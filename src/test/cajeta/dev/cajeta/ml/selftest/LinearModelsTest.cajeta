@@ -1,0 +1,138 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.Ridge;
+
+/**
+ * cajeta-ml plan Units 4 + 5 — LinearRegression and Ridge pinned against
+ * sklearn 1.9.0 on the reconstructible quadratic fixture (see Fixtures).
+ */
+public class LinearModelsTest {
+
+    public LinearModelsTest() { return; }
+
+    @Test
+    public void linearRegressionMatchesSklearn() {
+        LinearRegression lr = heap LinearRegression(true);
+        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> y = Fixtures.y1();
+        lr.fit(x, y);
+        Tensor<float64> cm = lr.coefMatrix();
+        Assert.isTrue(Fixtures.close(cm.get2(0, 0), 0.4984962406015034, 0.000000001));
+        Assert.isTrue(Fixtures.close(cm.get2(1, 0), -1.5, 0.000000001));
+        Assert.isTrue(Fixtures.close(lr.interceptVector().get1(0), 2.001428571428572, 0.000000001));
+        Assert.isTrue(Fixtures.close(lr.score(x, y), 0.9999512578378816, 0.0000000001));
+        Assert.equals((int64) 2, lr.rank());
+        Tensor<float64> sv = lr.singularValues();
+        Assert.isTrue(Fixtures.close(sv.get1(0), 5.661078398460271, 0.000000001));
+        Assert.isTrue(Fixtures.close(sv.get1(1), 0.603565544482523, 0.000000001));
+        // without intercept
+        LinearRegression lr0 = heap LinearRegression(false);
+        lr0.fit(x, y);
+        Tensor<float64> c0 = lr0.coefMatrix();
+        Assert.isTrue(Fixtures.close(c0.get2(0, 0), 4.5994969911644255, 0.000000001));
+        Assert.isTrue(Fixtures.close(c0.get2(1, 0), -3.2525644233174877, 0.000000001));
+    }
+
+    @Test
+    public void linearRegressionMultiOutput() {
+        LinearRegression lr = heap LinearRegression(true);
+        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> ym = Fixtures.yPair();
+        lr.fit(x, ym);
+        Tensor<float64> cm = lr.coefMatrix();
+        Assert.isTrue(Fixtures.close(cm.get2(0, 0), 0.4984962406015034, 0.000000001));
+        Assert.isTrue(Fixtures.close(cm.get2(1, 0), -1.5, 0.000000001));
+        Assert.isTrue(Fixtures.close(cm.get2(0, 1), 1.0015037593984968, 0.000000001));
+        Assert.isTrue(Fixtures.close(cm.get2(1, 1), 0.2499999999999999, 0.000000001));
+        Tensor<float64> ic = lr.interceptVector();
+        Assert.isTrue(Fixtures.close(ic.get1(0), 2.001428571428572, 0.000000001));
+        Assert.isTrue(Fixtures.close(ic.get1(1), -1.0014285714285716, 0.000000001));
+        Tensor<float64> pred = lr.predict(x);
+        Assert.equals((int64) 2, (int64) pred.ndim());
+        Assert.equals((int64) 20, pred.shapeAt(0));
+        Assert.equals((int64) 2, pred.shapeAt(1));
+    }
+
+    @Test
+    public void linearRegressionHeldOutPredictScore() {
+        LinearRegression lr = heap LinearRegression(true);
+        Tensor<float64> xtr = Fixtures.x20Head((int64) 15);
+        Tensor<float64> ytr = Fixtures.y1Head((int64) 15);
+        lr.fit(xtr, ytr);
+        Tensor<float64> xte = Fixtures.x20Tail((int64) 15);
+        Tensor<float64> yte = Fixtures.y1Tail((int64) 15);
+        Tensor<float64> pred = lr.predict(xte);
+        Assert.isTrue(Fixtures.close(pred.get1(0), -0.6202307692307696, 0.000000001));
+        Assert.isTrue(Fixtures.close(pred.get1(1), -1.0336923076923088, 0.000000001));
+        Assert.isTrue(Fixtures.close(pred.get1(2), -1.4769728506787332, 0.000000001));
+        Assert.isTrue(Fixtures.close(pred.get1(3), -1.9500723981900454, 0.000000001));
+        Assert.isTrue(Fixtures.close(pred.get1(4), -2.452990950226244, 0.000000001));
+        Assert.isTrue(Fixtures.close(lr.score(xte, yte), 0.9995090860937924, 0.0000000001));
+    }
+
+    @Test
+    public void linearRegressionRankDeficientMinNorm() {
+        LinearRegression lr = heap LinearRegression(false);
+        Tensor<float64> a = Fixtures.a5();
+        Tensor<float64> b = Fixtures.b5();
+        lr.fit(a, b);
+        Tensor<float64> cm = lr.coefMatrix();
+        Assert.isTrue(Fixtures.close(cm.get2(0, 0), 0.19272727272727275, 0.000000001));
+        Assert.isTrue(Fixtures.close(cm.get2(1, 0), 0.3854545454545455, 0.000000001));
+        Assert.equals((int64) 1, lr.rank());
+    }
+
+    @Test
+    public void ridgeCholeskyMatchesSklearnAcrossAlphas() {
+        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> y = Fixtures.y1();
+        Ridge r1 = heap Ridge(0.1, true, false);
+        r1.fit(x, y);
+        Assert.isTrue(Fixtures.close(r1.coefMatrix().get2(0, 0), 0.28514526713542043, 0.000000001));
+        Assert.isTrue(Fixtures.close(r1.coefMatrix().get2(1, 0), -1.3899668027830698, 0.000000001));
+        Assert.isTrue(Fixtures.close(r1.interceptVector().get1(0), 2.0682209976584414, 0.000000001));
+        Ridge r2 = heap Ridge(1.0, true, false);
+        r2.fit(x, y);
+        Assert.isTrue(Fixtures.close(r2.coefMatrix().get2(0, 0), -0.21775058975080117, 0.000000001));
+        Assert.isTrue(Fixtures.close(r2.coefMatrix().get2(1, 0), -1.105794063190057, 0.000000001));
+        Assert.isTrue(Fixtures.close(r2.interceptVector().get1(0), 2.1950187283029807, 0.000000001));
+        Ridge r3 = heap Ridge(10.0, true, false);
+        r3.fit(x, y);
+        Assert.isTrue(Fixtures.close(r3.coefMatrix().get2(0, 0), -0.3454719084679441, 0.000000001));
+        Assert.isTrue(Fixtures.close(r3.coefMatrix().get2(1, 0), -0.7823816956081305, 0.000000001));
+        Assert.isTrue(Fixtures.close(r3.interceptVector().get1(0), 1.9169397071205878, 0.000000001));
+    }
+
+    @Test
+    public void ridgeAlphaZeroAgreesWithOlsAndSolversAgree() {
+        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> y = Fixtures.y1();
+        Ridge r0 = heap Ridge(0.0, true, false);
+        r0.fit(x, y);
+        LinearRegression lr = heap LinearRegression(true);
+        lr.fit(x, y);
+        Assert.isTrue(Fixtures.close(r0.coefMatrix().get2(0, 0), lr.coefMatrix().get2(0, 0), 0.00000001));
+        Assert.isTrue(Fixtures.close(r0.coefMatrix().get2(1, 0), lr.coefMatrix().get2(1, 0), 0.00000001));
+        // cholesky vs svd solver agreement at alpha=1
+        Ridge rc = heap Ridge(1.0, true, false);
+        rc.fit(x, y);
+        Ridge rs = heap Ridge(1.0, true, true);
+        rs.fit(x, y);
+        Assert.isTrue(Fixtures.close(rc.coefMatrix().get2(0, 0), rs.coefMatrix().get2(0, 0), 0.0000000001));
+        Assert.isTrue(Fixtures.close(rc.coefMatrix().get2(1, 0), rs.coefMatrix().get2(1, 0), 0.0000000001));
+    }
+
+    @Test
+    public void ridgeSvdSurvivesRankDeficientGram() {
+        // the near-singular Gram case the svd solver exists for
+        Ridge r = heap Ridge(1.0, false, true);
+        Tensor<float64> a = Fixtures.a5();
+        Tensor<float64> b = Fixtures.b5();
+        r.fit(a, b);
+        Assert.isTrue(Fixtures.close(r.coefMatrix().get2(0, 0), 0.19202898550724642, 0.000000001));
+        Assert.isTrue(Fixtures.close(r.coefMatrix().get2(1, 0), 0.3840579710144928, 0.000000001));
+    }
+}

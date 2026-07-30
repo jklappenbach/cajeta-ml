@@ -1,0 +1,173 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.SummaryResult;
+
+/**
+ * cajeta-ml plan Units 6 + 7 — LogisticRegression (newton-cholesky) pinned
+ * against sklearn 1.9.0, and the inference summary pinned against
+ * closed-form OLS statistics (statsmodels-equivalent formulas; exact
+ * t-distribution p-values via Stats.tCdf).
+ */
+public class LogisticSummaryTest {
+
+    public LogisticSummaryTest() { return; }
+
+    @Test
+    public void logisticBinaryMatchesSklearn() {
+        LogisticRegression lg = heap LogisticRegression(1.0, 0.0000000001, (int64) 200);
+        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> y = Fixtures.yBinary();
+        lg.fit(x, y);
+        Assert.isTrue(lg.converged());
+        Assert.isTrue(Fixtures.close(lg.coefMatrix().get2(0, 0), 0.4490574023977388, 0.000001));
+        Assert.isTrue(Fixtures.close(lg.coefMatrix().get2(1, 0), 0.30792004087428027, 0.000001));
+        Assert.isTrue(Fixtures.close(lg.interceptVector().get1(0), -0.581868448872528, 0.000001));
+        // probabilities and labels on rows 0 / 10 / 19
+        Tensor<float64> proba = lg.predictProba(x);
+        Assert.isTrue(Fixtures.close(proba.get2(0, 1), 0.3585027770190751, 0.000001));
+        Assert.isTrue(Fixtures.close(proba.get2(10, 1), 0.5436657281464559, 0.000001));
+        Assert.isTrue(Fixtures.close(proba.get2(19, 1), 0.7994614736244957, 0.000001));
+        Assert.isTrue(Fixtures.close(proba.get2(0, 0) + proba.get2(0, 1), 1.0, 0.000000000001));
+        Tensor<float64> pred = lg.predict(x);
+        Assert.isTrue(pred.get1(0) == 0.0);
+        Assert.isTrue(pred.get1(10) == 1.0);
+        Assert.isTrue(pred.get1(19) == 1.0);
+        // near-unpenalized (large C): looser grad tol, sklearn-pinned coefs
+        LogisticRegression lh = heap LogisticRegression(1000000.0, 0.000001, (int64) 500);
+        lh.fit(x, y);
+        Assert.isTrue(Fixtures.close(lh.coefMatrix().get2(0, 0), 3.657103201963234, 0.0001));
+        Assert.isTrue(Fixtures.close(lh.coefMatrix().get2(1, 0), -1.2026443708945336, 0.0001));
+        Assert.isTrue(Fixtures.close(lh.interceptVector().get1(0), -1.7978306605021839, 0.0001));
+    }
+
+    @Test
+    public void logisticOvrThreeClassMatchesSklearn() {
+        LogisticRegression lg = heap LogisticRegression(1.0, 0.0000000001, (int64) 200);
+        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> y3 = Fixtures.yThree();
+        lg.fit(x, y3);
+        // per-class one-vs-rest coefficients
+        Tensor<float64> cm = lg.coefMatrix();
+        Assert.isTrue(Fixtures.close(cm.get2(0, 0), -1.0442861968510975, 0.00001));
+        Assert.isTrue(Fixtures.close(cm.get2(1, 0), -1.0840545708108538, 0.00001));
+        Assert.isTrue(Fixtures.close(cm.get2(0, 1), 0.26488044266071037, 0.00001));
+        Assert.isTrue(Fixtures.close(cm.get2(1, 1), -0.647616189073051, 0.00001));
+        Assert.isTrue(Fixtures.close(cm.get2(0, 2), 0.6821429285105117, 0.00001));
+        Assert.isTrue(Fixtures.close(cm.get2(1, 2), 1.1389752974757266, 0.00001));
+        Tensor<float64> ic = lg.interceptVector();
+        Assert.isTrue(Fixtures.close(ic.get1(0), 0.1500924247611628, 0.00001));
+        Assert.isTrue(Fixtures.close(ic.get1(1), -0.12988624511230867, 0.00001));
+        Assert.isTrue(Fixtures.close(ic.get1(2), -2.242737224927786, 0.00001));
+        // predictions match sklearn OvR argmax on every row
+        float64[] want = [ 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                           2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0 ];
+        Tensor<float64> pred = lg.predict(x);
+        int64 i = 0;
+        while (i < 20) {
+            Assert.isTrue(pred.get1(i) == want[(int32) i]);
+            i = i + 1;
+        }
+        // probabilities normalize
+        Tensor<float64> proba = lg.predictProba(x);
+        float64 rowSum = proba.get2(5, 0) + proba.get2(5, 1) + proba.get2(5, 2);
+        Assert.isTrue(Fixtures.close(rowSum, 1.0, 0.000000000001));
+    }
+
+    @Test
+    public void logisticSeparableDataWarnsAndStillPredicts() {
+        // perfectly separable on t: weights diverge, Newton blows the cap —
+        // the LOUD warning fires, converged() is false, the iterate predicts
+        int64[] sh = heap int64[1];
+        sh[0] = 20;
+        Tensor<float64> ysep = Tensor.zeros<float64>(sh);
+        int64 i = 10;
+        while (i < 20) {
+            ysep.set1(i, 1.0);
+            i = i + 1;
+        }
+        LogisticRegression lg = heap LogisticRegression(1000000.0, 0.0000000001, (int64) 30);
+        Tensor<float64> x = Fixtures.x20();
+        lg.fit(x, ysep);
+        Assert.isFalse(lg.converged());
+        Assert.isTrue(lg.score(x, ysep) == 1.0);
+    }
+
+    @Test
+    public void summaryMatchesClosedFormOls() {
+        LinearRegression lr = heap LinearRegression(true);
+        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> y = Fixtures.y1();
+        lr.fit(x, y);
+        SummaryResult s = lr.summary(x, y);
+        // beta (intercept first)
+        Assert.isTrue(Fixtures.close(s.coef.get1(0), 2.0014285714285713, 0.000000001));
+        Assert.isTrue(Fixtures.close(s.coef.get1(1), 0.4984962406015036, 0.000000001));
+        Assert.isTrue(Fixtures.close(s.coef.get1(2), -1.4999999999999996, 0.000000001));
+        // stderr
+        Assert.isTrue(Fixtures.close(s.stderr.get1(0), 0.00657974974572522, 0.000000001));
+        Assert.isTrue(Fixtures.close(s.stderr.get1(1), 0.01605161388336711, 0.000000001));
+        Assert.isTrue(Fixtures.close(s.stderr.get1(2), 0.00815528036912246, 0.000000001));
+        // t statistics
+        Assert.isTrue(Fixtures.close(s.tStat.get1(0), 304.18004464818335, 0.0001));
+        Assert.isTrue(Fixtures.close(s.tStat.get1(1), 31.055833028606035, 0.0001));
+        Assert.isTrue(Fixtures.close(s.tStat.get1(2), -183.9299119229919, 0.0001));
+        // p-values: hyper-significant here — assert the tail
+        Assert.isTrue(s.pValue.get1(0) < 0.000000000001);
+        Assert.isTrue(s.pValue.get1(1) < 0.000000000001);
+        Assert.isTrue(s.pValue.get1(2) < 0.000000000001);
+        // fit-quality scalars
+        Assert.isTrue(Fixtures.close(s.r2, 0.9999512578378816, 0.0000000001));
+        Assert.isTrue(Fixtures.close(s.adjR2, 0.9999455234658677, 0.0000000001));
+        Assert.isTrue(Fixtures.close(s.fStat, 174378.51178977315, 0.001));
+        Assert.isTrue(Fixtures.close(s.cond, 16.722216430796237, 0.000000001));
+        Assert.equals((int64) 17, s.df);
+        Assert.isFalse(s.condWarning);
+        Assert.isFalse(s.penalized);
+    }
+
+    @Test
+    public void summaryJunkFeatureHasHonestPValue() {
+        LinearRegression lr = heap LinearRegression(true);
+        Tensor<float64> x = Fixtures.x20Junk();
+        Tensor<float64> y = Fixtures.y1();
+        lr.fit(x, y);
+        SummaryResult s = lr.summary(x, y);
+        // the junk column: tiny coefficient, honest mid-range p-value
+        Assert.isTrue(Fixtures.close(s.coef.get1(3), 0.00015276009721201897, 0.000000001));
+        Assert.isTrue(Fixtures.close(s.stderr.get1(3), 0.00354982387477872, 0.000000001));
+        Assert.isTrue(Fixtures.close(s.tStat.get1(3), 0.043033148291488556, 0.00000001));
+        Assert.isTrue(Fixtures.close(s.pValue.get1(3), 0.96620757705083715, 0.00000001));
+    }
+
+    @Test
+    public void summaryCondWarningOnCollinearDesign() {
+        LinearRegression lr = heap LinearRegression(false);
+        Tensor<float64> a = Fixtures.a5();
+        Tensor<float64> b = Fixtures.b5();
+        lr.fit(a, b);
+        SummaryResult s = lr.summary(a, b);
+        Assert.isTrue(s.condWarning);
+    }
+
+    @Test
+    public void summaryPenalizedLogisticCarriesTheWarning() {
+        LogisticRegression lg = heap LogisticRegression(1.0, 0.0000000001, (int64) 200);
+        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> y = Fixtures.yBinary();
+        lg.fit(x, y);
+        SummaryResult s = lg.summary(x, y);
+        Assert.isTrue(s.penalized);
+        // Wald pieces are sane: positive stderr, p-values in [0,1]
+        int64 j = 0;
+        while (j < 3) {
+            Assert.isTrue(s.stderr.get1(j) > 0.0);
+            Assert.isTrue(s.pValue.get1(j) >= 0.0);
+            Assert.isTrue(s.pValue.get1(j) <= 1.0);
+            j = j + 1;
+        }
+    }
+}

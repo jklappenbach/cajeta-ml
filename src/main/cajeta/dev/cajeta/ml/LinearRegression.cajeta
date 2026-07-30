@@ -1,0 +1,370 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+import cajeta.math.stats.Stats;
+
+/**
+ * Ordinary least squares (sklearn `LinearRegression`): QR-path `lstsq` on
+ * the (optionally centered) design — sklearn's own algorithm. Supports
+ * single (`y (n,)`) and multi-output (`y (n,k)`) targets in one fit
+ * (multi-RHS lstsq). `fitIntercept` (the usual choice) centers X and y so
+ * the intercept is never part of the solve, exactly sklearn.
+ *
+ * Fitted surface: `coefMatrix() (p,k)` / `coef() (p,)`, `intercept()`,
+ * `rank()` and `singularValues()` of the solved design (numpy tolerance
+ * semantics — rank deficiency is surfaced, and lstsq's minimum-norm
+ * behavior on deficient designs matches numpy/sklearn). `summary(x, y)`
+ * returns the classical inference table ({@link SummaryResult}).
+ */
+public final class LinearRegression implements Predictor {
+
+    private boolean fitIcpt;
+    private Tensor<float64> coefM;      // (p, k)
+    private Tensor<float64> iceptV;     // (k,)
+    private Tensor<float64> singular;   // (min(n,p),) of the solved design
+    private int64 rankV;
+    private boolean yWas1D;
+    private boolean fitted;
+
+    public LinearRegression(boolean fitIntercept) {
+        this.fitIcpt = fitIntercept;
+        this.fitted = false;
+        return;
+    }
+
+    public static float64 machEps() {
+        float64 eps = 1.0;
+        while (1.0 + eps * 0.5 != 1.0) {
+            eps = eps * 0.5;
+        }
+        return eps;
+    }
+
+    /** Copy `y` into `(n,k)` form; `k = 1` for a 1-D target. */
+    public static #Tensor<float64> asMatrix(Tensor<float64> y, int64 n) {
+        int64 k = 1;
+        if (y.ndim() == 2) { k = y.shapeAt(1); }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> ysrc = y.copy();
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                out.flatSet(i * k + c, ysrc.flatGet(i * k + c));
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("LinearRegression.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        if (y.ndim() < 1 || y.ndim() > 2 || y.shapeAt(0) != n) {
+            throw heap MlException("LinearRegression.fit: y must be (n,) or (n,k) matching x rows");
+        }
+        this.yWas1D = y.ndim() == 1;
+        Tensor<float64> ym2 = LinearRegression.asMatrix(y, n);
+        int64 k = ym2.shapeAt(1);
+        // center when fitting an intercept (the sklearn preprocessing)
+        Tensor<float64> design = x.copy();
+        int64[] pm = heap int64[1];
+        pm[0] = p;
+        Tensor<float64> xmean = Tensor.zeros<float64>(pm);
+        int64[] km = heap int64[1];
+        km[0] = k;
+        Tensor<float64> ymean = Tensor.zeros<float64>(km);
+        if (this.fitIcpt) {
+            int64 j = 0;
+            while (j < p) {
+                float64 acc = 0.0;
+                int64 i = 0;
+                while (i < n) {
+                    acc = acc + x.get2(i, j);
+                    i = i + 1;
+                }
+                xmean.set1(j, acc / (float64) n);
+                j = j + 1;
+            }
+            int64 c = 0;
+            while (c < k) {
+                float64 acc = 0.0;
+                int64 i = 0;
+                while (i < n) {
+                    acc = acc + ym2.get2(i, c);
+                    i = i + 1;
+                }
+                ymean.set1(c, acc / (float64) n);
+                c = c + 1;
+            }
+            int64 i2 = 0;
+            while (i2 < n) {
+                int64 j2 = 0;
+                while (j2 < p) {
+                    design.flatSet(i2 * p + j2, x.get2(i2, j2) - xmean.get1(j2));
+                    j2 = j2 + 1;
+                }
+                int64 c2 = 0;
+                while (c2 < k) {
+                    ym2.flatSet(i2 * k + c2, ym2.get2(i2, c2) - ymean.get1(c2));
+                    c2 = c2 + 1;
+                }
+                i2 = i2 + 1;
+            }
+        }
+        Tensor<float64> w = LinAlg.lstsq<float64>(design, ym2);   // (p, k)
+        // diagnostics: singular values + numpy-tolerance rank of the design
+        Tensor<float64>[] sv = LinAlg.svd<float64>(design);
+        int64 r = sv[1].shapeAt(0);
+        int64[] rs = heap int64[1];
+        rs[0] = r;
+        Tensor<float64> sing = Tensor.zeros<float64>(rs);
+        float64 mx = (float64) n;
+        if (p > n) { mx = (float64) p; }
+        float64 tol = sv[1].get1(0) * mx * LinearRegression.machEps();
+        int64 rk = 0;
+        int64 si = 0;
+        while (si < r) {
+            float64 s = sv[1].get1(si);
+            sing.set1(si, s);
+            if (s > tol) { rk = rk + 1; }
+            si = si + 1;
+        }
+        // intercept: ymean - xmean · W  (zero without fitIntercept)
+        Tensor<float64> ic = Tensor.zeros<float64>(km);
+        if (this.fitIcpt) {
+            int64 c = 0;
+            while (c < k) {
+                float64 acc = ymean.get1(c);
+                int64 j = 0;
+                while (j < p) {
+                    acc = acc - xmean.get1(j) * w.get2(j, c);
+                    j = j + 1;
+                }
+                ic.set1(c, acc);
+                c = c + 1;
+            }
+        }
+        this.coefM #= w;
+        this.iceptV #= ic;
+        this.singular #= sing;
+        this.rankV = rk;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** Coefficient matrix `(p, k)` (one column per output). */
+    public Tensor<float64> coefMatrix() {
+        if (!this.fitted) {
+            throw heap MlException("LinearRegression.coefMatrix: fit first");
+        }
+        return this.coefM;
+    }
+
+    /** Intercept vector `(k,)`. */
+    public Tensor<float64> interceptVector() {
+        if (!this.fitted) {
+            throw heap MlException("LinearRegression.interceptVector: fit first");
+        }
+        return this.iceptV;
+    }
+
+    /** Rank of the solved design (numpy tolerance; sklearn `rank_`). */
+    public int64 rank() {
+        if (!this.fitted) {
+            throw heap MlException("LinearRegression.rank: fit first");
+        }
+        return this.rankV;
+    }
+
+    /** Singular values of the solved design (sklearn `singular_`). */
+    public Tensor<float64> singularValues() {
+        if (!this.fitted) {
+            throw heap MlException("LinearRegression.singularValues: fit first");
+        }
+        return this.singular;
+    }
+
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("LinearRegression.predict: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = this.coefM.shapeAt(0);
+        int64 k = this.coefM.shapeAt(1);
+        int64[] sh2 = heap int64[2];
+        sh2[0] = n;
+        sh2[1] = k;
+        Tensor<float64> out2 = Tensor.zeros<float64>(sh2);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                float64 acc = this.iceptV.get1(c);
+                int64 j = 0;
+                while (j < p) {
+                    acc = acc + x.get2(i, j) * this.coefM.get2(j, c);
+                    j = j + 1;
+                }
+                out2.flatSet(i * k + c, acc);
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        if (this.yWas1D) {
+            int64[] sh1 = heap int64[1];
+            sh1[0] = n;
+            Tensor<float64> out1 = Tensor.zeros<float64>(sh1);
+            int64 i1 = 0;
+            while (i1 < n) {
+                out1.set1(i1, out2.get2(i1, 0));
+                i1 = i1 + 1;
+            }
+            return #out1;
+        }
+        return #out2;
+    }
+
+    /** R² (uniform average over outputs for multi-output fits, sklearn). */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> pred = this.predict(x);
+        int64 n = y.shapeAt(0);
+        Tensor<float64> ym2 = LinearRegression.asMatrix(y, n);
+        Tensor<float64> pm2 = LinearRegression.asMatrix(pred, n);
+        int64 k = ym2.shapeAt(1);
+        float64 total = 0.0;
+        int64 c = 0;
+        while (c < k) {
+            float64 mean = 0.0;
+            int64 i = 0;
+            while (i < n) {
+                mean = mean + ym2.get2(i, c);
+                i = i + 1;
+            }
+            mean = mean / (float64) n;
+            float64 ssRes = 0.0;
+            float64 ssTot = 0.0;
+            i = 0;
+            while (i < n) {
+                float64 dr = ym2.get2(i, c) - pm2.get2(i, c);
+                float64 dt = ym2.get2(i, c) - mean;
+                ssRes = ssRes + dr * dr;
+                ssTot = ssTot + dt * dt;
+                i = i + 1;
+            }
+            total = total + 1.0 - ssRes / ssTot;
+            c = c + 1;
+        }
+        return total / (float64) k;
+    }
+
+    /**
+     * Classical OLS inference on `(x, y)` (the training data, for the
+     * classical reading): per-coefficient stderr, t, exact t-distribution
+     * p-values ({@link cajeta.math.stats.Stats#tCdf}), R²/adjusted-R²,
+     * F-statistic, and the design condition number (warning above 1e8).
+     * Index 0 of the vectors is the intercept when the model has one.
+     * Single-output fits only.
+     */
+    public #SummaryResult summary(Tensor<float64> x, Tensor<float64> y) {
+        if (!this.fitted) {
+            throw heap MlException("LinearRegression.summary: fit first");
+        }
+        if (y.ndim() != 1) {
+            throw heap MlException("LinearRegression.summary: single-output y only");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 d = p;
+        if (this.fitIcpt) { d = p + 1; }
+        // design with leading 1s column when intercept is fitted
+        int64[] dsh = heap int64[2];
+        dsh[0] = n;
+        dsh[1] = d;
+        Tensor<float64> xd = Tensor.zeros<float64>(dsh);
+        int64 i = 0;
+        while (i < n) {
+            int64 col = 0;
+            if (this.fitIcpt) {
+                xd.flatSet(i * d, 1.0);
+                col = 1;
+            }
+            int64 j = 0;
+            while (j < p) {
+                xd.flatSet(i * d + col + j, x.get2(i, j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        Tensor<float64> beta = LinAlg.lstsq<float64>(xd, y);
+        // residuals + sums of squares
+        float64 ymean = 0.0;
+        i = 0;
+        while (i < n) {
+            ymean = ymean + y.get1(i);
+            i = i + 1;
+        }
+        ymean = ymean / (float64) n;
+        float64 ssr = 0.0;
+        float64 sst = 0.0;
+        i = 0;
+        while (i < n) {
+            float64 fitv = 0.0;
+            int64 j = 0;
+            while (j < d) {
+                fitv = fitv + xd.get2(i, j) * beta.get1(j);
+                j = j + 1;
+            }
+            float64 dr = y.get1(i) - fitv;
+            float64 dt = y.get1(i) - ymean;
+            ssr = ssr + dr * dr;
+            sst = sst + dt * dt;
+            i = i + 1;
+        }
+        int64 dfree = n - d;
+        float64 sigma2 = ssr / (float64) dfree;
+        // (XdᵀXd)⁺ diagonal for the standard errors (pinv, statsmodels'
+        // choice — stays finite on collinear designs, where condWarning is
+        // the meaningful signal)
+        Tensor<float64> g = Tensor.matmul<float64>(xd.transpose(), xd);
+        Tensor<float64> ginv = LinAlg.pinv<float64>(g);
+        int64[] dm = heap int64[1];
+        dm[0] = d;
+        Tensor<float64> se = Tensor.zeros<float64>(dm);
+        Tensor<float64> ts = Tensor.zeros<float64>(dm);
+        Tensor<float64> pv = Tensor.zeros<float64>(dm);
+        int64 j2 = 0;
+        while (j2 < d) {
+            float64 s = Math.sqrt(sigma2 * ginv.get2(j2, j2));
+            se.set1(j2, s);
+            float64 tv = beta.get1(j2) / s;
+            ts.set1(j2, tv);
+            float64 at = tv;
+            if (at < 0.0) { at = -at; }
+            pv.set1(j2, 2.0 * (1.0 - Stats.tCdf(at, (float64) dfree)));
+            j2 = j2 + 1;
+        }
+        float64 r2 = 1.0 - ssr / sst;
+        float64 adj = 1.0 - (1.0 - r2) * (float64) (n - 1) / (float64) dfree;
+        float64 nreg = (float64) (d - 1);
+        if (!this.fitIcpt) { nreg = (float64) d; }
+        float64 fstat = ((sst - ssr) / nreg) / (ssr / (float64) dfree);
+        float64 cnd = LinAlg.cond<float64>(xd);
+        boolean cwarn = cnd > 100000000.0;
+        SummaryResult res = heap SummaryResult(#beta, #se, #ts, #pv, r2, adj,
+                                               fstat, cnd, dfree, cwarn, false);
+        return #res;
+    }
+}

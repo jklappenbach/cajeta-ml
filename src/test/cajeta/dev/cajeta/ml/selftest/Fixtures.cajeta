@@ -1,0 +1,177 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+
+/**
+ * Shared model-test fixtures, reconstructed in-language with the exact f64
+ * expressions the sklearn/numpy pin scripts evaluated (bit-identical
+ * inputs): the (20,2) quadratic design [t, t²] with t = i/10, targets
+ * y1/y2 with deterministic ±0.01 noise, binary and 3-class label patterns,
+ * the rank-deficient (5,2) design, and the junk feature ((i·7)%5−2)/2.
+ */
+public final class Fixtures {
+
+    public static boolean close(float64 a, float64 b, float64 tol) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d < tol;
+    }
+
+    public static #Tensor<float64> x20() {
+        int64[] sh = heap int64[2];
+        sh[0] = 20;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 20) {
+            float64 t = (float64) i / 10.0;
+            x.flatSet(i * 2, t);
+            x.flatSet(i * 2 + 1, t * t);
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    public static #Tensor<float64> y1() {
+        int64[] sh = heap int64[1];
+        sh[0] = 20;
+        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 20) {
+            float64 t = (float64) i / 10.0;
+            float64 noise = 0.01;
+            if (i % 2 == 1) { noise = -0.01; }
+            y.set1(i, 2.0 + 0.5 * t - 1.5 * (t * t) + noise);
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    public static #Tensor<float64> yPair() {
+        int64[] sh = heap int64[2];
+        sh[0] = 20;
+        sh[1] = 2;
+        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 20) {
+            float64 t = (float64) i / 10.0;
+            float64 noise = 0.01;
+            if (i % 2 == 1) { noise = -0.01; }
+            y.flatSet(i * 2, 2.0 + 0.5 * t - 1.5 * (t * t) + noise);
+            y.flatSet(i * 2 + 1, -1.0 + 1.0 * t + 0.25 * (t * t) - noise);
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** First `n` rows of x20 / y1 (held-out split fixtures). */
+    public static #Tensor<float64> x20Head(int64 n) {
+        Tensor<float64> full = Fixtures.x20();
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            x.flatSet(i * 2, full.get2(i, 0));
+            x.flatSet(i * 2 + 1, full.get2(i, 1));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    public static #Tensor<float64> y1Head(int64 n) {
+        Tensor<float64> full = Fixtures.y1();
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            y.set1(i, full.get1(i));
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    public static #Tensor<float64> x20Tail(int64 from) {
+        Tensor<float64> full = Fixtures.x20();
+        int64 n = 20 - from;
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            x.flatSet(i * 2, full.get2(from + i, 0));
+            x.flatSet(i * 2 + 1, full.get2(from + i, 1));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    public static #Tensor<float64> y1Tail(int64 from) {
+        Tensor<float64> full = Fixtures.y1();
+        int64 n = 20 - from;
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            y.set1(i, full.get1(from + i));
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** Rank-deficient (5,2): col2 = 2·col1. */
+    public static #Tensor<float64> a5() {
+        float64[] d = [ 1.0, 2.0, 2.0, 4.0, 3.0, 6.0, 4.0, 8.0, 5.0, 10.0 ];
+        int64[] sh = heap int64[2];
+        sh[0] = 5;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    public static #Tensor<float64> b5() {
+        float64[] d = [ 1.0, 3.0, 2.0, 5.0, 4.0 ];
+        int64[] sh = heap int64[1];
+        sh[0] = 5;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** The mixed binary label pattern the logistic pins were computed on. */
+    public static #Tensor<float64> yBinary() {
+        float64[] d = [ 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+                        1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0 ];
+        int64[] sh = heap int64[1];
+        sh[0] = 20;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** The 3-class label pattern the OvR pins were computed on. */
+    public static #Tensor<float64> yThree() {
+        float64[] d = [ 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 2.0, 1.0, 1.0,
+                        2.0, 1.0, 2.0, 2.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0 ];
+        int64[] sh = heap int64[1];
+        sh[0] = 20;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** (20,3): [t, t², junk] with junk = ((i·7) mod 5 − 2)/2 — the p-value fixture. */
+    public static #Tensor<float64> x20Junk() {
+        int64[] sh = heap int64[2];
+        sh[0] = 20;
+        sh[1] = 3;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 20) {
+            float64 t = (float64) i / 10.0;
+            x.flatSet(i * 3, t);
+            x.flatSet(i * 3 + 1, t * t);
+            float64 j = (float64) ((i * 7) % 5) - 2.0;
+            x.flatSet(i * 3 + 2, j / 2.0);
+            i = i + 1;
+        }
+        return #x;
+    }
+}

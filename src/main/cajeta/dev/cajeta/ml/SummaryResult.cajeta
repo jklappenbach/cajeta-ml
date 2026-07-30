@@ -1,0 +1,54 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * The inference summary of a fitted linear model (the statsmodels table,
+ * typed): per-coefficient estimates with standard errors, test statistics,
+ * and p-values, plus the fit-quality scalars. Index 0 is the intercept when
+ * the model was fit with one; feature coefficients follow in column order.
+ *
+ * A class, not a `record` — records are value types and the coefficient
+ * vectors are heap tensors. Fields are read directly (`s.coef.get1(0)`).
+ *
+ * For OLS ({@link LinearRegression#summary}) the statistics are classical
+ * (exact t-distribution p-values). For a penalized logistic fit
+ * ({@link LogisticRegression#summary}) they are Wald statistics from the
+ * penalized Hessian and `penalized` is set — NOT classical inference (the
+ * M3 warning); refit with a very large `C` for near-classical values.
+ * `condWarning` flags a design condition number above 1e8
+ * (multicollinearity — coefficient values are not individually trustworthy).
+ */
+public final class SummaryResult {
+
+    public Tensor<float64> coef;
+    public Tensor<float64> stderr;
+    public Tensor<float64> tStat;
+    public Tensor<float64> pValue;
+    public float64 r2;
+    public float64 adjR2;
+    public float64 fStat;
+    public float64 cond;
+    public int64 df;
+    public boolean condWarning;
+    public boolean penalized;
+
+    public SummaryResult(#Tensor<float64> coef, #Tensor<float64> stderr,
+                         #Tensor<float64> tStat, #Tensor<float64> pValue,
+                         float64 r2, float64 adjR2, float64 fStat,
+                         float64 cond, int64 df, boolean condWarning,
+                         boolean penalized) {
+        this.coef #= coef;
+        this.stderr #= stderr;
+        this.tStat #= tStat;
+        this.pValue #= pValue;
+        this.r2 = r2;
+        this.adjR2 = adjR2;
+        this.fStat = fStat;
+        this.cond = cond;
+        this.df = df;
+        this.condWarning = condWarning;
+        this.penalized = penalized;
+        return;
+    }
+}
