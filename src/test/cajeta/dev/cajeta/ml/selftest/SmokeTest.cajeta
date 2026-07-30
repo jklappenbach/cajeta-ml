@@ -1,0 +1,13 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.Ml;
+
+public class SmokeTest {
+    public SmokeTest() { return; }
+
+    @Test
+    public void libraryLinks() {
+        Assert.equals("0.1.0", Ml.version());
+    }
+}

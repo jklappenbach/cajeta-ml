@@ -1,0 +1,19 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * A fitted feature transformation (scalers, encoders). `fit` learns the
+ * statistics (ignoring `y`, which exists for lifecycle uniformity — see
+ * {@link Estimator}); `transform` applies them; `fitTransform` is the
+ * one-shot composition and must equal `fit(x, y)` followed by
+ * `transform(x)`. Implementations with a well-defined inverse also provide
+ * `inverseTransform` (concrete-class surface, not part of this contract).
+ */
+public interface Transformer extends Estimator {
+    /** Apply the fitted transformation to `x (n, p)`. */
+    #Tensor<float64> transform(Tensor<float64> x);
+
+    /** `fit` then `transform` in one call. */
+    #Tensor<float64> fitTransform(Tensor<float64> x, Tensor<float64> y);
+}

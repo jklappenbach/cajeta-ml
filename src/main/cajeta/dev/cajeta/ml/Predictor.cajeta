@@ -1,0 +1,21 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * A fitted model that maps feature rows to outputs. `score` follows the
+ * sklearn convention: R² for regressors, accuracy for classifiers.
+ * Classifiers additionally expose `predictProba` (see the concrete classes;
+ * it is not part of this minimal contract).
+ *
+ * `crossValScore` and every model-selection utility accept any `Predictor` —
+ * including adapted external models (the cajeta-xgboost adapter) — without
+ * knowing the concrete type.
+ */
+public interface Predictor extends Estimator {
+    /** Predictions for `x (n, p)`: `(n,)` (or `(n, k)` for multi-output fits). */
+    #Tensor<float64> predict(Tensor<float64> x);
+
+    /** Goodness of fit on held-out data: R² (regressors) / accuracy (classifiers). */
+    float64 score(Tensor<float64> x, Tensor<float64> y);
+}

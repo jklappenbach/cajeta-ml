@@ -1,0 +1,142 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.DummyRegressor;
+import dev.cajeta.ml.IdentityTransformer;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.Transformer;
+
+/**
+ * cajeta-ml plan 1.1.1 / 1.1.2 — the estimator-protocol conformance suite,
+ * pinned against the two reference conformers. This is the executable
+ * specification of the lifecycle every ecosystem estimator honors:
+ * unfitted use throws, fit marks fitted, score follows the sklearn R²
+ * convention, fitTransform == fit-then-transform.
+ */
+public class ProtocolTest {
+
+    public ProtocolTest() { return; }
+
+    static #Tensor<float64> xFix() {
+        float64[] dx = [ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 ];
+        int64[] sh = heap int64[2];
+        sh[0] = 4;
+        sh[1] = 2;
+        return Tensor.of<float64>(dx, sh);
+    }
+
+    static #Tensor<float64> yFix() {
+        float64[] dy = [ 1.0, 3.0, 5.0, 7.0 ];
+        int64[] sh = heap int64[1];
+        sh[0] = 4;
+        return Tensor.of<float64>(dy, sh);
+    }
+
+    @Test
+    public void unfittedPredictThrows() {
+        DummyRegressor d = heap DummyRegressor();
+        Assert.isFalse(d.isFitted());
+        boolean threw = false;
+        Tensor<float64> x = ProtocolTest.xFix();
+        try {
+            Tensor<float64> p = d.predict(x);
+        } catch (MlException ex) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+    }
+
+    @Test
+    public void fitPredictScoreLifecycle() {
+        DummyRegressor d = heap DummyRegressor();
+        Tensor<float64> x = ProtocolTest.xFix();
+        Tensor<float64> y = ProtocolTest.yFix();
+        d.fit(x, y);
+        Assert.isTrue(d.isFitted());
+        Tensor<float64> p = d.predict(x);
+        Assert.equals((int64) 1, (int64) p.ndim());
+        Assert.equals((int64) 4, p.shapeAt(0));
+        // mean of [1,3,5,7] = 4, predicted for every row
+        int64 i = 0;
+        while (i < 4) {
+            Assert.isTrue(p.get1(i) == 4.0);
+            i = i + 1;
+        }
+        // R² of the mean predictor on its own training targets is exactly 0
+        float64 s = d.score(x, y);
+        float64 ds = s;
+        if (ds < 0.0) { ds = -ds; }
+        Assert.isTrue(ds < 0.000000000001);
+    }
+
+    @Test
+    public void fitRejectsShapeMismatch() {
+        DummyRegressor d = heap DummyRegressor();
+        Tensor<float64> x = ProtocolTest.xFix();
+        float64[] dy = [ 1.0, 2.0 ];
+        int64[] sh = heap int64[1];
+        sh[0] = 2;
+        Tensor<float64> yShort = Tensor.of<float64>(dy, sh);
+        boolean threw = false;
+        try {
+            d.fit(x, yShort);
+        } catch (MlException ex) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+        Assert.isFalse(d.isFitted());
+    }
+
+    // BLOCKED on a compiler defect (registered 2026-07-30, iface-generic-
+    // returns): a method whose RETURN type is a generic instantiation
+    // (#Tensor<float64> / Tensor<float64>) dispatched through an
+    // interface-typed receiver calls a null vtable slot and SIGSEGVs —
+    // param-position generics and non-generic returns (#String, #int8[])
+    // dispatch fine. Minimal repro in the spec. Un-gate when the compiler
+    // fix lands: this test is the protocol's core promise (model-selection
+    // code sees only `Predictor`), and crossValScore depends on it.
+    @Disabled
+    @Test
+    public void predictorIsUsableThroughTheInterface() {
+        // the protocol's point: model-selection code sees only `Predictor`
+        Predictor p = heap DummyRegressor();
+        Tensor<float64> x = ProtocolTest.xFix();
+        Tensor<float64> y = ProtocolTest.yFix();
+        p.fit(x, y);
+        Tensor<float64> out = p.predict(x);
+        Assert.equals((int64) 4, out.shapeAt(0));
+        Assert.isTrue(out.get1(0) == 4.0);
+    }
+
+    @Test
+    public void transformerLifecycleAndFitTransform() {
+        IdentityTransformer t = heap IdentityTransformer();
+        Tensor<float64> x = ProtocolTest.xFix();
+        Tensor<float64> y = ProtocolTest.yFix();
+        boolean threw = false;
+        try {
+            Tensor<float64> bad = t.transform(x);
+        } catch (MlException ex) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+        // fitTransform == fit-then-transform, elementwise
+        Tensor<float64> a = t.fitTransform(x, y);
+        Assert.isTrue(t.isFitted());
+        IdentityTransformer t2 = heap IdentityTransformer();
+        t2.fit(x, y);
+        Tensor<float64> b = t2.transform(x);
+        int64 i = 0;
+        while (i < 4) {
+            int64 j = 0;
+            while (j < 2) {
+                Assert.isTrue(a.get2(i, j) == b.get2(i, j));
+                Assert.isTrue(a.get2(i, j) == x.get2(i, j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+    }
+}

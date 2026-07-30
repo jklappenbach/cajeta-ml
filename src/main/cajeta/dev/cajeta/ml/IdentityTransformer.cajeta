@@ -1,0 +1,45 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * The reference {@link Transformer} conformer (sklearn's default
+ * `FunctionTransformer`): passes features through unchanged. Pins the
+ * fit/transform/fitTransform lifecycle for the conformance suite and serves
+ * as the no-op stage in composed preprocessing.
+ */
+public final class IdentityTransformer implements Transformer {
+
+    private boolean fitted;
+
+    public IdentityTransformer() {
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("IdentityTransformer.fit: x must be 2-D (n, p)");
+        }
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    public #Tensor<float64> transform(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("IdentityTransformer.transform: fit first");
+        }
+        Tensor<float64> out = x.copy();
+        return #out;
+    }
+
+    public #Tensor<float64> fitTransform(Tensor<float64> x, Tensor<float64> y) {
+        this.fit(x, y);
+        Tensor<float64> out = this.transform(x);
+        return #out;
+    }
+}

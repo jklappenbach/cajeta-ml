@@ -1,0 +1,25 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * The root of the ecosystem estimator protocol: anything with a train
+ * lifecycle. `fit` consumes `X (n_samples, n_features)` and a target `y` and
+ * stores the fitted state on the instance; hyperparameters are constructor
+ * arguments (there is no sklearn-style `set_params` mutation — construct a
+ * new estimator instead).
+ *
+ * Transformers accept the `y` argument and ignore it (the sklearn
+ * `fit(X, y=None)` convention) so that every estimator — model or
+ * transformer — shares one lifecycle, which is what makes future pipeline
+ * composition possible without protocol change.
+ *
+ * Calling `predict`/`transform` before `fit` throws {@link MlException}.
+ */
+public interface Estimator {
+    /** Train on `x (n, p)` against target `y`; fitted state lands on `this`. */
+    void fit(Tensor<float64> x, Tensor<float64> y);
+
+    /** True once `fit` has completed successfully. */
+    boolean isFitted();
+}

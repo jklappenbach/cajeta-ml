@@ -1,0 +1,79 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * The reference {@link Predictor} conformer (sklearn `DummyRegressor`,
+ * strategy="mean"): predicts the training-target mean for every row. Useful
+ * as a baseline score and as the protocol's executable specification — the
+ * conformance suite pins the fit/predict/score lifecycle against this class.
+ */
+public final class DummyRegressor implements Predictor {
+
+    private float64 mean;
+    private boolean fitted;
+
+    public DummyRegressor() {
+        this.mean = 0.0;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("DummyRegressor.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException("DummyRegressor.fit: y must be (n,) matching x rows");
+        }
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            acc = acc + y.get1(i);
+            i = i + 1;
+        }
+        this.mean = acc / (float64) n;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("DummyRegressor.predict: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.full<float64>(sh, this.mean);
+        return #out;
+    }
+
+    /** R² (the sklearn regressor `score` convention): 0 for the mean predictor itself. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        int64 n = y.shapeAt(0);
+        float64 ymean = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            ymean = ymean + y.get1(i);
+            i = i + 1;
+        }
+        ymean = ymean / (float64) n;
+        float64 ssRes = 0.0;
+        float64 ssTot = 0.0;
+        i = 0;
+        while (i < n) {
+            float64 dr = y.get1(i) - p.get1(i);
+            float64 dt = y.get1(i) - ymean;
+            ssRes = ssRes + dr * dr;
+            ssTot = ssTot + dt * dt;
+            i = i + 1;
+        }
+        return 1.0 - ssRes / ssTot;
+    }
+}

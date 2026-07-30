@@ -1,0 +1,22 @@
+package dev.cajeta.ml;
+
+/**
+ * cajeta-ml — classical (non-deep) machine learning: the scikit-learn /
+ * statsmodels role for the cajeta ecosystem. Estimator objects with
+ * fit/predict lifecycles over `Tensor<float64>` data, the linear-model family,
+ * inference summaries, preprocessing, model selection, and metrics.
+ *
+ * This library also owns the ecosystem **estimator protocol** —
+ * {@link Estimator} / {@link Predictor} / {@link Transformer} — the contract
+ * sibling model libraries (cajeta-xgboost) conform to.
+ *
+ * This is the library entry class (the `--emit=cja` root). The surface lands
+ * unit by unit per the cajeta-ml plan.
+ */
+public final class Ml {
+    /** The library version. */
+    public static #String version() { return "0.1.0"; }
+
+    /** `--emit=cja` entry. */
+    public static int32 run() { return 0; }
+}
