@@ -68,6 +68,13 @@
             ]
         },
 
+        "tour": {
+            "description": "Build + run the self-checking tour",
+            "actions": [
+                { "action": "exec", "command": "./run-tour.sh" }
+            ]
+        },
+
         "release": {
             "description": "Release build of the .cja",
             "actions": [

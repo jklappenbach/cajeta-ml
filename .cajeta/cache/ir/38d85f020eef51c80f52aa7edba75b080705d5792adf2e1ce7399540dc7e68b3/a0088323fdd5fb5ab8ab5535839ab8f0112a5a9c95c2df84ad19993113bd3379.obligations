@@ -1,0 +1,2 @@
+cajeta.math.Tensor<?>
+cajeta.math.Tensor<?>::zeros(int64[])<float64>

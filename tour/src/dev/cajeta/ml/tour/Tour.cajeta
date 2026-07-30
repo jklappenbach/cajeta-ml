@@ -1,0 +1,244 @@
+package dev.cajeta.ml.tour;
+
+import cajeta.math.Tensor;
+import cajeta.nucleo.column.Column;
+import dev.cajeta.ml.DummyRegressor;
+import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.Ridge;
+import dev.cajeta.ml.Split;
+import dev.cajeta.ml.StandardScaler;
+import dev.cajeta.ml.SummaryResult;
+
+/**
+ * The cajeta-ml tour — a runnable walk through the full public surface:
+ * ingest → scale → split → fit → inference → model selection → metrics,
+ * ending with the estimator protocol driven generically.
+ *
+ *     cajeta tour          # via the manifest task
+ *
+ * Every section prints what it demonstrates and CHECKS it (the tour doubles
+ * as a smoke test: it exits non-zero if any claim it makes stops being
+ * true). Narrative companion: docs/Tour.md.
+ *
+ * The dataset is synthesized deterministically — no RNG beyond seeded
+ * splits, no files — so the tour behaves identically on every machine.
+ */
+public final class Tour {
+
+    static int32 failures;
+
+    static void check(boolean ok, String what) {
+        if (ok) {
+            System.stdout.println("   ok: " + what);
+        } else {
+            System.stdout.println(" FAIL: " + what);
+            Tour.failures = Tour.failures + 1;
+        }
+    }
+
+    static void section(String title) {
+        System.stdout.println("");
+        System.stdout.println("== " + title + " ==");
+    }
+
+    static boolean near(float64 a, float64 b, float64 tol) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d < tol;
+    }
+
+    /** The quadratic dataset: x = [t, t²] over t = i/20, y = 2 + t − 1.5t² ± 0.01. */
+    static #Tensor<float64> makeX(int64 n) {
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 20.0;
+            x.flatSet(i * 2, t);
+            x.flatSet(i * 2 + 1, t * t);
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    static #Tensor<float64> makeY(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 20.0;
+            float64 noise = 0.01;
+            if (i % 2 == 1) { noise = -0.01; }
+            y.set1(i, 2.0 + 1.0 * t - 1.5 * (t * t) + noise);
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    public static int32 main() {
+        System.stdout.println("cajeta-ml tour — classical ML: the sklearn/statsmodels role");
+        Tour.failures = 0;
+        int64 n = 60;
+
+        // ------------------------------------------------------------------
+        Tour.section("1. Ingest — tensors, and the zero-copy frame seam");
+        // The core API speaks Tensor<float64> (n, p). Dataframe columns cross
+        // into tensor land through nucleo's zero-copy Column seam — a non-null
+        // float64 column IS a tensor buffer.
+        Tensor<float64> x = Tour.makeX(n);
+        Tensor<float64> y = Tour.makeY(n);
+        Column<float64> col = Column.fromTensor<float64>(y);
+        Tensor<float64> yBack = col.asTensor();
+        Tour.check(x.shapeAt(0) == n && x.shapeAt(1) == 2, "design matrix is (n, 2)");
+        Tour.check(yBack.get1(3) == y.get1(3), "Column.asTensor round-trips the target zero-copy");
+
+        // ------------------------------------------------------------------
+        Tour.section("2. Preprocess — StandardScaler");
+        StandardScaler scaler = heap StandardScaler();
+        Tensor<float64> xs = scaler.fitTransform(x, y);
+        float64 colSum = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            colSum = colSum + xs.get2(i, 0);
+            i = i + 1;
+        }
+        Tour.check(Tour.near(colSum / (float64) n, 0.0, 0.0000000001),
+                   "scaled feature means are zero");
+
+        // ------------------------------------------------------------------
+        Tour.section("3. Split — seeded, deterministic");
+        Tensor<float64>[] parts = Split.trainTestSplit(x, y, 0.25, (uint64) 42);
+        Tour.check(parts[0].shapeAt(0) == 45 && parts[1].shapeAt(0) == 15,
+                   "75/25 split sizes (ceil rule)");
+
+        // ------------------------------------------------------------------
+        Tour.section("4. LinearRegression — fit, score, classical inference");
+        LinearRegression lr = heap LinearRegression(true);
+        lr.fit(parts[0], parts[2]);
+        float64 r2 = lr.score(parts[1], parts[3]);
+        System.stdout.println("   held-out R2 = " + r2);
+        Tour.check(r2 > 0.999, "held-out R2 above 0.999 on the quadratic data");
+        SummaryResult s = lr.summary(parts[0], parts[2]);
+        System.stdout.println("   coef[t]  = " + s.coef.get1(1) + "  se " + s.stderr.get1(1)
+                              + "  t " + s.tStat.get1(1) + "  p " + s.pValue.get1(1));
+        System.stdout.println("   coef[t2] = " + s.coef.get1(2) + "  se " + s.stderr.get1(2)
+                              + "  t " + s.tStat.get1(2) + "  p " + s.pValue.get1(2));
+        Tour.check(Tour.near(s.coef.get1(1), 1.0, 0.05), "slope recovers the generating 1.0");
+        Tour.check(Tour.near(s.coef.get1(2), -1.5, 0.05), "curvature recovers the generating -1.5");
+        Tour.check(s.pValue.get1(1) < 0.001, "the real effect is significant");
+        Tour.check(!s.penalized, "OLS inference is classical (not penalized)");
+
+        // ------------------------------------------------------------------
+        Tour.section("5. Ridge — the regularization path, judged by cross-validation");
+        KFold kf = heap KFold((int64) 5, true, (uint64) 7);
+        float64 bestScore = -1000000.0;
+        float64 bestAlpha = -1.0;
+        float64 alpha = 0.001;
+        while (alpha < 101.0) {
+            Ridge rr = heap Ridge(alpha, true, false);
+            Tensor<float64> scores = Split.crossValScore(rr, x, y, kf);
+            float64 mean = 0.0;
+            int64 f = 0;
+            while (f < 5) {
+                mean = mean + scores.get1(f);
+                f = f + 1;
+            }
+            mean = mean / 5.0;
+            System.stdout.println("   alpha " + alpha + " -> mean CV R2 " + mean);
+            if (mean > bestScore) {
+                bestScore = mean;
+                bestAlpha = alpha;
+            }
+            alpha = alpha * 10.0;
+        }
+        Tour.check(bestAlpha < 1.0, "CV prefers light regularization on clean data");
+        Tour.check(bestScore > 0.99, "the winning alpha still explains the data");
+
+        // ------------------------------------------------------------------
+        Tour.section("6. LogisticRegression — newton-cholesky classification");
+        int64[] shl = heap int64[1];
+        shl[0] = n;
+        Tensor<float64> labels = Tensor.zeros<float64>(shl);
+        i = 0;
+        while (i < n) {
+            // class by the true curve's sign structure + a few flips for realism
+            float64 t = (float64) i / 20.0;
+            float64 f = 2.0 + 1.0 * t - 1.5 * (t * t);
+            if (f < 2.15) { labels.set1(i, 1.0); }
+            if (i % 13 == 5) { labels.set1(i, 1.0 - labels.get1(i)); }
+            i = i + 1;
+        }
+        LogisticRegression lg = heap LogisticRegression(1.0, 0.0000000001, (int64) 200);
+        lg.fit(x, labels);
+        Tour.check(lg.converged(), "newton-cholesky converged");
+        float64 acc = lg.score(x, labels);
+        System.stdout.println("   training accuracy = " + acc);
+        Tour.check(acc > 0.85, "accuracy beats the flips");
+        Tensor<float64> proba = lg.predictProba(x);
+        Tour.check(Tour.near(proba.get2(0, 0) + proba.get2(0, 1), 1.0, 0.000000000001),
+                   "probabilities sum to one");
+        // classification metrics on the fit
+        Tensor<float64> pred = lg.predict(x);
+        Tensor<float64> posP = Tour.posColumn(proba, n);
+        System.stdout.println("   f1 = " + Metrics.f1(labels, pred)
+                              + "  auc = " + Metrics.rocAuc(labels, posP));
+        Tour.check(Metrics.f1(labels, pred) > 0.8, "F1 holds up");
+
+        // ------------------------------------------------------------------
+        Tour.section("7. The estimator protocol — models driven generically");
+        // Model-selection code sees only `Predictor` — any conforming model
+        // (cajeta-xgboost via its adapter, one day) slots in unchanged.
+        Predictor p1 = heap DummyRegressor();
+        Predictor p2 = heap LinearRegression(true);
+        Predictor p3 = heap Ridge(0.1, true, false);
+        float64 s1 = Tour.cvMean(p1, x, y);
+        float64 s2 = Tour.cvMean(p2, x, y);
+        float64 s3 = Tour.cvMean(p3, x, y);
+        System.stdout.println("   dummy " + s1 + "  ols " + s2 + "  ridge " + s3);
+        Tour.check(s2 > s1 && s3 > s1, "real models beat the mean-predicting baseline");
+        // and predict() through the interface — the protocol's core promise
+        Tensor<float64> viaIface = p2.predict(x);
+        Tour.check(viaIface.shapeAt(0) == n, "predict() dispatches through the Predictor interface");
+
+        // ------------------------------------------------------------------
+        System.stdout.println("");
+        if (Tour.failures > 0) {
+            System.stdout.println("TOUR FAILED: " + Tour.failures + " check(s)");
+            return 1;
+        }
+        System.stdout.println("tour complete — every demonstrated claim checked");
+        return 0;
+    }
+
+    /** Column 1 (positive-class probability) of a (n,2) proba matrix. */
+    static #Tensor<float64> posColumn(Tensor<float64> proba, int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            out.set1(i, proba.get2(i, 1));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    static float64 cvMean(Predictor est, Tensor<float64> x, Tensor<float64> y) {
+        KFold kf = heap KFold((int64) 4, true, (uint64) 11);
+        Tensor<float64> scores = Split.crossValScore(est, x, y, kf);
+        float64 mean = 0.0;
+        int64 f = 0;
+        while (f < 4) {
+            mean = mean + scores.get1(f);
+            f = f + 1;
+        }
+        return mean / 4.0;
+    }
+}
