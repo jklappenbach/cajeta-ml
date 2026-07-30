@@ -89,15 +89,12 @@ public class ProtocolTest {
         Assert.isFalse(d.isFitted());
     }
 
-    // BLOCKED on a compiler defect (registered 2026-07-30, iface-generic-
-    // returns): a method whose RETURN type is a generic instantiation
-    // (#Tensor<float64> / Tensor<float64>) dispatched through an
-    // interface-typed receiver calls a null vtable slot and SIGSEGVs —
-    // param-position generics and non-generic returns (#String, #int8[])
-    // dispatch fine. Minimal repro in the spec. Un-gate when the compiler
-    // fix lands: this test is the protocol's core promise (model-selection
-    // code sees only `Predictor`), and crossValScore depends on it.
-    @Disabled
+    // The protocol's core promise: model-selection code sees only
+    // `Predictor`. Was @Disabled on the iface-generic-returns defect
+    // (interface decls force-sret'd class returns, misaligning dispatch);
+    // un-gated 2026-07-30 with the compiler fix (Method.cpp
+    // returnsStackValue: sret only for the Optional value-shape convention,
+    // reference ABI otherwise).
     @Test
     public void predictorIsUsableThroughTheInterface() {
         // the protocol's point: model-selection code sees only `Predictor`
