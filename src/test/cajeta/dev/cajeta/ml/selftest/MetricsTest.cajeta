@@ -1,0 +1,79 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.Metrics;
+
+/**
+ * cajeta-ml plan 3.1.4 — the metric surface pinned against sklearn.metrics
+ * 1.9.0 on fixed vectors (values computed with the pinned reference at
+ * code/ml/sklearn-ref).
+ */
+public class MetricsTest {
+
+    public MetricsTest() { return; }
+
+    static boolean close(float64 a, float64 b) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d < 0.000000000001;
+    }
+
+    static #Tensor<float64> vec(float64[] d) {
+        int64[] sh = heap int64[1];
+        sh[0] = (int64) d.count();
+        return Tensor.of<float64>(d, sh);
+    }
+
+    @Test
+    public void regressionMetricsMatchSklearn() {
+        float64[] dt = [ 3.0, -0.5, 2.0, 7.0, 4.2 ];
+        float64[] dp = [ 2.5, 0.0, 2.1, 7.8, 3.9 ];
+        Tensor<float64> yt = MetricsTest.vec(dt);
+        Tensor<float64> yp = MetricsTest.vec(dp);
+        Assert.isTrue(MetricsTest.close(Metrics.mse(yt, yp), 0.24799999999999994));
+        Assert.isTrue(MetricsTest.close(Metrics.rmse(yt, yp), Math.sqrt(0.24799999999999994)));
+        Assert.isTrue(MetricsTest.close(Metrics.mae(yt, yp), 0.44000000000000006));
+        Assert.isTrue(MetricsTest.close(Metrics.r2(yt, yp), 0.9594665271966527));
+    }
+
+    @Test
+    public void binaryClassificationMetricsMatchSklearn() {
+        float64[] dt = [ 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0 ];
+        float64[] dp = [ 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0 ];
+        Tensor<float64> yt = MetricsTest.vec(dt);
+        Tensor<float64> yp = MetricsTest.vec(dp);
+        Assert.isTrue(MetricsTest.close(Metrics.accuracy(yt, yp), 0.7));
+        Assert.isTrue(MetricsTest.close(Metrics.precision(yt, yp), 0.6666666666666666));
+        Assert.isTrue(MetricsTest.close(Metrics.recall(yt, yp), 0.8));
+        Assert.isTrue(MetricsTest.close(Metrics.f1(yt, yp), 0.7272727272727273));
+        // confusion (rows true, cols pred): tn=3 fp=2 / fn=1 tp=4
+        Tensor<int64> cm = Metrics.confusionMatrix(yt, yp, (int64) 2);
+        Assert.equals((int64) 3, cm.get2(0, 0));
+        Assert.equals((int64) 2, cm.get2(0, 1));
+        Assert.equals((int64) 1, cm.get2(1, 0));
+        Assert.equals((int64) 4, cm.get2(1, 1));
+    }
+
+    @Test
+    public void macroMetricsLogLossAucMatchSklearn() {
+        float64[] dt3 = [ 0.0, 1.0, 2.0, 2.0, 1.0, 0.0, 2.0, 1.0, 0.0 ];
+        float64[] dp3 = [ 0.0, 2.0, 2.0, 1.0, 1.0, 0.0, 2.0, 0.0, 0.0 ];
+        Tensor<float64> yt3 = MetricsTest.vec(dt3);
+        Tensor<float64> yp3 = MetricsTest.vec(dp3);
+        Assert.isTrue(MetricsTest.close(Metrics.precisionMacro(yt3, yp3, (int64) 3), 0.6388888888888888));
+        Assert.isTrue(MetricsTest.close(Metrics.recallMacro(yt3, yp3, (int64) 3), 0.6666666666666666));
+        Assert.isTrue(MetricsTest.close(Metrics.f1Macro(yt3, yp3, (int64) 3), 0.6412698412698412));
+        float64[] dl = [ 1.0, 0.0, 1.0, 0.0 ];
+        float64[] dq = [ 0.9, 0.1, 0.8, 0.35 ];
+        Tensor<float64> ylt = MetricsTest.vec(dl);
+        Tensor<float64> ppos = MetricsTest.vec(dq);
+        Assert.isTrue(MetricsTest.close(Metrics.logLoss(ylt, ppos), 0.21616187468057912));
+        // AUC with a positive/negative tie at 0.7 — sklearn 0.7222222222222222
+        float64[] da = [ 0.0, 0.0, 1.0, 1.0, 1.0, 0.0 ];
+        float64[] ds = [ 0.1, 0.4, 0.35, 0.8, 0.7, 0.7 ];
+        Tensor<float64> yta = MetricsTest.vec(da);
+        Tensor<float64> sca = MetricsTest.vec(ds);
+        Assert.isTrue(MetricsTest.close(Metrics.rocAuc(yta, sca), 0.7222222222222222));
+    }
+}

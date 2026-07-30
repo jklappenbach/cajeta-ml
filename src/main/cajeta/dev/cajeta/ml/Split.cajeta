@@ -1,0 +1,146 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * Data splitting + cross-validation driving (sklearn `train_test_split` /
+ * `cross_val_score`).
+ */
+public final class Split {
+
+    /**
+     * Shuffle rows with a seeded permutation and split off a test fraction
+     * (sklearn `train_test_split`): returns `[xTrain, xTest, yTrain, yTest]`.
+     * The test size is `⌈n·testFraction⌉` (sklearn's ceil rule); deterministic
+     * per seed.
+     */
+    public static #Tensor<float64>[] trainTestSplit(
+            Tensor<float64> x, Tensor<float64> y, float64 testFraction, uint64 seed) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        if (y.shapeAt(0) != n) {
+            throw heap MlException("trainTestSplit: y rows must match x");
+        }
+        float64 ft = (float64) n * testFraction;
+        int64 nTest = (int64) ft;
+        if ((float64) nTest < ft) { nTest = nTest + 1; }
+        if (nTest < 1 || nTest >= n) {
+            throw heap MlException("trainTestSplit: testFraction leaves an empty side");
+        }
+        int64 nTrain = n - nTest;
+        Generator gen = heap Generator(seed);
+        Tensor<int64> perm = gen.permutation(n);
+        int64[] shTrX = heap int64[2];
+        shTrX[0] = nTrain;
+        shTrX[1] = p;
+        int64[] shTeX = heap int64[2];
+        shTeX[0] = nTest;
+        shTeX[1] = p;
+        int64[] shTrY = heap int64[1];
+        shTrY[0] = nTrain;
+        int64[] shTeY = heap int64[1];
+        shTeY[0] = nTest;
+        Tensor<float64>[] out = heap Tensor<float64>[4];
+        out[0] = Tensor.zeros<float64>(shTrX);
+        out[1] = Tensor.zeros<float64>(shTeX);
+        out[2] = Tensor.zeros<float64>(shTrY);
+        out[3] = Tensor.zeros<float64>(shTeY);
+        int64 i = 0;
+        while (i < nTrain) {
+            int64 src = perm.get1(i);
+            int64 j = 0;
+            while (j < p) {
+                out[0].flatSet(i * p + j, x.get2(src, j));
+                j = j + 1;
+            }
+            out[2].set1(i, y.get1(src));
+            i = i + 1;
+        }
+        i = 0;
+        while (i < nTest) {
+            int64 src = perm.get1(nTrain + i);
+            int64 j = 0;
+            while (j < p) {
+                out[1].flatSet(i * p + j, x.get2(src, j));
+                j = j + 1;
+            }
+            out[3].set1(i, y.get1(src));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Per-fold `score()` of an estimator under k-fold CV (sklearn
+     * `cross_val_score`): for each fold, fit on the other folds and score on
+     * it. Returns the `(k,)` score vector. The estimator instance is REFIT
+     * per fold (the protocol has no clone; its final state is the last
+     * fold's). Works today despite the `iface-generic-returns` defect:
+     * `fit`/`score` return non-generics (interface dispatch is fine), and
+     * `predict` runs inside the concrete `score()`. Only DIRECT
+     * `predict`-through-`Predictor` call sites remain blocked.
+     */
+    public static #Tensor<float64> crossValScore(
+            Predictor est, Tensor<float64> x, Tensor<float64> y, KFold folds) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 k = folds.folds();
+        Tensor<int64> fid = folds.assignments(n);
+        int64[] shk = heap int64[1];
+        shk[0] = k;
+        Tensor<float64> scores = Tensor.zeros<float64>(shk);
+        int64 f = 0;
+        while (f < k) {
+            int64 nTest = 0;
+            int64 i = 0;
+            while (i < n) {
+                if (fid.get1(i) == f) { nTest = nTest + 1; }
+                i = i + 1;
+            }
+            int64 nTrain = n - nTest;
+            int64[] shTrX = heap int64[2];
+            shTrX[0] = nTrain;
+            shTrX[1] = p;
+            int64[] shTeX = heap int64[2];
+            shTeX[0] = nTest;
+            shTeX[1] = p;
+            int64[] shTrY = heap int64[1];
+            shTrY[0] = nTrain;
+            int64[] shTeY = heap int64[1];
+            shTeY[0] = nTest;
+            Tensor<float64> xTr = Tensor.zeros<float64>(shTrX);
+            Tensor<float64> xTe = Tensor.zeros<float64>(shTeX);
+            Tensor<float64> yTr = Tensor.zeros<float64>(shTrY);
+            Tensor<float64> yTe = Tensor.zeros<float64>(shTeY);
+            int64 tr = 0;
+            int64 te = 0;
+            i = 0;
+            while (i < n) {
+                int64 j = 0;
+                if (fid.get1(i) == f) {
+                    j = 0;
+                    while (j < p) {
+                        xTe.flatSet(te * p + j, x.get2(i, j));
+                        j = j + 1;
+                    }
+                    yTe.set1(te, y.get1(i));
+                    te = te + 1;
+                } else {
+                    j = 0;
+                    while (j < p) {
+                        xTr.flatSet(tr * p + j, x.get2(i, j));
+                        j = j + 1;
+                    }
+                    yTr.set1(tr, y.get1(i));
+                    tr = tr + 1;
+                }
+                i = i + 1;
+            }
+            est.fit(xTr, yTr);
+            scores.set1(f, est.score(xTe, yTe));
+            f = f + 1;
+        }
+        return #scores;
+    }
+}

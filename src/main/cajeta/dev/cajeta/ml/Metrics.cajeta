@@ -1,0 +1,249 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * The metric surface (sklearn.metrics parity): pure static functions over
+ * `(n,)` float64 tensors. Regression: mse/rmse/mae/r2. Classification
+ * (labels as float64 values compared exactly; binary metrics treat 1.0 as
+ * the positive class): accuracy, precision/recall/f1 (binary + macro),
+ * confusion matrix, log-loss (sklearn's 1e-15 clipping), ROC-AUC (the
+ * Mann-Whitney rank form — average ranks, so ties match sklearn's
+ * trapezoidal result exactly).
+ */
+public final class Metrics {
+
+    public static float64 mse(Tensor<float64> yTrue, Tensor<float64> yPred) {
+        int64 n = yTrue.shapeAt(0);
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = yTrue.get1(i) - yPred.get1(i);
+            acc = acc + d * d;
+            i = i + 1;
+        }
+        return acc / (float64) n;
+    }
+
+    public static float64 rmse(Tensor<float64> yTrue, Tensor<float64> yPred) {
+        return Math.sqrt(Metrics.mse(yTrue, yPred));
+    }
+
+    public static float64 mae(Tensor<float64> yTrue, Tensor<float64> yPred) {
+        int64 n = yTrue.shapeAt(0);
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = yTrue.get1(i) - yPred.get1(i);
+            if (d < 0.0) { d = -d; }
+            acc = acc + d;
+            i = i + 1;
+        }
+        return acc / (float64) n;
+    }
+
+    /** Coefficient of determination R² (the regressor `score` convention). */
+    public static float64 r2(Tensor<float64> yTrue, Tensor<float64> yPred) {
+        int64 n = yTrue.shapeAt(0);
+        float64 mean = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            mean = mean + yTrue.get1(i);
+            i = i + 1;
+        }
+        mean = mean / (float64) n;
+        float64 ssRes = 0.0;
+        float64 ssTot = 0.0;
+        i = 0;
+        while (i < n) {
+            float64 dr = yTrue.get1(i) - yPred.get1(i);
+            float64 dt = yTrue.get1(i) - mean;
+            ssRes = ssRes + dr * dr;
+            ssTot = ssTot + dt * dt;
+            i = i + 1;
+        }
+        return 1.0 - ssRes / ssTot;
+    }
+
+    public static float64 accuracy(Tensor<float64> yTrue, Tensor<float64> yPred) {
+        int64 n = yTrue.shapeAt(0);
+        int64 hit = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (yTrue.get1(i) == yPred.get1(i)) { hit = hit + 1; }
+            i = i + 1;
+        }
+        return (float64) hit / (float64) n;
+    }
+
+    /** Confusion matrix `(nClasses, nClasses)`: rows = true class, cols = predicted. */
+    public static #Tensor<int64> confusionMatrix(
+            Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
+        int64[] sh = heap int64[2];
+        sh[0] = nClasses;
+        sh[1] = nClasses;
+        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        int64 n = yTrue.shapeAt(0);
+        int64 i = 0;
+        while (i < n) {
+            int64 t = (int64) yTrue.get1(i);
+            int64 p = (int64) yPred.get1(i);
+            int64 idx = t * nClasses + p;
+            out.flatSet(idx, out.flatGet(idx) + 1);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Per-class precision from a confusion matrix column (0 when nothing predicted). */
+    static float64 precisionOf(Tensor<int64> cm, int64 c, int64 k) {
+        int64 tp = cm.get2(c, c);
+        int64 colSum = 0;
+        int64 r = 0;
+        while (r < k) {
+            colSum = colSum + cm.get2(r, c);
+            r = r + 1;
+        }
+        if (colSum == 0) { return 0.0; }
+        return (float64) tp / (float64) colSum;
+    }
+
+    /** Per-class recall from a confusion matrix row (0 when class absent). */
+    static float64 recallOf(Tensor<int64> cm, int64 c, int64 k) {
+        int64 tp = cm.get2(c, c);
+        int64 rowSum = 0;
+        int64 j = 0;
+        while (j < k) {
+            rowSum = rowSum + cm.get2(c, j);
+            j = j + 1;
+        }
+        if (rowSum == 0) { return 0.0; }
+        return (float64) tp / (float64) rowSum;
+    }
+
+    /** Binary precision, positive class = 1.0 (sklearn `precision_score`). */
+    public static float64 precision(Tensor<float64> yTrue, Tensor<float64> yPred) {
+        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, (int64) 2);
+        return Metrics.precisionOf(cm, (int64) 1, (int64) 2);
+    }
+
+    /** Binary recall, positive class = 1.0 (sklearn `recall_score`). */
+    public static float64 recall(Tensor<float64> yTrue, Tensor<float64> yPred) {
+        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, (int64) 2);
+        return Metrics.recallOf(cm, (int64) 1, (int64) 2);
+    }
+
+    /** Binary F1, positive class = 1.0 (sklearn `f1_score`). */
+    public static float64 f1(Tensor<float64> yTrue, Tensor<float64> yPred) {
+        float64 p = Metrics.precision(yTrue, yPred);
+        float64 r = Metrics.recall(yTrue, yPred);
+        if (p + r == 0.0) { return 0.0; }
+        return 2.0 * p * r / (p + r);
+    }
+
+    /** Macro-averaged precision over `nClasses` (sklearn `average="macro"`). */
+    public static float64 precisionMacro(
+            Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
+        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, nClasses);
+        float64 acc = 0.0;
+        int64 c = 0;
+        while (c < nClasses) {
+            acc = acc + Metrics.precisionOf(cm, c, nClasses);
+            c = c + 1;
+        }
+        return acc / (float64) nClasses;
+    }
+
+    /** Macro-averaged recall over `nClasses`. */
+    public static float64 recallMacro(
+            Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
+        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, nClasses);
+        float64 acc = 0.0;
+        int64 c = 0;
+        while (c < nClasses) {
+            acc = acc + Metrics.recallOf(cm, c, nClasses);
+            c = c + 1;
+        }
+        return acc / (float64) nClasses;
+    }
+
+    /** Macro-averaged F1 over `nClasses` (per-class F1s averaged, sklearn's definition). */
+    public static float64 f1Macro(
+            Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
+        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, nClasses);
+        float64 acc = 0.0;
+        int64 c = 0;
+        while (c < nClasses) {
+            float64 p = Metrics.precisionOf(cm, c, nClasses);
+            float64 r = Metrics.recallOf(cm, c, nClasses);
+            float64 f = 0.0;
+            if (p + r > 0.0) { f = 2.0 * p * r / (p + r); }
+            acc = acc + f;
+            c = c + 1;
+        }
+        return acc / (float64) nClasses;
+    }
+
+    /**
+     * Binary cross-entropy on predicted positive-class probabilities
+     * (sklearn `log_loss`), probabilities clipped to `[1e-15, 1−1e-15]`.
+     */
+    public static float64 logLoss(Tensor<float64> yTrue, Tensor<float64> pPos) {
+        int64 n = yTrue.shapeAt(0);
+        float64 eps = 0.000000000000001;
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 p = pPos.get1(i);
+            if (p < eps) { p = eps; }
+            if (p > 1.0 - eps) { p = 1.0 - eps; }
+            if (yTrue.get1(i) == 1.0) {
+                acc = acc - Math.log(p);
+            } else {
+                acc = acc - Math.log(1.0 - p);
+            }
+            i = i + 1;
+        }
+        return acc / (float64) n;
+    }
+
+    /**
+     * ROC-AUC for binary labels vs continuous scores (sklearn
+     * `roc_auc_score`): the Mann-Whitney rank statistic with average ranks
+     * for ties — `(Σ rank⁺ − n⁺(n⁺+1)/2) / (n⁺·n⁻)`.
+     */
+    public static float64 rocAuc(Tensor<float64> yTrue, Tensor<float64> scores) {
+        int64 n = yTrue.shapeAt(0);
+        int64 nPos = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (yTrue.get1(i) == 1.0) { nPos = nPos + 1; }
+            i = i + 1;
+        }
+        int64 nNeg = n - nPos;
+        if (nPos == 0 || nNeg == 0) {
+            throw heap MlException("rocAuc: needs both classes present");
+        }
+        float64 rankSum = 0.0;
+        i = 0;
+        while (i < n) {
+            if (yTrue.get1(i) == 1.0) {
+                float64 si = scores.get1(i);
+                int64 below = 0;
+                int64 tied = 0;
+                int64 j = 0;
+                while (j < n) {
+                    float64 sj = scores.get1(j);
+                    if (sj < si) { below = below + 1; }
+                    if (sj == si) { tied = tied + 1; }
+                    j = j + 1;
+                }
+                // average rank of the tie group (1-based): below + (tied+1)/2
+                rankSum = rankSum + (float64) below + ((float64) tied + 1.0) / 2.0;
+            }
+            i = i + 1;
+        }
+        float64 fp = (float64) nPos;
+        return (rankSum - fp * (fp + 1.0) / 2.0) / (fp * (float64) nNeg);
+    }
+}
