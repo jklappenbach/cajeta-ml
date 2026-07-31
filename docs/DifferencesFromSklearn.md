@@ -25,6 +25,12 @@ numerics themselves are pinned against sklearn 1.9.0 in the test suite.
   library needed.
 - **Errors throw typed exceptions** (`MlException`), not warnings +
   NaN propagation: predict-before-fit, shape mismatches, single-class AUC.
+- **Dataframes cross through an explicit bridge, not duck-typing.** sklearn
+  accepts a pandas DataFrame anywhere an array is expected and infers
+  feature columns implicitly; here `Frames.design<R>(t, target)` makes the
+  selection a visible, auditable step (float64 columns minus the target, or
+  exactly the columns you name) and records `featureNames` on the `Design`.
+  Nothing is silently coerced or silently dropped.
 - **Determinism by construction.** Splits and folds take explicit seeds;
   there is no global RNG state.
 - **`crossValScore` refits the estimator instance per fold** (the protocol

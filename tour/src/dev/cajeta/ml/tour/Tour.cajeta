@@ -2,7 +2,10 @@ package dev.cajeta.ml.tour;
 
 import cajeta.math.Tensor;
 import cajeta.nucleo.column.Column;
+import cajeta.nucleo.frame.Table;
+import dev.cajeta.ml.Design;
 import dev.cajeta.ml.DummyRegressor;
+import dev.cajeta.ml.Frames;
 import dev.cajeta.ml.KFold;
 import dev.cajeta.ml.LinearRegression;
 import dev.cajeta.ml.LogisticRegression;
@@ -27,6 +30,13 @@ import dev.cajeta.ml.SummaryResult;
  * The dataset is synthesized deterministically — no RNG beyond seeded
  * splits, no files — so the tour behaves identically on every machine.
  */
+/** Section 8's frame schema — the record IS the column contract. */
+record Reading {
+    float64 temp;
+    float64 humidity;
+    float64 crop;
+}
+
 public final class Tour {
 
     static int32 failures;
@@ -194,7 +204,8 @@ public final class Tour {
         // ------------------------------------------------------------------
         Tour.section("7. The estimator protocol — models driven generically");
         // Model-selection code sees only `Predictor` — any conforming model
-        // (cajeta-xgboost via its adapter, one day) slots in unchanged.
+        // (cajeta-xgboost's XGBRegressor adapter is the shipped cross-library
+        // proof) slots in unchanged.
         Predictor p1 = heap DummyRegressor();
         Predictor p2 = heap LinearRegression(true);
         Predictor p3 = heap Ridge(0.1, true, false);
@@ -206,6 +217,36 @@ public final class Tour {
         // and predict() through the interface — the protocol's core promise
         Tensor<float64> viaIface = p2.predict(x);
         Tour.check(viaIface.shapeAt(0) == n, "predict() dispatches through the Predictor interface");
+
+        // ------------------------------------------------------------------
+        Tour.section("8. From the frame to the fit — the Frames bridge");
+        // A Table<R> (Parquet/Arrow/CSV in real life; built in memory here)
+        // becomes any Predictor's fit in two lines. Feature selection is
+        // explicit: float64 columns in schema order minus the target, with
+        // the names recorded on the Design for auditable coefficients.
+        int64 fn = 40;
+        float64[] tempv = heap float64[fn];
+        float64[] humv = heap float64[fn];
+        float64[] yldv = heap float64[fn];
+        int64 fi = 0;
+        while (fi < fn) {
+            float64 tv = (float64) (fi % 11);
+            float64 hv = (float64) ((fi * 7) % 13);
+            tempv[fi] = tv;
+            humv[fi] = hv;
+            yldv[fi] = 2.0 * tv - 0.5 * hv + 1.0;
+            fi = fi + 1;
+        }
+        Table<Reading> frame = heap Table<Reading>(
+            Column.of<float64>(tempv), Column.of<float64>(humv),
+            Column.of<float64>(yldv));
+        Design d = Frames.design<Reading>(frame, "crop");
+        LinearRegression fromFrame = heap LinearRegression(true);
+        fromFrame.fit(d.x, d.y);
+        Tour.check(d.x.shapeAt(1) == 2 && d.featureNames[0].equals("temp"),
+                   "features = float64 columns minus the target, names recorded");
+        Tour.check(fromFrame.score(d.x, d.y) > 0.999999,
+                   "the two-line fit recovers the planted linear structure");
 
         // ------------------------------------------------------------------
         System.stdout.println("");

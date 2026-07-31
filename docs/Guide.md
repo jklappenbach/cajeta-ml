@@ -64,6 +64,26 @@ Hessian with `penalized = true` — not classical inference (see
 - `Split.crossValScore(est, x, y, kfold)` — per-fold `score()` of any
   `Predictor` (refit per fold; the final state is the last fold's).
 
+## From the frame to the fit — `Frames` / `Design`
+
+Any `Table<R>` (Parquet/Arrow/CSV-loaded or built in memory) becomes any
+`Predictor`'s fit in two lines:
+
+```cajeta
+Design d = Frames.design<Tick>(t, "price");   // or (t, features[], target)
+est.fit(d.x, d.y);                            // LinearRegression, Ridge, XGBRegressor, …
+```
+
+Selection is explicit and auditable: the default takes the
+**float64-physical** columns in schema order minus the target (an
+`int64`/`Instant`/`Utf8` column is never silently coerced); the explicit
+overload takes the columns you name in the order you name them; and
+`d.featureNames` records which frame column became which `x` column, so a
+`summary()` can name its coefficients. Loud `MlException` failures: unknown
+or non-float64 target/feature, zero features, a nullable selected column
+(fill or drop nulls first — imputation belongs to the frame), the target
+listed as a feature.
+
 ## Metrics
 
 Static functions over `(n,)` tensors: `mse`/`rmse`/`mae`/`r2`;

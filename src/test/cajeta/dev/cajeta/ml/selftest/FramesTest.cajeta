@@ -1,0 +1,166 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.nucleo.column.Column;
+import cajeta.nucleo.frame.Table;
+import dev.cajeta.ml.Design;
+import dev.cajeta.ml.Frames;
+import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.MlException;
+
+/**
+ * table-fit plan 4.1 — the `Frames` bridge: any `Table<R>` becomes a design
+ * matrix + target for every `Predictor`, using the synthesized generic
+ * introspection surface. The schema record (`Obs`) lives in its own file,
+ * so this suite also exercises the compiler's cross-file materialization
+ * fix on a real consumer.
+ */
+public class FramesTest {
+
+    public FramesTest() { return; }
+
+    /** 5 rows: a = i, b = 2i+1, count = 10i (int64), target = 3a - b + 0.5. */
+    static #Table<Obs> fixture() {
+        int64 n = 5;
+        float64[] av = heap float64[n];
+        float64[] bv = heap float64[n];
+        int64[] cv = heap int64[n];
+        float64[] yv = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 fa = (float64) i;
+            float64 fb = (float64) 2.0 * fa + (float64) 1.0;
+            av[i] = fa;
+            bv[i] = fb;
+            cv[i] = i * (int64) 10;
+            yv[i] = (float64) 3.0 * fa - fb + (float64) 0.5;
+            i = i + 1;
+        }
+        Table<Obs> t = heap Table<Obs>(
+            Column.of<float64>(av), Column.of<float64>(bv),
+            Column.of<int64>(cv), Column.of<float64>(yv));
+        return #t;
+    }
+
+    @Test
+    public void defaultSelectionShapesOrderAndNames() {
+        Table<Obs> t = FramesTest.fixture();
+        Design d = Frames.design<Obs>(t, "target");
+        // Features: the float64 columns in schema order minus the target —
+        // a, b. The int64 `count` column is not float64-physical: skipped.
+        Assert.equals((int64) 2, (int64) d.x.ndim());
+        Assert.equals((int64) 5, d.x.shapeAt(0));
+        Assert.equals((int64) 2, d.x.shapeAt(1));
+        Assert.equals((int64) 1, (int64) d.y.ndim());
+        Assert.equals((int64) 5, d.y.shapeAt(0));
+        Assert.equals((int64) 2, (int64) d.featureNames.count());
+        Assert.isTrue(d.featureNames[0].equals("a"));
+        Assert.isTrue(d.featureNames[1].equals("b"));
+        // Values land row-major in schema order.
+        Assert.isTrue(d.x.get2(3, 0) == 3.0);
+        Assert.isTrue(d.x.get2(3, 1) == 7.0);
+        Assert.isTrue(d.y.get1(3) == 2.5);
+    }
+
+    @Test
+    public void explicitFeaturesSubsetAndReorder() {
+        Table<Obs> t = FramesTest.fixture();
+        String[] feats = [ "b", "a" ];
+        Design d = Frames.design<Obs>(t, feats, "target");
+        Assert.equals((int64) 2, d.x.shapeAt(1));
+        Assert.isTrue(d.featureNames[0].equals("b"));
+        Assert.isTrue(d.featureNames[1].equals("a"));
+        // Reordered: column 0 is b.
+        Assert.isTrue(d.x.get2(3, 0) == 7.0);
+        Assert.isTrue(d.x.get2(3, 1) == 3.0);
+    }
+
+    @Test
+    public void loudFailures() {
+        Table<Obs> t = FramesTest.fixture();
+
+        boolean threw = false;
+        try {
+            Design d = Frames.design<Obs>(t, "nope");
+        } catch (MlException ex) { threw = true; }
+        Assert.isTrue(threw);
+
+        // Non-float64 target.
+        threw = false;
+        try {
+            Design d = Frames.design<Obs>(t, "count");
+        } catch (MlException ex) { threw = true; }
+        Assert.isTrue(threw);
+
+        // Unknown explicit feature.
+        threw = false;
+        try {
+            String[] feats = [ "a", "ghost" ];
+            Design d = Frames.design<Obs>(t, feats, "target");
+        } catch (MlException ex) { threw = true; }
+        Assert.isTrue(threw);
+
+        // Non-float64 explicit feature.
+        threw = false;
+        try {
+            String[] feats = [ "count" ];
+            Design d = Frames.design<Obs>(t, feats, "target");
+        } catch (MlException ex) { threw = true; }
+        Assert.isTrue(threw);
+
+        // Target listed as a feature.
+        threw = false;
+        try {
+            String[] feats = [ "a", "target" ];
+            Design d = Frames.design<Obs>(t, feats, "target");
+        } catch (MlException ex) { threw = true; }
+        Assert.isTrue(threw);
+    }
+
+    @Test
+    public void twoLinerMatchesHandBuiltFit() {
+        Table<Obs> t = FramesTest.fixture();
+
+        // The two lines.
+        Design d = Frames.design<Obs>(t, "target");
+        LinearRegression viaFrame = heap LinearRegression(true);
+        viaFrame.fit(d.x, d.y);
+
+        // The same fit from hand-built tensors.
+        int64 n = 5;
+        float64[] xd = heap float64[n * (int64) 2];
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 fa = (float64) i;
+            float64 fb = (float64) 2.0 * fa + (float64) 1.0;
+            xd[i * (int64) 2] = fa;
+            xd[i * (int64) 2 + (int64) 1] = fb;
+            yd[i] = (float64) 3.0 * fa - fb + (float64) 0.5;
+            i = i + 1;
+        }
+        int64[] xsh = heap int64[2];
+        xsh[0] = n;
+        xsh[1] = 2;
+        Tensor<float64> hx = Tensor.of<float64>(xd, xsh);
+        int64[] ysh = heap int64[1];
+        ysh[0] = n;
+        Tensor<float64> hy = Tensor.of<float64>(yd, ysh);
+        LinearRegression viaHand = heap LinearRegression(true);
+        viaHand.fit(hx, hy);
+
+        // Identical inputs -> identical coefficients, bit for bit.
+        Tensor<float64> ca = viaFrame.coefMatrix();
+        Tensor<float64> cb = viaHand.coefMatrix();
+        Assert.equals(ca.shapeAt(0), cb.shapeAt(0));
+        i = 0;
+        while (i < ca.shapeAt(0)) {
+            Assert.isTrue(ca.get2(i, 0) == cb.get2(i, 0));
+            i = i + 1;
+        }
+        Tensor<float64> ia = viaFrame.interceptVector();
+        Tensor<float64> ib = viaHand.interceptVector();
+        Assert.isTrue(ia.get1(0) == ib.get1(0));
+    }
+}

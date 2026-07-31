@@ -27,5 +27,9 @@ The dataset is a deterministic quadratic — `y = 2 + t − 1.5t² ± 0.01` over
 7. **The protocol.** Three models — `DummyRegressor`, `LinearRegression`,
    `Ridge` — driven through `Predictor`-typed variables and a generic CV
    helper: model-selection code never names a concrete type, and
-   `predict()` dispatches through the interface. This is the seam a future
-   `cajeta-xgboost` adapter plugs into.
+   `predict()` dispatches through the interface. cajeta-xgboost's
+   `XGBRegressor` adapter is the shipped cross-library proof of this seam.
+8. **The Frames bridge.** A `Table<Reading>` built from columns becomes a
+   `LinearRegression` fit in two lines: `Frames.design<Reading>(frame,
+   "crop")` selects the float64 columns minus the target (names recorded
+   on the `Design`), and the fit recovers the planted linear structure.

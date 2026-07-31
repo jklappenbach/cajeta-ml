@@ -1,0 +1,17 @@
+package dev.cajeta.ml.selftest;
+
+/**
+ * The FramesTest schema record — deliberately in its OWN file: cross-file
+ * records are the natural user shape, and exercising `Table<Obs>` from
+ * another compilation unit pins the compiler's loader-materialization fix
+ * (table-fit spec §2) from the consumer side.
+ *
+ * `count` is int64 on purpose: not float64-physical, so the default
+ * feature selection must skip it.
+ */
+public record Obs {
+    float64 a;
+    float64 b;
+    int64 count;
+    float64 target;
+}

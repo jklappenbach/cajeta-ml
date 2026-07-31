@@ -1,0 +1,36 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * A design matrix + target extracted from a `Table<R>` by {@link Frames} —
+ * what any {@link Predictor}'s `fit` consumes:
+ *
+ * ```cajeta
+ * Design d = Frames.design<Tick>(t, "price");
+ * est.fit(d.x, d.y);
+ * ```
+ *
+ * `featureNames` records which columns became which `x` columns, in order —
+ * so a model summary can name its coefficients, and the selection stays
+ * auditable rather than implicit.
+ */
+public final class Design {
+
+    /** `(n, p)` float64 features, row-major, in `featureNames` order. */
+    public Tensor<float64> x;
+
+    /** `(n,)` float64 target. */
+    public Tensor<float64> y;
+
+    /** The frame column behind each `x` column, in order. */
+    public String[] featureNames;
+
+    public Design(#Tensor<float64> x, #Tensor<float64> y,
+                  #String[] featureNames) {
+        this.x #= x;
+        this.y #= y;
+        this.featureNames #= featureNames;
+        return;
+    }
+}

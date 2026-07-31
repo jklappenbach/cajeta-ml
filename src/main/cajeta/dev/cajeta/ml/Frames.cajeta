@@ -1,0 +1,159 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.nucleo.frame.Table;
+
+/**
+ * The dataframe → estimator bridge (table-fit spec §4): any `Table<R>` —
+ * loaded from Parquet/Arrow, CSV, or built in memory — becomes a
+ * {@link Design} for any {@link Predictor}, in two lines:
+ *
+ * ```cajeta
+ * Design d = Frames.design<Tick>(t, "price");
+ * est.fit(d.x, d.y);
+ * ```
+ *
+ * Generic over the schema record via the synthesized introspection surface
+ * (`colCount`/`colNameAt`/`colTypeAt`/`colNullableAt`) + the dynamic reads
+ * (`f64At`), so no per-schema overloads exist anywhere.
+ *
+ * Selection rules (explicit and auditable, spec §4.2):
+ * - default: the **float64-physical** columns in schema order, minus the
+ *   target (an `int64`/`Instant`/`Utf8` column is not silently coerced —
+ *   engineer it into a float64 column first);
+ * - explicit: `design(t, features, target)` takes the columns you name, in
+ *   the order you name them;
+ * - loud failures ({@link MlException}): unknown target or feature,
+ *   non-float64 target or feature, zero features, a nullable selected
+ *   column (fill or drop nulls first — imputation belongs to the frame),
+ *   and a target listed among the features.
+ */
+public final class Frames {
+
+    /** Default selection: float64 columns in schema order, minus `target`. */
+    public static #Design design<R>(Table<R> t, String target) {
+        int32 n = t.colCount();
+        int32 p = 0;
+        int32 i = 0;
+        boolean found = false;
+        while (i < n) {
+            String nm = t.colNameAt(i);
+            if (nm.equals(target)) {
+                found = true;
+            } else if (t.colTypeAt(i).equals("float64")) {
+                p = p + 1;
+            }
+            i = i + 1;
+        }
+        if (!found) {
+            throw heap MlException("Frames.design: target column '" + target
+                + "' is not in the schema");
+        }
+        String[] feats = heap String[p];
+        int32 k = 0;
+        i = 0;
+        while (i < n) {
+            String nm = t.colNameAt(i);
+            if (!nm.equals(target) && t.colTypeAt(i).equals("float64")) {
+                feats[k] = nm;
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        return Frames.design<R>(t, feats, target);
+    }
+
+    /** Explicit selection: the named columns, in the given order. */
+    public static #Design design<R>(Table<R> t, String[] features,
+                                    String target) {
+        int32 n = t.colCount();
+
+        // Validate the target: present, float64, not nullable.
+        int32 ti = Frames.indexOf<R>(t, target);
+        if (ti < 0) {
+            throw heap MlException("Frames.design: target column '" + target
+                + "' is not in the schema");
+        }
+        if (!t.colTypeAt(ti).equals("float64")) {
+            throw heap MlException("Frames.design: target column '" + target
+                + "' is '" + t.colTypeAt(ti) + "' - the target must be a "
+                + "float64 column");
+        }
+        if (t.colNullableAt(ti)) {
+            throw heap MlException("Frames.design: target column '" + target
+                + "' is nullable - fill or drop nulls first");
+        }
+
+        int32 p = (int32) features.count();
+        if (p == 0) {
+            throw heap MlException(
+                "Frames.design: zero feature columns selected");
+        }
+        int32 j = 0;
+        while (j < p) {
+            String f = features[j];
+            if (f.equals(target)) {
+                throw heap MlException("Frames.design: '" + f
+                    + "' is the target - it cannot also be a feature");
+            }
+            int32 fi = Frames.indexOf<R>(t, f);
+            if (fi < 0) {
+                throw heap MlException("Frames.design: feature column '" + f
+                    + "' is not in the schema");
+            }
+            if (!t.colTypeAt(fi).equals("float64")) {
+                throw heap MlException("Frames.design: feature column '" + f
+                    + "' is '" + t.colTypeAt(fi) + "' - features must be "
+                    + "float64 columns");
+            }
+            if (t.colNullableAt(fi)) {
+                throw heap MlException("Frames.design: feature column '" + f
+                    + "' is nullable - fill or drop nulls first");
+            }
+            j = j + 1;
+        }
+
+        // Materialize row-major x and y through the dynamic reads.
+        int64 rows = t.rowCount();
+        float64[] xd = heap float64[rows * (int64) p];
+        float64[] yd = heap float64[rows];
+        int64 r = 0;
+        while (r < rows) {
+            j = 0;
+            while (j < p) {
+                xd[r * (int64) p + (int64) j] = t.f64At(features[j], r);
+                j = j + 1;
+            }
+            yd[r] = t.f64At(target, r);
+            r = r + 1;
+        }
+        int64[] xsh = heap int64[2];
+        xsh[0] = rows;
+        xsh[1] = (int64) p;
+        Tensor<float64> x = Tensor.of<float64>(xd, xsh);
+        int64[] ysh = heap int64[1];
+        ysh[0] = rows;
+        Tensor<float64> y = Tensor.of<float64>(yd, ysh);
+
+        // Own the recorded names (the caller's array stays the caller's).
+        String[] names = heap String[p];
+        j = 0;
+        while (j < p) {
+            names[j] = features[j];
+            j = j + 1;
+        }
+        Design d = heap Design(#x, #y, #names);
+        return #d;
+    }
+
+    /** Schema ordinal of `name`, or -1. */
+    static int32 indexOf<R>(Table<R> t, String name) {
+        int32 n = t.colCount();
+        int32 i = 0;
+        while (i < n) {
+            if (t.colNameAt(i).equals(name)) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+}
