@@ -40,6 +40,18 @@ numerics themselves are pinned against sklearn 1.9.0 in the test suite.
   selection a visible, auditable step (float64 columns minus the target, or
   exactly the columns you name) and records `featureNames` on the `Design`.
   Nothing is silently coerced or silently dropped.
+- **KMeans has one seeded run, not `n_init`.** Init is k-means++ over the
+  stdlib `Generator` (deterministic per seed, not numpy's stream); sweep
+  seeds yourself for restarts. `score` is negative inertia, as in sklearn.
+- **kNN tie-breaks are documented.** Equal-distance neighbors break to the
+  lowest training index; classifier vote ties to the lowest label — where
+  sklearn's behavior is an implementation detail of its sort.
+- **PCA is the full-SVD solver only** (no randomized/arpack/covariance
+  paths, no whitening) — components carry sklearn's `svd_flip` signs, so
+  numerics match the reference's `svd_solver="full"`.
+- **Pipeline is fixed-arity and owning.** `Pipeline.of` takes up to three
+  transformers plus a final estimator and CONSUMES them (`#` transfer);
+  there is no ColumnTransformer/FeatureUnion and no step introspection.
 - **Determinism by construction.** Splits and folds take explicit seeds;
   there is no global RNG state.
 - **`crossValScore` refits the estimator instance per fold** (the protocol

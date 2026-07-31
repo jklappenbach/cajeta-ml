@@ -33,3 +33,22 @@ The dataset is a deterministic quadratic — `y = 2 + t − 1.5t² ± 0.01` over
    `LinearRegression` fit in two lines: `Frames.design<Reading>(frame,
    "crop")` selects the float64 columns minus the target (names recorded
    on the `Design`), and the fit recovers the planted linear structure.
+9. **Lasso & ElasticNet.** sklearn's exact coordinate descent: the L1
+   penalty drives coefficients to EXACT zeros (`sparsityCount()`), a large
+   alpha zeroes everything, `ElasticNet(l1Ratio=1)` reproduces Lasso bit
+   for bit — and `fitSparse` over a `CsrMatrix` matches the dense fit bit
+   for bit with the same iteration count (the `fitIntercept=false`
+   contract that makes that possible is checked loudly).
+10. **Multiclass.** Three bands on `t`: the explicit `multinomial` knob
+    fits one softmax likelihood (probability rows sum to exactly 1); OvR
+    stays the default. The accuracy check documents the honest effect of
+    `C = 1` regularization on band edges.
+11. **Pipelines that don't lie.** `Pipeline.of(#scaler, #ridge)` refits
+    the whole chain inside each CV fold; the tour measures the difference
+    against the leaky pre-scaled baseline — using Ridge on purpose,
+    because affine-equivariant OLS provably cannot show the leak. Then
+    `PCA(1) → OLS` is principal-component regression in two lines.
+12. **Structure discovery.** Seeded KMeans (same seed → bit-identical
+    centers; `score` = negative inertia, sklearn's convention) and
+    distance-weighted kNN's zero-distance rule (a training row predicts
+    its own target exactly).

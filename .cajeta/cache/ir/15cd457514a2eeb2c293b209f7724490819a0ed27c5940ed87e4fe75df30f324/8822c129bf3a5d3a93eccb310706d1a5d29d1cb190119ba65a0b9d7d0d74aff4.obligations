@@ -1,0 +1,4 @@
+cajeta.math.Storage<float64>
+cajeta.math.Tensor<?>
+cajeta.math.Tensor<?>::of(float64[],int64[])<float64>
+cajeta.math.Tensor<float64>

@@ -3,11 +3,14 @@ package dev.cajeta.ml.tour;
 import cajeta.math.Tensor;
 import cajeta.nucleo.column.Column;
 import cajeta.nucleo.frame.Table;
+import cajeta.nucleo.sparse.CsrMatrix;
 import dev.cajeta.ml.Design;
 import dev.cajeta.ml.DummyRegressor;
 import dev.cajeta.ml.Frames;
 import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.ElasticNet;
 import dev.cajeta.ml.KMeans;
+import dev.cajeta.ml.KNeighborsRegressor;
 import dev.cajeta.ml.Lasso;
 import dev.cajeta.ml.LinearRegression;
 import dev.cajeta.ml.LogisticRegression;
@@ -253,26 +256,120 @@ public final class Tour {
                    "the two-line fit recovers the planted linear structure");
 
         // ------------------------------------------------------------------
-        Tour.section("9. The v2 shelf — sparsity, pipelines, clusters");
-        // Lasso zeroes what doesn't earn its keep: on [t, t2] plus the
-        // curve's target, a junk-free penalty path keeps structure sparse.
+        Tour.section("9. Lasso & ElasticNet — sparsity you can count, sklearn's exact cd");
+        // Coordinate descent with soft-threshold updates: coefficients the
+        // penalty can't justify go EXACTLY to zero (a real == 0.0). On the
+        // quadratic design, alpha=0.05 keeps the curvature and drops the
+        // slope's small contribution; cranking alpha zeroes everything.
         Lasso la = heap Lasso(0.05);
         la.fit(x, y);
-        System.stdout.println("   lasso zeroed " + la.sparsityCount()
-            + " of 2 coefficients at alpha=0.05");
-        Tour.check(la.isFitted(), "coordinate descent fit (sklearn's exact algorithm)");
-        // Pipeline: PCA -> OLS, principal-component regression in two lines.
+        System.stdout.println("   alpha 0.05: " + la.sparsityCount()
+            + " of 2 coefficients exactly zero; intercept " + la.intercept());
+        Tour.check(la.converged(), "cd converged (duality-gap stop, sklearn's rule)");
+        Tour.check(la.sparsityCount() >= 1, "the L1 penalty produced a true zero");
+        Lasso laBig = heap Lasso(10.0);
+        laBig.fit(x, y);
+        Tour.check(laBig.sparsityCount() == 2,
+                   "large alpha zeroes ALL coefficients (intercept = mean(y))");
+        // ElasticNet at l1Ratio=1 IS Lasso — same solver, bit for bit.
+        ElasticNet en = heap ElasticNet(0.05, 1.0);
+        en.fit(x, y);
+        Tensor<float64> lc = la.coef();
+        Tensor<float64> ec = en.coef();
+        Tour.check(lc.get1(0) == ec.get1(0) && lc.get1(1) == ec.get1(1),
+                   "ElasticNet(l1Ratio=1) == Lasso, bit-identical");
+        // Sparse designs: the SAME fit over a CsrMatrix (CSC column walks).
+        // fitIntercept=false is the contract that makes it bit-exact.
+        Lasso ld = heap Lasso(0.01, false, 0.0001, (int64) 1000);
+        ld.fit(x, y);
+        CsrMatrix xs = CsrMatrix.fromDense(x);
+        Lasso ls = heap Lasso(0.01, false, 0.0001, (int64) 1000);
+        ls.fitSparse(xs, y);
+        Tensor<float64> cd2 = ld.coef();
+        Tensor<float64> cs2 = ls.coef();
+        Tour.check(cd2.get1(0) == cs2.get1(0) && cd2.get1(1) == cs2.get1(1)
+                   && ld.iterations() == ls.iterations(),
+                   "fitSparse(CsrMatrix) == dense fit, bit for bit, same iteration count");
+
+        // ------------------------------------------------------------------
+        Tour.section("10. Multiclass — one-vs-rest by default, softmax by explicit knob");
+        // Three bands on t. OvR fits K sigmoids; the multinomial knob fits ONE
+        // softmax likelihood (sklearn's only multiclass mode since 1.7) —
+        // an explicit constructor choice, never a silent strategy switch.
+        int64[] sh3 = heap int64[1];
+        sh3[0] = n;
+        Tensor<float64> y3 = Tensor.zeros<float64>(sh3);
+        i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 20.0;
+            float64 lab = 2.0;
+            if (t < 1.0) { lab = 0.0; }
+            else if (t < 2.0) { lab = 1.0; }
+            y3.set1(i, lab);
+            i = i + 1;
+        }
+        LogisticRegression sm = heap LogisticRegression(1.0, 0.00000001, (int64) 200, true);
+        sm.fit(x, y3);
+        Tour.check(sm.converged(), "damped full Newton converged on the softmax likelihood");
+        Tensor<float64> proba3 = sm.predictProba(x);
+        float64 rowSum = proba3.get2(30, 0) + proba3.get2(30, 1) + proba3.get2(30, 2);
+        Tour.check(Tour.near(rowSum, 1.0, 0.000000000001), "softmax rows sum to exactly 1");
+        float64 acc3 = sm.score(x, y3);
+        System.stdout.println("   3-class accuracy = " + acc3);
+        Tour.check(acc3 > 0.93,
+                   "the bands classify cleanly (C=1 regularization rounds the boundaries)");
+
+        // ------------------------------------------------------------------
+        Tour.section("11. Pipelines that don't lie — leakage-free CV, and PCR in two lines");
+        // Pipeline IS a Predictor: crossValScore refits the WHOLE chain per
+        // fold, so the scaler never sees test-fold statistics. The demo model
+        // is Ridge on purpose: plain OLS is affine-equivariant — scaling
+        // leakage provably CANNOT move its predictions - so an honest demo
+        // needs a model whose geometry depends on the scale.
+        StandardScaler psc = heap StandardScaler();
+        Ridge prr = heap Ridge(1.0, true, false);
+        Pipeline pl = Pipeline.of(#psc, #prr);
+        Tensor<float64> honest = Split.crossValScore(pl, x, y, kf);
+        StandardScaler leakSc = heap StandardScaler();
+        Tensor<float64> xLeak = leakSc.fitTransform(x, y);
+        Ridge bare = heap Ridge(1.0, true, false);
+        Tensor<float64> leaky = Split.crossValScore(bare, xLeak, y, kf);
+        boolean differs = false;
+        int64 f2 = 0;
+        while (f2 < 5) {
+            if (honest.get1(f2) != leaky.get1(f2)) { differs = true; }
+            f2 = f2 + 1;
+        }
+        Tour.check(differs, "per-fold scaling != global scaling — the leak is measurable");
+        // Principal-component regression: PCA is a Transformer, so it chains.
         PCA pca = heap PCA((int64) 1);
-        LinearRegression plr = heap LinearRegression(true);
-        Pipeline pl = Pipeline.of(#pca, #plr);
-        pl.fit(x, y);
-        Tour.check(pl.score(x, y) > 0.95,
-                   "PCA(1) -> OLS pipeline recovers the dominant trend");
-        // KMeans on the quadratic's two arms (deterministic seed).
+        LinearRegression pols = heap LinearRegression(true);
+        Pipeline pcr = Pipeline.of(#pca, #pols);
+        pcr.fit(x, y);
+        Tour.check(pcr.score(x, y) > 0.95,
+                   "PCA(1) -> OLS: the dominant direction carries the trend");
+
+        // ------------------------------------------------------------------
+        Tour.section("12. Structure discovery — seeded KMeans, exact-match kNN");
+        // KMeans: seeded k-means++ (deterministic per seed), Lloyd to a
+        // tolerance. score() is NEGATIVE inertia — sklearn's convention.
         KMeans km = heap KMeans((int64) 2, (uint64) 3);
         km.fit(x, y);
-        Tour.check(km.inertia() > 0.0 && km.isFitted(),
-                   "seeded k-means++ converged (same seed -> same centers)");
+        KMeans km2 = heap KMeans((int64) 2, (uint64) 3);
+        km2.fit(x, y);
+        Tensor<float64> ca = km.centers();
+        Tensor<float64> cb = km2.centers();
+        Tour.check(ca.get2(0, 0) == cb.get2(0, 0) && ca.get2(1, 1) == cb.get2(1, 1),
+                   "same seed -> bit-identical centers");
+        Tour.check(km.score(x, y) == 0.0 - km.inertia(),
+                   "score() is negative inertia (the sklearn convention)");
+        // kNN with distance weights: predicting a TRAINING row returns its
+        // training target exactly (the zero-distance rule).
+        KNeighborsRegressor knn = heap KNeighborsRegressor((int64) 3, true);
+        knn.fit(x, y);
+        Tensor<float64> knnPred = knn.predict(x);
+        Tour.check(knnPred.get1(7) == y.get1(7),
+                   "zero-distance neighbors take all the weight (exact recall)");
 
         // ------------------------------------------------------------------
         System.stdout.println("");

@@ -11,6 +11,11 @@ Cholesky factor application) and special functions (`cajeta.math.stats`).
 | [Tour](Tour.md) | The runnable walkthrough (`cajeta tour`), section by section |
 | [Differences from scikit-learn](DifferencesFromSklearn.md) | Where and why this library deliberately diverges |
 
+Agent-facing **skills** ship inside the `.cja` (`skills/*.md`, indexed):
+`cajeta search-skill dev.cajeta.ml` / `list-skills` / `get-skills` (or the
+same over cajeta-mcp) route a coding agent to the right estimator, the
+protocol contract, and the hazards — start at `ml-overview`.
+
 Quick start:
 
 ```cajeta
