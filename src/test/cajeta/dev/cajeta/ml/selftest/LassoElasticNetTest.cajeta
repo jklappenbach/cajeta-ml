@@ -1,0 +1,146 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.ElasticNet;
+import dev.cajeta.ml.Lasso;
+
+/**
+ * cajeta-ml-v2 plan 1.1 — Lasso/ElasticNet coordinate descent, pinned
+ * against sklearn 1.9.0 (tools/fixtures/gen_linear_cd.py, tol=1e-10):
+ *
+ *   n=20, p=3: x0 = t = i/10, x1 = ((7i)%5 - 2)/2, x2 = t²,
+ *   y = 2 + 1.5·x0 − 0.8·x2 ± 0.01.
+ *
+ *   lasso a=0.01: icpt 2.21831168848356,
+ *     coef [0.840715424426755, 0.0, -0.4696286167522077]   (x1 zeroed)
+ *   lasso a=0.5:  icpt 2.4370000000000003, coef all zero
+ *   enet a=0.05 l1r=0.5: icpt 2.4923109728468025,
+ *     coef [0.0, 0.0, -0.04478621283141871]
+ *   enet a=0.01 l1r=1.0 == the lasso a=0.01 fit exactly.
+ *
+ * Both solvers run the same cd algorithm as sklearn's cython (residual
+ * updates, soft threshold, duality-gap stop), so agreement is tight; the
+ * pinned tolerance below is 1e-7 absolute.
+ */
+public class LassoElasticNetTest {
+
+    public LassoElasticNetTest() { return; }
+
+    static boolean close(float64 a, float64 b) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d < 0.0000001;
+    }
+
+    static #Tensor<float64> fixX() {
+        int64 n = 20;
+        float64[] xd = heap float64[n * (int64) 3];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 10.0;
+            xd[i * (int64) 3] = t;
+            xd[i * (int64) 3 + (int64) 1] =
+                ((float64) ((i * (int64) 7) % (int64) 5) - 2.0) / 2.0;
+            xd[i * (int64) 3 + (int64) 2] = t * t;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 3;
+        return Tensor.of<float64>(xd, sh);
+    }
+
+    static #Tensor<float64> fixY() {
+        int64 n = 20;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 10.0;
+            float64 ripple = 0.01;
+            if (i % 2 == 1) { ripple = -0.01; }
+            yd[i] = 2.0 + 1.5 * t - 0.8 * (t * t) + ripple;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(yd, sh);
+    }
+
+    @Test
+    public void lassoMatchesSklearnPin() {
+        Tensor<float64> x = LassoElasticNetTest.fixX();
+        Tensor<float64> y = LassoElasticNetTest.fixY();
+        Lasso m = heap Lasso(0.01, true, 0.0000000001, (int64) 100000);
+        m.fit(x, y);
+        Assert.isTrue(m.converged());
+        Tensor<float64> c = m.coef();
+        Assert.isTrue(LassoElasticNetTest.close(c.get1(0), 0.840715424426755));
+        Assert.isTrue(c.get1(1) == 0.0);
+        Assert.isTrue(LassoElasticNetTest.close(c.get1(2), -0.4696286167522077));
+        Assert.isTrue(LassoElasticNetTest.close(m.intercept(), 2.21831168848356));
+        // Shrinkage costs fit quality by design — the reference fit's own
+        // training R² is 0.8231; assert the same ballpark, not OLS quality.
+        Assert.isTrue(m.score(x, y) > 0.8);
+    }
+
+    @Test
+    public void lassoSparsifiesLikeSklearn() {
+        Tensor<float64> x = LassoElasticNetTest.fixX();
+        Tensor<float64> y = LassoElasticNetTest.fixY();
+        // alpha=0.5 zeroes EVERYTHING; intercept falls back to mean(y).
+        Lasso m = heap Lasso(0.5, true, 0.0000000001, (int64) 100000);
+        m.fit(x, y);
+        Tensor<float64> c = m.coef();
+        Assert.isTrue(c.get1(0) == 0.0);
+        Assert.isTrue(c.get1(1) == 0.0);
+        Assert.isTrue(c.get1(2) == 0.0);
+        Assert.equals((int64) 3, m.sparsityCount());
+        Assert.isTrue(LassoElasticNetTest.close(m.intercept(), 2.437));
+        // alpha=0.01 zeroes exactly the junk feature.
+        Lasso m2 = heap Lasso(0.01, true, 0.0000000001, (int64) 100000);
+        m2.fit(x, y);
+        Assert.equals((int64) 1, m2.sparsityCount());
+    }
+
+    @Test
+    public void elasticNetPinAndLassoLimit() {
+        Tensor<float64> x = LassoElasticNetTest.fixX();
+        Tensor<float64> y = LassoElasticNetTest.fixY();
+        ElasticNet en = heap ElasticNet(0.05, 0.5, true, 0.0000000001,
+                                        (int64) 100000);
+        en.fit(x, y);
+        Tensor<float64> c = en.coef();
+        Assert.isTrue(c.get1(0) == 0.0);
+        Assert.isTrue(c.get1(1) == 0.0);
+        Assert.isTrue(LassoElasticNetTest.close(c.get1(2), -0.04478621283141871));
+        Assert.isTrue(LassoElasticNetTest.close(en.intercept(), 2.4923109728468025));
+
+        // l1Ratio = 1 IS the lasso — identical coefficients, bit for bit.
+        ElasticNet en1 = heap ElasticNet(0.01, 1.0, true, 0.0000000001,
+                                         (int64) 100000);
+        en1.fit(x, y);
+        Lasso la = heap Lasso(0.01, true, 0.0000000001, (int64) 100000);
+        la.fit(x, y);
+        Tensor<float64> ce = en1.coef();
+        Tensor<float64> cl = la.coef();
+        int64 j = 0;
+        while (j < 3) {
+            Assert.isTrue(ce.get1(j) == cl.get1(j));
+            j = j + 1;
+        }
+        Assert.isTrue(en1.intercept() == la.intercept());
+    }
+
+    @Test
+    public void nonConvergenceIsLoud() {
+        Tensor<float64> x = LassoElasticNetTest.fixX();
+        Tensor<float64> y = LassoElasticNetTest.fixY();
+        // One iteration cannot converge at this tol; the fit stays usable.
+        Lasso m = heap Lasso(0.01, true, 0.0000000001, (int64) 1);
+        m.fit(x, y);
+        Assert.isFalse(m.converged());
+        Tensor<float64> p = m.predict(x);
+        Assert.equals((int64) 20, p.shapeAt(0));
+    }
+}

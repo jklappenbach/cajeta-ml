@@ -1,0 +1,150 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.LogisticRegression;
+
+/**
+ * cajeta-ml-v2 plan 2.1 — multinomial softmax logistic, pinned against
+ * sklearn 1.9.0 (tools/fixtures/gen_softmax.py; lbfgs tol=1e-10):
+ *
+ *   n=30, p=2: x0 = t = i/10, x1 = ((7i)%5 − 2)/2,
+ *   y = 0 (t<1) / 1 (t<2) / 2 — bands on x0. C=1.
+ *
+ * Probabilities are the parametrization-invariant quantity — the pins are
+ * on predict_proba rows (1e-5 absolute; damped-Newton here vs lbfgs there)
+ * and on labels/accuracy, never raw coefficients.
+ */
+public class SoftmaxTest {
+
+    public SoftmaxTest() { return; }
+
+    static boolean near(float64 a, float64 b, float64 tolv) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d < tolv;
+    }
+
+    static #Tensor<float64> fixX() {
+        int64 n = 30;
+        float64[] xd = heap float64[n * (int64) 2];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 10.0;
+            xd[i * (int64) 2] = t;
+            xd[i * (int64) 2 + (int64) 1] =
+                ((float64) ((i * (int64) 7) % (int64) 5) - 2.0) / 2.0;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 2;
+        return Tensor.of<float64>(xd, sh);
+    }
+
+    static #Tensor<float64> fixY() {
+        int64 n = 30;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 10.0;
+            float64 lab = 2.0;
+            if (t < 1.0) { lab = 0.0; }
+            else if (t < 2.0) { lab = 1.0; }
+            yd[i] = lab;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(yd, sh);
+    }
+
+    @Test
+    public void threeClassProbabilitiesMatchSklearn() {
+        Tensor<float64> x = SoftmaxTest.fixX();
+        Tensor<float64> y = SoftmaxTest.fixY();
+        LogisticRegression m = heap LogisticRegression(
+            1.0, 0.0000000001, (int64) 200, true);
+        m.fit(x, y);
+        Assert.isTrue(m.converged());
+        Tensor<float64> pr = m.predictProba(x);
+        Assert.equals((int64) 30, pr.shapeAt(0));
+        Assert.equals((int64) 3, pr.shapeAt(1));
+        // Rows sum to 1 exactly (softmax normalization).
+        int64 i = 0;
+        while (i < 30) {
+            float64 s = pr.get2(i, 0) + pr.get2(i, 1) + pr.get2(i, 2);
+            Assert.isTrue(SoftmaxTest.near(s, 1.0, 0.000000000001));
+            i = i + 1;
+        }
+        // sklearn pins (1e-5): rows 0, 15, 29.
+        Assert.isTrue(SoftmaxTest.near(pr.get2(0, 0), 0.8756890971705845, 0.00001));
+        Assert.isTrue(SoftmaxTest.near(pr.get2(0, 1), 0.12151389427391524, 0.00001));
+        Assert.isTrue(SoftmaxTest.near(pr.get2(0, 2), 0.0027970085555002753, 0.00001));
+        Assert.isTrue(SoftmaxTest.near(pr.get2(15, 0), 0.17307358397214573, 0.00001));
+        Assert.isTrue(SoftmaxTest.near(pr.get2(15, 1), 0.5436639039332892, 0.00001));
+        Assert.isTrue(SoftmaxTest.near(pr.get2(15, 2), 0.2832625120945651, 0.00001));
+        Assert.isTrue(SoftmaxTest.near(pr.get2(29, 0), 0.0024468707311309274, 0.00001));
+        Assert.isTrue(SoftmaxTest.near(pr.get2(29, 1), 0.11403675649516462, 0.00001));
+        Assert.isTrue(SoftmaxTest.near(pr.get2(29, 2), 0.8835163727737044, 0.00001));
+        // sklearn's train accuracy is 1.0 on the bands.
+        Assert.isTrue(m.score(x, y) == 1.0);
+    }
+
+    @Test
+    public void binaryMultinomialTakesTheBinaryPath() {
+        Tensor<float64> x = SoftmaxTest.fixX();
+        int64 n = 30;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 10.0;
+            yd[i] = 0.0;
+            if (t >= 1.0) { yd[i] = 1.0; }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> yb = Tensor.of<float64>(yd, sh);
+
+        LogisticRegression viaKnob = heap LogisticRegression(
+            1.0, 0.0000000001, (int64) 200, true);
+        viaKnob.fit(x, yb);
+        LogisticRegression plain = heap LogisticRegression(
+            1.0, 0.0000000001, (int64) 200);
+        plain.fit(x, yb);
+
+        Tensor<float64> pa = viaKnob.predictProba(x);
+        Tensor<float64> pb = plain.predictProba(x);
+        i = 0;
+        while (i < n) {
+            Assert.isTrue(pa.get2(i, 1) == pb.get2(i, 1));
+            i = i + 1;
+        }
+        // sklearn binary pin (row 15): p1 = 0.8219366144967288.
+        Assert.isTrue(SoftmaxTest.near(pa.get2(15, 1), 0.8219366144967288, 0.00001));
+    }
+
+    @Test
+    public void summaryStaysPenalizedLabeled() {
+        // summary() is binary-only; through the multinomial-knob instance on
+        // a binary target it still carries the penalized labeling.
+        Tensor<float64> x = SoftmaxTest.fixX();
+        int64 n = 30;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 10.0;
+            yd[i] = 0.0;
+            if (t >= 1.5) { yd[i] = 1.0; }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> yb = Tensor.of<float64>(yd, sh);
+        LogisticRegression m = heap LogisticRegression(
+            1.0, 0.0000000001, (int64) 200, true);
+        m.fit(x, yb);
+        Assert.isTrue(m.summary(x, yb).penalized);
+    }
+}

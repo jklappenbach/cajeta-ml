@@ -1,0 +1,402 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * L1+L2-regularized least squares by cyclic coordinate descent (sklearn
+ * `ElasticNet`): minimize
+ *
+ *     1/(2n)·‖y − Xw‖² + α·l1r·‖w‖₁ + α·(1−l1r)/2·‖w‖²
+ *
+ * with sklearn's exact cd algorithm (residual-maintained soft-threshold
+ * updates in cyclic order, the duality-gap stopping rule scaled by ‖y‖²) —
+ * so coefficients agree with the pinned reference to tight tolerance, and
+ * zeros are EXACT (the soft threshold produces true zeros, not small
+ * values). The intercept is never regularized: X and y are centered first
+ * when `fitIntercept`. Single target `(n,)` (sklearn's multi-task variants
+ * are a different model family).
+ *
+ * Non-convergence is LOUD (the v1 convention): a warning prints, the last
+ * iterate is kept, `converged()` reports it.
+ */
+public final class ElasticNet implements Predictor {
+
+    private float64 alpha;
+    private float64 l1Ratio;
+    private boolean fitIcpt;
+    private float64 tol;
+    private int64 maxIter;
+    private Tensor<float64> coefV;      // (p,)
+    private float64 icept;
+    private int64 iters;
+    private boolean didConverge;
+    private boolean fitted;
+
+    public ElasticNet(float64 alpha, float64 l1Ratio, boolean fitIntercept,
+                      float64 tol, int64 maxIter) {
+        if (alpha < 0.0) {
+            throw heap MlException("ElasticNet: alpha must be >= 0");
+        }
+        if (l1Ratio < 0.0 || l1Ratio > 1.0) {
+            throw heap MlException("ElasticNet: l1Ratio must be in [0, 1]");
+        }
+        this.alpha = alpha;
+        this.l1Ratio = l1Ratio;
+        this.fitIcpt = fitIntercept;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.fitted = false;
+        return;
+    }
+
+    /** sklearn defaults: fitIntercept, tol 1e-4, maxIter 1000. */
+    public ElasticNet(float64 alpha, float64 l1Ratio) {
+        this.alpha = alpha;
+        this.l1Ratio = l1Ratio;
+        this.fitIcpt = true;
+        this.tol = 0.0001;
+        this.maxIter = 1000;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("ElasticNet.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException(
+                "ElasticNet.fit: y must be (n,) matching x rows");
+        }
+
+        // Centered working copies (row-major xc, yc) + means.
+        float64[] xc = heap float64[n * p];
+        float64[] yc = heap float64[n];
+        float64[] xmean = heap float64[p];
+        float64 ymean = 0.0;
+        int64 j = 0;
+        while (j < p) { xmean[j] = 0.0; j = j + 1; }
+        int64 i = 0;
+        if (this.fitIcpt) {
+            j = 0;
+            while (j < p) {
+                float64 acc = 0.0;
+                i = 0;
+                while (i < n) { acc = acc + x.get2(i, j); i = i + 1; }
+                xmean[j] = acc / (float64) n;
+                j = j + 1;
+            }
+            float64 yacc = 0.0;
+            i = 0;
+            while (i < n) { yacc = yacc + y.get1(i); i = i + 1; }
+            ymean = yacc / (float64) n;
+        }
+        i = 0;
+        while (i < n) {
+            j = 0;
+            while (j < p) {
+                xc[i * p + j] = x.get2(i, j) - xmean[j];
+                j = j + 1;
+            }
+            yc[i] = y.get1(i) - ymean;
+            i = i + 1;
+        }
+
+        // sklearn's scaling: the cython solver sees l1reg = α·l1r·n and
+        // l2reg = α·(1−l1r)·n, and the gap tolerance is tol·(yc·yc).
+        float64 l1reg = this.alpha * this.l1Ratio * (float64) n;
+        float64 l2reg = this.alpha * (1.0 - this.l1Ratio) * (float64) n;
+        float64 ydoty = 0.0;
+        i = 0;
+        while (i < n) { ydoty = ydoty + yc[i] * yc[i]; i = i + 1; }
+        float64 gapTol = this.tol * ydoty;
+
+        float64[] normCols = heap float64[p];
+        j = 0;
+        while (j < p) {
+            float64 acc = 0.0;
+            i = 0;
+            while (i < n) {
+                acc = acc + xc[i * p + j] * xc[i * p + j];
+                i = i + 1;
+            }
+            normCols[j] = acc;
+            j = j + 1;
+        }
+
+        float64[] w = heap float64[p];
+        j = 0;
+        while (j < p) { w[j] = 0.0; j = j + 1; }
+        float64[] resid = heap float64[n];
+        i = 0;
+        while (i < n) { resid[i] = yc[i]; i = i + 1; }
+
+        boolean conv = false;
+        int64 it = 0;
+        int64 done = 0;
+        while (it < this.maxIter && done == 0) {
+            float64 wMax = 0.0;
+            float64 dwMax = 0.0;
+            j = 0;
+            while (j < p) {
+                if (normCols[j] != 0.0) {
+                    float64 wj = w[j];
+                    if (wj != 0.0) {
+                        i = 0;
+                        while (i < n) {
+                            resid[i] = resid[i] + wj * xc[i * p + j];
+                            i = i + 1;
+                        }
+                    }
+                    float64 rho = 0.0;
+                    i = 0;
+                    while (i < n) {
+                        rho = rho + xc[i * p + j] * resid[i];
+                        i = i + 1;
+                    }
+                    float64 mag = rho;
+                    if (mag < 0.0) { mag = -mag; }
+                    float64 shrunk = mag - l1reg;
+                    float64 wNew = 0.0;
+                    if (shrunk > 0.0) {
+                        wNew = shrunk / (normCols[j] + l2reg);
+                        if (rho < 0.0) { wNew = -wNew; }
+                    }
+                    w[j] = wNew;
+                    if (wNew != 0.0) {
+                        i = 0;
+                        while (i < n) {
+                            resid[i] = resid[i] - wNew * xc[i * p + j];
+                            i = i + 1;
+                        }
+                    }
+                    float64 dw = wNew - wj;
+                    if (dw < 0.0) { dw = -dw; }
+                    if (dw > dwMax) { dwMax = dw; }
+                    float64 aw = wNew;
+                    if (aw < 0.0) { aw = -aw; }
+                    if (aw > wMax) { wMax = aw; }
+                }
+                j = j + 1;
+            }
+            // sklearn's stop: when the sweep's largest update is small (or
+            // the budget is spent), decide on the DUALITY GAP.
+            boolean check = wMax == 0.0 || it == this.maxIter - 1;
+            if (!check && dwMax / wMax < this.tol) { check = true; }
+            if (check) {
+                float64 gap = ElasticNet.dualityGap(
+                    xc, yc, w, resid, n, p, l1reg, l2reg);
+                if (gap < gapTol) {
+                    conv = true;
+                    done = 1;
+                }
+            }
+            it = it + 1;
+        }
+
+        // Coefficients + intercept (never regularized).
+        float64[] cd = heap float64[p];
+        j = 0;
+        while (j < p) { cd[j] = w[j]; j = j + 1; }
+        int64[] psh = heap int64[1];
+        psh[0] = p;
+        Tensor<float64> coefT = Tensor.of<float64>(cd, psh);
+        float64 ic = ymean;
+        j = 0;
+        while (j < p) { ic = ic - xmean[j] * w[j]; j = j + 1; }
+
+        if (!conv) {
+            System.stdout.println(
+                "warning: ElasticNet did not converge within maxIter "
+                + "(duality gap still above tol) — results are the last "
+                + "iterate; raise maxIter or tol");
+        }
+        this.coefV #= coefT;
+        this.icept = ic;
+        this.iters = it;
+        this.didConverge = conv;
+        this.fitted = true;
+        return;
+    }
+
+    /** sklearn's enet duality gap (the cython formula, verbatim). */
+    static float64 dualityGap(float64[] xc, float64[] yc, float64[] w,
+                              float64[] resid, int64 n, int64 p,
+                              float64 l1reg, float64 l2reg) {
+        // XtA = Xᵀr − l2reg·w; its max |·| decides dual feasibility.
+        float64 dualNorm = 0.0;
+        int64 j = 0;
+        while (j < p) {
+            float64 acc = 0.0;
+            int64 i = 0;
+            while (i < n) {
+                acc = acc + xc[i * p + j] * resid[i];
+                i = i + 1;
+            }
+            acc = acc - l2reg * w[j];
+            if (acc < 0.0) { acc = -acc; }
+            if (acc > dualNorm) { dualNorm = acc; }
+            j = j + 1;
+        }
+        float64 rNorm2 = 0.0;
+        int64 i2 = 0;
+        while (i2 < n) { rNorm2 = rNorm2 + resid[i2] * resid[i2]; i2 = i2 + 1; }
+        float64 wNorm2 = 0.0;
+        j = 0;
+        while (j < p) { wNorm2 = wNorm2 + w[j] * w[j]; j = j + 1; }
+        float64 cst = 1.0;
+        float64 gap = rNorm2;
+        if (dualNorm > l1reg) {
+            cst = l1reg / dualNorm;
+            gap = 0.5 * (rNorm2 + rNorm2 * cst * cst);
+        }
+        float64 l1w = 0.0;
+        j = 0;
+        while (j < p) {
+            float64 aw = w[j];
+            if (aw < 0.0) { aw = -aw; }
+            l1w = l1w + aw;
+            j = j + 1;
+        }
+        float64 ry = 0.0;
+        i2 = 0;
+        while (i2 < n) { ry = ry + resid[i2] * yc[i2]; i2 = i2 + 1; }
+        gap = gap + l1reg * l1w - cst * ry
+            + 0.5 * l2reg * (1.0 + cst * cst) * wNorm2;
+        return gap;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(p,)` coefficients — soft-threshold zeros are exact zeros. */
+    public Tensor<float64> coef() {
+        if (!this.fitted) {
+            throw heap MlException("ElasticNet.coef: fit first");
+        }
+        return this.coefV;
+    }
+
+    public float64 intercept() {
+        if (!this.fitted) {
+            throw heap MlException("ElasticNet.intercept: fit first");
+        }
+        return this.icept;
+    }
+
+    /** How many coefficients the penalty zeroed. */
+    public int64 sparsityCount() {
+        if (!this.fitted) {
+            throw heap MlException("ElasticNet.sparsityCount: fit first");
+        }
+        int64 c = 0;
+        int64 j = 0;
+        while (j < this.coefV.shapeAt(0)) {
+            if (this.coefV.get1(j) == 0.0) { c = c + 1; }
+            j = j + 1;
+        }
+        return c;
+    }
+
+    public int64 iterations() {
+        return this.iters;
+    }
+
+    public boolean converged() {
+        return this.didConverge;
+    }
+
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("ElasticNet.predict: fit first");
+        }
+        int64 p = this.coefV.shapeAt(0);
+        if (x.ndim() != 2 || x.shapeAt(1) != p) {
+            throw heap MlException(
+                "ElasticNet.predict: x must be (n, p) with p matching the fit");
+        }
+        int64 n = x.shapeAt(0);
+        float64[] out = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 acc = this.icept;
+            int64 j = 0;
+            while (j < p) {
+                acc = acc + x.get2(i, j) * this.coefV.get1(j);
+                j = j + 1;
+            }
+            out[i] = acc;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** R² (the sklearn regressor `score` convention). */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> pr = this.predict(x);
+        return Metrics.r2(y, pr);
+    }
+}
+
+// Lasso lives in this file ON PURPOSE (compiler defect
+// `placeholder-owned-field`, specs/INDEX row, fix scheduled with v0.13.0 in
+// the cajeta-ml-v2 plan U7): a class whose OWNED FIELD is a user class that
+// is still an archive placeholder at its declaration walk (unspecified
+// readdir parse order put Lasso.cajeta before ElasticNet.cajeta) crashes
+// --emit=cja. Same-file declaration order is deterministic: ElasticNet
+// above is real by the time Lasso walks.
+
+/**
+ * L1-regularized least squares (sklearn `Lasso`): exactly
+ * {@link ElasticNet} at `l1Ratio = 1` — one objective, one solver, one set
+ * of pinned numerics — packaged under the name every sklearn user reaches
+ * for. Soft-threshold zeros are exact; `sparsityCount()` reports them.
+ */
+public final class Lasso implements Predictor {
+
+    private ElasticNet inner;
+
+    public Lasso(float64 alpha, boolean fitIntercept, float64 tol,
+                 int64 maxIter) {
+        this.inner #= heap ElasticNet(alpha, 1.0, fitIntercept, tol, maxIter);
+        return;
+    }
+
+    /** sklearn defaults: fitIntercept, tol 1e-4, maxIter 1000. */
+    public Lasso(float64 alpha) {
+        this.inner #= heap ElasticNet(alpha, 1.0);
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        this.inner.fit(x, y);
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.inner.isFitted();
+    }
+
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        return this.inner.predict(x);
+    }
+
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        return this.inner.score(x, y);
+    }
+
+    public Tensor<float64> coef() { return this.inner.coef(); }
+
+    public float64 intercept() { return this.inner.intercept(); }
+
+    public int64 sparsityCount() { return this.inner.sparsityCount(); }
+
+    public int64 iterations() { return this.inner.iterations(); }
+
+    public boolean converged() { return this.inner.converged(); }
+}

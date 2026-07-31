@@ -1,0 +1,226 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+
+/**
+ * Principal component analysis (sklearn `PCA`, the full-SVD solver): center,
+ * `LinAlg.svd`, components with sklearn's `svd_flip` sign convention
+ * (each component's largest-|·| loading is made positive — the
+ * `u_based_decision=False` rule the full solver uses), explained variance
+ * `s²/(n−1)` with ratios against the FULL spectrum. A {@link Transformer},
+ * so it drops into {@link Pipeline} (principal-component regression is a
+ * two-liner). No whitening (sklearn's default).
+ */
+public final class PCA implements Transformer {
+
+    private int64 nComp;
+    private Tensor<float64> meanV;      // (p,)
+    private Tensor<float64> compM;      // (k, p)
+    private Tensor<float64> explVar;    // (k,)
+    private Tensor<float64> explRatio;  // (k,)
+    private boolean fitted;
+
+    public PCA(int64 nComponents) {
+        if (nComponents < 1) {
+            throw heap MlException("PCA: nComponents must be >= 1");
+        }
+        this.nComp = nComponents;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("PCA.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 r = n;
+        if (p < r) { r = p; }
+        if (this.nComp > r) {
+            throw heap MlException("PCA.fit: nComponents > min(n, p)");
+        }
+        if (n < 2) {
+            throw heap MlException("PCA.fit: need at least 2 rows");
+        }
+
+        // Center a working copy.
+        int64[] pm = heap int64[1];
+        pm[0] = p;
+        Tensor<float64> mu = Tensor.zeros<float64>(pm);
+        int64 j = 0;
+        while (j < p) {
+            float64 acc = 0.0;
+            int64 i = 0;
+            while (i < n) { acc = acc + x.get2(i, j); i = i + 1; }
+            mu.set1(j, acc / (float64) n);
+            j = j + 1;
+        }
+        Tensor<float64> xc = x.copy();
+        int64 i2 = 0;
+        while (i2 < n) {
+            j = 0;
+            while (j < p) {
+                xc.flatSet(i2 * p + j, x.get2(i2, j) - mu.get1(j));
+                j = j + 1;
+            }
+            i2 = i2 + 1;
+        }
+
+        Tensor<float64>[] usv = LinAlg.svd<float64>(xc);
+        Tensor<float64> s = usv[1];       // (r,) descending
+        Tensor<float64> vt = usv[2];      // (r, p)
+
+        // Full-spectrum variances for the ratio denominator.
+        float64 total = 0.0;
+        int64 c = 0;
+        while (c < r) {
+            float64 sv = s.get1(c);
+            total = total + sv * sv / ((float64) n - 1.0);
+            c = c + 1;
+        }
+
+        int64 k = this.nComp;
+        int64[] cs = heap int64[2];
+        cs[0] = k;
+        cs[1] = p;
+        Tensor<float64> comp = Tensor.zeros<float64>(cs);
+        int64[] ks = heap int64[1];
+        ks[0] = k;
+        Tensor<float64> ev = Tensor.zeros<float64>(ks);
+        Tensor<float64> ratio = Tensor.zeros<float64>(ks);
+        c = 0;
+        while (c < k) {
+            // svd_flip (v-based): the row's largest-|·| loading goes positive.
+            int64 arg = 0;
+            float64 best = 0.0;
+            j = 0;
+            while (j < p) {
+                float64 av = vt.get2(c, j);
+                if (av < 0.0) { av = -av; }
+                if (av > best) { best = av; arg = j; }
+                j = j + 1;
+            }
+            float64 sign = 1.0;
+            if (vt.get2(c, arg) < 0.0) { sign = -1.0; }
+            j = 0;
+            while (j < p) {
+                comp.flatSet(c * p + j, sign * vt.get2(c, j));
+                j = j + 1;
+            }
+            float64 sv = s.get1(c);
+            float64 var = sv * sv / ((float64) n - 1.0);
+            ev.set1(c, var);
+            ratio.set1(c, var / total);
+            c = c + 1;
+        }
+
+        this.meanV #= mu;
+        this.compM #= comp;
+        this.explVar #= ev;
+        this.explRatio #= ratio;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(k, p)` components, sklearn sign convention. */
+    public Tensor<float64> components() {
+        if (!this.fitted) {
+            throw heap MlException("PCA.components: fit first");
+        }
+        return this.compM;
+    }
+
+    public Tensor<float64> explainedVariance() {
+        if (!this.fitted) {
+            throw heap MlException("PCA.explainedVariance: fit first");
+        }
+        return this.explVar;
+    }
+
+    public Tensor<float64> explainedVarianceRatio() {
+        if (!this.fitted) {
+            throw heap MlException("PCA.explainedVarianceRatio: fit first");
+        }
+        return this.explRatio;
+    }
+
+    /** `(n, k)` scores: `(x − mean)·componentsᵀ`. */
+    public #Tensor<float64> transform(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("PCA.transform: fit first");
+        }
+        int64 p = this.compM.shapeAt(1);
+        if (x.ndim() != 2 || x.shapeAt(1) != p) {
+            throw heap MlException(
+                "PCA.transform: x must be (n, p) with p matching the fit");
+        }
+        int64 n = x.shapeAt(0);
+        int64 k = this.compM.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                float64 acc = 0.0;
+                int64 j = 0;
+                while (j < p) {
+                    acc = acc + (x.get2(i, j) - this.meanV.get1(j))
+                        * this.compM.get2(c, j);
+                    j = j + 1;
+                }
+                out.flatSet(i * k + c, acc);
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    public #Tensor<float64> fitTransform(Tensor<float64> x, Tensor<float64> y) {
+        this.fit(x, y);
+        return this.transform(x);
+    }
+
+    /** `(n, p)` reconstruction: `t·components + mean` (lossy for k < p). */
+    public #Tensor<float64> inverseTransform(Tensor<float64> t) {
+        if (!this.fitted) {
+            throw heap MlException("PCA.inverseTransform: fit first");
+        }
+        int64 k = this.compM.shapeAt(0);
+        if (t.ndim() != 2 || t.shapeAt(1) != k) {
+            throw heap MlException("PCA.inverseTransform: t must be (n, k) "
+                + "with k matching the fit");
+        }
+        int64 n = t.shapeAt(0);
+        int64 p = this.compM.shapeAt(1);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = p;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < p) {
+                float64 acc = this.meanV.get1(j);
+                int64 c = 0;
+                while (c < k) {
+                    acc = acc + t.get2(i, c) * this.compM.get2(c, j);
+                    c = c + 1;
+                }
+                out.flatSet(i * p + j, acc);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+}

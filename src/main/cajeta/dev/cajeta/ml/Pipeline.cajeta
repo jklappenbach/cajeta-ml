@@ -1,0 +1,137 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * A fitted chain — zero to three {@link Transformer} stages and a final
+ * {@link Predictor} — that IS a `Predictor` (table-fit-era protocol
+ * payoff): `fit` runs `fitTransform` left to right then fits the final
+ * stage; `predict`/`score` run `transform` then delegate. Because the
+ * whole chain refits inside `Split.crossValScore`, per-fold preprocessing
+ * is leakage-free by construction — the reason Pipeline exists.
+ *
+ * Construction: the `Pipeline.of(...)` factories take OWNERSHIP of their
+ * stages (`#` transfer — pass fresh constructions or surrender locals);
+ * hyperparameters live on the stages, per the protocol convention.
+ * Pipelines nest: a Pipeline is a legal final stage.
+ */
+public final class Pipeline implements Predictor {
+
+    private Transformer s1;
+    private Transformer s2;
+    private Transformer s3;
+    private int32 nStages;
+    private Predictor last;
+    private boolean fitted;
+
+    Pipeline(#Transformer a, #Transformer b, #Transformer c,
+             int32 n, #Predictor fin) {
+        this.s1 #= a;
+        this.s2 #= b;
+        this.s3 #= c;
+        this.nStages = n;
+        this.last #= fin;
+        this.fitted = false;
+        return;
+    }
+
+    // Unused stage slots hold IdentityTransformer, never null — a null in
+    // an owned interface field has no vtable half to drop through.
+    public static #Pipeline of(#Predictor fin) {
+        Pipeline pl = heap Pipeline(heap IdentityTransformer(),
+            heap IdentityTransformer(), heap IdentityTransformer(), 0, #fin);
+        return #pl;
+    }
+
+    public static #Pipeline of(#Transformer a, #Predictor fin) {
+        Pipeline pl = heap Pipeline(#a, heap IdentityTransformer(),
+            heap IdentityTransformer(), 1, #fin);
+        return #pl;
+    }
+
+    public static #Pipeline of(#Transformer a, #Transformer b,
+                               #Predictor fin) {
+        Pipeline pl = heap Pipeline(#a, #b, heap IdentityTransformer(),
+            2, #fin);
+        return #pl;
+    }
+
+    public static #Pipeline of(#Transformer a, #Transformer b,
+                               #Transformer c, #Predictor fin) {
+        Pipeline pl = heap Pipeline(#a, #b, #c, 3, #fin);
+        return #pl;
+    }
+
+    Transformer stageAt(int32 i) {
+        if (i == 0) { return this.s1; }
+        if (i == 1) { return this.s2; }
+        return this.s3;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (this.last == null) {
+            throw heap MlException("Pipeline.fit: no final estimator");
+        }
+        if (this.nStages == 0) {
+            this.last.fit(x, y);
+            this.fitted = true;
+            return;
+        }
+        Tensor<float64> cur = this.stageAt(0).fitTransform(x, y);
+        int32 i = 1;
+        while (i < this.nStages) {
+            Tensor<float64> nxt = this.stageAt(i).fitTransform(cur, y);
+            cur #= nxt;
+            i = i + 1;
+        }
+        this.last.fit(cur, y);
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** Run the fitted transformer chain only (no final stage). */
+    public #Tensor<float64> transformChain(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("Pipeline.transformChain: fit first");
+        }
+        if (this.nStages == 0) {
+            Tensor<float64> cp = x.copy();
+            return #cp;
+        }
+        Tensor<float64> cur = this.stageAt(0).transform(x);
+        int32 i = 1;
+        while (i < this.nStages) {
+            Tensor<float64> nxt = this.stageAt(i).transform(cur);
+            cur #= nxt;
+            i = i + 1;
+        }
+        return #cur;
+    }
+
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("Pipeline.predict: fit first");
+        }
+        if (this.nStages == 0) {
+            return this.last.predict(x);
+        }
+        Tensor<float64> tx = this.transformChain(x);
+        return this.last.predict(tx);
+    }
+
+    /** The final stage's own score over the transformed features. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        if (!this.fitted) {
+            throw heap MlException("Pipeline.score: fit first");
+        }
+        if (this.nStages == 0) {
+            return this.last.score(x, y);
+        }
+        Tensor<float64> tx = this.transformChain(x);
+        return this.last.score(tx, y);
+    }
+}

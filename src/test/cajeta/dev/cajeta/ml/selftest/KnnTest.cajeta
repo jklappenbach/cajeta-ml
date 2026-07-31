@@ -1,0 +1,123 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.KNeighborsClassifier;
+import dev.cajeta.ml.KNeighborsRegressor;
+
+/**
+ * cajeta-ml-v2 plan 5.1 — kNN, pinned against sklearn 1.9.0
+ * (tools/fixtures/gen_knn.py; tie-free fixture):
+ *
+ *   train: x0 = 0.7i, x1 = ((5i)%7)·0.31, yr = 2x0 − x1 + 0.25,
+ *          yc = 0 (i<6) else 1;  queries (1.0,0.5), (5.3,1.2), (7.7,0.1).
+ *
+ *   reg uniform:  [2.1199999999999997, 9.95, 13.216666666666667]
+ *   reg distance: [2.108555157356881, 10.013331312098666, 13.420047587663776]
+ *   cls labels [0, 1, 1], proba rows [1,0], [0,1], [0,1].
+ */
+public class KnnTest {
+
+    public KnnTest() { return; }
+
+    static boolean near(float64 a, float64 b) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d < 0.000000000001;
+    }
+
+    static #Tensor<float64> trainX() {
+        int64 n = 12;
+        float64[] xd = heap float64[n * (int64) 2];
+        int64 i = 0;
+        while (i < n) {
+            xd[i * (int64) 2] = (float64) i * 0.7;
+            xd[i * (int64) 2 + (int64) 1] =
+                (float64) ((i * (int64) 5) % (int64) 7) * 0.31;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 2;
+        return Tensor.of<float64>(xd, sh);
+    }
+
+    static #Tensor<float64> queries() {
+        float64[] qd = [ 1.0, 0.5, 5.3, 1.2, 7.7, 0.1 ];
+        int64[] sh = heap int64[2];
+        sh[0] = 3;
+        sh[1] = 2;
+        return Tensor.of<float64>(qd, sh);
+    }
+
+    @Test
+    public void regressorUniformAndDistanceMatchSklearn() {
+        Tensor<float64> x = KnnTest.trainX();
+        int64 n = 12;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            yd[i] = 2.0 * x.get2(i, 0) - x.get2(i, 1) + 0.25;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> y = Tensor.of<float64>(yd, sh);
+        Tensor<float64> q = KnnTest.queries();
+
+        KNeighborsRegressor ru = heap KNeighborsRegressor((int64) 3, false);
+        ru.fit(x, y);
+        Tensor<float64> pu = ru.predict(q);
+        Assert.isTrue(KnnTest.near(pu.get1(0), 2.1199999999999997));
+        Assert.isTrue(KnnTest.near(pu.get1(1), 9.95));
+        Assert.isTrue(KnnTest.near(pu.get1(2), 13.216666666666667));
+
+        KNeighborsRegressor rd = heap KNeighborsRegressor((int64) 3, true);
+        rd.fit(x, y);
+        Tensor<float64> pd = rd.predict(q);
+        Assert.isTrue(KnnTest.near(pd.get1(0), 2.108555157356881));
+        Assert.isTrue(KnnTest.near(pd.get1(1), 10.013331312098666));
+        Assert.isTrue(KnnTest.near(pd.get1(2), 13.420047587663776));
+
+        // Training-point query: zero distance dominates (weights=distance).
+        float64[] q0 = [ 0.0, 0.0, 2.1, 0.31 ];
+        int64[] qs = heap int64[2];
+        qs[0] = 2;
+        qs[1] = 2;
+        Tensor<float64> qt = Tensor.of<float64>(q0, qs);
+        Tensor<float64> pt = rd.predict(qt);
+        Assert.isTrue(pt.get1(0) == y.get1(0));
+        Assert.isTrue(pt.get1(1) == y.get1(3));
+    }
+
+    @Test
+    public void classifierLabelsAndProbaMatchSklearn() {
+        Tensor<float64> x = KnnTest.trainX();
+        int64 n = 12;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            yd[i] = 0.0;
+            if (i >= 6) { yd[i] = 1.0; }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> y = Tensor.of<float64>(yd, sh);
+        Tensor<float64> q = KnnTest.queries();
+
+        KNeighborsClassifier c = heap KNeighborsClassifier((int64) 3);
+        c.fit(x, y);
+        Tensor<float64> lab = c.predict(q);
+        Assert.isTrue(lab.get1(0) == 0.0);
+        Assert.isTrue(lab.get1(1) == 1.0);
+        Assert.isTrue(lab.get1(2) == 1.0);
+        Tensor<float64> pr = c.predictProba(q);
+        Assert.isTrue(pr.get2(0, 0) == 1.0);
+        Assert.isTrue(pr.get2(0, 1) == 0.0);
+        Assert.isTrue(pr.get2(1, 0) == 0.0);
+        Assert.isTrue(pr.get2(1, 1) == 1.0);
+        // Training accuracy is perfect on this fixture.
+        Assert.isTrue(c.score(x, y) == 1.0);
+    }
+}

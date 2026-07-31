@@ -1,0 +1,125 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.KMeans;
+
+/**
+ * cajeta-ml-v2 plan 4.1 — KMeans, pinned against sklearn 1.9.0
+ * (tools/fixtures/gen_kmeans.py): three separated 2-D blobs at (0,0),
+ * (10,10), (−10,10), 8 deterministic points each. Lloyd's converged
+ * result is init-independent here, so the pins hold across RNGs:
+ *
+ *   inertia 0.44625000000000087
+ *   centers (sorted): (−9.85, 10.0875), (0.15, 0.0875), (10.15, 10.0875)
+ *   partition: the three blobs, exactly.
+ */
+public class KMeansTest {
+
+    public KMeansTest() { return; }
+
+    static boolean near(float64 a, float64 b) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d < 0.000000001;
+    }
+
+    static #Tensor<float64> blobs() {
+        // blob c at (cx, cy); offsets ((j%4)·0.1, (j%3)·0.1)
+        float64[] cx = [ 0.0, 10.0, -10.0 ];
+        float64[] cy = [ 0.0, 10.0, 10.0 ];
+        int64 n = 24;
+        float64[] xd = heap float64[n * (int64) 2];
+        int64 c = 0;
+        while (c < 3) {
+            int64 j = 0;
+            while (j < 8) {
+                int64 row = c * (int64) 8 + j;
+                xd[row * (int64) 2] = cx[c] + (float64) (j % 4) * 0.1;
+                xd[row * (int64) 2 + (int64) 1] =
+                    cy[c] + (float64) (j % 3) * 0.1;
+                j = j + 1;
+            }
+            c = c + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 2;
+        return Tensor.of<float64>(xd, sh);
+    }
+
+    @Test
+    public void separatedBlobsMatchSklearn() {
+        Tensor<float64> x = KMeansTest.blobs();
+        KMeans m = heap KMeans((int64) 3, (uint64) 7);
+        int64[] esh = heap int64[1];
+        esh[0] = 24;
+        Tensor<float64> yIgnored = Tensor.zeros<float64>(esh);
+        m.fit(x, yIgnored);
+        // Partition: each blob uniform, blobs pairwise distinct.
+        Tensor<float64> lab = m.labels();
+        int64 c = 0;
+        while (c < 3) {
+            float64 l0 = lab.get1(c * (int64) 8);
+            int64 j = 1;
+            while (j < 8) {
+                Assert.isTrue(lab.get1(c * (int64) 8 + j) == l0);
+                j = j + 1;
+            }
+            c = c + 1;
+        }
+        Assert.isTrue(lab.get1(0) != lab.get1(8));
+        Assert.isTrue(lab.get1(0) != lab.get1(16));
+        Assert.isTrue(lab.get1(8) != lab.get1(16));
+        // Inertia pin.
+        Assert.isTrue(KMeansTest.near(m.inertia(), 0.44625000000000087));
+        // Centers: each blob mean appears among the centers.
+        Tensor<float64> cen = m.centers();
+        float64[] wantX = [ 0.15, 10.15, -9.85 ];
+        float64[] wantY = [ 0.0875, 10.0875, 10.0875 ];
+        int64 w = 0;
+        while (w < 3) {
+            boolean found = false;
+            int64 c2 = 0;
+            while (c2 < 3) {
+                if (KMeansTest.near(cen.get2(c2, 0), wantX[w])
+                        && KMeansTest.near(cen.get2(c2, 1), wantY[w])) {
+                    found = true;
+                }
+                c2 = c2 + 1;
+            }
+            Assert.isTrue(found);
+            w = w + 1;
+        }
+        // score = −inertia on the training data.
+        Assert.isTrue(KMeansTest.near(m.score(x, yIgnored), -0.44625000000000087));
+    }
+
+    @Test
+    public void sameSeedSameCentersAndPredictIsNearest() {
+        Tensor<float64> x = KMeansTest.blobs();
+        int64[] esh = heap int64[1];
+        esh[0] = 24;
+        Tensor<float64> yIgnored = Tensor.zeros<float64>(esh);
+        KMeans a = heap KMeans((int64) 3, (uint64) 42);
+        KMeans b = heap KMeans((int64) 3, (uint64) 42);
+        a.fit(x, yIgnored);
+        b.fit(x, yIgnored);
+        Tensor<float64> ca = a.centers();
+        Tensor<float64> cb = b.centers();
+        int64 c = 0;
+        while (c < 3) {
+            Assert.isTrue(ca.get2(c, 0) == cb.get2(c, 0));
+            Assert.isTrue(ca.get2(c, 1) == cb.get2(c, 1));
+            c = c + 1;
+        }
+        // predict on the training rows reproduces the fit labels.
+        Tensor<float64> pr = a.predict(x);
+        Tensor<float64> lab = a.labels();
+        int64 i = 0;
+        while (i < 24) {
+            Assert.isTrue(pr.get1(i) == lab.get1(i));
+            i = i + 1;
+        }
+    }
+}

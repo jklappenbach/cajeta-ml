@@ -25,6 +25,15 @@ numerics themselves are pinned against sklearn 1.9.0 in the test suite.
   library needed.
 - **Errors throw typed exceptions** (`MlException`), not warnings +
   NaN propagation: predict-before-fit, shape mismatches, single-class AUC.
+- **Multiclass strategy is an explicit knob, not a silent default.**
+  sklearn ≥ 1.7 removed `multi_class` and always fits softmax; here
+  `K > 2` defaults to one-vs-rest (the v1 contract) and softmax is the
+  `multinomial` constructor argument. Softmax probabilities match
+  sklearn's; raw multinomial coefficients are gauge-fixed (centered
+  intercepts) and are not comparable to sklearn's optimizer-path values.
+- **Lasso/ElasticNet are single-target.** sklearn's `Lasso` quietly accepts
+  `(n, k)` targets (fitting columns independently); the multi-task variants
+  are a different model family. Here the cd models take `(n,)` and say so.
 - **Dataframes cross through an explicit bridge, not duck-typing.** sklearn
   accepts a pandas DataFrame anywhere an array is expected and infers
   feature columns implicitly; here `Frames.design<R>(t, target)` makes the

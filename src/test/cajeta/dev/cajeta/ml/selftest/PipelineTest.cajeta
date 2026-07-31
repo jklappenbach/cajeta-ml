@@ -1,0 +1,153 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Pipeline;
+import dev.cajeta.ml.Ridge;
+import dev.cajeta.ml.Split;
+import dev.cajeta.ml.StandardScaler;
+
+/**
+ * cajeta-ml-v2 plan 3.1 — Pipeline: a Predictor built from stages.
+ * Determinism makes the pins exact: the same stages fit on the same data
+ * produce bit-identical predictions whether chained by hand or by
+ * Pipeline.
+ */
+public class PipelineTest {
+
+    public PipelineTest() { return; }
+
+    /** n=40, p=2, mean/scale drift along the rows (fold scalers differ). */
+    static #Tensor<float64> fixX() {
+        int64 n = 40;
+        float64[] xd = heap float64[n * (int64) 2];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 4.0;      // strong drift
+            xd[i * (int64) 2] = t * t + 1.0;
+            xd[i * (int64) 2 + (int64) 1] =
+                ((float64) ((i * (int64) 3) % (int64) 7)) - 3.0;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 2;
+        return Tensor.of<float64>(xd, sh);
+    }
+
+    static #Tensor<float64> fixY() {
+        int64 n = 40;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 4.0;
+            float64 x1 = ((float64) ((i * (int64) 3) % (int64) 7)) - 3.0;
+            yd[i] = 0.5 * (t * t + 1.0) - 1.25 * x1 + 3.0;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(yd, sh);
+    }
+
+    @Test
+    public void scalerOlsMatchesHandChain() {
+        Tensor<float64> x = PipelineTest.fixX();
+        Tensor<float64> y = PipelineTest.fixY();
+
+        StandardScaler sc = heap StandardScaler();
+        LinearRegression lr = heap LinearRegression(true);
+        Pipeline pl = Pipeline.of(#sc, #lr);
+        pl.fit(x, y);
+        Assert.isTrue(pl.isFitted());
+        Tensor<float64> pp = pl.predict(x);
+
+        StandardScaler sc2 = heap StandardScaler();
+        LinearRegression lr2 = heap LinearRegression(true);
+        Tensor<float64> xs = sc2.fitTransform(x, y);
+        lr2.fit(xs, y);
+        Tensor<float64> xt = sc2.transform(x);
+        Tensor<float64> ph = lr2.predict(xt);
+
+        int64 i = 0;
+        while (i < 40) {
+            Assert.isTrue(pp.get1(i) == ph.get1(i));
+            i = i + 1;
+        }
+        Assert.isTrue(pl.score(x, y) == lr2.score(xt, y));
+    }
+
+    @Test
+    public void crossValRefitsTheScalerPerFold() {
+        // NOTE: the model must NOT be affine-equivariant, or per-fold vs
+        // global scaling provably cannot change predictions (plain OLS is —
+        // the first cut of this test proved it by failing). Ridge's penalty
+        // geometry depends on the scaling, so the leak is visible.
+        Tensor<float64> x = PipelineTest.fixX();
+        Tensor<float64> y = PipelineTest.fixY();
+        KFold kf = heap KFold((int64) 4, false, (uint64) 0);
+
+        // Leakage-free: the scaler refits INSIDE each fold.
+        StandardScaler sc = heap StandardScaler();
+        Ridge rr = heap Ridge(1.0, true, false);
+        Pipeline pl = Pipeline.of(#sc, #rr);
+        Tensor<float64> honest = Split.crossValScore(pl, x, y, kf);
+
+        // Leaky baseline: scale ONCE on all rows, then CV the bare model.
+        StandardScaler scAll = heap StandardScaler();
+        Tensor<float64> xsAll = scAll.fitTransform(x, y);
+        Ridge bare = heap Ridge(1.0, true, false);
+        Tensor<float64> leaky = Split.crossValScore(bare, xsAll, y, kf);
+
+        // On drifting data the two disagree — that disagreement IS the leak.
+        boolean differs = false;
+        int64 f = 0;
+        while (f < 4) {
+            if (honest.get1(f) != leaky.get1(f)) { differs = true; }
+            f = f + 1;
+        }
+        Assert.isTrue(differs);
+    }
+
+    @Test
+    public void predictBeforeFitThrows() {
+        LinearRegression lr = heap LinearRegression(true);
+        Pipeline pl = Pipeline.of(#lr);
+        Tensor<float64> x = PipelineTest.fixX();
+        boolean threw = false;
+        try {
+            Tensor<float64> p = pl.predict(x);
+        } catch (MlException ex) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+    }
+
+    @Test
+    public void pipelinesNest() {
+        Tensor<float64> x = PipelineTest.fixX();
+        Tensor<float64> y = PipelineTest.fixY();
+
+        LinearRegression lrInner = heap LinearRegression(true);
+        Pipeline inner = Pipeline.of(#lrInner);
+        StandardScaler sc = heap StandardScaler();
+        Pipeline outer = Pipeline.of(#sc, #inner);
+        outer.fit(x, y);
+        Tensor<float64> pn = outer.predict(x);
+
+        StandardScaler sc2 = heap StandardScaler();
+        LinearRegression lr2 = heap LinearRegression(true);
+        Tensor<float64> xs = sc2.fitTransform(x, y);
+        lr2.fit(xs, y);
+        Tensor<float64> ph = lr2.predict(sc2.transform(x));
+
+        int64 i = 0;
+        while (i < 40) {
+            Assert.isTrue(pn.get1(i) == ph.get1(i));
+            i = i + 1;
+        }
+    }
+}

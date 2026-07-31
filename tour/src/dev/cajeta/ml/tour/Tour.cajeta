@@ -7,9 +7,13 @@ import dev.cajeta.ml.Design;
 import dev.cajeta.ml.DummyRegressor;
 import dev.cajeta.ml.Frames;
 import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.KMeans;
+import dev.cajeta.ml.Lasso;
 import dev.cajeta.ml.LinearRegression;
 import dev.cajeta.ml.LogisticRegression;
 import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.PCA;
+import dev.cajeta.ml.Pipeline;
 import dev.cajeta.ml.Predictor;
 import dev.cajeta.ml.Ridge;
 import dev.cajeta.ml.Split;
@@ -247,6 +251,28 @@ public final class Tour {
                    "features = float64 columns minus the target, names recorded");
         Tour.check(fromFrame.score(d.x, d.y) > 0.999999,
                    "the two-line fit recovers the planted linear structure");
+
+        // ------------------------------------------------------------------
+        Tour.section("9. The v2 shelf — sparsity, pipelines, clusters");
+        // Lasso zeroes what doesn't earn its keep: on [t, t2] plus the
+        // curve's target, a junk-free penalty path keeps structure sparse.
+        Lasso la = heap Lasso(0.05);
+        la.fit(x, y);
+        System.stdout.println("   lasso zeroed " + la.sparsityCount()
+            + " of 2 coefficients at alpha=0.05");
+        Tour.check(la.isFitted(), "coordinate descent fit (sklearn's exact algorithm)");
+        // Pipeline: PCA -> OLS, principal-component regression in two lines.
+        PCA pca = heap PCA((int64) 1);
+        LinearRegression plr = heap LinearRegression(true);
+        Pipeline pl = Pipeline.of(#pca, #plr);
+        pl.fit(x, y);
+        Tour.check(pl.score(x, y) > 0.95,
+                   "PCA(1) -> OLS pipeline recovers the dominant trend");
+        // KMeans on the quadratic's two arms (deterministic seed).
+        KMeans km = heap KMeans((int64) 2, (uint64) 3);
+        km.fit(x, y);
+        Tour.check(km.inertia() > 0.0 && km.isFitted(),
+                   "seeded k-means++ converged (same seed -> same centers)");
 
         // ------------------------------------------------------------------
         System.stdout.println("");

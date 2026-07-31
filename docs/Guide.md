@@ -40,11 +40,24 @@ application (sklearn's dense solver), or the SVD filter `s/(s²+α)` when
 `svdSolver` — use it when the Gram matrix is near-singular. The intercept
 is never regularized.
 
-### LogisticRegression(c, tol, maxIter)
+### Lasso(alpha, fitIntercept, tol, maxIter) / ElasticNet(alpha, l1Ratio, …)
+L1 (and L1+L2) regularized least squares by **cyclic coordinate descent** —
+sklearn's exact algorithm (residual-maintained soft-threshold updates, the
+duality-gap stopping rule), so coefficients match the pinned reference and
+iteration counts agree. Zeros are **exact** (`sparsityCount()`); `Lasso` IS
+`ElasticNet` at `l1Ratio = 1`. The intercept is never regularized. Single
+target `(n,)`. Non-convergence prints the loud warning and sets
+`converged()` false. sklearn-default convenience ctors: `Lasso(alpha)` /
+`ElasticNet(alpha, l1Ratio)` (fitIntercept, tol 1e-4, maxIter 1000).
+
+### LogisticRegression(c, tol, maxIter[, multinomial])
 sklearn's `newton-cholesky`: IRLS Newton steps, each a `choSolve`.
 Objective: `0.5‖w‖² + C·Σ log-loss` — **L2 is on by default (`C = 1`),
 the sklearn convention**; pass a very large `C` for a near-unpenalized
-fit. Binary targets fit directly; `K > 2` integer labels fit one-vs-rest.
+fit. Binary targets fit directly; `K > 2` integer labels fit one-vs-rest,
+or ONE softmax likelihood with the explicit `multinomial` knob (damped
+full Newton on the symmetric K-block system; probabilities match sklearn's
+multinomial mode — which is sklearn ≥ 1.7's only multiclass mode).
 `predictProba` (binary `[1−p, p]`; OvR normalized), `predict` (threshold /
 argmax), `score` = accuracy. Non-convergence prints a **loud warning** and
 sets `converged()` false — separable data is the classic cause.
@@ -53,10 +66,34 @@ sets `converged()` false — separable data is the classic cause.
 Hessian with `penalized = true` — not classical inference (see
 [differences](DifferencesFromSklearn.md)).
 
+### KMeans(k, seed[, maxIter, tol])
+Seeded k-means++ over the stdlib `Generator` (deterministic per seed — not
+numpy's stream; on separated data the converged partition/centers/inertia
+are init-independent and pinned against sklearn), then Lloyd.
+`centers()/labels()/inertia()/predict`; `score` = −inertia (sklearn's
+convention). Nearest-center ties go to the lowest index.
+
+### KNeighborsRegressor(k, distanceWeights) / KNeighborsClassifier(k)
+Brute-force euclidean. Regressor: uniform or 1/d weights with sklearn's
+zero-distance rule (exact matches take all the weight). Classifier:
+vote fractions in `predictProba`, argmax ties to the lowest label.
+Neighbor ties at equal distance break to the lowest training index
+(documented where sklearn's is an implementation detail).
+
 ## Preprocessing & model selection
 
 - `StandardScaler` / `MinMaxScaler` — sklearn semantics (ddof-0 scale,
   zero-variance guard), plus `inverseTransform`.
+- `PCA(nComponents)` — full-SVD solver over `LinAlg.svd`: components with
+  sklearn's `svd_flip` signs, `explainedVariance`/`Ratio` (full-spectrum
+  denominator), `transform`/`inverseTransform`. A `Transformer`, so
+  `Pipeline.of(#pca, #ols)` is principal-component regression in one line.
+- `Pipeline.of([t1[, t2[, t3]]], final)` — a `Predictor` built from up to
+  three `Transformer` stages + a final estimator: `fit` chains
+  `fitTransform` then fits the final stage; `predict`/`score` chain
+  `transform`. Because the WHOLE chain refits inside `crossValScore`,
+  per-fold preprocessing is leakage-free by construction. Stages transfer
+  ownership (`#`); pipelines nest.
 - `Split.trainTestSplit(x, y, testFraction, seed)` — seeded permutation,
   ceil test-size rule; returns `[xTrain, xTest, yTrain, yTest]`.
 - `KFold(k, shuffle, seed)` — sklearn fold sizes; `assignments(n)` gives a

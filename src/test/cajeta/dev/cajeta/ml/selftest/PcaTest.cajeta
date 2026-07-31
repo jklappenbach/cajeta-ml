@@ -1,0 +1,123 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.PCA;
+import dev.cajeta.ml.Pipeline;
+
+/**
+ * cajeta-ml-v2 plan 6.1 — PCA, pinned against sklearn 1.9.0
+ * (tools/fixtures/gen_pca.py, full-SVD solver): n=16, p=3,
+ * x0 = t = i/4, x1 = 2t + ((3i)%5−2)·0.05, x2 = −t + ((7i)%3−1)·0.1.
+ *
+ *   components (svd_flip signs):
+ *     [0.40822972665136936, 0.8169703725491134, −0.4073179355922244]
+ *     [0.01621266167574921, 0.43963159731590495, 0.8980318525769861]
+ *   explained_variance [8.496224533801907, 0.007451254650923542]
+ *   ratio [0.9990171417923956, 0.0008761457626875953]
+ *   transform row 0  [−4.631195679730623, −0.12061345542228279]
+ *   transform row 15 [4.554385847801206, −0.13019844143263423]
+ *   inverse max |err| vs X = 0.05051503408827607 (k=2 of 3 is lossy).
+ */
+public class PcaTest {
+
+    public PcaTest() { return; }
+
+    static boolean near(float64 a, float64 b) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d < 0.00000001;
+    }
+
+    static #Tensor<float64> fixX() {
+        int64 n = 16;
+        float64[] xd = heap float64[n * (int64) 3];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 4.0;
+            xd[i * (int64) 3] = t;
+            xd[i * (int64) 3 + (int64) 1] =
+                2.0 * t + ((float64) ((i * (int64) 3) % (int64) 5) - 2.0) * 0.05;
+            xd[i * (int64) 3 + (int64) 2] =
+                0.0 - t + ((float64) ((i * (int64) 7) % (int64) 3) - 1.0) * 0.1;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 3;
+        return Tensor.of<float64>(xd, sh);
+    }
+
+    @Test
+    public void componentsVarianceTransformMatchSklearn() {
+        Tensor<float64> x = PcaTest.fixX();
+        int64[] esh = heap int64[1];
+        esh[0] = 16;
+        Tensor<float64> yIgnored = Tensor.zeros<float64>(esh);
+        PCA m = heap PCA((int64) 2);
+        Tensor<float64> t = m.fitTransform(x, yIgnored);
+
+        Tensor<float64> comp = m.components();
+        Assert.isTrue(PcaTest.near(comp.get2(0, 0), 0.40822972665136936));
+        Assert.isTrue(PcaTest.near(comp.get2(0, 1), 0.8169703725491134));
+        Assert.isTrue(PcaTest.near(comp.get2(0, 2), -0.4073179355922244));
+        Assert.isTrue(PcaTest.near(comp.get2(1, 0), 0.01621266167574921));
+        Assert.isTrue(PcaTest.near(comp.get2(1, 1), 0.43963159731590495));
+        Assert.isTrue(PcaTest.near(comp.get2(1, 2), 0.8980318525769861));
+
+        Tensor<float64> ev = m.explainedVariance();
+        Assert.isTrue(PcaTest.near(ev.get1(0), 8.496224533801907));
+        Assert.isTrue(PcaTest.near(ev.get1(1), 0.007451254650923542));
+        Tensor<float64> ratio = m.explainedVarianceRatio();
+        Assert.isTrue(PcaTest.near(ratio.get1(0), 0.9990171417923956));
+        Assert.isTrue(PcaTest.near(ratio.get1(1), 0.0008761457626875953));
+
+        Assert.isTrue(PcaTest.near(t.get2(0, 0), -4.631195679730623));
+        Assert.isTrue(PcaTest.near(t.get2(0, 1), -0.12061345542228279));
+        Assert.isTrue(PcaTest.near(t.get2(15, 0), 4.554385847801206));
+        Assert.isTrue(PcaTest.near(t.get2(15, 1), -0.13019844143263423));
+
+        // Lossy reconstruction: max |err| matches sklearn's residual.
+        Tensor<float64> back = m.inverseTransform(t);
+        float64 maxErr = 0.0;
+        int64 i = 0;
+        while (i < 16) {
+            int64 j = 0;
+            while (j < 3) {
+                float64 d = back.get2(i, j) - x.get2(i, j);
+                if (d < 0.0) { d = -d; }
+                if (d > maxErr) { maxErr = d; }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(PcaTest.near(maxErr, 0.05051503408827607));
+    }
+
+    @Test
+    public void pcrPipelineEndToEnd() {
+        // Principal-component regression: PCA(2) → OLS as a Pipeline.
+        Tensor<float64> x = PcaTest.fixX();
+        int64 n = 16;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 4.0;
+            yd[i] = 3.0 * t + 1.0;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> y = Tensor.of<float64>(yd, sh);
+
+        PCA pca = heap PCA((int64) 2);
+        LinearRegression lr = heap LinearRegression(true);
+        Pipeline pl = Pipeline.of(#pca, #lr);
+        pl.fit(x, y);
+        // The dominant direction carries t; the discarded 3rd PC keeps a
+        // sliver of it, so the attainable R² is 0.99947 (verified with
+        // sklearn on this fixture) — assert just under it.
+        Assert.isTrue(pl.score(x, y) > 0.999);
+    }
+}

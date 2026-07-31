@@ -1,0 +1,131 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * k-nearest-neighbors classification (sklearn `KNeighborsClassifier`,
+ * uniform weights): brute-force euclidean, vote by neighbor count,
+ * `predictProba` = vote fractions, argmax ties to the LOWEST label
+ * (sklearn's argmax does the same). Integer labels `0..K-1`.
+ */
+public final class KNeighborsClassifier implements Predictor {
+
+    private int64 kNeighbors;
+    private Tensor<float64> trainX;     // (n, p)
+    private Tensor<float64> trainY;     // (n,)
+    private int64 nClasses;
+    private boolean fitted;
+
+    public KNeighborsClassifier(int64 k) {
+        if (k < 1) {
+            throw heap MlException("KNeighborsClassifier: k must be >= 1");
+        }
+        this.kNeighbors = k;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "KNeighborsClassifier.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException(
+                "KNeighborsClassifier.fit: y must be (n,) matching x rows");
+        }
+        if (n < this.kNeighbors) {
+            throw heap MlException("KNeighborsClassifier.fit: n < k");
+        }
+        int64 kmax = 0;
+        int64 i = 0;
+        while (i < n) {
+            float64 v = y.get1(i);
+            int64 li = (int64) v;
+            if (v != (float64) li || li < 0) {
+                throw heap MlException("KNeighborsClassifier.fit: labels "
+                    + "must be integers 0..K-1");
+            }
+            if (li > kmax) { kmax = li; }
+            i = i + 1;
+        }
+        this.nClasses = kmax + 1;
+        if (this.nClasses < 2) { this.nClasses = 2; }
+        Tensor<float64> cx = x.copy();
+        Tensor<float64> cy = y.copy();
+        this.trainX #= cx;
+        this.trainY #= cy;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(n, K)` vote fractions. */
+    public #Tensor<float64> predictProba(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException(
+                "KNeighborsClassifier.predictProba: fit first");
+        }
+        int64 p = this.trainX.shapeAt(1);
+        if (x.ndim() != 2 || x.shapeAt(1) != p) {
+            throw heap MlException("KNeighborsClassifier.predictProba: x "
+                + "must be (n, p) with p matching the fit");
+        }
+        int64 n = x.shapeAt(0);
+        int64 k = this.kNeighbors;
+        int64 kc = this.nClasses;
+        int64[] idx = heap int64[k];
+        float64[] d2 = heap float64[k];
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = kc;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            KNeighborsRegressor.nearest(this.trainX, x, i, k, idx, d2);
+            int64 s = 0;
+            while (s < k) {
+                int64 ix = idx[s];
+                int64 lab = (int64) this.trainY.get1(ix);
+                out.flatSet(i * kc + lab,
+                    out.get2(i, lab) + 1.0 / (float64) k);
+                s = s + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Vote argmax per row (lowest label on ties). */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        Tensor<float64> pr = this.predictProba(x);
+        int64 n = pr.shapeAt(0);
+        int64 kc = pr.shapeAt(1);
+        float64[] out = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            int64 best = 0;
+            float64 bv = pr.get2(i, 0);
+            int64 c = 1;
+            while (c < kc) {
+                if (pr.get2(i, c) > bv) { bv = pr.get2(i, c); best = c; }
+                c = c + 1;
+            }
+            out[i] = (float64) best;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** Accuracy — the classifier `score` convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> pred = this.predict(x);
+        return Metrics.accuracy(y, pred);
+    }
+}
