@@ -1,0 +1,117 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.nucleo.sparse.CsrMatrix;
+import dev.cajeta.ml.ElasticNet;
+import dev.cajeta.ml.Lasso;
+import dev.cajeta.ml.MlException;
+
+/**
+ * cajeta-ml-v2 plan 8.1 — sparse coordinate descent: `fitSparse` over a
+ * CSR design agrees with the dense fit BIT FOR BIT (fitIntercept=false —
+ * skipping exact zeros is bitwise-neutral; the v1 contract refuses
+ * centering loudly). Sparse-ish fixture: the U1 columns with planted
+ * exact zeros.
+ */
+public class SparseCdTest {
+
+    public SparseCdTest() { return; }
+
+    /** n=20, p=3 with exact zeros: x0 zero on odd rows, x1 the junk grid
+     *  (hits 0 at (7i)%5==2), x2 zero above row 14. */
+    static #Tensor<float64> fixX() {
+        int64 n = 20;
+        float64[] xd = heap float64[n * (int64) 3];
+        int64 i = 0;
+        while (i < n) {
+            float64 t = (float64) i / 10.0;
+            float64 x0 = t;
+            if (i % 2 == 1) { x0 = 0.0; }
+            xd[i * (int64) 3] = x0;
+            xd[i * (int64) 3 + (int64) 1] =
+                ((float64) ((i * (int64) 7) % (int64) 5) - 2.0) / 2.0;
+            float64 x2 = t * t;
+            if (i > 14) { x2 = 0.0; }
+            xd[i * (int64) 3 + (int64) 2] = x2;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = 3;
+        return Tensor.of<float64>(xd, sh);
+    }
+
+    static #Tensor<float64> fixY(Tensor<float64> x) {
+        int64 n = 20;
+        float64[] yd = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            float64 ripple = 0.01;
+            if (i % 2 == 1) { ripple = -0.01; }
+            yd[i] = 1.5 * x.get2(i, 0) - 0.8 * x.get2(i, 2)
+                + 0.3 * x.get2(i, 1) + ripple;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(yd, sh);
+    }
+
+    @Test
+    public void sparseEqualsDenseBitForBit() {
+        Tensor<float64> x = SparseCdTest.fixX();
+        Tensor<float64> y = SparseCdTest.fixY(x);
+        CsrMatrix xs = CsrMatrix.fromDense(x);
+        Assert.isTrue(xs.nnz() < 60);   // the zeros are really absent
+
+        ElasticNet dense = heap ElasticNet(0.01, 0.7, false,
+                                           0.0000000001, (int64) 100000);
+        dense.fit(x, y);
+        ElasticNet sparse = heap ElasticNet(0.01, 0.7, false,
+                                            0.0000000001, (int64) 100000);
+        sparse.fitSparse(xs, y);
+
+        Assert.isTrue(sparse.isFitted());
+        Assert.equals(dense.iterations(), sparse.iterations());
+        Tensor<float64> cd = dense.coef();
+        Tensor<float64> cs = sparse.coef();
+        int64 j = 0;
+        while (j < 3) {
+            Assert.isTrue(cd.get1(j) == cs.get1(j));
+            j = j + 1;
+        }
+        Assert.isTrue(dense.intercept() == 0.0);
+        Assert.isTrue(sparse.intercept() == 0.0);
+
+        // Lasso delegates.
+        Lasso ld = heap Lasso(0.01, false, 0.0000000001, (int64) 100000);
+        ld.fit(x, y);
+        Lasso ls = heap Lasso(0.01, false, 0.0000000001, (int64) 100000);
+        ls.fitSparse(xs, y);
+        Tensor<float64> cld = ld.coef();
+        Tensor<float64> cls = ls.coef();
+        j = 0;
+        while (j < 3) {
+            Assert.isTrue(cld.get1(j) == cls.get1(j));
+            j = j + 1;
+        }
+    }
+
+    @Test
+    public void sparseWithInterceptRefusedLoudly() {
+        Tensor<float64> x = SparseCdTest.fixX();
+        Tensor<float64> y = SparseCdTest.fixY(x);
+        CsrMatrix xs = CsrMatrix.fromDense(x);
+        ElasticNet m = heap ElasticNet(0.01, 0.5, true,
+                                       0.0000000001, (int64) 100000);
+        boolean threw = false;
+        try {
+            m.fitSparse(xs, y);
+        } catch (MlException ex) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+        Assert.isFalse(m.isFitted());
+    }
+}

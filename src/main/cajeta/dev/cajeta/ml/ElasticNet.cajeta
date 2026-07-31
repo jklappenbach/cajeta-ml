@@ -1,6 +1,7 @@
 package dev.cajeta.ml;
 
 import cajeta.math.Tensor;
+import cajeta.nucleo.sparse.CsrMatrix;
 
 /**
  * L1+L2-regularized least squares by cyclic coordinate descent (sklearn
@@ -221,6 +222,183 @@ public final class ElasticNet implements Predictor {
         return;
     }
 
+    /**
+     * The sparse fit (cajeta-ml-v2 spec §5.3): identical cd over a CSR
+     * design's CSC mirror. Requires `fitIntercept == false` (v1): skipping
+     * EXACT zeros is bitwise-neutral (x + 0.0 == x), so the un-centered
+     * sparse fit agrees with the dense fit BIT FOR BIT; implicit-mean
+     * centering (sklearn's sparse variant) would break that contract and
+     * is deferred. Center densely or add an explicit constant column if
+     * an intercept is needed.
+     */
+    public void fitSparse(CsrMatrix x, Tensor<float64> y) {
+        if (this.fitIcpt) {
+            throw heap MlException("ElasticNet.fitSparse: fitIntercept is "
+                + "not supported on sparse designs (v1) - center densely "
+                + "or add an explicit constant column");
+        }
+        int64 n = x.rowCount();
+        int64 p = x.colCount();
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException(
+                "ElasticNet.fitSparse: y must be (n,) matching x rows");
+        }
+        x.buildCsc();
+
+        float64 l1reg = this.alpha * this.l1Ratio * (float64) n;
+        float64 l2reg = this.alpha * (1.0 - this.l1Ratio) * (float64) n;
+        float64 ydoty = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 yi = y.get1(i);
+            ydoty = ydoty + yi * yi;
+            i = i + 1;
+        }
+        float64 gapTol = this.tol * ydoty;
+
+        float64[] w = heap float64[p];
+        float64[] resid = heap float64[n];
+        i = 0;
+        while (i < n) { resid[i] = y.get1(i); i = i + 1; }
+
+        boolean conv = false;
+        int64 it = 0;
+        int64 done = 0;
+        while (it < this.maxIter && done == 0) {
+            float64 wMax = 0.0;
+            float64 dwMax = 0.0;
+            int64 j = 0;
+            while (j < p) {
+                float64 nc = x.colNorm2(j);
+                if (nc != 0.0) {
+                    float64 wj = w[j];
+                    if (wj != 0.0) {
+                        int64 t = x.colStart(j);
+                        while (t < x.colEnd(j)) {
+                            int64 r = x.cscRowAt(t);
+                            float64 v = x.cscValAt(t);
+                            resid[r] = resid[r] + wj * v;
+                            t = t + 1;
+                        }
+                    }
+                    float64 rho = 0.0;
+                    int64 t2 = x.colStart(j);
+                    while (t2 < x.colEnd(j)) {
+                        int64 r = x.cscRowAt(t2);
+                        float64 v = x.cscValAt(t2);
+                        rho = rho + v * resid[r];
+                        t2 = t2 + 1;
+                    }
+                    float64 mag = rho;
+                    if (mag < 0.0) { mag = -mag; }
+                    float64 shrunk = mag - l1reg;
+                    float64 wNew = 0.0;
+                    if (shrunk > 0.0) {
+                        wNew = shrunk / (nc + l2reg);
+                        if (rho < 0.0) { wNew = -wNew; }
+                    }
+                    w[j] = wNew;
+                    if (wNew != 0.0) {
+                        int64 t3 = x.colStart(j);
+                        while (t3 < x.colEnd(j)) {
+                            int64 r = x.cscRowAt(t3);
+                            float64 v = x.cscValAt(t3);
+                            resid[r] = resid[r] - wNew * v;
+                            t3 = t3 + 1;
+                        }
+                    }
+                    float64 dw = wNew - wj;
+                    if (dw < 0.0) { dw = -dw; }
+                    if (dw > dwMax) { dwMax = dw; }
+                    float64 aw = wNew;
+                    if (aw < 0.0) { aw = -aw; }
+                    if (aw > wMax) { wMax = aw; }
+                }
+                j = j + 1;
+            }
+            boolean check = wMax == 0.0 || it == this.maxIter - 1;
+            if (!check && dwMax / wMax < this.tol) { check = true; }
+            if (check) {
+                float64 gap = ElasticNet.sparseDualityGap(
+                    x, y, w, resid, n, p, l1reg, l2reg);
+                if (gap < gapTol) {
+                    conv = true;
+                    done = 1;
+                }
+            }
+            it = it + 1;
+        }
+
+        float64[] cd = heap float64[p];
+        int64 j2 = 0;
+        while (j2 < p) { cd[j2] = w[j2]; j2 = j2 + 1; }
+        int64[] psh = heap int64[1];
+        psh[0] = p;
+        Tensor<float64> coefT = Tensor.of<float64>(cd, psh);
+
+        if (!conv) {
+            System.stdout.println(
+                "warning: ElasticNet did not converge within maxIter "
+                + "(duality gap still above tol) — results are the last "
+                + "iterate; raise maxIter or tol");
+        }
+        this.coefV #= coefT;
+        this.icept = 0.0;
+        this.iters = it;
+        this.didConverge = conv;
+        this.fitted = true;
+        return;
+    }
+
+    /** The duality gap over the sparse design (same formula, CSC walks). */
+    static float64 sparseDualityGap(CsrMatrix x, Tensor<float64> y,
+                                    float64[] w, float64[] resid,
+                                    int64 n, int64 p,
+                                    float64 l1reg, float64 l2reg) {
+        float64 dualNorm = 0.0;
+        int64 j = 0;
+        while (j < p) {
+            float64 acc = 0.0;
+            int64 t = x.colStart(j);
+            while (t < x.colEnd(j)) {
+                int64 r = x.cscRowAt(t);
+                float64 v = x.cscValAt(t);
+                acc = acc + v * resid[r];
+                t = t + 1;
+            }
+            acc = acc - l2reg * w[j];
+            if (acc < 0.0) { acc = -acc; }
+            if (acc > dualNorm) { dualNorm = acc; }
+            j = j + 1;
+        }
+        float64 rNorm2 = 0.0;
+        int64 i = 0;
+        while (i < n) { rNorm2 = rNorm2 + resid[i] * resid[i]; i = i + 1; }
+        float64 wNorm2 = 0.0;
+        j = 0;
+        while (j < p) { wNorm2 = wNorm2 + w[j] * w[j]; j = j + 1; }
+        float64 cst = 1.0;
+        float64 gap = rNorm2;
+        if (dualNorm > l1reg) {
+            cst = l1reg / dualNorm;
+            gap = 0.5 * (rNorm2 + rNorm2 * cst * cst);
+        }
+        float64 l1w = 0.0;
+        j = 0;
+        while (j < p) {
+            float64 aw = w[j];
+            if (aw < 0.0) { aw = -aw; }
+            l1w = l1w + aw;
+            j = j + 1;
+        }
+        float64 ry = 0.0;
+        i = 0;
+        while (i < n) { ry = ry + resid[i] * y.get1(i); i = i + 1; }
+        gap = gap + l1reg * l1w - cst * ry
+            + 0.5 * l2reg * (1.0 + cst * cst) * wNorm2;
+        return gap;
+    }
+
     /** sklearn's enet duality gap (the cython formula, verbatim). */
     static float64 dualityGap(float64[] xc, float64[] yc, float64[] w,
                               float64[] resid, int64 n, int64 p,
@@ -375,6 +553,12 @@ public final class Lasso implements Predictor {
 
     public void fit(Tensor<float64> x, Tensor<float64> y) {
         this.inner.fit(x, y);
+        return;
+    }
+
+    /** Sparse fit — see {@link ElasticNet#fitSparse} (fitIntercept=false only). */
+    public void fitSparse(CsrMatrix x, Tensor<float64> y) {
+        this.inner.fitSparse(x, y);
         return;
     }
 
