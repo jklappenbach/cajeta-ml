@@ -12,10 +12,24 @@ import dev.cajeta.ml.MlException;
 /**
  * table-fit plan 4.1 — the `Frames` bridge: any `Table<R>` becomes a design
  * matrix + target for every `Predictor`, using the synthesized generic
- * introspection surface. The schema record (`Obs`) lives in its own file,
- * so this suite also exercises the compiler's cross-file materialization
- * fix on a real consumer.
+ * introspection surface.
  */
+// Obs is CO-LOCATED here (not its own file) for the v0.2.0 cut: the
+// v0.12.1 toolchain's nested-materialize prototype hazard fires when a
+// consumer file precedes its record in readdir order (fixed in v0.13.0 —
+// compiler TableLoaderMaterializationTests.explicitCtorConsumerBeforeRecord);
+// same-file order is deterministic. 0.3.0 splits it back out.
+/**
+ * The FramesTest schema record. `count` is int64 on purpose: not
+ * float64-physical, so the default feature selection must skip it.
+ */
+public record Obs {
+    float64 a;
+    float64 b;
+    int64 count;
+    float64 target;
+}
+
 public class FramesTest {
 
     public FramesTest() { return; }
