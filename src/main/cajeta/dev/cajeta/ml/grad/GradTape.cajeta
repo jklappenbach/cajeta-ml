@@ -32,12 +32,23 @@ import dev.cajeta.ml.MlException;
  */
 public final class GradTape<E extends Floating> {
 
+    /** Int payload slots per node (structured-op configuration: stride,
+     *  padding, kernel, training flag, output extents). An instance field
+     *  rather than a static: a static on a TEMPLATED class does not resolve
+     *  through the bare class name in this toolchain. */
+    int32 payStride;
+
     ArrayList<Tensor<E>> values;         // node forward values (owned)
     ArrayList<Tensor<E>> grads;          // cotangents (allocated in backward)
+    ArrayList<Tensor<E>> auxT;           // saved forward state (owned)
     int32[] ops;                         // Op.* per node
     int32[] ain;                         // first-input node idx (-1 = none)
     int32[] bin;                         // second-input node idx (-1 = none)
+    int32[] cin;                         // third-input node idx (-1 = none)
     int32[] axes;                        // axis payload
+    int32[] pay;                         // PAY int payloads per node
+    int32[] aux0;                        // auxT index, or -1
+    int32[] aux1;                        // auxT index, or -1
     float64[] cs;                        // scalar payload (dtype-neutral)
     boolean[] needsGrad;                 // reaches a requires-grad leaf
     boolean[] isLeafGrad;                // a leaf explicitly requiring grad
@@ -49,11 +60,17 @@ public final class GradTape<E extends Floating> {
     public GradTape() {
         this.values = heap ArrayList<Tensor<E>>();
         this.grads = heap ArrayList<Tensor<E>>();
+        this.auxT = heap ArrayList<Tensor<E>>();
+        this.payStride = 4;
         this.cap = 64;
         this.ops = heap int32[this.cap];
         this.ain = heap int32[this.cap];
         this.bin = heap int32[this.cap];
+        this.cin = heap int32[this.cap];
         this.axes = heap int32[this.cap];
+        this.pay = heap int32[this.cap * this.payStride];
+        this.aux0 = heap int32[this.cap];
+        this.aux1 = heap int32[this.cap];
         this.cs = heap float64[this.cap];
         this.needsGrad = heap boolean[this.cap];
         this.isLeafGrad = heap boolean[this.cap];
@@ -69,7 +86,11 @@ public final class GradTape<E extends Floating> {
         int32[] no = heap int32[nc];
         int32[] na = heap int32[nc];
         int32[] nb = heap int32[nc];
+        int32[] ncn = heap int32[nc];
         int32[] nx = heap int32[nc];
+        int32[] npay = heap int32[nc * this.payStride];
+        int32[] na0 = heap int32[nc];
+        int32[] na1 = heap int32[nc];
         float64[] ncs = heap float64[nc];
         boolean[] ng = heap boolean[nc];
         boolean[] nl = heap boolean[nc];
@@ -78,16 +99,28 @@ public final class GradTape<E extends Floating> {
             no[i] = this.ops[i];
             na[i] = this.ain[i];
             nb[i] = this.bin[i];
+            ncn[i] = this.cin[i];
             nx[i] = this.axes[i];
+            na0[i] = this.aux0[i];
+            na1[i] = this.aux1[i];
             ncs[i] = this.cs[i];
             ng[i] = this.needsGrad[i];
             nl[i] = this.isLeafGrad[i];
+            int32 k = 0;
+            while (k < this.payStride) {
+                npay[i * this.payStride + k] = this.pay[i * this.payStride + k];
+                k = k + 1;
+            }
             i = i + 1;
         }
         this.ops #= no;
         this.ain #= na;
         this.bin #= nb;
+        this.cin #= ncn;
         this.axes #= nx;
+        this.pay #= npay;
+        this.aux0 #= na0;
+        this.aux1 #= na1;
         this.cs #= ncs;
         this.needsGrad #= ng;
         this.isLeafGrad #= nl;
@@ -111,9 +144,42 @@ public final class GradTape<E extends Floating> {
         }
         this.needsGrad[i] = ng;
         this.isLeafGrad[i] = false;
+        this.cin[i] = -1;
+        this.aux0[i] = -1;
+        this.aux1[i] = -1;
+        int32 k = 0;
+        while (k < this.payStride) {
+            this.pay[i * this.payStride + k] = 0;
+            k = k + 1;
+        }
         this.values.add(#value);
         this.n = i + 1;
         return stack GradTensor(i);
+    }
+
+    /** Attach a THIRD differentiable input (conv bias, norm beta) to a node
+     *  already pushed, propagating its grad-requirement. */
+    void linkThird(int32 node, int32 c) {
+        this.cin[node] = c;
+        if (c >= 0 && this.needsGrad[c] && this.noGradDepth == 0) {
+            this.needsGrad[node] = true;
+        }
+        return;
+    }
+
+    void setPay(int32 node, int32 slot, int32 v) {
+        this.pay[node * this.payStride + slot] = v;
+        return;
+    }
+
+    int32 getPay(int32 node, int32 slot) {
+        return this.pay[node * this.payStride + slot];
+    }
+
+    /** Park a saved forward tensor on the tape and return its handle. */
+    int32 addAux(#Tensor<E> t) {
+        this.auxT.add(#t);
+        return (int32) this.auxT.count() - 1;
     }
 
     /** Record `value` as a leaf. `requiresGrad` marks a trainable input. */
@@ -225,6 +291,171 @@ public final class GradTape<E extends Floating> {
         parts[1] = this.values.get(b.idx);
         Tensor<E> v = Tensor.concatenate<E>(parts, axis);
         return this.push(Op.CONCAT, a.idx, b.idx, axis, 0.0, #v);
+    }
+
+    // ── Structured ops (U3) ─────────────────────────────────────────────
+
+    /** 2-D convolution over NCHW input with an (O,C,KH,KW) kernel. */
+    public GradTensor conv2d(GradTensor x, GradTensor w, GradTensor b,
+                             int32 stride, int32 pad) {
+        Tensor<E> v = Ops.conv2d<E>(this.values.get(x.idx), this.values.get(w.idx),
+                                    this.values.get(b.idx), stride, pad);
+        GradTensor t = this.push(Op.CONV2D, x.idx, w.idx, 0, 0.0, #v);
+        this.linkThird(t.idx, b.idx);
+        this.setPay(t.idx, 0, stride);
+        this.setPay(t.idx, 1, pad);
+        return t;
+    }
+
+    public GradTensor maxPool2d(GradTensor x, int32 k, int32 stride, int32 pad) {
+        Tensor<E> xv = this.values.get(x.idx);
+        int64 oh = StructKernels.outExtent(xv.shapeAt(2), k, stride, pad);
+        int64 ow = StructKernels.outExtent(xv.shapeAt(3), k, stride, pad);
+        int64[] osh = StructKernels.shape4(xv.shapeAt(0), xv.shapeAt(1), oh, ow);
+        Tensor<E> argmax = Tensor.zeros<E>(osh);
+        Tensor<E> v = Ops.maxPool2d<E>(xv, k, stride, pad, argmax);
+        GradTensor t = this.push(Op.MAXPOOL2D, x.idx, -1, 0, 0.0, #v);
+        this.setPay(t.idx, 0, k);
+        this.setPay(t.idx, 1, stride);
+        this.setPay(t.idx, 2, pad);
+        this.aux0[t.idx] = this.addAux(#argmax);
+        return t;
+    }
+
+    public GradTensor avgPool2d(GradTensor x, int32 k, int32 stride, int32 pad) {
+        Tensor<E> v = Ops.avgPool2d<E>(this.values.get(x.idx), k, stride, pad);
+        GradTensor t = this.push(Op.AVGPOOL2D, x.idx, -1, 0, 0.0, #v);
+        this.setPay(t.idx, 0, k);
+        this.setPay(t.idx, 1, stride);
+        this.setPay(t.idx, 2, pad);
+        return t;
+    }
+
+    public GradTensor adaptiveAvgPool2d(GradTensor x, int32 outH, int32 outW) {
+        Tensor<E> v = Ops.adaptiveAvgPool2d<E>(this.values.get(x.idx), outH, outW);
+        GradTensor t = this.push(Op.ADAPTAVGPOOL2D, x.idx, -1, 0, 0.0, #v);
+        this.setPay(t.idx, 0, outH);
+        this.setPay(t.idx, 1, outW);
+        return t;
+    }
+
+    /** Training-mode batch norm: normalizes with THIS batch's statistics,
+     *  so every element's gradient depends on the whole channel. Running
+     *  stats are module state — see {@link Ops#updateRunningStats}. */
+    public GradTensor batchNorm2dTrain(GradTensor x, GradTensor gamma,
+                                       GradTensor beta, float64 eps) {
+        Tensor<E> xv = this.values.get(x.idx);
+        Tensor<E> mean = Ops.channelMean<E>(xv);
+        Tensor<E> var = Ops.channelVar<E>(xv, mean);
+        return this.bnCommon(x, gamma, beta, mean, var, eps, true);
+    }
+
+    /** Eval-mode batch norm against fixed (running) statistics. */
+    public GradTensor batchNorm2dEval(GradTensor x, GradTensor gamma,
+                                      GradTensor beta, Tensor<E> mean,
+                                      Tensor<E> var, float64 eps) {
+        return this.bnCommon(x, gamma, beta, mean, var, eps, false);
+    }
+
+    GradTensor bnCommon(GradTensor x, GradTensor gamma, GradTensor beta,
+                        Tensor<E> mean, Tensor<E> var, float64 eps,
+                        boolean training) {
+        Tensor<E> xv = this.values.get(x.idx);
+        Tensor<E> xhat = Tensor.zerosLike<E>(xv);
+        int64[] csh = StructKernels.shape1(xv.shapeAt(1));
+        Tensor<E> invstd = Tensor.zeros<E>(csh);
+        Tensor<E> v = Ops.batchNorm2d<E>(xv, this.values.get(gamma.idx),
+                                         this.values.get(beta.idx), mean, var,
+                                         eps, xhat, invstd);
+        GradTensor t = this.push(Op.BATCHNORM2D, x.idx, gamma.idx, 0, eps, #v);
+        this.linkThird(t.idx, beta.idx);
+        if (training) { this.setPay(t.idx, 0, 1); }
+        this.aux0[t.idx] = this.addAux(#xhat);
+        this.aux1[t.idx] = this.addAux(#invstd);
+        return t;
+    }
+
+    /** Layer norm over the LAST axis, with per-position scale and shift. */
+    public GradTensor layerNorm(GradTensor x, GradTensor gamma, GradTensor beta,
+                                float64 eps) {
+        Tensor<E> xv = this.values.get(x.idx);
+        Tensor<E> xhat = Tensor.zerosLike<E>(xv);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < xv.ndim() - 1) {
+            rows = rows * xv.shapeAt(k);
+            k = k + 1;
+        }
+        int64[] rsh = StructKernels.shape1(rows);
+        Tensor<E> invstd = Tensor.zeros<E>(rsh);
+        Tensor<E> v = Ops.layerNorm<E>(xv, this.values.get(gamma.idx),
+                                       this.values.get(beta.idx), eps, xhat, invstd);
+        GradTensor t = this.push(Op.LAYERNORM, x.idx, gamma.idx, 0, eps, #v);
+        this.linkThird(t.idx, beta.idx);
+        this.aux0[t.idx] = this.addAux(#xhat);
+        this.aux1[t.idx] = this.addAux(#invstd);
+        return t;
+    }
+
+    /** Row gather from an embedding table. `indices` holds class ids as
+     *  values (exact in both float widths below 2²⁴) and is not
+     *  differentiable — only the table receives gradient. */
+    public GradTensor embedding(GradTensor table, Tensor<E> indices) {
+        Tensor<E> v = Ops.embedding<E>(this.values.get(table.idx), indices);
+        GradTensor t = this.push(Op.EMBEDDING, table.idx, -1, 0, 0.0, #v);
+        Tensor<E> own = indices.copy();
+        this.aux0[t.idx] = this.addAux(#own);
+        return t;
+    }
+
+    /** Inverted dropout; identity when `training` is false. */
+    public GradTensor dropout(GradTensor x, float64 p, boolean training,
+                              uint64 seed) {
+        Tensor<E> xv = this.values.get(x.idx);
+        Tensor<E> mask = Tensor.zerosLike<E>(xv);
+        Tensor<E> v = Ops.dropout<E>(xv, p, training, seed, mask);
+        GradTensor t = this.push(Op.DROPOUT, x.idx, -1, 0, p, #v);
+        if (training) { this.setPay(t.idx, 0, 1); }
+        this.aux0[t.idx] = this.addAux(#mask);
+        return t;
+    }
+
+    /** Softmax cross-entropy against class ids, mean reduction → (1,). */
+    public GradTensor crossEntropy(GradTensor logits, Tensor<E> targets) {
+        Tensor<E> lv = this.values.get(logits.idx);
+        Tensor<E> probs = Tensor.zerosLike<E>(lv);
+        Tensor<E> v = Ops.crossEntropy<E>(lv, targets, probs);
+        GradTensor t = this.push(Op.CROSSENTROPY, logits.idx, -1, 0, 0.0, #v);
+        this.aux0[t.idx] = this.addAux(#probs);
+        Tensor<E> own = targets.copy();
+        this.aux1[t.idx] = this.addAux(#own);
+        return t;
+    }
+
+    /** Mean squared error → (1,). Both inputs receive gradient. */
+    public GradTensor mseLoss(GradTensor pred, GradTensor target) {
+        Tensor<E> v = Ops.mseLoss<E>(this.values.get(pred.idx),
+                                     this.values.get(target.idx));
+        return this.push(Op.MSELOSS, pred.idx, target.idx, 0, 0.0, #v);
+    }
+
+    /** Row-wise cosine similarity over the last axis → (rows,). SPELA's
+     *  per-layer objective is built on this. */
+    public GradTensor cosineSim(GradTensor a, GradTensor b) {
+        Tensor<E> av = this.values.get(a.idx);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < av.ndim() - 1) {
+            rows = rows * av.shapeAt(k);
+            k = k + 1;
+        }
+        int64[] csh = StructKernels.shape1(rows * 3);
+        Tensor<E> cache = Tensor.zeros<E>(csh);
+        float64 eps = 0.00000001;
+        Tensor<E> v = Ops.cosineSim<E>(av, this.values.get(b.idx), eps, cache);
+        GradTensor t = this.push(Op.COSINESIM, a.idx, b.idx, 0, eps, #v);
+        this.aux0[t.idx] = this.addAux(#cache);
+        return t;
     }
 
     // ── Backward ────────────────────────────────────────────────────────
@@ -470,6 +701,108 @@ public final class GradTape<E extends Floating> {
                 Tensor<E> vw = g.slice(axis, na, na + vb.shapeAt(axis));
                 Tensor<E> gb = vw.copy();
                 this.accum(b, #gb);
+            }
+            return;
+        }
+        if (op == Op.CONV2D) {
+            int32 stride = this.getPay(i, 0);
+            int32 pad = this.getPay(i, 1);
+            Tensor<E> vb = this.values.get(b);
+            if (this.needsGrad[a]) {
+                this.accum(a, Ops.conv2dBackIn<E>(g, va, vb, stride, pad));
+            }
+            if (this.needsGrad[b]) {
+                this.accum(b, Ops.conv2dBackWeight<E>(g, va, vb, stride, pad));
+            }
+            int32 c = this.cin[i];
+            if (c >= 0 && this.needsGrad[c]) {
+                this.accum(c, Ops.conv2dBackBias<E>(g));
+            }
+            return;
+        }
+        if (op == Op.MAXPOOL2D) {
+            Tensor<E> argmax = this.auxT.get(this.aux0[i]);
+            this.accum(a, Ops.maxPool2dBack<E>(g, va, argmax));
+            return;
+        }
+        if (op == Op.AVGPOOL2D) {
+            this.accum(a, Ops.avgPool2dBack<E>(g, va, this.getPay(i, 0),
+                                               this.getPay(i, 1), this.getPay(i, 2)));
+            return;
+        }
+        if (op == Op.ADAPTAVGPOOL2D) {
+            this.accum(a, Ops.adaptiveAvgPool2dBack<E>(g, va));
+            return;
+        }
+        if (op == Op.BATCHNORM2D) {
+            Tensor<E> xhat = this.auxT.get(this.aux0[i]);
+            Tensor<E> invstd = this.auxT.get(this.aux1[i]);
+            boolean training = this.getPay(i, 0) == 1;
+            if (this.needsGrad[a]) {
+                this.accum(a, Ops.batchNorm2dBackIn<E>(g, xhat, this.values.get(b),
+                                                       invstd, training));
+            }
+            if (this.needsGrad[b]) {
+                this.accum(b, Ops.normBackScale<E>(g, xhat));
+            }
+            int32 c = this.cin[i];
+            if (c >= 0 && this.needsGrad[c]) {
+                this.accum(c, Ops.normBackShift<E>(g));
+            }
+            return;
+        }
+        if (op == Op.LAYERNORM) {
+            Tensor<E> xhat = this.auxT.get(this.aux0[i]);
+            Tensor<E> invstd = this.auxT.get(this.aux1[i]);
+            if (this.needsGrad[a]) {
+                this.accum(a, Ops.layerNormBackIn<E>(g, xhat, this.values.get(b),
+                                                     invstd));
+            }
+            if (this.needsGrad[b]) {
+                this.accum(b, Ops.layerNormBackScale<E>(g, xhat));
+            }
+            int32 c = this.cin[i];
+            if (c >= 0 && this.needsGrad[c]) {
+                this.accum(c, Ops.layerNormBackShift<E>(g));
+            }
+            return;
+        }
+        if (op == Op.EMBEDDING) {
+            Tensor<E> idx = this.auxT.get(this.aux0[i]);
+            this.accum(a, Ops.embeddingBack<E>(g, va, idx));
+            return;
+        }
+        if (op == Op.DROPOUT) {
+            Tensor<E> mask = this.auxT.get(this.aux0[i]);
+            Tensor<E> ga = Tensor.mul<E>(g, mask);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.CROSSENTROPY) {
+            Tensor<E> probs = this.auxT.get(this.aux0[i]);
+            Tensor<E> targets = this.auxT.get(this.aux1[i]);
+            this.accum(a, Ops.crossEntropyBack<E>(g, probs, targets));
+            return;
+        }
+        if (op == Op.MSELOSS) {
+            Tensor<E> vb = this.values.get(b);
+            if (this.needsGrad[a]) {
+                this.accum(a, Ops.mseLossBack<E>(g, va, vb, true));
+            }
+            if (this.needsGrad[b]) {
+                this.accum(b, Ops.mseLossBack<E>(g, va, vb, false));
+            }
+            return;
+        }
+        if (op == Op.COSINESIM) {
+            Tensor<E> cache = this.auxT.get(this.aux0[i]);
+            Tensor<E> vb = this.values.get(b);
+            float64 eps = this.cs[i];
+            if (this.needsGrad[a]) {
+                this.accum(a, Ops.cosineSimBack<E>(g, va, vb, cache, eps, true));
+            }
+            if (this.needsGrad[b]) {
+                this.accum(b, Ops.cosineSimBack<E>(g, va, vb, cache, eps, false));
             }
             return;
         }

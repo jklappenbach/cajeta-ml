@@ -1,0 +1,624 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.grad.Ops;
+
+/**
+ * cajeta-ml-v3 plan 3.1.1 / 3.3.1 — the structured ops (conv2d, pooling,
+ * normalization, embedding, dropout, losses) pinned against PINNED torch
+ * 2.13.0+cpu (tools/fixtures/gen_grad_structured.py), plus the composite
+ * CNN-block acceptance check.
+ *
+ * Inputs are integer formulas over the FLAT index, identical to the
+ * generator's, so no fixture data ships. Backward is driven by the same
+ * weighted scalar the generator used, L = Σ out⊙K with
+ * K[f] = ((f mod 3) + 1)·0.5 — non-uniform cotangents, so a wrong VJP
+ * cannot hide behind a symmetric seed.
+ *
+ * Dropout is deliberately NOT torch-pinned: torch's RNG stream is a
+ * different generator, so masks cannot agree elementwise. Its tests pin
+ * the semantics instead (see `dropout*` below).
+ */
+public class GradStructuredTest {
+
+    public GradStructuredTest() { return; }
+
+    static float32 TOL = 0.0002f;
+    static float64 EPS = 0.00001;
+
+    // ── fixture builders (mirror gen_grad_structured.py) ────────────────
+
+    static int64 countOf(Tensor<float32> t) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < t.ndim()) {
+            n = n * t.shapeAt(d);
+            d = d + 1;
+        }
+        return n;
+    }
+
+    static #Tensor<float32> filled(int64[] shape, int32 kind) {
+        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        int64 n = GradStructuredTest.countOf(t);
+        int64 f = 0;
+        while (f < n) {
+            float32 v = 0.0f;
+            if (kind == 0) {          // x_: (f % 7)*0.25 - 0.75
+                v = (float32) (f % 7) * 0.25f - 0.75f;
+            } else if (kind == 1) {   // w_: (f % 5)*0.5 - 1.0
+                v = (float32) (f % 5) * 0.5f - 1.0f;
+            } else if (kind == 2) {   // b_: f*0.25 - 0.25
+                v = (float32) f * 0.25f - 0.25f;
+            } else {                  // g_: (f % 4)*0.5 + 0.5
+                v = (float32) (f % 4) * 0.5f + 0.5f;
+            }
+            t.flatSet(f, v);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    static #int64[] sh4(int64 a, int64 b, int64 c, int64 d) {
+        int64[] s = heap int64[4];
+        s[0] = a; s[1] = b; s[2] = c; s[3] = d;
+        return #s;
+    }
+
+    static #int64[] sh1(int64 a) {
+        int64[] s = heap int64[1];
+        s[0] = a;
+        return #s;
+    }
+
+    /** x (2,2,4,4). */
+    static #Tensor<float32> xIn() {
+        int64[] s = GradStructuredTest.sh4(2, 2, 4, 4);
+        return GradStructuredTest.filled(s, 0);
+    }
+
+    /** w (3,2,3,3). */
+    static #Tensor<float32> wIn() {
+        int64[] s = GradStructuredTest.sh4(3, 2, 3, 3);
+        return GradStructuredTest.filled(s, 1);
+    }
+
+    /** b (3,). */
+    static #Tensor<float32> bIn() {
+        int64[] s = GradStructuredTest.sh1(3);
+        return GradStructuredTest.filled(s, 2);
+    }
+
+    // ── harness ─────────────────────────────────────────────────────────
+
+    static #Tensor<float32> kLike(Tensor<float32> src) {
+        Tensor<float32> out = src.copy();
+        int64 n = GradStructuredTest.countOf(out);
+        int64 f = 0;
+        while (f < n) {
+            out.flatSet(f, (float32) (f % 3 + 1) * 0.5f);
+            f = f + 1;
+        }
+        return #out;
+    }
+
+    /** Backprop L = Σ(y ⊙ K) — the generator's weighted scalar. */
+    static void wback(GradTape<float32> t, GradTensor y) {
+        Tensor<float32> kv = GradStructuredTest.kLike(t.valueOf(y));
+        GradTensor k = t.leaf(kv, false);
+        GradTensor loss = t.sum(t.mul(y, k));
+        t.backward(loss);
+    }
+
+    static void checkFlat(Tensor<float32> t, float32[] exp, float32 tol) {
+        int64 n = (int64) exp.count();
+        Assert.isTrue(GradStructuredTest.countOf(t) == n);
+        int64 f = 0;
+        while (f < n) {
+            float32 e = exp[f];
+            float32 v = t.flatGet(f);
+            float32 d = v - e;
+            if (d < 0.0f) { d = 0.0f - d; }
+            if (d >= tol) {
+                Assert.fail("flat[" + f + "] = " + v + ", torch pin " + e);
+            }
+            f = f + 1;
+        }
+    }
+
+    static void checkShape4(Tensor<float32> t, int64 a, int64 b, int64 c, int64 d) {
+        Assert.isTrue(t.ndim() == 4);
+        Assert.isTrue(t.shapeAt(0) == a);
+        Assert.isTrue(t.shapeAt(1) == b);
+        Assert.isTrue(t.shapeAt(2) == c);
+        Assert.isTrue(t.shapeAt(3) == d);
+    }
+
+    // ── the seam still covers every op id ───────────────────────────────
+
+    @Test
+    public void seamCoversStructuredOps() {
+        int32 op = Op.CONV2D;
+        while (op < Op.COUNT) {
+            Assert.isTrue(Ops.hasCpu(op));
+            Assert.isFalse(Ops.hasGpu(op));
+            op = op + 1;
+        }
+        Assert.equals("conv2d", Ops.name(Op.CONV2D));
+        Assert.equals("adaptiveAvgPool2d", Ops.name(Op.ADAPTAVGPOOL2D));
+        Assert.equals("cosineSim", Ops.name(Op.COSINESIM));
+    }
+
+    // ── conv2d ──────────────────────────────────────────────────────────
+
+    @Test
+    public void pinConv2dStride1Pad1() {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor w = t.leaf(GradStructuredTest.wIn(), true);
+        GradTensor b = t.leaf(GradStructuredTest.bIn(), true);
+        GradTensor y = t.conv2d(x, w, b, 1, 1);
+        GradStructuredTest.checkShape4(t.valueOf(y), 2, 3, 4, 4);
+        float32[] po = [-0.75f, -0.75f, 0.25f, 0.125f, -0.375f, -0.5f, 0.875f,
+                        -1.625f, 0.0f, 1.5f, -0.625f, 0.375f, -1.25f, 1.125f,
+                        -0.625f, -1.5f, 0.875f, 0.0f, -0.375f, 0.625f, -0.125f,
+                        -1.0f, 0.0f, 1.125f, -1.875f, -1.375f, 2.25f, -1.75f,
+                        0.75f, 0.5f, 0.625f, 1.25f, 1.25f, 0.125f, -0.375f, 0.5f,
+                        0.75f, 0.375f, 0.375f, 0.75f, 1.25f, -0.5f, -0.5f, 1.125f,
+                        -1.0f, -0.125f, 1.25f, -1.0f, -1.0f, -1.125f, 0.75f,
+                        -1.625f, 0.0f, 1.5f, -0.625f, 0.375f, -1.375f, 0.875f,
+                        -1.25f, -2.0f, 0.875f, -0.625f, -1.5f, 0.75f, 0.25f,
+                        -0.625f, -0.125f, 1.0f, -1.875f, -1.375f, 2.25f, -1.75f,
+                        0.75f, 0.0f, 1.875f, 0.625f, -1.25f, 1.0f, -0.625f,
+                        -1.375f, 0.875f, -0.125f, 0.25f, 1.125f, 1.25f, -0.5f,
+                        -0.5f, 1.125f, -0.875f, 0.375f, 1.25f, -1.125f, 1.0f,
+                        0.125f, 1.5f, 0.25f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, GradStructuredTest.TOL);
+        GradStructuredTest.wback(t, y);
+        float32[] pdx = [-1.5f, -1.0f, 1.5f, -2.0f, 1.75f, 1.25f, -2.5f, -0.5f,
+                         0.5f, -2.5f, 1.25f, 0.75f, 0.0f, 3.5f, 1.0f, -2.5f, 0.0f,
+                         -2.5f, 1.25f, 2.0f, -2.25f, 0.25f, -1.0f, -0.75f, 0.25f,
+                         -1.0f, -2.25f, 1.75f, -1.0f, -0.5f, 0.75f, 0.25f, -1.5f,
+                         -1.0f, 1.5f, -2.0f, 1.75f, 1.25f, -2.5f, -0.5f, 0.5f,
+                         -2.5f, 1.25f, 0.75f, 0.0f, 3.5f, 1.0f, -2.5f, 0.0f, -2.5f,
+                         1.25f, 2.0f, -2.25f, 0.25f, -1.0f, -0.75f, 0.25f, -1.0f,
+                         -2.25f, 1.75f, -1.0f, -0.5f, 0.75f, 0.25f];
+        float32[] pdw = [1.375f, -2.0f, -0.25f, 0.75f, -0.625f, 0.5f, 0.125f,
+                         1.375f, 0.25f, -1.0f, 1.25f, 0.0f, -0.375f, 0.0f, -0.625f,
+                         -0.5f, -1.5f, 0.5f, 0.5f, -0.25f, -1.125f, 1.625f, -0.875f,
+                         -0.25f, 1.0f, -0.75f, 1.125f, -1.875f, 0.375f, 0.0f,
+                         -1.25f, 0.25f, 0.375f, 0.375f, 0.75f, -0.375f, -0.375f,
+                         -0.75f, 0.625f, 0.625f, 0.0f, -0.25f, 1.875f, 0.125f,
+                         -0.625f, -0.125f, -0.125f, 0.0f, -1.375f, -1.0f, -0.5f,
+                         -1.375f, 0.75f, 1.375f];
+        float32[] pdb = [31.0f, 32.0f, 33.0f];
+        GradStructuredTest.checkFlat(t.gradOf(x), pdx, GradStructuredTest.TOL);
+        GradStructuredTest.checkFlat(t.gradOf(w), pdw, GradStructuredTest.TOL);
+        GradStructuredTest.checkFlat(t.gradOf(b), pdb, 0.001f);
+    }
+
+    @Test
+    public void pinConv2dStride2Pad0() {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor w = t.leaf(GradStructuredTest.wIn(), true);
+        GradTensor b = t.leaf(GradStructuredTest.bIn(), true);
+        GradTensor y = t.conv2d(x, w, b, 2, 0);
+        GradStructuredTest.checkShape4(t.valueOf(y), 2, 3, 1, 1);
+        float32[] po = [-0.5f, -1.0f, 0.375f, 1.5f, -1.375f, -0.5f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, GradStructuredTest.TOL);
+        GradStructuredTest.wback(t, y);
+        float32[] pdb = [1.0f, 2.0f, 3.0f];
+        GradStructuredTest.checkFlat(t.gradOf(b), pdb, GradStructuredTest.TOL);
+        // dx: only the 3×3 top-left window of each 4×4 plane is covered.
+        Tensor<float32> dx = t.gradOf(x);
+        Assert.isTrue(dx.flatGet(0) == -0.75f);
+        Assert.isTrue(dx.flatGet(3) == 0.0f);      // last column untouched
+        Assert.isTrue(dx.flatGet(12) == 0.0f);     // last row untouched
+    }
+
+    // ── pooling ─────────────────────────────────────────────────────────
+
+    @Test
+    public void pinMaxPool2d() {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor y = t.maxPool2d(x, 2, 2, 0);
+        GradStructuredTest.checkShape4(t.valueOf(y), 2, 2, 2, 2);
+        float32[] po = [0.5f, 0.75f, 0.75f, 0.25f, 0.75f, 0.5f, 0.25f, 0.75f,
+                        0.5f, 0.75f, 0.75f, 0.5f, 0.75f, 0.75f, 0.5f, 0.75f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, GradStructuredTest.TOL);
+        GradStructuredTest.wback(t, y);
+        float32[] pdx = [0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.5f, 1.0f, 0.0f, 0.0f,
+                         0.0f, 0.0f, 0.5f, 0.0f, 1.5f, 0.0f, 0.0f, 0.0f, 0.0f,
+                         0.0f, 1.5f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.5f, 0.0f,
+                         1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.5f, 0.5f, 0.0f,
+                         0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                         0.0f, 0.0f, 1.5f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                         0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.5f, 0.5f,
+                         0.0f];
+        GradStructuredTest.checkFlat(t.gradOf(x), pdx, GradStructuredTest.TOL);
+    }
+
+    @Test
+    public void pinAvgPool2d() {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor y = t.avgPool2d(x, 2, 2, 0);
+        float32[] po = [-0.125f, -0.0625f, 0.125f, -0.25f, -0.0625f, 0.0f,
+                        -0.25f, 0.25f, 0.0f, 0.0625f, 0.25f, -0.125f, 0.0625f,
+                        0.125f, -0.125f, -0.0625f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, GradStructuredTest.TOL);
+        GradStructuredTest.wback(t, y);
+        Tensor<float32> dx = t.gradOf(x);
+        // every input cell in a 2×2 window gets g/4
+        Assert.isTrue(dx.flatGet(0) == 0.125f);
+        Assert.isTrue(dx.flatGet(1) == 0.125f);
+        Assert.isTrue(dx.flatGet(2) == 0.25f);
+        Assert.isTrue(dx.flatGet(8) == 0.375f);
+    }
+
+    @Test
+    public void pinAdaptiveAvgPool2dToOne() {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor y = t.adaptiveAvgPool2d(x, 1, 1);
+        GradStructuredTest.checkShape4(t.valueOf(y), 2, 2, 1, 1);
+        float32[] po = [-0.078125f, -0.015625f, 0.046875f, 0.0f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, GradStructuredTest.TOL);
+        GradStructuredTest.wback(t, y);
+        Tensor<float32> dx = t.gradOf(x);
+        Assert.isTrue(dx.flatGet(0) == 0.03125f);   // 0.5/16
+        Assert.isTrue(dx.flatGet(16) == 0.0625f);   // 1.0/16
+        Assert.isTrue(dx.flatGet(32) == 0.09375f);  // 1.5/16
+    }
+
+    /** With outH/outW dividing the input evenly, adaptive == plain avgPool. */
+    @Test
+    public void adaptiveAvgPool2dMatchesAvgPoolWhenEven() {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor y = t.adaptiveAvgPool2d(x, 2, 2);
+        float32[] po = [-0.125f, -0.0625f, 0.125f, -0.25f, -0.0625f, 0.0f,
+                        -0.25f, 0.25f, 0.0f, 0.0625f, 0.25f, -0.125f, 0.0625f,
+                        0.125f, -0.125f, -0.0625f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, GradStructuredTest.TOL);
+    }
+
+    // ── batchNorm2d ─────────────────────────────────────────────────────
+
+    @Test
+    public void pinBatchNorm2dTrain() {
+        GradTape<float32> t = heap GradTape<float32>();
+        int64[] cs = GradStructuredTest.sh1(2);
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor gam = t.leaf(GradStructuredTest.filled(cs, 3), true);
+        GradTensor bet = t.leaf(GradStructuredTest.filled(cs, 2), true);
+        GradTensor y = t.batchNorm2dTrain(x, gam, bet, GradStructuredTest.EPS);
+        Tensor<float32> out = t.valueOf(y);
+        // spot-check the pinned head and tail of torch's output
+        Assert.isTrue(GradStructuredTest.near(out.flatGet(0), -0.97904027f, 0.0001f));
+        Assert.isTrue(GradStructuredTest.near(out.flatGet(16), -0.47884434f, 0.0001f));
+        Assert.isTrue(GradStructuredTest.near(out.flatGet(63), -1.4674263f, 0.0001f));
+        GradStructuredTest.wback(t, y);
+        float32[] pdg = [0.49636784f, 0.23942217f];
+        float32[] pdb = [32.0f, 31.5f];
+        GradStructuredTest.checkFlat(t.gradOf(gam), pdg, 0.001f);
+        GradStructuredTest.checkFlat(t.gradOf(bet), pdb, 0.001f);
+        Tensor<float32> dx = t.gradOf(x);
+        Assert.isTrue(GradStructuredTest.near(dx.flatGet(0), -0.47391513f, 0.0002f));
+        Assert.isTrue(GradStructuredTest.near(dx.flatGet(17), 1.01924658f, 0.0002f));
+    }
+
+    static boolean near(float32 a, float32 b, float32 tol) {
+        float32 d = a - b;
+        if (d < 0.0f) { d = 0.0f - d; }
+        return d < tol;
+    }
+
+    /** The running-stat update: momentum blend, UNBIASED batch variance. */
+    @Test
+    public void pinBatchNormRunningStats() {
+        Tensor<float32> x = GradStructuredTest.xIn();
+        int64[] cs = GradStructuredTest.sh1(2);
+        Tensor<float32> rm = Tensor.zeros<float32>(cs);
+        Tensor<float32> rv = Tensor.full<float32>(cs, 1.0f);
+        Tensor<float32> mean = Ops.channelMean<float32>(x);
+        Tensor<float32> var = Ops.channelVar<float32>(x, mean);
+        int64 count = 2 * 4 * 4;
+        Ops.updateRunningStats<float32>(rm, rv, mean, var, count, 0.1);
+        float32[] prm = [-0.0015625f, -0.00078125f];
+        float32[] prv = [0.92618448f, 0.92640495f];
+        GradStructuredTest.checkFlat(rm, prm, 0.00001f);
+        GradStructuredTest.checkFlat(rv, prv, 0.00001f);
+    }
+
+    @Test
+    public void pinBatchNorm2dEval() {
+        GradTape<float32> t = heap GradTape<float32>();
+        int64[] cs = GradStructuredTest.sh1(2);
+        Tensor<float32> rm = Tensor.zeros<float32>(cs);
+        rm.flatSet(0, -0.0015625f);
+        rm.flatSet(1, -0.00078125f);
+        Tensor<float32> rv = Tensor.zeros<float32>(cs);
+        rv.flatSet(0, 0.92618448f);
+        rv.flatSet(1, 0.92640495f);
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor gam = t.leaf(GradStructuredTest.filled(cs, 3), true);
+        GradTensor bet = t.leaf(GradStructuredTest.filled(cs, 2), true);
+        GradTensor y = t.batchNorm2dEval(x, gam, bet, rm, rv, GradStructuredTest.EPS);
+        Tensor<float32> out = t.valueOf(y);
+        Assert.isTrue(GradStructuredTest.near(out.flatGet(0), -0.63884312f, 0.0001f));
+        Assert.isTrue(GradStructuredTest.near(out.flatGet(16), -0.25892735f, 0.0001f));
+        GradStructuredTest.wback(t, y);
+        // eval mode: the statistics are constants, so dx = g·γ·invstd —
+        // note it does NOT sum to zero per channel the way train mode does.
+        Tensor<float32> dx = t.gradOf(x);
+        Assert.isTrue(GradStructuredTest.near(dx.flatGet(0), 0.25976995f, 0.0002f));
+        Assert.isTrue(GradStructuredTest.near(dx.flatGet(16), 1.03895617f, 0.0002f));
+        float32[] pdg = [-0.20781626f, -0.10430176f];
+        GradStructuredTest.checkFlat(t.gradOf(gam), pdg, 0.001f);
+    }
+
+    // ── layerNorm ───────────────────────────────────────────────────────
+
+    @Test
+    public void pinLayerNormLastAxis() {
+        GradTape<float32> t = heap GradTape<float32>();
+        int64[] xs = heap int64[3];
+        xs[0] = 2; xs[1] = 3; xs[2] = 4;
+        int64[] ds = GradStructuredTest.sh1(4);
+        GradTensor x = t.leaf(GradStructuredTest.filled(xs, 0), true);
+        GradTensor gam = t.leaf(GradStructuredTest.filled(ds, 3), true);
+        GradTensor bet = t.leaf(GradStructuredTest.filled(ds, 2), true);
+        GradTensor y = t.layerNorm(x, gam, bet, GradStructuredTest.EPS);
+        float32[] po = [-0.92077744f, -0.44718498f, 0.92077744f, 3.18310976f,
+                        -0.19511873f, 0.54881281f, 1.73179448f, -2.79287672f,
+                        -0.92077744f, -0.44718498f, 0.92077744f, 3.18310976f,
+                        0.14222744f, 1.17668235f, -1.51502347f, -1.06890976f,
+                        -0.92077744f, -0.44718498f, 0.92077744f, 3.18310976f,
+                        0.57321918f, -0.987863f, -0.57321918f, 0.2804749f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, GradStructuredTest.TOL);
+        GradStructuredTest.wback(t, y);
+        float32[] pdx = [-1.25235844f, 0.17879391f, 3.39868641f, -2.3251214f,
+                         -1.12672174f, 0.95214462f, -0.04234052f, 0.21691775f,
+                         1.698771f, -1.96779108f, -1.16250372f, 1.4315238f,
+                         -0.73921347f, 0.7542603f, 0.81464958f, -0.8296963f,
+                         -0.44744229f, 1.78865409f, -2.23583889f, 0.89462733f,
+                         -0.90984809f, -1.82496214f, 0.01058292f, 2.72422838f];
+        float32[] pdg = [-1.05301738f, 0.16441503f, -0.47834983f, 1.8213551f];
+        float32[] pdb = [6.0f, 6.0f, 6.0f, 6.0f];
+        GradStructuredTest.checkFlat(t.gradOf(x), pdx, 0.001f);
+        GradStructuredTest.checkFlat(t.gradOf(gam), pdg, 0.001f);
+        GradStructuredTest.checkFlat(t.gradOf(bet), pdb, GradStructuredTest.TOL);
+    }
+
+    // ── embedding ───────────────────────────────────────────────────────
+
+    @Test
+    public void pinEmbeddingGatherAndScatter() {
+        GradTape<float32> t = heap GradTape<float32>();
+        int64[] ws = heap int64[2];
+        ws[0] = 5; ws[1] = 3;
+        GradTensor w = t.leaf(GradStructuredTest.filled(ws, 0), true);
+        int64[] is = GradStructuredTest.sh1(5);
+        Tensor<float32> idx = Tensor.zeros<float32>(is);
+        idx.flatSet(0, 0.0f);
+        idx.flatSet(1, 2.0f);
+        idx.flatSet(2, 4.0f);
+        idx.flatSet(3, 1.0f);
+        idx.flatSet(4, 2.0f);     // index 2 repeats — its grad must ACCUMULATE
+        GradTensor y = t.embedding(w, idx);
+        float32[] po = [-0.75f, -0.5f, -0.25f, 0.75f, -0.75f, -0.5f, 0.5f, 0.75f,
+                        -0.75f, 0.0f, 0.25f, 0.5f, 0.75f, -0.75f, -0.5f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, GradStructuredTest.TOL);
+        GradStructuredTest.wback(t, y);
+        float32[] pdw = [0.5f, 1.0f, 1.5f, 0.5f, 1.0f, 1.5f, 1.0f, 2.0f, 3.0f,
+                         0.0f, 0.0f, 0.0f, 0.5f, 1.0f, 1.5f];
+        GradStructuredTest.checkFlat(t.gradOf(w), pdw, GradStructuredTest.TOL);
+    }
+
+    // ── dropout (semantics, not a torch pin — see the class comment) ────
+
+    @Test
+    public void dropoutEvalIsIdentity() {
+        GradTape<float32> t = heap GradTape<float32>();
+        Tensor<float32> xv = GradStructuredTest.xIn();
+        GradTensor x = t.leaf(xv, true);
+        GradTensor y = t.dropout(x, 0.5, false, 7L);
+        Tensor<float32> out = t.valueOf(y);
+        int64 n = GradStructuredTest.countOf(out);
+        int64 f = 0;
+        while (f < n) {
+            Assert.isTrue(out.flatGet(f) == xv.flatGet(f));
+            f = f + 1;
+        }
+        GradStructuredTest.wback(t, y);
+        // identity forward → the cotangent passes through untouched
+        Tensor<float32> dx = t.gradOf(x);
+        Tensor<float32> k = GradStructuredTest.kLike(out);
+        f = 0;
+        while (f < n) {
+            Assert.isTrue(dx.flatGet(f) == k.flatGet(f));
+            f = f + 1;
+        }
+    }
+
+    @Test
+    public void dropoutTrainScalesSurvivorsAndZeroesTheRest() {
+        GradTape<float32> t = heap GradTape<float32>();
+        Tensor<float32> xv = GradStructuredTest.xIn();
+        GradTensor x = t.leaf(xv, true);
+        GradTensor y = t.dropout(x, 0.5, true, 12345L);
+        Tensor<float32> out = t.valueOf(y);
+        int64 n = GradStructuredTest.countOf(out);
+        int64 dropped = 0;
+        int64 f = 0;
+        while (f < n) {
+            float32 o = out.flatGet(f);
+            if (o == 0.0f) {
+                dropped = dropped + 1;
+            } else {
+                // survivor: exactly x·2 for p = 0.5
+                Assert.isTrue(GradStructuredTest.near(o, xv.flatGet(f) * 2.0f, 0.0001f));
+            }
+            f = f + 1;
+        }
+        // a fair mask over 64 cells at p=0.5 lands well inside these bounds
+        Assert.isTrue(dropped > 10 && dropped < 54);
+        // backward routes through the SAME mask: zeros stay zero
+        GradStructuredTest.wback(t, y);
+        Tensor<float32> dx = t.gradOf(x);
+        f = 0;
+        while (f < n) {
+            if (out.flatGet(f) == 0.0f && xv.flatGet(f) != 0.0f) {
+                Assert.isTrue(dx.flatGet(f) == 0.0f);
+            }
+            f = f + 1;
+        }
+    }
+
+    @Test
+    public void dropoutIsDeterministicPerSeed() {
+        GradTape<float32> a = heap GradTape<float32>();
+        GradTensor xa = a.leaf(GradStructuredTest.xIn(), true);
+        Tensor<float32> ya = a.valueOf(a.dropout(xa, 0.5, true, 99L));
+        GradTape<float32> b = heap GradTape<float32>();
+        GradTensor xb = b.leaf(GradStructuredTest.xIn(), true);
+        Tensor<float32> yb = b.valueOf(b.dropout(xb, 0.5, true, 99L));
+        int64 n = GradStructuredTest.countOf(ya);
+        int64 f = 0;
+        while (f < n) {
+            Assert.isTrue(ya.flatGet(f) == yb.flatGet(f));
+            f = f + 1;
+        }
+        // a different seed gives a different mask
+        GradTape<float32> c = heap GradTape<float32>();
+        GradTensor xc = c.leaf(GradStructuredTest.xIn(), true);
+        Tensor<float32> yc = c.valueOf(c.dropout(xc, 0.5, true, 100L));
+        boolean differs = false;
+        f = 0;
+        while (f < n) {
+            if (ya.flatGet(f) != yc.flatGet(f)) { differs = true; }
+            f = f + 1;
+        }
+        Assert.isTrue(differs);
+    }
+
+    // ── losses ──────────────────────────────────────────────────────────
+
+    @Test
+    public void pinCrossEntropyMean() {
+        GradTape<float32> t = heap GradTape<float32>();
+        int64[] ls = heap int64[2];
+        ls[0] = 4; ls[1] = 3;
+        GradTensor logits = t.leaf(GradStructuredTest.filled(ls, 0), true);
+        int64[] ts = GradStructuredTest.sh1(4);
+        Tensor<float32> tgt = Tensor.zeros<float32>(ts);
+        tgt.flatSet(0, 0.0f);
+        tgt.flatSet(1, 2.0f);
+        tgt.flatSet(2, 1.0f);
+        tgt.flatSet(3, 2.0f);
+        GradTensor loss = t.crossEntropy(logits, tgt);
+        float32[] pl = [1.25497055f];
+        GradStructuredTest.checkFlat(t.valueOf(loss), pl, 0.0001f);
+        t.backward(loss);
+        float32[] pdl = [-0.1864312f, 0.08162396f, 0.10480724f, 0.06356881f,
+                         0.08162396f, -0.14519276f, 0.16560295f, -0.21304899f,
+                         0.04744604f, 0.06356881f, 0.08162396f, -0.14519276f];
+        GradStructuredTest.checkFlat(t.gradOf(logits), pdl, GradStructuredTest.TOL);
+    }
+
+    @Test
+    public void pinMseLossMean() {
+        GradTape<float32> t = heap GradTape<float32>();
+        int64[] s = heap int64[2];
+        s[0] = 2; s[1] = 3;
+        GradTensor p = t.leaf(GradStructuredTest.filled(s, 0), true);
+        GradTensor q = t.leaf(GradStructuredTest.filled(s, 1), true);
+        GradTensor loss = t.mseLoss(p, q);
+        float32[] pl = [0.53125f];
+        GradStructuredTest.checkFlat(t.valueOf(loss), pl, 0.0001f);
+        t.backward(loss);
+        float32[] pdp = [0.08333334f, 0.0f, -0.08333334f, -0.16666667f, -0.25f, 0.5f];
+        float32[] pdq = [-0.08333334f, 0.0f, 0.08333334f, 0.16666667f, 0.25f, -0.5f];
+        GradStructuredTest.checkFlat(t.gradOf(p), pdp, GradStructuredTest.TOL);
+        GradStructuredTest.checkFlat(t.gradOf(q), pdq, GradStructuredTest.TOL);
+    }
+
+    /** Cosine similarity + the 1−cos loss — SPELA's per-layer objective. */
+    @Test
+    public void pinCosineSimilarityAndLoss() {
+        GradTape<float32> t = heap GradTape<float32>();
+        int64[] s = heap int64[2];
+        s[0] = 3; s[1] = 4;
+        GradTensor a = t.leaf(GradStructuredTest.filled(s, 0), true);
+        GradTensor b = t.leaf(GradStructuredTest.filled(s, 1), true);
+        GradTensor cos = t.cosineSim(a, b);
+        float32[] pc = [0.87287152f, -0.34752405f, -0.6454972f];
+        GradStructuredTest.checkFlat(t.valueOf(cos), pc, GradStructuredTest.TOL);
+        Assert.isTrue(t.valueOf(cos).ndim() == 1);
+        int64[] os = GradStructuredTest.sh1(3);
+        GradTensor one = t.leaf(Tensor.full<float32>(os, 1.0f), false);
+        GradTensor loss = t.mean(t.sub(one, cos));
+        float32[] pl = [1.04004991f];
+        GradStructuredTest.checkFlat(t.valueOf(loss), pl, 0.0001f);
+        t.backward(loss);
+        float32[] pda = [0.04156533f, -0.02078265f, -0.08313062f, -0.14547859f,
+                         -0.20549248f, 0.14505352f, 0.03223411f, 0.06043896f,
+                         0.11475502f, -0.20082138f, 0.34426519f, 0.02868879f];
+        float32[] pdb = [0.02424642f, 0.04849286f, 0.0727393f, 0.09698573f,
+                         -0.09782158f, -0.04118803f, -0.11326709f, 0.13900961f,
+                         0.12909944f, 0.0f, 0.0860663f, -0.04303315f];
+        GradStructuredTest.checkFlat(t.gradOf(a), pda, GradStructuredTest.TOL);
+        GradStructuredTest.checkFlat(t.gradOf(b), pdb, GradStructuredTest.TOL);
+    }
+
+    // ── 3.3.1 composite CNN block vs torch ──────────────────────────────
+
+    @Test
+    public void cnnBlockMatchesTorchEndToEnd() {
+        GradTape<float32> t = heap GradTape<float32>();
+        int64[] cs = GradStructuredTest.sh1(3);
+        GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
+        GradTensor w = t.leaf(GradStructuredTest.wIn(), true);
+        GradTensor b = t.leaf(GradStructuredTest.bIn(), true);
+        GradTensor gam = t.leaf(GradStructuredTest.filled(cs, 3), true);
+        GradTensor bet = t.leaf(GradStructuredTest.filled(cs, 2), true);
+
+        GradTensor h = t.conv2d(x, w, b, 1, 1);
+        h = t.batchNorm2dTrain(h, gam, bet, GradStructuredTest.EPS);
+        h = t.relu(h);
+        GradTensor y = t.maxPool2d(h, 2, 2, 0);
+
+        GradStructuredTest.checkShape4(t.valueOf(y), 2, 3, 2, 2);
+        float32[] po = [0.0f, 0.35203502f, 0.67099392f, 0.09686785f, 0.73798293f,
+                        0.95073479f, 0.631607f, 1.90811801f, 2.03650475f,
+                        1.0756954f, 2.03650475f, 2.03650475f, 0.67099392f,
+                        0.28824323f, 0.35203502f, 0.28824323f, 0.20610334f,
+                        1.90811801f, 0.84435886f, 1.58899033f, 2.03650475f,
+                        1.79630232f, 1.55610001f, 2.51690936f];
+        GradStructuredTest.checkFlat(t.valueOf(y), po, 0.001f);
+
+        GradStructuredTest.wback(t, y);
+        float32[] pdg = [8.65574837f, 9.46745682f, 10.47882557f];
+        float32[] pdb = [6.5f, 8.0f, 9.0f];
+        GradStructuredTest.checkFlat(t.gradOf(gam), pdg, 0.005f);
+        GradStructuredTest.checkFlat(t.gradOf(bet), pdb, 0.005f);
+        // conv bias sees ~0 (batch norm removes the per-channel mean)
+        Tensor<float32> db = t.gradOf(b);
+        Assert.isTrue(GradStructuredTest.near(db.flatGet(0), 0.0f, 0.001f));
+        Assert.isTrue(GradStructuredTest.near(db.flatGet(1), 0.0f, 0.001f));
+        // dx / dw spot checks against the torch pin
+        Tensor<float32> dx = t.gradOf(x);
+        Assert.isTrue(GradStructuredTest.near(dx.flatGet(0), -1.69878113f, 0.005f));
+        Assert.isTrue(GradStructuredTest.near(dx.flatGet(63), -3.14605618f, 0.005f));
+        Tensor<float32> dw = t.gradOf(w);
+        Assert.isTrue(GradStructuredTest.near(dw.flatGet(0), -0.24470413f, 0.005f));
+        Assert.isTrue(GradStructuredTest.near(dw.flatGet(53), -3.09270167f, 0.005f));
+    }
+}

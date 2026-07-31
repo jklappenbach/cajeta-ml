@@ -1,0 +1,10 @@
+cajeta.math.Storage<float32>
+cajeta.math.Tensor<? extends cajeta.lang.Numeric>
+cajeta.math.Tensor<?>
+cajeta.math.Tensor<?>::mean(cajeta.math.Tensor<float32>)<float32,float32>
+cajeta.math.Tensor<?>::mul(cajeta.math.Tensor<float32>,cajeta.math.Tensor<float32>)<float32,float32>
+cajeta.math.Tensor<?>::mul(cajeta.math.Tensor<float32>,cajeta.math.Tensor<float32>)<float32>
+cajeta.math.Tensor<?>::sub(cajeta.math.Tensor<float32>,cajeta.math.Tensor<float32>)<float32,float32>
+cajeta.math.Tensor<?>::sub(cajeta.math.Tensor<float32>,cajeta.math.Tensor<float32>)<float32>
+cajeta.math.Tensor<?>::sum(cajeta.math.Tensor<float32>)<float32,float32>
+cajeta.math.Tensor<float32>

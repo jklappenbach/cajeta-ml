@@ -1,0 +1,1245 @@
+package dev.cajeta.ml.grad;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/**
+ * CPU kernels for the structured ops (spec §3.2, U3) — conv/pool/norm/
+ * embedding/dropout/losses, forward and backward.
+ *
+ * Package-private and reached ONLY through {@link Ops}: the seam performs
+ * the residency check, then calls in here. Nothing outside `ml.grad` may
+ * call these directly (spec §3.3 — the dispatch layer is the only kernel
+ * entry, so the xpu phase can add a GPU column without touching callers).
+ *
+ * Layout convention: 4-D tensors are NCHW and contiguous, so a kernel
+ * indexes with `((n·C + c)·H + h)·W + w` on the flat storage rather than
+ * paying `getAt(int64[])`'s per-element index allocation.
+ *
+ * Reductions (mean/variance) accumulate in `float64` regardless of `E`;
+ * the store narrows. That is at least as accurate as torch's f32
+ * accumulation and lands inside the pinned tolerances.
+ */
+public final class StructKernels {
+
+    static #int64[] shape4(int64 a, int64 b, int64 c, int64 d) {
+        int64[] sh = heap int64[4];
+        sh[0] = a; sh[1] = b; sh[2] = c; sh[3] = d;
+        return #sh;
+    }
+
+    static #int64[] shape1(int64 a) {
+        int64[] sh = heap int64[1];
+        sh[0] = a;
+        return #sh;
+    }
+
+    static void require4d<E extends Floating>(String who, Tensor<E> t) {
+        if (t.ndim() != 4) {
+            throw heap MlException("ml.grad: '" + who + "' expects a 4-D NCHW "
+                + "tensor, got rank " + t.ndim());
+        }
+        return;
+    }
+
+    /** Output extent of a conv/pool axis. */
+    static int64 outExtent(int64 inLen, int32 kernel, int32 stride, int32 pad) {
+        return (inLen + 2 * (int64) pad - (int64) kernel) / (int64) stride + 1;
+    }
+
+    // ── conv2d ──────────────────────────────────────────────────────────
+
+    static #Tensor<E> conv2d<E extends Floating>(Tensor<E> x, Tensor<E> w,
+                                                 Tensor<E> b, int32 stride,
+                                                 int32 pad) {
+        StructKernels.require4d<E>("conv2d(input)", x);
+        StructKernels.require4d<E>("conv2d(weight)", w);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 wd = x.shapeAt(3);
+        int64 oc = w.shapeAt(0);
+        int64 kh = w.shapeAt(2);
+        int64 kw = w.shapeAt(3);
+        if (w.shapeAt(1) != c) {
+            throw heap MlException("ml.grad: conv2d channel mismatch — input "
+                + "has " + c + ", weight expects " + w.shapeAt(1));
+        }
+        int64 oh = StructKernels.outExtent(h, (int32) kh, stride, pad);
+        int64 ow = StructKernels.outExtent(wd, (int32) kw, stride, pad);
+        int64[] osh = StructKernels.shape4(n, oc, oh, ow);
+        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64 bn = 0;
+        while (bn < n) {
+            int64 o = 0;
+            while (o < oc) {
+                int64 y = 0;
+                while (y < oh) {
+                    int64 xx = 0;
+                    while (xx < ow) {
+                        float64 acc = (float64) b.flatGet(o);
+                        int64 ci = 0;
+                        while (ci < c) {
+                            int64 a = 0;
+                            while (a < kh) {
+                                int64 ih = y * (int64) stride - (int64) pad + a;
+                                if (ih >= 0 && ih < h) {
+                                    int64 e = 0;
+                                    while (e < kw) {
+                                        int64 iw = xx * (int64) stride - (int64) pad + e;
+                                        if (iw >= 0 && iw < wd) {
+                                            int64 xi = ((bn * c + ci) * h + ih) * wd + iw;
+                                            int64 wi = ((o * c + ci) * kh + a) * kw + e;
+                                            acc = acc + (float64) x.flatGet(xi)
+                                                      * (float64) w.flatGet(wi);
+                                        }
+                                        e = e + 1;
+                                    }
+                                }
+                                a = a + 1;
+                            }
+                            ci = ci + 1;
+                        }
+                        int64 oi = ((bn * oc + o) * oh + y) * ow + xx;
+                        out.flatSet(oi, (E) acc);
+                        xx = xx + 1;
+                    }
+                    y = y + 1;
+                }
+                o = o + 1;
+            }
+            bn = bn + 1;
+        }
+        return #out;
+    }
+
+    /** dL/dx for conv2d. */
+    static #Tensor<E> conv2dBackIn<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                       Tensor<E> w, int32 stride,
+                                                       int32 pad) {
+        Tensor<E> dx = Tensor.zerosLike<E>(x);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 wd = x.shapeAt(3);
+        int64 oc = w.shapeAt(0);
+        int64 kh = w.shapeAt(2);
+        int64 kw = w.shapeAt(3);
+        int64 oh = g.shapeAt(2);
+        int64 ow = g.shapeAt(3);
+        int64 bn = 0;
+        while (bn < n) {
+            int64 o = 0;
+            while (o < oc) {
+                int64 y = 0;
+                while (y < oh) {
+                    int64 xx = 0;
+                    while (xx < ow) {
+                        int64 gi = ((bn * oc + o) * oh + y) * ow + xx;
+                        float64 gv = (float64) g.flatGet(gi);
+                        int64 ci = 0;
+                        while (ci < c) {
+                            int64 a = 0;
+                            while (a < kh) {
+                                int64 ih = y * (int64) stride - (int64) pad + a;
+                                if (ih >= 0 && ih < h) {
+                                    int64 e = 0;
+                                    while (e < kw) {
+                                        int64 iw = xx * (int64) stride - (int64) pad + e;
+                                        if (iw >= 0 && iw < wd) {
+                                            int64 xi = ((bn * c + ci) * h + ih) * wd + iw;
+                                            int64 wi = ((o * c + ci) * kh + a) * kw + e;
+                                            float64 add = gv * (float64) w.flatGet(wi);
+                                            float64 __c1 = (float64) dx.flatGet(xi) + add;
+                                            dx.flatSet(xi, (E) __c1);
+                                        }
+                                        e = e + 1;
+                                    }
+                                }
+                                a = a + 1;
+                            }
+                            ci = ci + 1;
+                        }
+                        xx = xx + 1;
+                    }
+                    y = y + 1;
+                }
+                o = o + 1;
+            }
+            bn = bn + 1;
+        }
+        return #dx;
+    }
+
+    /** dL/dw for conv2d. */
+    static #Tensor<E> conv2dBackWeight<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                           Tensor<E> w, int32 stride,
+                                                           int32 pad) {
+        Tensor<E> dw = Tensor.zerosLike<E>(w);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 wd = x.shapeAt(3);
+        int64 oc = w.shapeAt(0);
+        int64 kh = w.shapeAt(2);
+        int64 kw = w.shapeAt(3);
+        int64 oh = g.shapeAt(2);
+        int64 ow = g.shapeAt(3);
+        int64 o = 0;
+        while (o < oc) {
+            int64 ci = 0;
+            while (ci < c) {
+                int64 a = 0;
+                while (a < kh) {
+                    int64 e = 0;
+                    while (e < kw) {
+                        float64 acc = 0.0;
+                        int64 bn = 0;
+                        while (bn < n) {
+                            int64 y = 0;
+                            while (y < oh) {
+                                int64 ih = y * (int64) stride - (int64) pad + a;
+                                if (ih >= 0 && ih < h) {
+                                    int64 xx = 0;
+                                    while (xx < ow) {
+                                        int64 iw = xx * (int64) stride - (int64) pad + e;
+                                        if (iw >= 0 && iw < wd) {
+                                            int64 gi = ((bn * oc + o) * oh + y) * ow + xx;
+                                            int64 xi = ((bn * c + ci) * h + ih) * wd + iw;
+                                            acc = acc + (float64) g.flatGet(gi)
+                                                      * (float64) x.flatGet(xi);
+                                        }
+                                        xx = xx + 1;
+                                    }
+                                }
+                                y = y + 1;
+                            }
+                            bn = bn + 1;
+                        }
+                        int64 wi = ((o * c + ci) * kh + a) * kw + e;
+                        dw.flatSet(wi, (E) acc);
+                        e = e + 1;
+                    }
+                    a = a + 1;
+                }
+                ci = ci + 1;
+            }
+            o = o + 1;
+        }
+        return #dw;
+    }
+
+    /** dL/db for conv2d — sum of g over every axis but the channel. */
+    static #Tensor<E> conv2dBackBias<E extends Floating>(Tensor<E> g) {
+        int64 n = g.shapeAt(0);
+        int64 oc = g.shapeAt(1);
+        int64 oh = g.shapeAt(2);
+        int64 ow = g.shapeAt(3);
+        int64[] bsh = StructKernels.shape1(oc);
+        Tensor<E> db = Tensor.zeros<E>(bsh);
+        int64 o = 0;
+        while (o < oc) {
+            float64 acc = 0.0;
+            int64 bn = 0;
+            while (bn < n) {
+                int64 p = 0;
+                while (p < oh * ow) {
+                    acc = acc + (float64) g.flatGet(((bn * oc + o) * oh) * ow + p);
+                    p = p + 1;
+                }
+                bn = bn + 1;
+            }
+            db.flatSet(o, (E) acc);
+            o = o + 1;
+        }
+        return #db;
+    }
+
+    // ── pooling ─────────────────────────────────────────────────────────
+
+    /** maxPool2d forward. `argmax` (same shape as the output) receives the
+     *  FLAT input index each output cell selected — the backward's routing
+     *  table, saved on the tape rather than recomputed. */
+    static #Tensor<E> maxPool2d<E extends Floating>(Tensor<E> x, int32 k,
+                                                    int32 stride, int32 pad,
+                                                    Tensor<E> argmax) {
+        StructKernels.require4d<E>("maxPool2d", x);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 wd = x.shapeAt(3);
+        int64 oh = StructKernels.outExtent(h, k, stride, pad);
+        int64 ow = StructKernels.outExtent(wd, k, stride, pad);
+        int64[] osh = StructKernels.shape4(n, c, oh, ow);
+        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64 bn = 0;
+        while (bn < n) {
+            int64 ci = 0;
+            while (ci < c) {
+                int64 y = 0;
+                while (y < oh) {
+                    int64 xx = 0;
+                    while (xx < ow) {
+                        boolean seen = false;
+                        float64 best = 0.0;
+                        int64 bestIdx = -1;
+                        int64 a = 0;
+                        while (a < k) {
+                            int64 ih = y * (int64) stride - (int64) pad + a;
+                            if (ih >= 0 && ih < h) {
+                                int64 e = 0;
+                                while (e < k) {
+                                    int64 iw = xx * (int64) stride - (int64) pad + e;
+                                    if (iw >= 0 && iw < wd) {
+                                        int64 xi = ((bn * c + ci) * h + ih) * wd + iw;
+                                        float64 v = (float64) x.flatGet(xi);
+                                        if (!seen || v > best) {
+                                            best = v;
+                                            bestIdx = xi;
+                                            seen = true;
+                                        }
+                                    }
+                                    e = e + 1;
+                                }
+                            }
+                            a = a + 1;
+                        }
+                        int64 oi = ((bn * c + ci) * oh + y) * ow + xx;
+                        out.flatSet(oi, (E) best);
+                        float64 bestPos = (float64) bestIdx;
+                        argmax.flatSet(oi, (E) bestPos);
+                        xx = xx + 1;
+                    }
+                    y = y + 1;
+                }
+                ci = ci + 1;
+            }
+            bn = bn + 1;
+        }
+        return #out;
+    }
+
+    /** maxPool2d backward: route each cotangent to its saved argmax. */
+    static #Tensor<E> maxPool2dBack<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                        Tensor<E> argmax) {
+        Tensor<E> dx = Tensor.zerosLike<E>(x);
+        int64 n = 1;
+        int32 d = 0;
+        while (d < g.ndim()) {
+            n = n * g.shapeAt(d);
+            d = d + 1;
+        }
+        int64 i = 0;
+        while (i < n) {
+            int64 xi = (int64) (float64) argmax.flatGet(i);
+            if (xi >= 0) {
+                float64 acc = (float64) dx.flatGet(xi) + (float64) g.flatGet(i);
+                dx.flatSet(xi, (E) acc);
+            }
+            i = i + 1;
+        }
+        return #dx;
+    }
+
+    static #Tensor<E> avgPool2d<E extends Floating>(Tensor<E> x, int32 k,
+                                                    int32 stride, int32 pad) {
+        StructKernels.require4d<E>("avgPool2d", x);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 wd = x.shapeAt(3);
+        int64 oh = StructKernels.outExtent(h, k, stride, pad);
+        int64 ow = StructKernels.outExtent(wd, k, stride, pad);
+        int64[] osh = StructKernels.shape4(n, c, oh, ow);
+        Tensor<E> out = Tensor.zeros<E>(osh);
+        float64 area = (float64) (k * k);
+        int64 bn = 0;
+        while (bn < n) {
+            int64 ci = 0;
+            while (ci < c) {
+                int64 y = 0;
+                while (y < oh) {
+                    int64 xx = 0;
+                    while (xx < ow) {
+                        float64 acc = 0.0;
+                        int64 a = 0;
+                        while (a < k) {
+                            int64 ih = y * (int64) stride - (int64) pad + a;
+                            if (ih >= 0 && ih < h) {
+                                int64 e = 0;
+                                while (e < k) {
+                                    int64 iw = xx * (int64) stride - (int64) pad + e;
+                                    if (iw >= 0 && iw < wd) {
+                                        acc = acc + (float64) x.flatGet(
+                                            ((bn * c + ci) * h + ih) * wd + iw);
+                                    }
+                                    e = e + 1;
+                                }
+                            }
+                            a = a + 1;
+                        }
+                        int64 oi = ((bn * c + ci) * oh + y) * ow + xx;
+                        float64 __c3 = acc / area;
+                        out.flatSet(oi, (E) __c3);
+                        xx = xx + 1;
+                    }
+                    y = y + 1;
+                }
+                ci = ci + 1;
+            }
+            bn = bn + 1;
+        }
+        return #out;
+    }
+
+    static #Tensor<E> avgPool2dBack<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                        int32 k, int32 stride,
+                                                        int32 pad) {
+        Tensor<E> dx = Tensor.zerosLike<E>(x);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 wd = x.shapeAt(3);
+        int64 oh = g.shapeAt(2);
+        int64 ow = g.shapeAt(3);
+        float64 area = (float64) (k * k);
+        int64 bn = 0;
+        while (bn < n) {
+            int64 ci = 0;
+            while (ci < c) {
+                int64 y = 0;
+                while (y < oh) {
+                    int64 xx = 0;
+                    while (xx < ow) {
+                        int64 gi = ((bn * c + ci) * oh + y) * ow + xx;
+                        float64 share = (float64) g.flatGet(gi) / area;
+                        int64 a = 0;
+                        while (a < k) {
+                            int64 ih = y * (int64) stride - (int64) pad + a;
+                            if (ih >= 0 && ih < h) {
+                                int64 e = 0;
+                                while (e < k) {
+                                    int64 iw = xx * (int64) stride - (int64) pad + e;
+                                    if (iw >= 0 && iw < wd) {
+                                        int64 xi = ((bn * c + ci) * h + ih) * wd + iw;
+                                        float64 __c4 = (float64) dx.flatGet(xi) + share;
+                                        dx.flatSet(xi, (E) __c4);
+                                    }
+                                    e = e + 1;
+                                }
+                            }
+                            a = a + 1;
+                        }
+                        xx = xx + 1;
+                    }
+                    y = y + 1;
+                }
+                ci = ci + 1;
+            }
+            bn = bn + 1;
+        }
+        return #dx;
+    }
+
+    /** torch's adaptive window bounds: start = ⌊i·L/out⌋, end = ⌈(i+1)·L/out⌉. */
+    static int64 adaptStart(int64 i, int64 outLen, int64 inLen) {
+        return i * inLen / outLen;
+    }
+
+    static int64 adaptEnd(int64 i, int64 outLen, int64 inLen) {
+        return ((i + 1) * inLen + outLen - 1) / outLen;
+    }
+
+    static #Tensor<E> adaptiveAvgPool2d<E extends Floating>(Tensor<E> x,
+                                                            int32 outH, int32 outW) {
+        StructKernels.require4d<E>("adaptiveAvgPool2d", x);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 wd = x.shapeAt(3);
+        int64 oh = (int64) outH;
+        int64 ow = (int64) outW;
+        int64[] osh = StructKernels.shape4(n, c, oh, ow);
+        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64 bn = 0;
+        while (bn < n) {
+            int64 ci = 0;
+            while (ci < c) {
+                int64 y = 0;
+                while (y < oh) {
+                    int64 h0 = StructKernels.adaptStart(y, oh, h);
+                    int64 h1 = StructKernels.adaptEnd(y, oh, h);
+                    int64 xx = 0;
+                    while (xx < ow) {
+                        int64 w0 = StructKernels.adaptStart(xx, ow, wd);
+                        int64 w1 = StructKernels.adaptEnd(xx, ow, wd);
+                        float64 acc = 0.0;
+                        int64 ih = h0;
+                        while (ih < h1) {
+                            int64 iw = w0;
+                            while (iw < w1) {
+                                acc = acc + (float64) x.flatGet(
+                                    ((bn * c + ci) * h + ih) * wd + iw);
+                                iw = iw + 1;
+                            }
+                            ih = ih + 1;
+                        }
+                        float64 area = (float64) ((h1 - h0) * (w1 - w0));
+                        int64 oi = ((bn * c + ci) * oh + y) * ow + xx;
+                        float64 __c5 = acc / area;
+                        out.flatSet(oi, (E) __c5);
+                        xx = xx + 1;
+                    }
+                    y = y + 1;
+                }
+                ci = ci + 1;
+            }
+            bn = bn + 1;
+        }
+        return #out;
+    }
+
+    static #Tensor<E> adaptiveAvgPool2dBack<E extends Floating>(Tensor<E> g,
+                                                                Tensor<E> x) {
+        Tensor<E> dx = Tensor.zerosLike<E>(x);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 wd = x.shapeAt(3);
+        int64 oh = g.shapeAt(2);
+        int64 ow = g.shapeAt(3);
+        int64 bn = 0;
+        while (bn < n) {
+            int64 ci = 0;
+            while (ci < c) {
+                int64 y = 0;
+                while (y < oh) {
+                    int64 h0 = StructKernels.adaptStart(y, oh, h);
+                    int64 h1 = StructKernels.adaptEnd(y, oh, h);
+                    int64 xx = 0;
+                    while (xx < ow) {
+                        int64 w0 = StructKernels.adaptStart(xx, ow, wd);
+                        int64 w1 = StructKernels.adaptEnd(xx, ow, wd);
+                        float64 area = (float64) ((h1 - h0) * (w1 - w0));
+                        int64 gi = ((bn * c + ci) * oh + y) * ow + xx;
+                        float64 share = (float64) g.flatGet(gi) / area;
+                        int64 ih = h0;
+                        while (ih < h1) {
+                            int64 iw = w0;
+                            while (iw < w1) {
+                                int64 xi = ((bn * c + ci) * h + ih) * wd + iw;
+                                float64 __c6 = (float64) dx.flatGet(xi) + share;
+                                dx.flatSet(xi, (E) __c6);
+                                iw = iw + 1;
+                            }
+                            ih = ih + 1;
+                        }
+                        xx = xx + 1;
+                    }
+                    y = y + 1;
+                }
+                ci = ci + 1;
+            }
+            bn = bn + 1;
+        }
+        return #dx;
+    }
+
+    // ── batchNorm2d ─────────────────────────────────────────────────────
+
+    /** Per-channel batch mean over (N,H,W) — the training statistic. */
+    static #Tensor<E> channelMean<E extends Floating>(Tensor<E> x) {
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 hw = x.shapeAt(2) * x.shapeAt(3);
+        int64[] sh = StructKernels.shape1(c);
+        Tensor<E> mean = Tensor.zeros<E>(sh);
+        float64 m = (float64) (n * hw);
+        int64 ci = 0;
+        while (ci < c) {
+            float64 acc = 0.0;
+            int64 bn = 0;
+            while (bn < n) {
+                int64 p = 0;
+                while (p < hw) {
+                    acc = acc + (float64) x.flatGet((bn * c + ci) * hw + p);
+                    p = p + 1;
+                }
+                bn = bn + 1;
+            }
+            float64 __c7 = acc / m;
+            mean.flatSet(ci, (E) __c7);
+            ci = ci + 1;
+        }
+        return #mean;
+    }
+
+    /** Per-channel BIASED variance (torch's normalize statistic). */
+    static #Tensor<E> channelVar<E extends Floating>(Tensor<E> x, Tensor<E> mean) {
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 hw = x.shapeAt(2) * x.shapeAt(3);
+        int64[] sh = StructKernels.shape1(c);
+        Tensor<E> var = Tensor.zeros<E>(sh);
+        float64 m = (float64) (n * hw);
+        int64 ci = 0;
+        while (ci < c) {
+            float64 mu = (float64) mean.flatGet(ci);
+            float64 acc = 0.0;
+            int64 bn = 0;
+            while (bn < n) {
+                int64 p = 0;
+                while (p < hw) {
+                    float64 d = (float64) x.flatGet((bn * c + ci) * hw + p) - mu;
+                    acc = acc + d * d;
+                    p = p + 1;
+                }
+                bn = bn + 1;
+            }
+            float64 __c8 = acc / m;
+            var.flatSet(ci, (E) __c8);
+            ci = ci + 1;
+        }
+        return #var;
+    }
+
+    /** Normalize with the given per-channel stats, then scale + shift.
+     *  `xhat` (same shape as x) receives the normalized activations and
+     *  `invstd` (per channel) the 1/√(var+eps) — the backward's saved state. */
+    static #Tensor<E> batchNorm2d<E extends Floating>(Tensor<E> x, Tensor<E> gamma,
+                                                      Tensor<E> beta, Tensor<E> mean,
+                                                      Tensor<E> var, float64 eps,
+                                                      Tensor<E> xhat, Tensor<E> invstd) {
+        StructKernels.require4d<E>("batchNorm2d", x);
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 hw = x.shapeAt(2) * x.shapeAt(3);
+        Tensor<E> out = Tensor.zerosLike<E>(x);
+        int64 ci = 0;
+        while (ci < c) {
+            float64 mu = (float64) mean.flatGet(ci);
+            float64 iv = 1.0 / Math.sqrt((float64) var.flatGet(ci) + eps);
+            invstd.flatSet(ci, (E) iv);
+            float64 gv = (float64) gamma.flatGet(ci);
+            float64 bv = (float64) beta.flatGet(ci);
+            int64 bn = 0;
+            while (bn < n) {
+                int64 p = 0;
+                while (p < hw) {
+                    int64 i = (bn * c + ci) * hw + p;
+                    float64 xh = ((float64) x.flatGet(i) - mu) * iv;
+                    xhat.flatSet(i, (E) xh);
+                    float64 __c9 = gv * xh + bv;
+                    out.flatSet(i, (E) __c9);
+                    p = p + 1;
+                }
+                bn = bn + 1;
+            }
+            ci = ci + 1;
+        }
+        return #out;
+    }
+
+    /** dL/dgamma = Σ g·x̂ (per channel). */
+    static #Tensor<E> normBackScale<E extends Floating>(Tensor<E> g, Tensor<E> xhat) {
+        int64 n = g.shapeAt(0);
+        int64 c = g.shapeAt(1);
+        int64 hw = g.shapeAt(2) * g.shapeAt(3);
+        int64[] sh = StructKernels.shape1(c);
+        Tensor<E> dg = Tensor.zeros<E>(sh);
+        int64 ci = 0;
+        while (ci < c) {
+            float64 acc = 0.0;
+            int64 bn = 0;
+            while (bn < n) {
+                int64 p = 0;
+                while (p < hw) {
+                    int64 i = (bn * c + ci) * hw + p;
+                    acc = acc + (float64) g.flatGet(i) * (float64) xhat.flatGet(i);
+                    p = p + 1;
+                }
+                bn = bn + 1;
+            }
+            dg.flatSet(ci, (E) acc);
+            ci = ci + 1;
+        }
+        return #dg;
+    }
+
+    /** dL/dbeta = Σ g (per channel). */
+    static #Tensor<E> normBackShift<E extends Floating>(Tensor<E> g) {
+        int64 n = g.shapeAt(0);
+        int64 c = g.shapeAt(1);
+        int64 hw = g.shapeAt(2) * g.shapeAt(3);
+        int64[] sh = StructKernels.shape1(c);
+        Tensor<E> db = Tensor.zeros<E>(sh);
+        int64 ci = 0;
+        while (ci < c) {
+            float64 acc = 0.0;
+            int64 bn = 0;
+            while (bn < n) {
+                int64 p = 0;
+                while (p < hw) {
+                    acc = acc + (float64) g.flatGet((bn * c + ci) * hw + p);
+                    p = p + 1;
+                }
+                bn = bn + 1;
+            }
+            db.flatSet(ci, (E) acc);
+            ci = ci + 1;
+        }
+        return #db;
+    }
+
+    /** dL/dx for batchNorm2d.
+     *  Training: dx = invstd/M · (M·dx̂ − Σdx̂ − x̂·Σ(dx̂·x̂)) — the batch
+     *  statistics depend on x, so every element's gradient sees the whole
+     *  channel. Eval: the statistics are constants, so dx = g·γ·invstd. */
+    static #Tensor<E> batchNorm2dBackIn<E extends Floating>(Tensor<E> g, Tensor<E> xhat,
+                                                            Tensor<E> gamma,
+                                                            Tensor<E> invstd,
+                                                            boolean training) {
+        Tensor<E> dx = Tensor.zerosLike<E>(g);
+        int64 n = g.shapeAt(0);
+        int64 c = g.shapeAt(1);
+        int64 hw = g.shapeAt(2) * g.shapeAt(3);
+        float64 m = (float64) (n * hw);
+        int64 ci = 0;
+        while (ci < c) {
+            float64 gv = (float64) gamma.flatGet(ci);
+            float64 iv = (float64) invstd.flatGet(ci);
+            if (!training) {
+                int64 bn = 0;
+                while (bn < n) {
+                    int64 p = 0;
+                    while (p < hw) {
+                        int64 i = (bn * c + ci) * hw + p;
+                        float64 __c10 = (float64) g.flatGet(i) * gv * iv;
+                        dx.flatSet(i, (E) __c10);
+                        p = p + 1;
+                    }
+                    bn = bn + 1;
+                }
+            } else {
+                float64 sumDx = 0.0;
+                float64 sumDxXh = 0.0;
+                int64 bn = 0;
+                while (bn < n) {
+                    int64 p = 0;
+                    while (p < hw) {
+                        int64 i = (bn * c + ci) * hw + p;
+                        float64 dxh = (float64) g.flatGet(i) * gv;
+                        sumDx = sumDx + dxh;
+                        sumDxXh = sumDxXh + dxh * (float64) xhat.flatGet(i);
+                        p = p + 1;
+                    }
+                    bn = bn + 1;
+                }
+                bn = 0;
+                while (bn < n) {
+                    int64 p = 0;
+                    while (p < hw) {
+                        int64 i = (bn * c + ci) * hw + p;
+                        float64 dxh = (float64) g.flatGet(i) * gv;
+                        float64 v = iv / m * (m * dxh - sumDx
+                                    - (float64) xhat.flatGet(i) * sumDxXh);
+                        dx.flatSet(i, (E) v);
+                        p = p + 1;
+                    }
+                    bn = bn + 1;
+                }
+            }
+            ci = ci + 1;
+        }
+        return #dx;
+    }
+
+    /** In-place running-stat update (torch's `batch_norm` train path):
+     *  running = (1−momentum)·running + momentum·batch, where the variance
+     *  contribution is the UNBIASED batch variance even though the biased
+     *  one normalizes. Module state, not a tape node — the module layer
+     *  calls this alongside the training forward. */
+    static void updateRunningStats<E extends Floating>(Tensor<E> runningMean,
+                                                       Tensor<E> runningVar,
+                                                       Tensor<E> batchMean,
+                                                       Tensor<E> batchVar,
+                                                       int64 count, float64 momentum) {
+        int64 c = runningMean.shapeAt(0);
+        float64 unbiased = 1.0;
+        if (count > 1) {
+            unbiased = (float64) count / (float64) (count - 1);
+        }
+        int64 ci = 0;
+        while (ci < c) {
+            float64 rm = (1.0 - momentum) * (float64) runningMean.flatGet(ci)
+                       + momentum * (float64) batchMean.flatGet(ci);
+            float64 rv = (1.0 - momentum) * (float64) runningVar.flatGet(ci)
+                       + momentum * (float64) batchVar.flatGet(ci) * unbiased;
+            runningMean.flatSet(ci, (E) rm);
+            runningVar.flatSet(ci, (E) rv);
+            ci = ci + 1;
+        }
+        return;
+    }
+
+    // ── layerNorm (over the LAST axis) ──────────────────────────────────
+
+    static #Tensor<E> layerNorm<E extends Floating>(Tensor<E> x, Tensor<E> gamma,
+                                                    Tensor<E> beta, float64 eps,
+                                                    Tensor<E> xhat, Tensor<E> invstd) {
+        int64 d = x.shapeAt(x.ndim() - 1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < x.ndim() - 1) {
+            rows = rows * x.shapeAt(k);
+            k = k + 1;
+        }
+        Tensor<E> out = Tensor.zerosLike<E>(x);
+        int64 r = 0;
+        while (r < rows) {
+            float64 acc = 0.0;
+            int64 j = 0;
+            while (j < d) {
+                acc = acc + (float64) x.flatGet(r * d + j);
+                j = j + 1;
+            }
+            float64 mu = acc / (float64) d;
+            float64 vacc = 0.0;
+            j = 0;
+            while (j < d) {
+                float64 diff = (float64) x.flatGet(r * d + j) - mu;
+                vacc = vacc + diff * diff;
+                j = j + 1;
+            }
+            float64 iv = 1.0 / Math.sqrt(vacc / (float64) d + eps);
+            invstd.flatSet(r, (E) iv);
+            j = 0;
+            while (j < d) {
+                float64 xh = ((float64) x.flatGet(r * d + j) - mu) * iv;
+                xhat.flatSet(r * d + j, (E) xh);
+                float64 ov = (float64) gamma.flatGet(j) * xh
+                           + (float64) beta.flatGet(j);
+                out.flatSet(r * d + j, (E) ov);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    /** dL/dx for layerNorm — the per-ROW analogue of the batchNorm rule. */
+    static #Tensor<E> layerNormBackIn<E extends Floating>(Tensor<E> g, Tensor<E> xhat,
+                                                          Tensor<E> gamma,
+                                                          Tensor<E> invstd) {
+        Tensor<E> dx = Tensor.zerosLike<E>(g);
+        int64 d = g.shapeAt(g.ndim() - 1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < g.ndim() - 1) {
+            rows = rows * g.shapeAt(k);
+            k = k + 1;
+        }
+        int64 r = 0;
+        while (r < rows) {
+            float64 iv = (float64) invstd.flatGet(r);
+            float64 sumDx = 0.0;
+            float64 sumDxXh = 0.0;
+            int64 j = 0;
+            while (j < d) {
+                float64 dxh = (float64) g.flatGet(r * d + j)
+                            * (float64) gamma.flatGet(j);
+                sumDx = sumDx + dxh;
+                sumDxXh = sumDxXh + dxh * (float64) xhat.flatGet(r * d + j);
+                j = j + 1;
+            }
+            j = 0;
+            while (j < d) {
+                float64 dxh = (float64) g.flatGet(r * d + j)
+                            * (float64) gamma.flatGet(j);
+                float64 v = iv / (float64) d * ((float64) d * dxh - sumDx
+                            - (float64) xhat.flatGet(r * d + j) * sumDxXh);
+                dx.flatSet(r * d + j, (E) v);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #dx;
+    }
+
+    /** dL/dgamma for layerNorm: Σ over rows of g·x̂ (per last-axis position). */
+    static #Tensor<E> layerNormBackScale<E extends Floating>(Tensor<E> g,
+                                                             Tensor<E> xhat) {
+        int64 d = g.shapeAt(g.ndim() - 1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < g.ndim() - 1) {
+            rows = rows * g.shapeAt(k);
+            k = k + 1;
+        }
+        int64[] sh = StructKernels.shape1(d);
+        Tensor<E> dg = Tensor.zeros<E>(sh);
+        int64 j = 0;
+        while (j < d) {
+            float64 acc = 0.0;
+            int64 r = 0;
+            while (r < rows) {
+                acc = acc + (float64) g.flatGet(r * d + j)
+                          * (float64) xhat.flatGet(r * d + j);
+                r = r + 1;
+            }
+            dg.flatSet(j, (E) acc);
+            j = j + 1;
+        }
+        return #dg;
+    }
+
+    /** dL/dbeta for layerNorm: Σ over rows of g. */
+    static #Tensor<E> layerNormBackShift<E extends Floating>(Tensor<E> g) {
+        int64 d = g.shapeAt(g.ndim() - 1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < g.ndim() - 1) {
+            rows = rows * g.shapeAt(k);
+            k = k + 1;
+        }
+        int64[] sh = StructKernels.shape1(d);
+        Tensor<E> db = Tensor.zeros<E>(sh);
+        int64 j = 0;
+        while (j < d) {
+            float64 acc = 0.0;
+            int64 r = 0;
+            while (r < rows) {
+                acc = acc + (float64) g.flatGet(r * d + j);
+                r = r + 1;
+            }
+            db.flatSet(j, (E) acc);
+            j = j + 1;
+        }
+        return #db;
+    }
+
+    // ── embedding ───────────────────────────────────────────────────────
+
+    /** Row gather: out[i,:] = w[idx[i],:]. Indices ride a float tensor —
+     *  every id below 2²⁴ is exact in f32, and it keeps the tape's saved
+     *  state one uniform type. */
+    static #Tensor<E> embedding<E extends Floating>(Tensor<E> w, Tensor<E> idx) {
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < idx.ndim()) {
+            rows = rows * idx.shapeAt(k);
+            k = k + 1;
+        }
+        int64 vocab = w.shapeAt(0);
+        int64 dim = w.shapeAt(1);
+        int64[] osh = heap int64[2];
+        osh[0] = rows;
+        osh[1] = dim;
+        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64 i = 0;
+        while (i < rows) {
+            int64 row = (int64) (float64) idx.flatGet(i);
+            if (row < 0 || row >= vocab) {
+                throw heap MlException("ml.grad: embedding index " + row
+                    + " is outside the table (vocab " + vocab + ")");
+            }
+            int64 j = 0;
+            while (j < dim) {
+                out.flatSet(i * dim + j, w.flatGet(row * dim + j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Scatter-add back into the table — repeated ids ACCUMULATE. */
+    static #Tensor<E> embeddingBack<E extends Floating>(Tensor<E> g, Tensor<E> w,
+                                                        Tensor<E> idx) {
+        Tensor<E> dw = Tensor.zerosLike<E>(w);
+        int64 dim = w.shapeAt(1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < idx.ndim()) {
+            rows = rows * idx.shapeAt(k);
+            k = k + 1;
+        }
+        int64 i = 0;
+        while (i < rows) {
+            int64 row = (int64) (float64) idx.flatGet(i);
+            int64 j = 0;
+            while (j < dim) {
+                float64 acc = (float64) dw.flatGet(row * dim + j)
+                            + (float64) g.flatGet(i * dim + j);
+                dw.flatSet(row * dim + j, (E) acc);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #dw;
+    }
+
+    // ── dropout ─────────────────────────────────────────────────────────
+
+    /** Inverted dropout with a SEEDED mask, drawn from the same explicit
+     *  {@link Generator} (Philox) the `ml.nn` layers use — so the grad
+     *  layer and the module layer produce identical masks for a seed, and
+     *  a training run is reproducible. `mask` receives 1/(1−p) for
+     *  survivors and 0 for dropped units; eval mode leaves the input alone.
+     *
+     *  Not torch-pinned by construction: torch's RNG stream is a different
+     *  generator, so the masks cannot agree elementwise. The tests pin the
+     *  SEMANTICS instead — eval identity, survivor scaling, mask/backward
+     *  agreement, per-seed determinism, and the keep rate. */
+    static #Tensor<E> dropout<E extends Floating>(Tensor<E> x, float64 p,
+                                                  boolean training, uint64 seed,
+                                                  Tensor<E> mask) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < x.ndim()) {
+            n = n * x.shapeAt(d);
+            d = d + 1;
+        }
+        Tensor<E> out = Tensor.zerosLike<E>(x);
+        if (!training || p <= 0.0) {
+            int64 i = 0;
+            while (i < n) {
+                mask.flatSet(i, (E) 1);
+                out.flatSet(i, x.flatGet(i));
+                i = i + 1;
+            }
+            return #out;
+        }
+        if (p >= 1.0) {
+            throw heap MlException("ml.grad: dropout p must be < 1 (got " + p + ")");
+        }
+        float64 scale = 1.0 / (1.0 - p);
+        Generator gen = heap Generator(seed);
+        Tensor<float32> u = gen.uniform(n);
+        int64 i = 0;
+        while (i < n) {
+            if ((float64) u.get1(i) < p) {
+                mask.flatSet(i, (E) 0);
+                out.flatSet(i, (E) 0);
+            } else {
+                mask.flatSet(i, (E) scale);
+                float64 __c11 = (float64) x.flatGet(i) * scale;
+                out.flatSet(i, (E) __c11);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // ── mse ─────────────────────────────────────────────────────────────
+
+    /** Mean squared error, mean reduction → a (1,) tensor. Fused rather
+     *  than composed (sub → pow → mean) so the module layer pays one pass. */
+    static #Tensor<E> mseLoss<E extends Floating>(Tensor<E> pred, Tensor<E> target) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < pred.ndim()) {
+            n = n * pred.shapeAt(d);
+            d = d + 1;
+        }
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 diff = (float64) pred.flatGet(i) - (float64) target.flatGet(i);
+            acc = acc + diff * diff;
+            i = i + 1;
+        }
+        int64[] sh = StructKernels.shape1(1);
+        float64 __c12 = acc / (float64) n;
+        return Tensor.full<E>(sh, (E) __c12);
+    }
+
+    /** dL/dpred = 2(pred − target)/N · g; dL/dtarget is its negation. */
+    static #Tensor<E> mseLossBack<E extends Floating>(Tensor<E> g, Tensor<E> pred,
+                                                      Tensor<E> target,
+                                                      boolean wantPred) {
+        Tensor<E> out = Tensor.zerosLike<E>(pred);
+        int64 n = 1;
+        int32 d = 0;
+        while (d < pred.ndim()) {
+            n = n * pred.shapeAt(d);
+            d = d + 1;
+        }
+        float64 gv = 2.0 * (float64) g.flatGet(0) / (float64) n;
+        if (!wantPred) { gv = 0.0 - gv; }
+        int64 i = 0;
+        while (i < n) {
+            float64 diff = (float64) pred.flatGet(i) - (float64) target.flatGet(i);
+            float64 __c13 = diff * gv;
+            out.flatSet(i, (E) __c13);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // ── losses ──────────────────────────────────────────────────────────
+
+    /** Softmax cross-entropy, mean reduction. `probs` receives the softmax
+     *  (the backward's saved state); `targets` holds class ids. Returns a
+     *  (1,) tensor — the tape's scalar carrier. */
+    static #Tensor<E> crossEntropy<E extends Floating>(Tensor<E> logits,
+                                                       Tensor<E> targets,
+                                                       Tensor<E> probs) {
+        int64 cls = logits.shapeAt(logits.ndim() - 1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < logits.ndim() - 1) {
+            rows = rows * logits.shapeAt(k);
+            k = k + 1;
+        }
+        float64 total = 0.0;
+        int64 r = 0;
+        while (r < rows) {
+            float64 mx = (float64) logits.flatGet(r * cls);
+            int64 j = 1;
+            while (j < cls) {
+                float64 v = (float64) logits.flatGet(r * cls + j);
+                if (v > mx) { mx = v; }
+                j = j + 1;
+            }
+            float64 sum = 0.0;
+            j = 0;
+            while (j < cls) {
+                float64 e = Math.exp((float64) logits.flatGet(r * cls + j) - mx);
+                probs.flatSet(r * cls + j, (E) e);
+                sum = sum + e;
+                j = j + 1;
+            }
+            j = 0;
+            while (j < cls) {
+                float64 pv = (float64) probs.flatGet(r * cls + j) / sum;
+                probs.flatSet(r * cls + j, (E) pv);
+                j = j + 1;
+            }
+            int64 t = (int64) (float64) targets.flatGet(r);
+            if (t < 0 || t >= cls) {
+                throw heap MlException("ml.grad: crossEntropy target " + t
+                    + " is outside [0, " + cls + ")");
+            }
+            total = total - Math.log((float64) probs.flatGet(r * cls + t));
+            r = r + 1;
+        }
+        int64[] sh = StructKernels.shape1(1);
+        float64 __c14 = total / (float64) rows;
+        return Tensor.full<E>(sh, (E) __c14);
+    }
+
+    /** dL/dlogits = (softmax − onehot)/N, scaled by the incoming cotangent. */
+    static #Tensor<E> crossEntropyBack<E extends Floating>(Tensor<E> g,
+                                                           Tensor<E> probs,
+                                                           Tensor<E> targets) {
+        Tensor<E> dx = Tensor.zerosLike<E>(probs);
+        int64 cls = probs.shapeAt(probs.ndim() - 1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < probs.ndim() - 1) {
+            rows = rows * probs.shapeAt(k);
+            k = k + 1;
+        }
+        float64 gv = (float64) g.flatGet(0) / (float64) rows;
+        int64 r = 0;
+        while (r < rows) {
+            int64 t = (int64) (float64) targets.flatGet(r);
+            int64 j = 0;
+            while (j < cls) {
+                float64 v = (float64) probs.flatGet(r * cls + j);
+                if (j == t) { v = v - 1.0; }
+                float64 __c15 = v * gv;
+                dx.flatSet(r * cls + j, (E) __c15);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #dx;
+    }
+
+    /** Row-wise cosine similarity over the last axis. `cache` receives
+     *  [‖a‖, ‖b‖, cos] per row — the backward's saved state. */
+    static #Tensor<E> cosineSim<E extends Floating>(Tensor<E> a, Tensor<E> b,
+                                                    float64 eps, Tensor<E> cache) {
+        int64 d = a.shapeAt(a.ndim() - 1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < a.ndim() - 1) {
+            rows = rows * a.shapeAt(k);
+            k = k + 1;
+        }
+        int64[] osh = StructKernels.shape1(rows);
+        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64 r = 0;
+        while (r < rows) {
+            float64 dot = 0.0;
+            float64 na = 0.0;
+            float64 nb = 0.0;
+            int64 j = 0;
+            while (j < d) {
+                float64 av = (float64) a.flatGet(r * d + j);
+                float64 bv = (float64) b.flatGet(r * d + j);
+                dot = dot + av * bv;
+                na = na + av * av;
+                nb = nb + bv * bv;
+                j = j + 1;
+            }
+            na = Math.sqrt(na);
+            nb = Math.sqrt(nb);
+            float64 den = na * nb;
+            if (den < eps) { den = eps; }
+            float64 cos = dot / den;
+            cache.flatSet(r * 3, (E) na);
+            cache.flatSet(r * 3 + 1, (E) nb);
+            cache.flatSet(r * 3 + 2, (E) cos);
+            out.flatSet(r, (E) cos);
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    /** ∂cos/∂a = b/(‖a‖‖b‖) − cos·a/‖a‖². `wantA` selects which input. */
+    static #Tensor<E> cosineSimBack<E extends Floating>(Tensor<E> g, Tensor<E> a,
+                                                        Tensor<E> b, Tensor<E> cache,
+                                                        float64 eps, boolean wantA) {
+        Tensor<E> src = a;
+        Tensor<E> other = b;
+        if (!wantA) {
+            src = b;
+            other = a;
+        }
+        Tensor<E> dsrc = Tensor.zerosLike<E>(src);
+        int64 d = a.shapeAt(a.ndim() - 1);
+        int64 rows = 1;
+        int32 k = 0;
+        while (k < a.ndim() - 1) {
+            rows = rows * a.shapeAt(k);
+            k = k + 1;
+        }
+        int64 r = 0;
+        while (r < rows) {
+            float64 na = (float64) cache.flatGet(r * 3);
+            float64 nb = (float64) cache.flatGet(r * 3 + 1);
+            float64 cos = (float64) cache.flatGet(r * 3 + 2);
+            float64 ns = na;
+            if (!wantA) { ns = nb; }
+            float64 den = na * nb;
+            if (den < eps) { den = eps; }
+            float64 ns2 = ns * ns;
+            if (ns2 < eps) { ns2 = eps; }
+            float64 gv = (float64) g.flatGet(r);
+            int64 j = 0;
+            while (j < d) {
+                float64 ov = (float64) other.flatGet(r * d + j);
+                float64 sv = (float64) src.flatGet(r * d + j);
+                float64 __c16 = gv * (ov / den - cos * sv / ns2);
+                dsrc.flatSet(r * d + j, (E) __c16);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #dsrc;
+    }
+}

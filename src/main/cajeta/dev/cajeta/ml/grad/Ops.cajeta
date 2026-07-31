@@ -87,6 +87,221 @@ public final class Ops {
         throw heap MlException("ml.grad: unknown binary op " + op);
     }
 
+    // ── Structured-op dispatch (U3) ────────────────────────────────────
+    //
+    // The structured ops carry too much configuration for run1/run2's
+    // (axis, scalar) payload, so each gets its own seam entry. Both
+    // DIRECTIONS route through here — a GPU column has to replace the
+    // backward kernels too, and a backward that reached StructKernels
+    // directly would be a hole in the contract.
+
+    public static #Tensor<E> conv2d<E extends Floating>(Tensor<E> x, Tensor<E> w,
+                                                        Tensor<E> b, int32 stride,
+                                                        int32 pad) {
+        Ops.requireSame<E>("conv2d", x, w);
+        Ops.requireSame<E>("conv2d", x, b);
+        return StructKernels.conv2d<E>(x, w, b, stride, pad);
+    }
+
+    public static #Tensor<E> conv2dBackIn<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                              Tensor<E> w, int32 stride,
+                                                              int32 pad) {
+        Ops.requireSame<E>("conv2d.backward", g, x);
+        return StructKernels.conv2dBackIn<E>(g, x, w, stride, pad);
+    }
+
+    public static #Tensor<E> conv2dBackWeight<E extends Floating>(Tensor<E> g,
+                                                                  Tensor<E> x,
+                                                                  Tensor<E> w,
+                                                                  int32 stride,
+                                                                  int32 pad) {
+        Ops.requireSame<E>("conv2d.backward", g, x);
+        return StructKernels.conv2dBackWeight<E>(g, x, w, stride, pad);
+    }
+
+    public static #Tensor<E> conv2dBackBias<E extends Floating>(Tensor<E> g) {
+        Ops.requireCpu<E>("conv2d.backward", g);
+        return StructKernels.conv2dBackBias<E>(g);
+    }
+
+    public static #Tensor<E> maxPool2d<E extends Floating>(Tensor<E> x, int32 k,
+                                                           int32 stride, int32 pad,
+                                                           Tensor<E> argmax) {
+        Ops.requireCpu<E>("maxPool2d", x);
+        return StructKernels.maxPool2d<E>(x, k, stride, pad, argmax);
+    }
+
+    public static #Tensor<E> maxPool2dBack<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                               Tensor<E> argmax) {
+        Ops.requireSame<E>("maxPool2d.backward", g, x);
+        return StructKernels.maxPool2dBack<E>(g, x, argmax);
+    }
+
+    public static #Tensor<E> avgPool2d<E extends Floating>(Tensor<E> x, int32 k,
+                                                           int32 stride, int32 pad) {
+        Ops.requireCpu<E>("avgPool2d", x);
+        return StructKernels.avgPool2d<E>(x, k, stride, pad);
+    }
+
+    public static #Tensor<E> avgPool2dBack<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                               int32 k, int32 stride,
+                                                               int32 pad) {
+        Ops.requireSame<E>("avgPool2d.backward", g, x);
+        return StructKernels.avgPool2dBack<E>(g, x, k, stride, pad);
+    }
+
+    public static #Tensor<E> adaptiveAvgPool2d<E extends Floating>(Tensor<E> x,
+                                                                   int32 outH,
+                                                                   int32 outW) {
+        Ops.requireCpu<E>("adaptiveAvgPool2d", x);
+        return StructKernels.adaptiveAvgPool2d<E>(x, outH, outW);
+    }
+
+    public static #Tensor<E> adaptiveAvgPool2dBack<E extends Floating>(Tensor<E> g,
+                                                                       Tensor<E> x) {
+        Ops.requireSame<E>("adaptiveAvgPool2d.backward", g, x);
+        return StructKernels.adaptiveAvgPool2dBack<E>(g, x);
+    }
+
+    public static #Tensor<E> channelMean<E extends Floating>(Tensor<E> x) {
+        Ops.requireCpu<E>("batchNorm2d", x);
+        return StructKernels.channelMean<E>(x);
+    }
+
+    public static #Tensor<E> channelVar<E extends Floating>(Tensor<E> x, Tensor<E> mean) {
+        Ops.requireSame<E>("batchNorm2d", x, mean);
+        return StructKernels.channelVar<E>(x, mean);
+    }
+
+    public static #Tensor<E> batchNorm2d<E extends Floating>(Tensor<E> x, Tensor<E> gamma,
+                                                             Tensor<E> beta,
+                                                             Tensor<E> mean, Tensor<E> var,
+                                                             float64 eps, Tensor<E> xhat,
+                                                             Tensor<E> invstd) {
+        Ops.requireSame<E>("batchNorm2d", x, gamma);
+        Ops.requireSame<E>("batchNorm2d", x, beta);
+        return StructKernels.batchNorm2d<E>(x, gamma, beta, mean, var, eps, xhat, invstd);
+    }
+
+    public static #Tensor<E> batchNorm2dBackIn<E extends Floating>(Tensor<E> g,
+                                                                   Tensor<E> xhat,
+                                                                   Tensor<E> gamma,
+                                                                   Tensor<E> invstd,
+                                                                   boolean training) {
+        Ops.requireSame<E>("batchNorm2d.backward", g, xhat);
+        return StructKernels.batchNorm2dBackIn<E>(g, xhat, gamma, invstd, training);
+    }
+
+    public static #Tensor<E> normBackScale<E extends Floating>(Tensor<E> g, Tensor<E> xhat) {
+        Ops.requireSame<E>("batchNorm2d.backward", g, xhat);
+        return StructKernels.normBackScale<E>(g, xhat);
+    }
+
+    public static #Tensor<E> normBackShift<E extends Floating>(Tensor<E> g) {
+        Ops.requireCpu<E>("batchNorm2d.backward", g);
+        return StructKernels.normBackShift<E>(g);
+    }
+
+    /** In-place running-stat update for the module layer's BatchNorm2d.
+     *  Not a tape op — running statistics are module state, updated
+     *  alongside a training forward, never differentiated. */
+    public static void updateRunningStats<E extends Floating>(Tensor<E> runningMean,
+                                                              Tensor<E> runningVar,
+                                                              Tensor<E> batchMean,
+                                                              Tensor<E> batchVar,
+                                                              int64 count,
+                                                              float64 momentum) {
+        Ops.requireSame<E>("batchNorm2d.runningStats", runningMean, batchMean);
+        StructKernels.updateRunningStats<E>(runningMean, runningVar, batchMean,
+                                            batchVar, count, momentum);
+        return;
+    }
+
+    public static #Tensor<E> layerNorm<E extends Floating>(Tensor<E> x, Tensor<E> gamma,
+                                                           Tensor<E> beta, float64 eps,
+                                                           Tensor<E> xhat,
+                                                           Tensor<E> invstd) {
+        Ops.requireSame<E>("layerNorm", x, gamma);
+        Ops.requireSame<E>("layerNorm", x, beta);
+        return StructKernels.layerNorm<E>(x, gamma, beta, eps, xhat, invstd);
+    }
+
+    public static #Tensor<E> layerNormBackIn<E extends Floating>(Tensor<E> g,
+                                                                 Tensor<E> xhat,
+                                                                 Tensor<E> gamma,
+                                                                 Tensor<E> invstd) {
+        Ops.requireSame<E>("layerNorm.backward", g, xhat);
+        return StructKernels.layerNormBackIn<E>(g, xhat, gamma, invstd);
+    }
+
+    public static #Tensor<E> layerNormBackScale<E extends Floating>(Tensor<E> g,
+                                                                    Tensor<E> xhat) {
+        Ops.requireSame<E>("layerNorm.backward", g, xhat);
+        return StructKernels.layerNormBackScale<E>(g, xhat);
+    }
+
+    public static #Tensor<E> layerNormBackShift<E extends Floating>(Tensor<E> g) {
+        Ops.requireCpu<E>("layerNorm.backward", g);
+        return StructKernels.layerNormBackShift<E>(g);
+    }
+
+    public static #Tensor<E> embedding<E extends Floating>(Tensor<E> w, Tensor<E> idx) {
+        Ops.requireCpu<E>("embedding", w);
+        return StructKernels.embedding<E>(w, idx);
+    }
+
+    public static #Tensor<E> embeddingBack<E extends Floating>(Tensor<E> g, Tensor<E> w,
+                                                               Tensor<E> idx) {
+        Ops.requireSame<E>("embedding.backward", g, w);
+        return StructKernels.embeddingBack<E>(g, w, idx);
+    }
+
+    public static #Tensor<E> dropout<E extends Floating>(Tensor<E> x, float64 p,
+                                                         boolean training, uint64 seed,
+                                                         Tensor<E> mask) {
+        Ops.requireCpu<E>("dropout", x);
+        return StructKernels.dropout<E>(x, p, training, seed, mask);
+    }
+
+    public static #Tensor<E> crossEntropy<E extends Floating>(Tensor<E> logits,
+                                                              Tensor<E> targets,
+                                                              Tensor<E> probs) {
+        Ops.requireCpu<E>("crossEntropy", logits);
+        return StructKernels.crossEntropy<E>(logits, targets, probs);
+    }
+
+    public static #Tensor<E> crossEntropyBack<E extends Floating>(Tensor<E> g,
+                                                                  Tensor<E> probs,
+                                                                  Tensor<E> targets) {
+        Ops.requireCpu<E>("crossEntropy.backward", g);
+        return StructKernels.crossEntropyBack<E>(g, probs, targets);
+    }
+
+    public static #Tensor<E> mseLoss<E extends Floating>(Tensor<E> pred, Tensor<E> target) {
+        Ops.requireSame<E>("mseLoss", pred, target);
+        return StructKernels.mseLoss<E>(pred, target);
+    }
+
+    public static #Tensor<E> mseLossBack<E extends Floating>(Tensor<E> g, Tensor<E> pred,
+                                                             Tensor<E> target,
+                                                             boolean wantPred) {
+        Ops.requireSame<E>("mseLoss.backward", pred, target);
+        return StructKernels.mseLossBack<E>(g, pred, target, wantPred);
+    }
+
+    public static #Tensor<E> cosineSim<E extends Floating>(Tensor<E> a, Tensor<E> b,
+                                                           float64 eps, Tensor<E> cache) {
+        Ops.requireSame<E>("cosineSim", a, b);
+        return StructKernels.cosineSim<E>(a, b, eps, cache);
+    }
+
+    public static #Tensor<E> cosineSimBack<E extends Floating>(Tensor<E> g, Tensor<E> a,
+                                                               Tensor<E> b, Tensor<E> cache,
+                                                               float64 eps, boolean wantA) {
+        Ops.requireSame<E>("cosineSim.backward", a, b);
+        return StructKernels.cosineSimBack<E>(g, a, b, cache, eps, wantA);
+    }
+
     public static #String name(int32 op) {
         if (op == Op.ADD) { return "add"; }
         if (op == Op.SUB) { return "sub"; }
@@ -113,6 +328,17 @@ public final class Ops {
         if (op == Op.SLICE) { return "slice"; }
         if (op == Op.CONCAT) { return "concat"; }
         if (op == Op.NEG) { return "neg"; }
+        if (op == Op.CONV2D) { return "conv2d"; }
+        if (op == Op.MAXPOOL2D) { return "maxPool2d"; }
+        if (op == Op.AVGPOOL2D) { return "avgPool2d"; }
+        if (op == Op.ADAPTAVGPOOL2D) { return "adaptiveAvgPool2d"; }
+        if (op == Op.BATCHNORM2D) { return "batchNorm2d"; }
+        if (op == Op.LAYERNORM) { return "layerNorm"; }
+        if (op == Op.EMBEDDING) { return "embedding"; }
+        if (op == Op.DROPOUT) { return "dropout"; }
+        if (op == Op.CROSSENTROPY) { return "crossEntropy"; }
+        if (op == Op.MSELOSS) { return "mseLoss"; }
+        if (op == Op.COSINESIM) { return "cosineSim"; }
         return "op" + op;
     }
 

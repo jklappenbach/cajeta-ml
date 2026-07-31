@@ -34,6 +34,22 @@ public final class Op {
     public static int32 CONCAT      = 24;   // two inputs, one axis
     public static int32 NEG         = 25;
 
+    // Structured ops (spec §3.2, U3). Each carries its non-differentiable
+    // configuration in the tape's int payload block (stride/padding/kernel/
+    // training flag) and its saved forward state in the tape's aux slots
+    // (pool argmax, normalized activations, dropout mask, target indices).
+    public static int32 CONV2D      = 26;   // x, w, b   | p0=stride p1=pad
+    public static int32 MAXPOOL2D   = 27;   // x         | p0=k p1=stride p2=pad
+    public static int32 AVGPOOL2D   = 28;   // x         | p0=k p1=stride p2=pad
+    public static int32 ADAPTAVGPOOL2D = 29; // x        | p0=outH p1=outW
+    public static int32 BATCHNORM2D = 30;   // x, gamma, beta | p0=training
+    public static int32 LAYERNORM   = 31;   // x, gamma, beta | last axis
+    public static int32 EMBEDDING   = 32;   // w         | aux0=indices
+    public static int32 DROPOUT     = 33;   // x         | p0=training p1=seed
+    public static int32 CROSSENTROPY = 34;  // logits    | aux1=targets
+    public static int32 MSELOSS     = 35;   // pred, target
+    public static int32 COSINESIM   = 36;   // a, b (row-wise, last axis)
+
     /** One past the largest id — the registry array length. */
-    public static int32 COUNT       = 26;
+    public static int32 COUNT       = 37;
 }
