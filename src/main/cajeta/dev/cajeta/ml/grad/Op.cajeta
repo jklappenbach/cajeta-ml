@@ -1,0 +1,39 @@
+package dev.cajeta.ml.grad;
+
+/**
+ * Op identifiers for the {@link GradTape} / {@link Ops} registry — one id
+ * per differentiable operation (spec §3.2). Ids are dense so the dispatch
+ * registry (spec §3.3, the day-one GPU seam) can be indexed arrays: a CPU
+ * column (complete in v3) and a GPU column (filled by the xpu phase).
+ */
+public final class Op {
+    public static int32 LEAF        = 0;
+    public static int32 ADD         = 1;
+    public static int32 SUB         = 2;
+    public static int32 MUL         = 3;
+    public static int32 DIV         = 4;
+    public static int32 MATMUL      = 5;
+    public static int32 RELU        = 6;
+    public static int32 GELU        = 7;
+    public static int32 TANH        = 8;
+    public static int32 SIGMOID     = 9;
+    public static int32 SOFTMAX     = 10;   // last axis
+    public static int32 LOGSOFTMAX  = 11;   // last axis
+    public static int32 EXP         = 12;
+    public static int32 LOG         = 13;
+    public static int32 SQRT        = 14;
+    public static int32 POWS        = 15;   // elementwise x^c, scalar c
+    public static int32 SUM         = 16;   // full reduction -> (1,)
+    public static int32 MEAN        = 17;   // full reduction -> (1,)
+    public static int32 SUMAXIS     = 18;   // keepdims
+    public static int32 MEANAXIS    = 19;   // keepdims
+    public static int32 MAXAXIS     = 20;   // keepdims
+    public static int32 RESHAPE     = 21;
+    public static int32 TRANSPOSE   = 22;   // 2-D
+    public static int32 SLICE       = 23;   // one axis, [start, stop)
+    public static int32 CONCAT      = 24;   // two inputs, one axis
+    public static int32 NEG         = 25;
+
+    /** One past the largest id — the registry array length. */
+    public static int32 COUNT       = 26;
+}

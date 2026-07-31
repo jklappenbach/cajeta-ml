@@ -1,0 +1,15 @@
+package dev.cajeta.ml.grad;
+
+/**
+ * A handle to one node on a {@link GradTape} — the tensor analog of the
+ * stdlib scalar tape's `Var`. A value record (stack-copied freely); the
+ * node's value and gradient live on the tape, read back with
+ * `tape.valueOf(t)` / `tape.gradOf(t)` after `tape.backward(...)`.
+ */
+public record GradTensor {
+    int32 idx;
+
+    public GradTensor(int32 idx) {
+        this.idx = idx;
+    }
+}

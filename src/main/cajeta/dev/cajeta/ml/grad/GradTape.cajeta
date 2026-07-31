@@ -1,0 +1,637 @@
+package dev.cajeta.ml.grad;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import cajeta.math.stats.Stats;
+import dev.cajeta.ml.MlException;
+
+/**
+ * Define-by-run reverse-mode differentiation over `Tensor<E>` for
+ * `E extends Floating` — f32 and f64 (spec §3.1) — the runtime tensor
+ * tape the neural framework trains with (the stdlib's scalar tape and
+ * compile-time `Grad` are untouched; this one handles dynamic module
+ * trees, checkpoint-loaded nets, and per-layer SPELA tapes).
+ *
+ * Model: nodes append in execution order; `backward(out)` seeds the
+ * output cotangent with ones and replays nodes in reverse, accumulating
+ * each input's vector–Jacobian product. Broadcast-widened elementwise ops
+ * restore input shapes with `Tensor.sumTo` (PyTorch's `sum_to`).
+ *
+ * Every FORWARD kernel runs through {@link Ops} — the device seam (spec
+ * §3.3). First-order only: a second `backward` on the same tape throws
+ * (build a fresh tape per step, which is also the training-loop idiom).
+ *
+ * ```cajeta
+ * GradTape<float32> t = heap GradTape<float32>();
+ * GradTensor x = t.leaf(xVal, false);
+ * GradTensor w = t.leaf(wVal, true);
+ * GradTensor y = t.mean(t.relu(t.matmul(x, w)));
+ * t.backward(y);
+ * Tensor<float32> dw = t.gradOf(w);
+ * ```
+ */
+public final class GradTape<E extends Floating> {
+
+    ArrayList<Tensor<E>> values;         // node forward values (owned)
+    ArrayList<Tensor<E>> grads;          // cotangents (allocated in backward)
+    int32[] ops;                         // Op.* per node
+    int32[] ain;                         // first-input node idx (-1 = none)
+    int32[] bin;                         // second-input node idx (-1 = none)
+    int32[] axes;                        // axis payload
+    float64[] cs;                        // scalar payload (dtype-neutral)
+    boolean[] needsGrad;                 // reaches a requires-grad leaf
+    boolean[] isLeafGrad;                // a leaf explicitly requiring grad
+    int32 n;
+    int32 cap;
+    boolean ranBackward;
+    int32 noGradDepth;
+
+    public GradTape() {
+        this.values = heap ArrayList<Tensor<E>>();
+        this.grads = heap ArrayList<Tensor<E>>();
+        this.cap = 64;
+        this.ops = heap int32[this.cap];
+        this.ain = heap int32[this.cap];
+        this.bin = heap int32[this.cap];
+        this.axes = heap int32[this.cap];
+        this.cs = heap float64[this.cap];
+        this.needsGrad = heap boolean[this.cap];
+        this.isLeafGrad = heap boolean[this.cap];
+        this.n = 0;
+        this.ranBackward = false;
+        this.noGradDepth = 0;
+        return;
+    }
+
+    void grow() {
+        if (this.n < this.cap) { return; }
+        int32 nc = this.cap * 2;
+        int32[] no = heap int32[nc];
+        int32[] na = heap int32[nc];
+        int32[] nb = heap int32[nc];
+        int32[] nx = heap int32[nc];
+        float64[] ncs = heap float64[nc];
+        boolean[] ng = heap boolean[nc];
+        boolean[] nl = heap boolean[nc];
+        int32 i = 0;
+        while (i < this.n) {
+            no[i] = this.ops[i];
+            na[i] = this.ain[i];
+            nb[i] = this.bin[i];
+            nx[i] = this.axes[i];
+            ncs[i] = this.cs[i];
+            ng[i] = this.needsGrad[i];
+            nl[i] = this.isLeafGrad[i];
+            i = i + 1;
+        }
+        this.ops #= no;
+        this.ain #= na;
+        this.bin #= nb;
+        this.axes #= nx;
+        this.cs #= ncs;
+        this.needsGrad #= ng;
+        this.isLeafGrad #= nl;
+        this.cap = nc;
+        return;
+    }
+
+    GradTensor push(int32 op, int32 a, int32 b, int32 axis, float64 c,
+                    #Tensor<E> value) {
+        this.grow();
+        int32 i = this.n;
+        this.ops[i] = op;
+        this.ain[i] = a;
+        this.bin[i] = b;
+        this.axes[i] = axis;
+        this.cs[i] = c;
+        boolean ng = false;
+        if (this.noGradDepth == 0) {
+            if (a >= 0 && this.needsGrad[a]) { ng = true; }
+            if (b >= 0 && this.needsGrad[b]) { ng = true; }
+        }
+        this.needsGrad[i] = ng;
+        this.isLeafGrad[i] = false;
+        this.values.add(#value);
+        this.n = i + 1;
+        return stack GradTensor(i);
+    }
+
+    /** Record `value` as a leaf. `requiresGrad` marks a trainable input. */
+    public GradTensor leaf(Tensor<E> value, boolean requiresGrad) {
+        Tensor<E> own = value.copy();
+        GradTensor t = this.push(Op.LEAF, -1, -1, 0, 0.0, #own);
+        this.needsGrad[t.idx] = requiresGrad && this.noGradDepth == 0;
+        this.isLeafGrad[t.idx] = this.needsGrad[t.idx];
+        return t;
+    }
+
+    /** The node's forward value (borrow — the tape owns it). */
+    public Tensor<E> valueOf(GradTensor t) {
+        return this.values.get(t.idx);
+    }
+
+    /** The accumulated cotangent of a requires-grad node after backward. */
+    public Tensor<E> gradOf(GradTensor t) {
+        if (!this.ranBackward) {
+            throw heap MlException("GradTape.gradOf: run backward first");
+        }
+        if (!this.needsGrad[t.idx]) {
+            throw heap MlException("GradTape.gradOf: node " + t.idx
+                + " does not require grad");
+        }
+        return this.grads.get(t.idx);
+    }
+
+    /** Suspend recording of grad requirements (torch's no_grad). */
+    public void noGradBegin() {
+        this.noGradDepth = this.noGradDepth + 1;
+        return;
+    }
+
+    public void noGradEnd() {
+        if (this.noGradDepth > 0) {
+            this.noGradDepth = this.noGradDepth - 1;
+        }
+        return;
+    }
+
+    /** A grad-detached alias of `t` (same value, no history). `detach` and
+     *  `view` are reserved words, hence the spelling. */
+    public GradTensor detached(GradTensor t) {
+        Tensor<E> v = this.values.get(t.idx);
+        Tensor<E> own = v.copy();
+        return this.push(Op.LEAF, -1, -1, 0, 0.0, #own);
+    }
+
+    // ── Recorded ops (forward via the Ops seam) ─────────────────────────
+
+    public GradTensor add(GradTensor a, GradTensor b) { return this.bin2(Op.ADD, a, b); }
+    public GradTensor sub(GradTensor a, GradTensor b) { return this.bin2(Op.SUB, a, b); }
+    public GradTensor mul(GradTensor a, GradTensor b) { return this.bin2(Op.MUL, a, b); }
+    public GradTensor div(GradTensor a, GradTensor b) { return this.bin2(Op.DIV, a, b); }
+    public GradTensor matmul(GradTensor a, GradTensor b) { return this.bin2(Op.MATMUL, a, b); }
+
+    GradTensor bin2(int32 op, GradTensor a, GradTensor b) {
+        Tensor<E> v = Ops.run2<E>(op, this.values.get(a.idx), this.values.get(b.idx));
+        return this.push(op, a.idx, b.idx, 0, 0.0, #v);
+    }
+
+    public GradTensor relu(GradTensor a) { return this.una(Op.RELU, a, 0, (E) 0); }
+    public GradTensor gelu(GradTensor a) { return this.una(Op.GELU, a, 0, (E) 0); }
+    public GradTensor tanh(GradTensor a) { return this.una(Op.TANH, a, 0, (E) 0); }
+    public GradTensor sigmoid(GradTensor a) { return this.una(Op.SIGMOID, a, 0, (E) 0); }
+    public GradTensor softmax(GradTensor a) { return this.una(Op.SOFTMAX, a, 0, (E) 0); }
+    public GradTensor logSoftmax(GradTensor a) { return this.una(Op.LOGSOFTMAX, a, 0, (E) 0); }
+    public GradTensor exp(GradTensor a) { return this.una(Op.EXP, a, 0, (E) 0); }
+    public GradTensor log(GradTensor a) { return this.una(Op.LOG, a, 0, (E) 0); }
+    public GradTensor sqrt(GradTensor a) { return this.una(Op.SQRT, a, 0, (E) 0); }
+    public GradTensor neg(GradTensor a) { return this.una(Op.NEG, a, 0, (E) 0); }
+    public GradTensor powScalar(GradTensor a, E c) { return this.una(Op.POWS, a, 0, c); }
+    public GradTensor sum(GradTensor a) { return this.una(Op.SUM, a, 0, (E) 0); }
+    public GradTensor mean(GradTensor a) { return this.una(Op.MEAN, a, 0, (E) 0); }
+    public GradTensor sumAxis(GradTensor a, int32 axis) { return this.una(Op.SUMAXIS, a, axis, (E) 0); }
+    public GradTensor meanAxis(GradTensor a, int32 axis) { return this.una(Op.MEANAXIS, a, axis, (E) 0); }
+    public GradTensor maxAxis(GradTensor a, int32 axis) { return this.una(Op.MAXAXIS, a, axis, (E) 0); }
+    public GradTensor transpose2d(GradTensor a) { return this.una(Op.TRANSPOSE, a, 0, (E) 0); }
+
+    GradTensor una(int32 op, GradTensor a, int32 axis, E c) {
+        Tensor<E> v = Ops.run1<E>(op, this.values.get(a.idx), axis, c);
+        return this.push(op, a.idx, -1, axis, (float64) c, #v);
+    }
+
+    /** Reshape (records the input shape for the backward). */
+    public GradTensor reshape(GradTensor a, int64[] newShape) {
+        Tensor<E> src = this.values.get(a.idx);
+        Tensor<E> vw = src.reshape(newShape);
+        Tensor<E> v = vw.copy();
+        return this.push(Op.RESHAPE, a.idx, -1, 0, 0.0, #v);
+    }
+
+    /** Slice one axis, [start, stop). */
+    public GradTensor slice(GradTensor a, int32 axis, int64 start, int64 stop) {
+        Tensor<E> src = this.values.get(a.idx);
+        Tensor<E> vw = src.slice(axis, start, stop);
+        Tensor<E> v = vw.copy();
+        GradTensor t = this.push(Op.SLICE, a.idx, -1, axis, 0.0, #v);
+        // start rides the scalar payload (stop derives from the shapes).
+        this.cs[t.idx] = (float64) start;
+        return t;
+    }
+
+    /** Concatenate two nodes along `axis`. */
+    public GradTensor concat(GradTensor a, GradTensor b, int32 axis) {
+        Tensor<E>[] parts = heap Tensor<E>[2];
+        parts[0] = this.values.get(a.idx);
+        parts[1] = this.values.get(b.idx);
+        Tensor<E> v = Tensor.concatenate<E>(parts, axis);
+        return this.push(Op.CONCAT, a.idx, b.idx, axis, 0.0, #v);
+    }
+
+    // ── Backward ────────────────────────────────────────────────────────
+
+    void accum(int32 node, #Tensor<E> contrib) {
+        Tensor<E> cur = this.grads.get(node);
+        Tensor<E> next = Tensor.add<E>(cur, contrib);
+        this.grads.set(node, #next);
+        return;
+    }
+
+    /** Shape-restoring accumulate (broadcast backward). */
+    void accumTo(int32 node, Tensor<E> contrib) {
+        Tensor<E> like = this.values.get(node);
+        Tensor<E> fit = Tensor.sumTo<E>(contrib, like);
+        this.accum(node, #fit);
+        return;
+    }
+
+    public void backward(GradTensor out) {
+        if (this.ranBackward) {
+            throw heap MlException("GradTape.backward: this tape already ran "
+                + "backward (first-order only) — build a fresh tape per step");
+        }
+        if (!this.needsGrad[out.idx]) {
+            throw heap MlException("GradTape.backward: the output does not "
+                + "reach any requires-grad leaf");
+        }
+        this.ranBackward = true;
+        // Allocate cotangents (zeros) for every node up front.
+        int32 i = 0;
+        while (i < this.n) {
+            Tensor<E> v = this.values.get(i);
+            Tensor<E> z = Tensor.zerosLike<E>(v);
+            this.grads.add(#z);
+            i = i + 1;
+        }
+        // Seed d(out)/d(out) = 1.
+        Tensor<E> seedSrc = this.values.get(out.idx);
+        Tensor<E> seed = Tensor.onesLike<E>(seedSrc);
+        this.grads.set(out.idx, #seed);
+
+        int32 k = out.idx;
+        while (k >= 0) {
+            if (this.needsGrad[k] && this.ops[k] != Op.LEAF) {
+                this.backOne(k);
+            }
+            k = k - 1;
+        }
+        return;
+    }
+
+    void backOne(int32 i) {
+        int32 op = this.ops[i];
+        int32 a = this.ain[i];
+        int32 b = this.bin[i];
+        Tensor<E> g = this.grads.get(i);
+        Tensor<E> va = this.values.get(a);
+        Tensor<E> vo = this.values.get(i);
+
+        if (op == Op.ADD) {
+            if (this.needsGrad[a]) { this.accumTo(a, g); }
+            if (this.needsGrad[b]) { this.accumTo(b, g); }
+            return;
+        }
+        if (op == Op.SUB) {
+            if (this.needsGrad[a]) { this.accumTo(a, g); }
+            if (this.needsGrad[b]) {
+                Tensor<E> ng = Tensor.neg<E>(g);
+                this.accumTo(b, ng);
+            }
+            return;
+        }
+        if (op == Op.MUL) {
+            if (this.needsGrad[a]) {
+                Tensor<E> ga = Tensor.mul<E>(g, this.values.get(b));
+                this.accumTo(a, ga);
+            }
+            if (this.needsGrad[b]) {
+                Tensor<E> gb = Tensor.mul<E>(g, va);
+                this.accumTo(b, gb);
+            }
+            return;
+        }
+        if (op == Op.DIV) {
+            Tensor<E> vb = this.values.get(b);
+            if (this.needsGrad[a]) {
+                Tensor<E> ga = Ops.divK<E>(g, vb);
+                this.accumTo(a, ga);
+            }
+            if (this.needsGrad[b]) {
+                // d/db (a/b) = -a/b² → -out/b
+                Tensor<E> t1 = Ops.divK<E>(vo, vb);
+                Tensor<E> t2 = Tensor.mul<E>(g, t1);
+                Tensor<E> gb = Tensor.neg<E>(t2);
+                this.accumTo(b, gb);
+            }
+            return;
+        }
+        if (op == Op.MATMUL) {
+            Tensor<E> vb = this.values.get(b);
+            if (this.needsGrad[a]) {
+                Tensor<E> bt = vb.transpose();
+                Tensor<E> ga = Tensor.matmul<E>(g, bt);
+                this.accum(a, #ga);
+            }
+            if (this.needsGrad[b]) {
+                Tensor<E> at = va.transpose();
+                Tensor<E> gb = Tensor.matmul<E>(at, g);
+                this.accum(b, #gb);
+            }
+            return;
+        }
+        if (op == Op.RELU) {
+            Tensor<E> m = Tensor.reluMask<E>(va);
+            Tensor<E> ga = Tensor.mul<E>(g, m);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.NEG) {
+            Tensor<E> ga = Tensor.neg<E>(g);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.EXP) {
+            Tensor<E> ga = Tensor.mul<E>(g, vo);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.LOG) {
+            Tensor<E> ga = Ops.divK<E>(g, va);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.SQRT) {
+            // 1/(2·out)
+            Tensor<E> two = Tensor.mulScalar<E>(vo, (E) 2);
+            Tensor<E> ga = Ops.divK<E>(g, two);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.TANH) {
+            // 1 − out²
+            Tensor<E> o2 = Tensor.mul<E>(vo, vo);
+            Tensor<E> one = Tensor.onesLike<E>(vo);
+            Tensor<E> d = Tensor.sub<E>(one, o2);
+            Tensor<E> ga = Tensor.mul<E>(g, d);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.SIGMOID) {
+            // out·(1−out)
+            Tensor<E> one = Tensor.onesLike<E>(vo);
+            Tensor<E> om = Tensor.sub<E>(one, vo);
+            Tensor<E> d = Tensor.mul<E>(vo, om);
+            Tensor<E> ga = Tensor.mul<E>(g, d);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.GELU) {
+            this.accum(a, GradTape.geluBack<E>(va, g));
+            return;
+        }
+        if (op == Op.POWS) {
+            // c·x^(c−1)
+            E c = (E) this.cs[i];
+            Tensor<E> pm1 = Ops.powScalarK<E>(va, c - (E) 1);
+            Tensor<E> d = Tensor.mulScalar<E>(pm1, c);
+            Tensor<E> ga = Tensor.mul<E>(g, d);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.SOFTMAX) {
+            this.accum(a, GradTape.softmaxBack<E>(vo, g));
+            return;
+        }
+        if (op == Op.LOGSOFTMAX) {
+            this.accum(a, GradTape.logSoftmaxBack<E>(vo, g));
+            return;
+        }
+        if (op == Op.SUM) {
+            // broadcast the (1,) cotangent to the input shape
+            E gv = g.flatGet(0);
+            Tensor<E> ones = Tensor.onesLike<E>(va);
+            Tensor<E> ga = Tensor.mulScalar<E>(ones, gv);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.MEAN) {
+            E gv = g.flatGet(0) / (E) Ops.countOf<E>(va);
+            Tensor<E> ones = Tensor.onesLike<E>(va);
+            Tensor<E> ga = Tensor.mulScalar<E>(ones, gv);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.SUMAXIS) {
+            Tensor<E> gb = g.broadcastTo(GradTape.shapeOf<E>(va));
+            Tensor<E> ga = gb.copy();
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.MEANAXIS) {
+            int32 axis = this.axes[i];
+            E inv = (E) 1 / (E) va.shapeAt(axis);
+            Tensor<E> gb = g.broadcastTo(GradTape.shapeOf<E>(va));
+            Tensor<E> ga = Tensor.mulScalar<E>(gb, inv);
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.MAXAXIS) {
+            // route to the (first) argmax positions: mask = (x == max)
+            this.accum(a, GradTape.maxAxisBack<E>(va, vo, g));
+            return;
+        }
+        if (op == Op.RESHAPE || op == Op.TRANSPOSE) {
+            Tensor<E> ga;
+            if (op == Op.RESHAPE) {
+                Tensor<E> vw = g.reshape(GradTape.shapeOf<E>(va));
+                ga = vw.copy();
+            } else {
+                Tensor<E> vw = g.transpose();
+                ga = vw.copy();
+            }
+            this.accum(a, #ga);
+            return;
+        }
+        if (op == Op.SLICE) {
+            int32 axis = this.axes[i];
+            int64 start = (int64) this.cs[i];
+            this.accum(a, GradTape.sliceBack<E>(va, g, axis, start));
+            return;
+        }
+        if (op == Op.CONCAT) {
+            int32 axis = this.axes[i];
+            int64 na = va.shapeAt(axis);
+            if (this.needsGrad[a]) {
+                Tensor<E> vw = g.slice(axis, 0, na);
+                Tensor<E> ga = vw.copy();
+                this.accum(a, #ga);
+            }
+            if (this.needsGrad[b]) {
+                Tensor<E> vb = this.values.get(b);
+                Tensor<E> vw = g.slice(axis, na, na + vb.shapeAt(axis));
+                Tensor<E> gb = vw.copy();
+                this.accum(b, #gb);
+            }
+            return;
+        }
+        throw heap MlException("GradTape: no backward rule for op " + op);
+    }
+
+    static #int64[] shapeOf<E extends Floating>(Tensor<E> t) {
+        int32 nd = t.ndim();
+        int64[] sh = heap int64[nd];
+        int32 d = 0;
+        while (d < nd) {
+            sh[d] = t.shapeAt(d);
+            d = d + 1;
+        }
+        return #sh;
+    }
+
+    /** GELU'(x) = Φ(x) + x·φ(x), Φ the standard-normal CDF. */
+    static #Tensor<E> geluBack<E extends Floating>(Tensor<E> x, Tensor<E> g) {
+        Tensor<E> out = x.copy();
+        int64 n = Ops.countOf<E>(out);
+        int64 i = 0;
+        while (i < n) {
+            float64 xv = (float64) x.flatGet(i);
+            float64 cdf = 0.5 * (1.0 + Stats.erf(xv / 1.4142135623730951));
+            float64 pdf = 0.3989422804014327 * Math.exp(-0.5 * xv * xv);
+            float64 gr = (float64) g.flatGet(i) * (cdf + xv * pdf);
+            out.flatSet(i, (E) gr);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** softmax VJP per row: s ⊙ (g − ⟨g, s⟩). */
+    static #Tensor<E> softmaxBack<E extends Floating>(Tensor<E> s, Tensor<E> g) {
+        Tensor<E> out = s.copy();
+        int64 cols = s.shapeAt(s.ndim() - 1);
+        int64 rows = Ops.countOf<E>(s) / cols;
+        int64 r = 0;
+        while (r < rows) {
+            float64 dot = 0.0;
+            int64 j = 0;
+            while (j < cols) {
+                dot = dot + (float64) g.flatGet(r * cols + j)
+                          * (float64) s.flatGet(r * cols + j);
+                j = j + 1;
+            }
+            j = 0;
+            while (j < cols) {
+                float64 sv = (float64) s.flatGet(r * cols + j);
+                float64 gv = (float64) g.flatGet(r * cols + j);
+                float64 res = sv * (gv - dot);
+                out.flatSet(r * cols + j, (E) res);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    /** logSoftmax VJP per row: g − softmax ⊙ Σg. */
+    static #Tensor<E> logSoftmaxBack<E extends Floating>(Tensor<E> ls, Tensor<E> g) {
+        Tensor<E> out = ls.copy();
+        int64 cols = ls.shapeAt(ls.ndim() - 1);
+        int64 rows = Ops.countOf<E>(ls) / cols;
+        int64 r = 0;
+        while (r < rows) {
+            float64 gsum = 0.0;
+            int64 j = 0;
+            while (j < cols) {
+                gsum = gsum + (float64) g.flatGet(r * cols + j);
+                j = j + 1;
+            }
+            j = 0;
+            while (j < cols) {
+                float64 sm = Math.exp((float64) ls.flatGet(r * cols + j));
+                float64 gv = (float64) g.flatGet(r * cols + j);
+                float64 res = gv - sm * gsum;
+                out.flatSet(r * cols + j, (E) res);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    /** maxAxis backward: cotangent routed to the FIRST max per slice
+     *  (torch routes to a single argmax for max(dim=)). Iterates the
+     *  flattened index space treating `axis` as the varying dim. */
+    static #Tensor<E> maxAxisBack<E extends Floating>(Tensor<E> x, Tensor<E> mx,
+                                                      Tensor<E> g) {
+        Tensor<E> out = Tensor.zerosLike<E>(x);
+        int32 nd = x.ndim();
+        // Only the 2-D cases are exercised in v3 (axis 0 or 1); generalize
+        // when a consumer needs rank > 2.
+        if (nd != 2) {
+            throw heap MlException("GradTape.maxAxis backward: rank-2 only in v3");
+        }
+        int64 rows = x.shapeAt(0);
+        int64 cols = x.shapeAt(1);
+        int64 r = 0;
+        // axis detection via mx shape: (rows,1) → axis 1; (1,cols) → axis 0
+        if (mx.shapeAt(1) == 1) {
+            r = 0;
+            while (r < rows) {
+                E target = mx.get2(r, 0);
+                int64 jj = 0;
+                while (jj < cols) {
+                    if (x.get2(r, jj) == target) {
+                        out.flatSet(r * cols + jj, g.get2(r, 0));
+                        jj = cols;
+                    } else {
+                        jj = jj + 1;
+                    }
+                }
+                r = r + 1;
+            }
+        } else {
+            int64 jj = 0;
+            while (jj < cols) {
+                E target = mx.get2(0, jj);
+                r = 0;
+                while (r < rows) {
+                    if (x.get2(r, jj) == target) {
+                        out.flatSet(r * cols + jj, g.get2(0, jj));
+                        r = rows;
+                    } else {
+                        r = r + 1;
+                    }
+                }
+                jj = jj + 1;
+            }
+        }
+        return #out;
+    }
+
+    /** slice backward: cotangent scattered into a zeros-of-input. */
+    static #Tensor<E> sliceBack<E extends Floating>(Tensor<E> x, Tensor<E> g,
+                                                    int32 axis, int64 start) {
+        Tensor<E> out = Tensor.zerosLike<E>(x);
+        if (x.ndim() != 2) {
+            throw heap MlException("GradTape.slice backward: rank-2 only in v3");
+        }
+        int64 gr = g.shapeAt(0);
+        int64 gc = g.shapeAt(1);
+        int64 cols = x.shapeAt(1);
+        int64 r = 0;
+        while (r < gr) {
+            int64 j = 0;
+            while (j < gc) {
+                int64 rr = r;
+                int64 cc = j;
+                if (axis == 0) { rr = r + start; } else { cc = j + start; }
+                out.flatSet(rr * cols + cc, g.get2(r, j));
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    public int32 count() {
+        return this.n;
+    }
+}

@@ -1,0 +1,251 @@
+package dev.cajeta.ml.grad;
+
+import cajeta.math.Tensor;
+import cajeta.math.stats.Stats;
+import dev.cajeta.ml.MlException;
+
+/**
+ * The op dispatch layer — THE device seam (spec §3.3, designed in from
+ * day one). Every forward kernel the tape runs enters through
+ * {@link #run1} / {@link #run2}: residency is checked here (mixed
+ * CPU/GPU inputs are a loud error, never a silent transfer), and the
+ * kernel is chosen from the registry column matching the inputs' device.
+ * v3 ships the CPU column complete; {@link #hasGpu} answers false for
+ * every op until the `cajeta.xpu` phase fills that column in — AT WHICH
+ * POINT NO CALLER CHANGES: the seam is the contract.
+ *
+ * Generic over `E extends Floating` (f32 + f64, spec §3.1); scalar
+ * intermediates compute in float64 and narrow on store.
+ *
+ * Kernels compose `cajeta.math.Tensor` primitives (which carry their own
+ * broadcast semantics); nothing outside this class may implement an op —
+ * the kernel methods are package-private on purpose.
+ */
+public final class Ops {
+
+    /** True when a CPU kernel exists for `op` (v3: all ops). */
+    public static boolean hasCpu(int32 op) {
+        return op > Op.LEAF && op < Op.COUNT;
+    }
+
+    /** True when a GPU kernel exists for `op` (v3: none — the xpu phase). */
+    public static boolean hasGpu(int32 op) {
+        return false;
+    }
+
+    static void requireCpu<E extends Floating>(String opName, Tensor<E> t) {
+        if (t.isOnGpu()) {
+            throw heap MlException("ml.grad: '" + opName + "' input is "
+                + "GPU-resident but the GPU kernel column is not filled in "
+                + "yet (the cajeta.xpu phase) — move it with .cpu(), or "
+                + "keep training CPU-resident in v3");
+        }
+    }
+
+    static void requireSame<E extends Floating>(String opName, Tensor<E> a, Tensor<E> b) {
+        if (a.isOnGpu() != b.isOnGpu()) {
+            throw heap MlException("ml.grad: '" + opName + "' inputs live on "
+                + "different devices — no silent transfers; move one "
+                + "explicitly");
+        }
+        Ops.requireCpu<E>(opName, a);
+    }
+
+    /** Unary dispatch. `axis` and `c` are op-specific payloads. */
+    public static #Tensor<E> run1<E extends Floating>(int32 op, Tensor<E> a,
+                                                      int32 axis, E c) {
+        Ops.requireCpu<E>(Ops.name(op), a);
+        if (op == Op.RELU)       { return Tensor.relu<E>(a); }
+        if (op == Op.NEG)        { return Tensor.neg<E>(a); }
+        if (op == Op.EXP)        { return Tensor.exp<E>(a); }
+        if (op == Op.LOG)        { return Tensor.log<E>(a); }
+        if (op == Op.SQRT)       { return Tensor.sqrt<E>(a); }
+        if (op == Op.TANH)       { return Ops.tanhK<E>(a); }
+        if (op == Op.SIGMOID)    { return Ops.sigmoidK<E>(a); }
+        if (op == Op.GELU)       { return Ops.geluK<E>(a); }
+        if (op == Op.SOFTMAX)    { return Ops.softmaxK<E>(a); }
+        if (op == Op.LOGSOFTMAX) { return Ops.logSoftmaxK<E>(a); }
+        if (op == Op.POWS)       { return Ops.powScalarK<E>(a, c); }
+        if (op == Op.SUM)        { return Ops.sumK<E>(a); }
+        if (op == Op.MEAN)       { return Ops.meanK<E>(a); }
+        if (op == Op.SUMAXIS)    { return Tensor.sumAxis<E, E>(a, axis, true); }
+        if (op == Op.MEANAXIS)   { return Tensor.meanAxis<E, E>(a, axis, true); }
+        if (op == Op.MAXAXIS)    { return Tensor.maxAxis<E>(a, axis, true); }
+        if (op == Op.TRANSPOSE)  { Tensor<E> tr = a.transpose(); Tensor<E> cp = tr.copy(); return #cp; }
+        throw heap MlException("ml.grad: unknown unary op " + op);
+    }
+
+    /** Binary dispatch. */
+    public static #Tensor<E> run2<E extends Floating>(int32 op, Tensor<E> a,
+                                                      Tensor<E> b) {
+        Ops.requireSame<E>(Ops.name(op), a, b);
+        if (op == Op.ADD)    { return Tensor.add<E>(a, b); }
+        if (op == Op.SUB)    { return Tensor.sub<E>(a, b); }
+        if (op == Op.MUL)    { return Tensor.mul<E>(a, b); }
+        if (op == Op.DIV)    { return Ops.divK<E>(a, b); }
+        if (op == Op.MATMUL) { return Tensor.matmul<E>(a, b); }
+        throw heap MlException("ml.grad: unknown binary op " + op);
+    }
+
+    public static #String name(int32 op) {
+        if (op == Op.ADD) { return "add"; }
+        if (op == Op.SUB) { return "sub"; }
+        if (op == Op.MUL) { return "mul"; }
+        if (op == Op.DIV) { return "div"; }
+        if (op == Op.MATMUL) { return "matmul"; }
+        if (op == Op.RELU) { return "relu"; }
+        if (op == Op.GELU) { return "gelu"; }
+        if (op == Op.TANH) { return "tanh"; }
+        if (op == Op.SIGMOID) { return "sigmoid"; }
+        if (op == Op.SOFTMAX) { return "softmax"; }
+        if (op == Op.LOGSOFTMAX) { return "logSoftmax"; }
+        if (op == Op.EXP) { return "exp"; }
+        if (op == Op.LOG) { return "log"; }
+        if (op == Op.SQRT) { return "sqrt"; }
+        if (op == Op.POWS) { return "powScalar"; }
+        if (op == Op.SUM) { return "sum"; }
+        if (op == Op.MEAN) { return "mean"; }
+        if (op == Op.SUMAXIS) { return "sumAxis"; }
+        if (op == Op.MEANAXIS) { return "meanAxis"; }
+        if (op == Op.MAXAXIS) { return "maxAxis"; }
+        if (op == Op.RESHAPE) { return "reshape"; }
+        if (op == Op.TRANSPOSE) { return "transpose"; }
+        if (op == Op.SLICE) { return "slice"; }
+        if (op == Op.CONCAT) { return "concat"; }
+        if (op == Op.NEG) { return "neg"; }
+        return "op" + op;
+    }
+
+    // ── CPU kernels (package-private: the seam is the only entry) ──────
+
+    /** Elementwise a/b with broadcasting (via mul + reciprocal). */
+    static #Tensor<E> divK<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        Tensor<E> rb = Ops.recipK<E>(b);
+        return Tensor.mul<E>(a, rb);
+    }
+
+    static #Tensor<E> recipK<E extends Floating>(Tensor<E> b) {
+        Tensor<E> out = b.copy();
+        E one = (E) 1;
+        int64 n = Ops.countOf<E>(out);
+        int64 i = 0;
+        while (i < n) {
+            out.flatSet(i, one / out.flatGet(i));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    static int64 countOf<E extends Floating>(Tensor<E> t) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < t.ndim()) {
+            n = n * t.shapeAt(d);
+            d = d + 1;
+        }
+        return n;
+    }
+
+    static #Tensor<E> tanhK<E extends Floating>(Tensor<E> a) {
+        Tensor<E> out = a.copy();
+        int64 n = Ops.countOf<E>(out);
+        int64 i = 0;
+        while (i < n) {
+            float64 x = (float64) out.flatGet(i);
+            float64 e2 = Math.exp(2.0 * x);
+            float64 th = (e2 - 1.0) / (e2 + 1.0);
+            out.flatSet(i, (E) th);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    static #Tensor<E> sigmoidK<E extends Floating>(Tensor<E> a) {
+        Tensor<E> out = a.copy();
+        int64 n = Ops.countOf<E>(out);
+        int64 i = 0;
+        while (i < n) {
+            out.flatSet(i, (E) Stats.expit((float64) out.flatGet(i)));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** torch's default (exact, erf-based) GELU. */
+    static #Tensor<E> geluK<E extends Floating>(Tensor<E> a) {
+        Tensor<E> out = a.copy();
+        int64 n = Ops.countOf<E>(out);
+        int64 i = 0;
+        while (i < n) {
+            float64 x = (float64) out.flatGet(i);
+            float64 cdf = 0.5 * (1.0 + Stats.erf(x / 1.4142135623730951));
+            float64 gl = x * cdf;
+            out.flatSet(i, (E) gl);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    static #Tensor<E> powScalarK<E extends Floating>(Tensor<E> a, E c) {
+        Tensor<E> out = a.copy();
+        float64 cc = (float64) c;
+        int64 n = Ops.countOf<E>(out);
+        int64 i = 0;
+        while (i < n) {
+            out.flatSet(i, (E) Math.pow((float64) out.flatGet(i), cc));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Row softmax over the LAST axis (2-D or 1-D), max-shifted. */
+    static #Tensor<E> softmaxK<E extends Floating>(Tensor<E> a) {
+        Tensor<E> out = a.copy();
+        int64 cols = out.shapeAt(out.ndim() - 1);
+        int64 rows = Ops.countOf<E>(out) / cols;
+        int64 r = 0;
+        while (r < rows) {
+            E mx = out.flatGet(r * cols);
+            int64 j = 1;
+            while (j < cols) {
+                E v = out.flatGet(r * cols + j);
+                if (v > mx) { mx = v; }
+                j = j + 1;
+            }
+            float64 sum = 0.0;
+            j = 0;
+            while (j < cols) {
+                float64 e = Math.exp((float64) (out.flatGet(r * cols + j) - mx));
+                out.flatSet(r * cols + j, (E) e);
+                sum = sum + e;
+                j = j + 1;
+            }
+            j = 0;
+            while (j < cols) {
+                float64 sv = (float64) out.flatGet(r * cols + j) / sum;
+                out.flatSet(r * cols + j, (E) sv);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    static #Tensor<E> logSoftmaxK<E extends Floating>(Tensor<E> a) {
+        Tensor<E> sm = Ops.softmaxK<E>(a);
+        return Tensor.log<E>(sm);
+    }
+
+    /** Full reduction to a (1,) tensor (a differentiable scalar carrier). */
+    static #Tensor<E> sumK<E extends Floating>(Tensor<E> a) {
+        E s = Tensor.sum<E, E>(a);
+        int64[] sh = [1];
+        return Tensor.full<E>(sh, s);
+    }
+
+    static #Tensor<E> meanK<E extends Floating>(Tensor<E> a) {
+        E m = Tensor.mean<E, E>(a);
+        int64[] sh = [1];
+        return Tensor.full<E>(sh, m);
+    }
+}
