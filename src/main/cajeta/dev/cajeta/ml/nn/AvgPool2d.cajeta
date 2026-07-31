@@ -1,0 +1,23 @@
+package dev.cajeta.ml.nn;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/** Average pooling over NCHW input. Parameterless; each window shares its
+ *  cotangent equally among its cells. */
+public class AvgPool2d extends Module {
+    int32 kernel;
+    int32 stride;
+    int32 padding;
+
+    public AvgPool2d(int32 kernel, int32 stride, int32 padding) {
+        this.kernel = kernel;
+        this.stride = stride;
+        this.padding = padding;
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.avgPool2d(x, this.kernel, this.stride, this.padding);
+    }
+}

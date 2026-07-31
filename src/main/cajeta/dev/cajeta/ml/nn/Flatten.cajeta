@@ -1,0 +1,32 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * Collapses every axis after the first into one — `(N, C, H, W)` becomes
+ * `(N, C·H·W)`, the join between a convolutional stack and a classifier
+ * head. Parameterless.
+ */
+public class Flatten extends Module {
+
+    public Flatten() {
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        Tensor<float32> v = tape.valueOf(x);
+        int64 rows = v.shapeAt(0);
+        int64 rest = 1;
+        int32 d = 1;
+        while (d < v.ndim()) {
+            rest = rest * v.shapeAt(d);
+            d = d + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = rows;
+        sh[1] = rest;
+        return tape.reshape(x, sh);
+    }
+}

@@ -1,0 +1,134 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * Scaled dot-product self-attention with multiple heads, over
+ * `(batch, seq, embed)` input.
+ *
+ * ```
+ * q,k,v = xWq, xWk, xWv            split into H heads of width D = E/H
+ * attn  = softmax(qkᵀ / √D)        per head, over the key axis
+ * out   = (attn·v) merged · Wo
+ * ```
+ *
+ * The head axis is handled by reshape + permute rather than a strided
+ * view, so every intermediate is a materialized tape node: `(B,T,E)` →
+ * `(B,T,H,D)` → `(B,H,T,D)` → `(B·H,T,D)`, which is the rank-3 shape the
+ * batched matmul wants, and the reverse on the way out.
+ *
+ * Projections are `Linear` sub-modules, so parameter names come out as
+ * `wq.weight`, `wq.bias`, … — one dotted level per projection, the same
+ * shape torch produces for an attention block written with `nn.Linear`
+ * projections (torch's own `nn.MultiheadAttention` fuses qkv into one
+ * `in_proj_weight` instead; a checkpoint from that layout needs the
+ * split, which is `ml.io`'s business).
+ *
+ * Self-attention only, and no mask: causal masking and cross-attention
+ * are the transformer unit's work, not the block's.
+ */
+public class MultiheadAttention extends Module {
+    Linear wq;
+    Linear wk;
+    Linear wv;
+    Linear wo;
+    int32 heads;
+    int64 embed;
+
+    public MultiheadAttention(int64 embed, int32 heads, uint64 seed) {
+        if (embed % (int64) heads != 0) {
+            throw heap MlException("MultiheadAttention: embed " + embed
+                + " is not divisible by heads " + heads);
+        }
+        this.wq = heap Linear(embed, embed, seed);
+        this.wk = heap Linear(embed, embed, seed + 1);
+        this.wv = heap Linear(embed, embed, seed + 2);
+        this.wo = heap Linear(embed, embed, seed + 3);
+        this.heads = heads;
+        this.embed = embed;
+        return;
+    }
+
+    static #int64[] shape2(int64 a, int64 b) {
+        int64[] s = heap int64[2];
+        s[0] = a; s[1] = b;
+        return #s;
+    }
+
+    static #int64[] shape3(int64 a, int64 b, int64 c) {
+        int64[] s = heap int64[3];
+        s[0] = a; s[1] = b; s[2] = c;
+        return #s;
+    }
+
+    static #int64[] shape4(int64 a, int64 b, int64 c, int64 d) {
+        int64[] s = heap int64[4];
+        s[0] = a; s[1] = b; s[2] = c; s[3] = d;
+        return #s;
+    }
+
+    /** `(B·T, E)` → `(B·H, T, D)`: split the embedding into heads and move
+     *  the head axis next to the batch. */
+    GradTensor splitHeads(GradTape<float32> tape, GradTensor flat, int64 b,
+                          int64 t, int64 d) {
+        int64[] s4 = MultiheadAttention.shape4(b, t, (int64) this.heads, d);
+        GradTensor r = tape.reshape(flat, s4);
+        int32[] perm = heap int32[4];
+        perm[0] = 0; perm[1] = 2; perm[2] = 1; perm[3] = 3;
+        GradTensor p = tape.permute(r, perm);
+        int64[] s3 = MultiheadAttention.shape3(b * (int64) this.heads, t, d);
+        return tape.reshape(p, s3);
+    }
+
+    /** The inverse of {@link #splitHeads}: `(B·H, T, D)` → `(B·T, E)`. */
+    GradTensor mergeHeads(GradTape<float32> tape, GradTensor heads3, int64 b,
+                          int64 t, int64 d) {
+        int64[] s4 = MultiheadAttention.shape4(b, (int64) this.heads, t, d);
+        GradTensor r = tape.reshape(heads3, s4);
+        int32[] perm = heap int32[4];
+        perm[0] = 0; perm[1] = 2; perm[2] = 1; perm[3] = 3;
+        GradTensor p = tape.permute(r, perm);
+        int64[] s2 = MultiheadAttention.shape2(b * t, this.embed);
+        return tape.reshape(p, s2);
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        Tensor<float32> xv = tape.valueOf(x);
+        if (xv.ndim() != 3) {
+            throw heap MlException("MultiheadAttention: expected "
+                + "(batch, seq, embed), got rank " + xv.ndim());
+        }
+        int64 b = xv.shapeAt(0);
+        int64 t = xv.shapeAt(1);
+        if (xv.shapeAt(2) != this.embed) {
+            throw heap MlException("MultiheadAttention: embed mismatch — "
+                + "layer is " + this.embed + ", input is " + xv.shapeAt(2));
+        }
+        int64 d = this.embed / (int64) this.heads;
+
+        // Project on the flattened token axis: the projections are ordinary
+        // rank-2 matmuls over (B·T, E).
+        int64[] flatShape = MultiheadAttention.shape2(b * t, this.embed);
+        GradTensor flat = tape.reshape(x, flatShape);
+        GradTensor q = this.splitHeads(tape, this.wq.forward(tape, flat), b, t, d);
+        GradTensor k = this.splitHeads(tape, this.wk.forward(tape, flat), b, t, d);
+        GradTensor v = this.splitHeads(tape, this.wv.forward(tape, flat), b, t, d);
+
+        // scores = q · kᵀ / √D, softmaxed over the key axis (the last one).
+        GradTensor scores = tape.matmulBatched(q, tape.transposeBatch(k));
+        int64[] one = heap int64[1];
+        one[0] = 1;
+        float32 inv = 1.0f / Math.sqrt((float32) d);
+        GradTensor scale = tape.leaf(Tensor.full<float32>(one, inv), false);
+        GradTensor attn = tape.softmax(tape.mul(scores, scale));
+
+        GradTensor ctx = tape.matmulBatched(attn, v);
+        GradTensor merged = this.mergeHeads(tape, ctx, b, t, d);
+        GradTensor out = this.wo.forward(tape, merged);
+        int64[] s3 = MultiheadAttention.shape3(b, t, this.embed);
+        return tape.reshape(out, s3);
+    }
+}

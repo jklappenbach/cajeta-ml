@@ -1,0 +1,47 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.LayerNorm;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Sequential;
+
+/**
+ * The naming fixture: a named sub-module field, an indexed container, a
+ * nested block, and a norm — the same tree the torch generator builds, so
+ * the two key lists are directly comparable.
+ */
+public class Net extends Module {
+    Linear stem;
+    Sequential layers;
+    Block block;
+    LayerNorm norm;
+
+    public Net() {
+        this.stem = heap Linear(3, 4, 1L);
+        this.layers = heap Sequential();
+        this.layers.add(heap Linear(4, 4, 2L));
+        this.layers.add(heap Linear(4, 2, 3L));
+        this.block = heap Block();
+        this.norm = heap LayerNorm(2, 0.00001);
+        return;
+    }
+
+    public Module stemModule() {
+        return this.stem;
+    }
+
+    public Module blockModule() {
+        return this.block;
+    }
+
+    public Module layerAt(int32 i) {
+        return this.layers.at(i);
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return this.norm.forward(tape, this.layers.forward(tape,
+            this.stem.forward(tape, x)));
+    }
+}

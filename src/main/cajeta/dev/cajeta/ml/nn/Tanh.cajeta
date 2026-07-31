@@ -1,0 +1,16 @@
+package dev.cajeta.ml.nn;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/** Hyperbolic tangent, elementwise. Parameterless. */
+public class Tanh extends Module {
+
+    public Tanh() {
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.tanh(x);
+    }
+}

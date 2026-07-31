@@ -1,0 +1,107 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * Shared plumbing for the {@link dev.cajeta.ml.Predictor} adapters — the
+ * dtype bridge and one training step.
+ *
+ * The estimator protocol speaks `float64` (it is shared with the linear
+ * models, where the extra precision earns its keep) while the neural stack
+ * is `float32`. The conversion happens HERE, at the boundary, exactly
+ * once per call — not smeared through the layers.
+ */
+public final class Nets {
+
+    static int64 countOf64(Tensor<float64> t) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < t.ndim()) {
+            n = n * t.shapeAt(d);
+            d = d + 1;
+        }
+        return n;
+    }
+
+    static int64 countOf32(Tensor<float32> t) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < t.ndim()) {
+            n = n * t.shapeAt(d);
+            d = d + 1;
+        }
+        return n;
+    }
+
+    static #int64[] shapeOf64(Tensor<float64> t) {
+        int32 nd = t.ndim();
+        int64[] sh = heap int64[nd];
+        int32 d = 0;
+        while (d < nd) {
+            sh[d] = t.shapeAt(d);
+            d = d + 1;
+        }
+        return #sh;
+    }
+
+    /** Narrow a protocol tensor to the network's working precision. */
+    public static #Tensor<float32> toF32(Tensor<float64> t) {
+        int64[] sh = Nets.shapeOf64(t);
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64 n = Nets.countOf64(t);
+        int64 i = 0;
+        while (i < n) {
+            out.flatSet(i, (float32) t.flatGet(i));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Widen a network output back to the protocol's precision. */
+    public static #Tensor<float64> toF64(Tensor<float32> t) {
+        int32 nd = t.ndim();
+        int64[] sh = heap int64[nd];
+        int32 d = 0;
+        while (d < nd) {
+            sh[d] = t.shapeAt(d);
+            d = d + 1;
+        }
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 n = Nets.countOf32(t);
+        int64 i = 0;
+        while (i < n) {
+            out.flatSet(i, (float64) t.flatGet(i));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Reshape a `(n,)` target to the `(n, 1)` a single-output head emits. */
+    public static #Tensor<float32> asColumn(Tensor<float32> y) {
+        if (y.ndim() == 2) {
+            return y.copy();
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = y.shapeAt(0);
+        sh[1] = 1;
+        Tensor<float32> vw = y.reshape(sh);
+        Tensor<float32> out = vw.copy();
+        return #out;
+    }
+
+    /** Collect this pass's gradients in `parameters()` order — the shape
+     *  the optimizers consume. */
+    public static #Tensor<float32>[] gradsOf(GradTape<float32> tape,
+                                             Parameter[] ps) {
+        int32 n = (int32) ps.count();
+        Tensor<float32>[] gs = heap Tensor<float32>[n];
+        int32 i = 0;
+        while (i < n) {
+            gs[i] = tape.gradOf(ps[i].node()).copy();
+            i = i + 1;
+        }
+        return gs;
+    }
+}

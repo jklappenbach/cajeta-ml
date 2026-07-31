@@ -2,43 +2,57 @@ package dev.cajeta.ml.nn;
 
 import cajeta.collection.ArrayList;
 import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
 
 /**
- * Module — the composable neural-net building block (spec §2; resolutions
- * N1/N2): an ordinary base class whose subclasses declare {@link Parameter}
- * fields (owned, optimizable tensors), sub-`Module` fields (composition), and
- * plain `Tensor<float32>` fields (buffers — running statistics, lookup tables),
- * and define a `forward` method by convention (`model.forward(x)`; there is
- * ONE model abstraction — no Sequential/Functional/subclassing split).
+ * Module — the composable neural-net building block: a base class whose
+ * subclasses declare {@link Parameter} fields (owned, optimizable tensors),
+ * sub-`Module` fields or `ArrayList<Module>` fields (composition), and plain
+ * `Tensor<float32>` fields (buffers — running statistics, lookup tables).
  *
- * Parameter collection is a **reflection walk** (N1): {@link #parameters}
- * enumerates this module's typed fields via the object-receiver rtti natives
- * (`fieldCount`/`fieldIsRef`/`fieldRef`) + `instanceof`, recursing
- * depth-first into sub-modules, in DECLARED order —
- * so the order is stable run-to-run (§3.1), a field added to a module is
- * collected automatically (§3.5), and no per-module registration list exists.
- * {@link #parameterNames} yields the dotted paths (`head.weight`) in the SAME
- * order — the basis a serializer keys on (§3.4). {@link #buffers} enumerates
- * the plain tensor fields the optimizer must never touch (§3.6).
+ * **Forward runs over a {@link GradTape}** (spec §4, v3). Subclasses override
+ * {@link #forward}; the tape is explicit rather than ambient, so a training
+ * step, an inference pass, and SPELA's per-layer tapes are the same code
+ * with a different tape. {@link #predict} is the inference convenience —
+ * throwaway tape, constant leaves, value copied out — so there is ONE
+ * forward implementation per layer, never a train/infer pair to keep in
+ * sync.
  *
- * OWNERSHIP (N3): the module owns its parameters; collections returned here
- * hold **borrows** — an optimizer constructed over them updates the tensors
- * in place and must not outlive the module.
+ * Parameter collection is a **reflection walk** over typed fields
+ * (`fieldCount`/`fieldIsRef`/`fieldRef` + `instanceof`), depth-first in
+ * DECLARED order, so ordering is stable run-to-run and a field added to a
+ * module is collected automatically with no registration list.
+ * {@link #parameterNames} yields the dotted paths in the SAME order — the
+ * checkpoint key contract. Children held in an `ArrayList<Module>` are named
+ * by INDEX (`layers.0.weight`), matching torch's `Sequential`/`ModuleList`
+ * naming so a `state_dict()` key list transfers unchanged.
+ *
+ * OWNERSHIP: the module owns its parameters; collections returned here hold
+ * **borrows** — an optimizer constructed over them updates the tensors in
+ * place and must not outlive the module.
  *
  * v1 is FLOAT32-ONLY and the class is non-generic — every parameter and
- * buffer in the tree is `float32`, matching `GradAll`'s uniform-type grads
- * contract. The generic `Module` is blocked on two recorded compiler gaps
- * (identifier-template-arg `instanceof`/cast mis-parse in templates;
- * concrete-extends-instantiated-template member resolution) — plan 8.2.2.
+ * buffer in the tree is `float32`. The generic `Module` is blocked on two
+ * recorded compiler gaps (identifier-template-arg `instanceof`/cast
+ * mis-parse in templates; concrete-extends-instantiated-template member
+ * resolution).
  */
 public class Module {
 
+    /** Train vs eval. Dropout and BatchNorm2d read it; {@link #train} and
+     *  {@link #eval} propagate it through the whole subtree so setting the
+     *  root is enough. */
+    boolean training;
+
+    public Module() {
+        this.training = true;
+        return;
+    }
+
     // The self-walk natives: THIS module's own field count / reference-kind
-    // test / name / borrow-read, rtti derived from the receiver. Object-
-    // receiver forms because (a) a multi-reference-param borrow return is
-    // rejected by the checker — provenance must be `this` — and (b) member
-    // resolution on a `Class<?>` wildcard receiver is unavailable to stdlib
-    // code today, so the Class/Field surface can't drive this walk yet.
+    // test / name / borrow-read, rtti derived from the receiver.
     @Native("__cajeta_object_field_count")
     int32 fieldCount();
     @Native("__cajeta_object_field_is_ref")
@@ -55,6 +69,118 @@ public class Module {
         int8[] out = heap int8[len];
         this.fieldNameInto(index, out);
         return heap String(#out, len);
+    }
+
+    /**
+     * Child modules held in a CONTAINER rather than named fields —
+     * `Sequential` overrides this; every other module returns null.
+     *
+     * A hook rather than an `instanceof ArrayList<Module>` branch in the
+     * field walk: calling a method on a template-typed `instanceof` pattern
+     * variable does not resolve in this toolchain (binding it does), and a
+     * statically-typed override is clearer besides. Container children are
+     * named by INDEX (`layers.0.weight`), matching torch's Sequential /
+     * ModuleList so a state_dict key list transfers unchanged.
+     */
+    public ArrayList<Module> children() {
+        return null;
+    }
+
+    /**
+     * Map `x` to this module's output, recording every op on `tape`.
+     * Subclasses override; the base throws so a module that forgot to is a
+     * loud error rather than a silent identity.
+     */
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        throw heap MlException("Module.forward: this module does not "
+            + "implement forward — override it in the subclass");
+    }
+
+    /** Bind every parameter in the tree to `tape` (declared order), so the
+     *  handles a forward reads are nodes of THIS tape. */
+    public void bindParameters(GradTape<float32> tape) {
+        Parameter[] ps = this.parameters();
+        int32 i = 0;
+        while (i < (int32) ps.count()) {
+            ps[i].bind(tape);
+            i = i + 1;
+        }
+        return;
+    }
+
+    /** Inference: run the forward on a throwaway tape whose leaves require
+     *  no gradient, and copy the result out. The same forward code the
+     *  training path uses — there is no second implementation. */
+    public #Tensor<float32> predict(Tensor<float32> x) {
+        GradTape<float32> tape = heap GradTape<float32>();
+        this.bindParameters(tape);
+        GradTensor xn = tape.leaf(x, false);
+        GradTensor y = this.forward(tape, xn);
+        Tensor<float32> out = tape.valueOf(y).copy();
+        this.unbindParameters();
+        return #out;
+    }
+
+    /** Drop every tape binding in the tree (the tape is going away). */
+    public void unbindParameters() {
+        Parameter[] ps = this.parameters();
+        int32 i = 0;
+        while (i < (int32) ps.count()) {
+            ps[i].unbind();
+            i = i + 1;
+        }
+        return;
+    }
+
+    public boolean isTraining() {
+        return this.training;
+    }
+
+    /** Put this module and its whole subtree into training mode. */
+    public void train() {
+        this.setMode(true);
+        return;
+    }
+
+    /** Put this module and its whole subtree into evaluation mode. */
+    public void eval() {
+        this.setMode(false);
+        return;
+    }
+
+    void setMode(boolean mode) {
+        this.training = mode;
+        int32 n = this.fieldCount();
+        int32 i = 0;
+        while (i < n) {
+            if (this.fieldIsRef(i) != 0) {
+                Object o = this.fieldRef(i);
+                if (o instanceof Module m) {
+                    m.setMode(mode);
+                }
+            }
+            i = i + 1;
+        }
+        ArrayList<Module> kids = this.children();
+        if (kids != null) {
+            int32 k = 0;
+            while (k < kids.count()) {
+                kids.get(k).setMode(mode);
+                k = k + 1;
+            }
+        }
+        return;
+    }
+
+    /** Freeze or unfreeze every parameter in the subtree. */
+    public void setTrainable(boolean trainable) {
+        Parameter[] ps = this.parameters();
+        int32 i = 0;
+        while (i < (int32) ps.count()) {
+            ps[i].setTrainable(trainable);
+            i = i + 1;
+        }
+        return;
     }
 
     /**
@@ -76,10 +202,9 @@ public class Module {
     }
 
     /**
-     * The stable dotted path of each parameter (`w0`, `head.weight`), in the
-     * SAME order as {@link #parameters} — the parallel-collection v1
-     * `namedParameters` surface. Returns an OWNING list (the JsonObject.keys
-     * idiom): the paths are freshly built strings, moved in with `#`.
+     * The stable dotted path of each parameter (`weight`, `head.weight`,
+     * `layers.0.weight`), in the SAME order as {@link #parameters} — the
+     * key list a checkpoint is written against. Returns an OWNING list.
      */
     public #ArrayList<String> parameterNames() {
         ArrayList<String> acc #= heap ArrayList<String>();
@@ -89,7 +214,7 @@ public class Module {
 
     /**
      * Every plain `Tensor<float32>` field of this module and its sub-modules —
-     * state a serializer records but an optimizer must never update (§3.6).
+     * state a serializer records but an optimizer must never update.
      * Borrows, same ordering rule as {@link #parameters}.
      */
     public #Tensor<float32>[] buffers() {
@@ -119,6 +244,14 @@ public class Module {
             }
             i = i + 1;
         }
+        ArrayList<Module> kids = this.children();
+        if (kids != null) {
+            int32 k = 0;
+            while (k < kids.count()) {
+                kids.get(k).collectParams(acc);
+                k = k + 1;
+            }
+        }
     }
 
     void collectNames(String prefix, ArrayList<String> acc) {
@@ -136,6 +269,14 @@ public class Module {
             }
             i = i + 1;
         }
+        ArrayList<Module> kids = this.children();
+        if (kids != null) {
+            int32 k = 0;
+            while (k < kids.count()) {
+                kids.get(k).collectNames(prefix + k + ".", acc);
+                k = k + 1;
+            }
+        }
     }
 
     void collectBuffers(ArrayList<Tensor<float32>> acc) {
@@ -151,6 +292,14 @@ public class Module {
                 }
             }
             i = i + 1;
+        }
+        ArrayList<Module> kids = this.children();
+        if (kids != null) {
+            int32 k = 0;
+            while (k < kids.count()) {
+                kids.get(k).collectBuffers(acc);
+                k = k + 1;
+            }
         }
     }
 }

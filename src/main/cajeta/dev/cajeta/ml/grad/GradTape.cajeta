@@ -237,6 +237,31 @@ public final class GradTape<E extends Floating> {
     public GradTensor div(GradTensor a, GradTensor b) { return this.bin2(Op.DIV, a, b); }
     public GradTensor matmul(GradTensor a, GradTensor b) { return this.bin2(Op.MATMUL, a, b); }
 
+    /** Rank-3 batched matmul: (B,M,K)·(B,K,N) → (B,M,N). Attention's shape
+     *  once the head axis is folded into the batch. */
+    public GradTensor matmulBatched(GradTensor a, GradTensor b) { return this.bin2(Op.MATMULB, a, b); }
+
+    /** Swap the last two axes of a rank-3 node. */
+    public GradTensor transposeBatch(GradTensor a) { return this.una(Op.TRANSPOSEB, a, 0, (E) 0); }
+
+    /** Permute axes (rank ≤ 4 — the perm rides the int payload slots).
+     *  `perm[k]` is the SOURCE axis that becomes axis `k`. */
+    public GradTensor permute(GradTensor a, int32[] perm) {
+        int32 rank = (int32) perm.count();
+        if (rank > this.payStride) {
+            throw heap MlException("GradTape.permute: rank " + rank
+                + " exceeds the tape's payload width (" + this.payStride + ")");
+        }
+        Tensor<E> v = Ops.permute<E>(this.values.get(a.idx), perm);
+        GradTensor t = this.push(Op.PERMUTE, a.idx, -1, rank, 0.0, #v);
+        int32 k = 0;
+        while (k < rank) {
+            this.setPay(t.idx, k, perm[k]);
+            k = k + 1;
+        }
+        return t;
+    }
+
     GradTensor bin2(int32 op, GradTensor a, GradTensor b) {
         Tensor<E> v = Ops.run2<E>(op, this.values.get(a.idx), this.values.get(b.idx));
         return this.push(op, a.idx, b.idx, 0, 0.0, #v);
@@ -567,6 +592,35 @@ public final class GradTape<E extends Floating> {
                 Tensor<E> gb = Tensor.matmul<E>(at, g);
                 this.accum(b, #gb);
             }
+            return;
+        }
+        if (op == Op.MATMULB) {
+            Tensor<E> vb = this.values.get(b);
+            if (this.needsGrad[a]) {
+                Tensor<E> bt = Ops.transposeLast2<E>(vb);
+                this.accum(a, Ops.run2<E>(Op.MATMULB, g, bt));
+            }
+            if (this.needsGrad[b]) {
+                Tensor<E> at = Ops.transposeLast2<E>(va);
+                this.accum(b, Ops.run2<E>(Op.MATMULB, at, g));
+            }
+            return;
+        }
+        if (op == Op.TRANSPOSEB) {
+            // the last-two-axis swap is its own inverse
+            this.accum(a, Ops.transposeLast2<E>(g));
+            return;
+        }
+        if (op == Op.PERMUTE) {
+            // undo with the INVERSE permutation: axis perm[k] came from k
+            int32 rank = this.axes[i];
+            int32[] inv = heap int32[rank];
+            int32 k = 0;
+            while (k < rank) {
+                inv[this.getPay(i, k)] = k;
+                k = k + 1;
+            }
+            this.accum(a, Ops.permute<E>(g, inv));
             return;
         }
         if (op == Op.RELU) {

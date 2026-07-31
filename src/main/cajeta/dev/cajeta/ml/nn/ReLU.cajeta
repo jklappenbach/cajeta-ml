@@ -1,0 +1,16 @@
+package dev.cajeta.ml.nn;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/** `max(0, x)`, elementwise. Parameterless. */
+public class ReLU extends Module {
+
+    public ReLU() {
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.relu(x);
+    }
+}

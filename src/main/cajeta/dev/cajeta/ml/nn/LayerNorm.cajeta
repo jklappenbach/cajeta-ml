@@ -1,0 +1,33 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * Normalizes each row over the LAST axis to zero mean and unit variance,
+ * then applies a learned per-position scale and shift. Parameter names
+ * match torch (`weight`, `bias`).
+ *
+ * No mode dependence and no running statistics: layer norm uses the
+ * current row's own statistics in both training and evaluation, which is
+ * exactly why transformers prefer it over batch norm.
+ */
+public class LayerNorm extends Module {
+    Parameter weight;
+    Parameter bias;
+    float64 eps;
+
+    public LayerNorm(int64 features, float64 eps) {
+        int64[] s = heap int64[1];
+        s[0] = features;
+        this.weight = heap Parameter(Tensor.full<float32>(s, 1.0f));
+        this.bias = heap Parameter(Tensor.zeros<float32>(s));
+        this.eps = eps;
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.layerNorm(x, this.weight.node(), this.bias.node(), this.eps);
+    }
+}

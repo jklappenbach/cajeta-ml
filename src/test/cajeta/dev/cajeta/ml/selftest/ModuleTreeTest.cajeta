@@ -1,0 +1,491 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.BatchNorm2d;
+import dev.cajeta.ml.nn.Conv2d;
+import dev.cajeta.ml.nn.Dropout;
+import dev.cajeta.ml.nn.Flatten;
+import dev.cajeta.ml.nn.Init;
+import dev.cajeta.ml.nn.LayerNorm;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.MaxPool2d;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.MultiheadAttention;
+import dev.cajeta.ml.nn.NetClassifier;
+import dev.cajeta.ml.nn.NetRegressor;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+
+/**
+ * cajeta-ml-v3 plan 4.1.1–4.3.1 — the module tree: torch-compatible
+ * parameter NAMES (the checkpoint key contract), train/eval propagation,
+ * per-parameter freezing, seeded initialization, the reference MLP
+ * differentiating end to end against torch, and the `Predictor` wrap.
+ *
+ * Key lists are pinned against a real `state_dict()` from PINNED torch
+ * 2.13.0+cpu (tools/fixtures/gen_nn_module.py) — a tree of the same shape
+ * built with `nn.Linear` / `nn.Sequential` / `nn.LayerNorm`.
+ */
+public class ModuleTreeTest {
+
+    public ModuleTreeTest() { return; }
+
+    static boolean near(float32 a, float32 b, float32 tol) {
+        float32 d = a - b;
+        if (d < 0.0f) { d = 0.0f - d; }
+        return d < tol;
+    }
+
+    static void checkFlat(Tensor<float32> t, float32[] exp, float32 tol) {
+        int64 n = (int64) exp.count();
+        int64 f = 0;
+        while (f < n) {
+            float32 v = t.flatGet(f);
+            float32 d = v - exp[f];
+            if (d < 0.0f) { d = 0.0f - d; }
+            if (d >= tol) {
+                Assert.fail("flat[" + f + "] = " + v + ", torch pin " + exp[f]);
+            }
+            f = f + 1;
+        }
+    }
+
+    // ── 4.1.1 the checkpoint key contract ───────────────────────────────
+
+    @Test
+    public void namedParametersMatchTorchStateDictKeys() {
+        Net net = heap Net();
+        ArrayList<String> names = net.parameterNames();
+        // torch state_dict() key order for the same tree — named fields in
+        // declaration order, container children by INDEX.
+        Assert.equals(12, (int64) names.count());
+        Assert.equals("stem.weight", names.get(0));
+        Assert.equals("stem.bias", names.get(1));
+        Assert.equals("layers.0.weight", names.get(2));
+        Assert.equals("layers.0.bias", names.get(3));
+        Assert.equals("layers.1.weight", names.get(4));
+        Assert.equals("layers.1.bias", names.get(5));
+        Assert.equals("block.wq.weight", names.get(6));
+        Assert.equals("block.wq.bias", names.get(7));
+        Assert.equals("block.wo.weight", names.get(8));
+        Assert.equals("block.wo.bias", names.get(9));
+        Assert.equals("norm.weight", names.get(10));
+        Assert.equals("norm.bias", names.get(11));
+    }
+
+    @Test
+    public void parameterNamesAlignWithParameterOrder() {
+        Net net = heap Net();
+        Parameter[] ps = net.parameters();
+        ArrayList<String> names = net.parameterNames();
+        Assert.equals((int64) ps.count(), (int64) names.count());
+        // names.get(i) describes ps[i]: stem.weight is (3,4), stem.bias (4,)
+        Assert.isTrue(ps[0].get().ndim() == 2);
+        Assert.isTrue(ps[0].get().shapeAt(0) == 3);
+        Assert.isTrue(ps[1].get().ndim() == 1);
+        Assert.isTrue(ps[1].get().shapeAt(0) == 4);
+    }
+
+    /** BatchNorm's running statistics are BUFFERS: reported for a
+     *  checkpoint, never handed to an optimizer. */
+    @Test
+    public void runningStatsAreBuffersNotParameters() {
+        BatchNorm2d bn = heap BatchNorm2d(3, 0.00001, 0.1);
+        Assert.equals(2, (int64) bn.parameters().count());   // weight, bias
+        Assert.equals(2, (int64) bn.buffers().count());      // mean, var
+        ArrayList<String> names = bn.parameterNames();
+        Assert.equals("weight", names.get(0));
+        Assert.equals("bias", names.get(1));
+    }
+
+    // ── 4.1.2 mode propagation + per-parameter freezing ─────────────────
+
+    @Test
+    public void trainEvalPropagatesThroughTheTree() {
+        Net net = heap Net();
+        Assert.isTrue(net.isTraining());
+        net.eval();
+        Assert.isFalse(net.isTraining());
+        Assert.isFalse(net.stemModule().isTraining());
+        // through a named sub-module field AND an indexed container child
+        Assert.isFalse(net.blockModule().isTraining());
+        Assert.isFalse(net.layerAt(0).isTraining());
+        net.train();
+        Assert.isTrue(net.layerAt(1).isTraining());
+        Assert.isTrue(net.blockModule().isTraining());
+    }
+
+    /** Dropout is the mode-sensitive proof layer: identity in eval,
+     *  masked in train — driven purely by the tree's mode. */
+    @Test
+    public void dropoutFollowsTreeMode() {
+        Dropout d = heap Dropout(0.5, 4242L);
+        int64[] s = heap int64[2];
+        s[0] = 4;
+        s[1] = 8;
+        Tensor<float32> x = Tensor.full<float32>(s, 1.0f);
+
+        d.eval();
+        Tensor<float32> ev = d.predict(x);
+        int64 i = 0;
+        while (i < 32) {
+            Assert.isTrue(ev.flatGet(i) == 1.0f);
+            i = i + 1;
+        }
+
+        d.train();
+        d.resetStream();
+        Tensor<float32> tr = d.predict(x);
+        int64 zeros = 0;
+        i = 0;
+        while (i < 32) {
+            float32 v = tr.flatGet(i);
+            Assert.isTrue(v == 0.0f || ModuleTreeTest.near(v, 2.0f, 0.0001f));
+            if (v == 0.0f) { zeros = zeros + 1; }
+            i = i + 1;
+        }
+        Assert.isTrue(zeros > 3 && zeros < 29);
+    }
+
+    /** The mask stream ADVANCES per forward — successive batches must not
+     *  all see the same mask — and rewinds on demand. */
+    @Test
+    public void dropoutStreamAdvancesAndRewinds() {
+        Dropout d = heap Dropout(0.5, 77L);
+        d.train();
+        int64[] s = heap int64[2];
+        s[0] = 4;
+        s[1] = 8;
+        Tensor<float32> x = Tensor.full<float32>(s, 1.0f);
+        Tensor<float32> a = d.predict(x);
+        Tensor<float32> b = d.predict(x);
+        boolean differs = false;
+        int64 i = 0;
+        while (i < 32) {
+            if (a.flatGet(i) != b.flatGet(i)) { differs = true; }
+            i = i + 1;
+        }
+        Assert.isTrue(differs);
+        d.resetStream();
+        Tensor<float32> again = d.predict(x);
+        i = 0;
+        while (i < 32) {
+            Assert.isTrue(again.flatGet(i) == a.flatGet(i));
+            i = i + 1;
+        }
+    }
+
+    @Test
+    public void freezingSuppressesGradient() {
+        Linear fc = heap Linear(2, 2, 5L);
+        fc.weightParam().setTrainable(false);
+        GradTape<float32> tape = heap GradTape<float32>();
+        fc.bindParameters(tape);
+        int64[] xs = heap int64[2];
+        xs[0] = 1;
+        xs[1] = 2;
+        GradTensor x = tape.leaf(Tensor.full<float32>(xs, 1.0f), false);
+        GradTensor y = tape.sum(fc.forward(tape, x));
+        tape.backward(y);
+        // the bias still trains...
+        Tensor<float32> db = tape.gradOf(fc.biasParam().node());
+        Assert.isTrue(db.flatGet(0) == 1.0f);
+        // ...while the frozen weight has no gradient at all
+        boolean threw = false;
+        try {
+            Tensor<float32> dw = tape.gradOf(fc.weightParam().node());
+        } catch (Exception e) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+    }
+
+    // ── 4.1.3 initialization ────────────────────────────────────────────
+
+    @Test
+    public void seededInitIsReproducibleAndBounded() {
+        Linear a = heap Linear(4, 3, 42L);
+        Linear b = heap Linear(4, 3, 42L);
+        Tensor<float32> wa = a.weightParam().get();
+        Tensor<float32> wb = b.weightParam().get();
+        float32 bound = 0.5f;              // 1/sqrt(4), torch's nn.Linear default
+        int64 i = 0;
+        while (i < 4) {
+            int64 j = 0;
+            while (j < 3) {
+                Assert.isTrue(wa.get2(i, j) == wb.get2(i, j));
+                float32 v = wa.get2(i, j);
+                Assert.isTrue(v > (0.0f - bound) && v < bound);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        // a different seed gives different weights
+        Linear c = heap Linear(4, 3, 43L);
+        Assert.isTrue(c.weightParam().get().get2(0, 0) != wa.get2(0, 0));
+    }
+
+    @Test
+    public void initSchemeSpreadsMatchTheirFormulas() {
+        int64[] s = heap int64[2];
+        s[0] = 40;
+        s[1] = 40;
+        // kaiming normal: std = sqrt(2/fanIn); check the sample std is in
+        // the right neighbourhood (1600 draws)
+        Tensor<float32> k = Init.kaimingNormal(s, 8, 11L);
+        float64 sum = 0.0;
+        float64 sq = 0.0;
+        int64 n = 1600;
+        int64 i = 0;
+        while (i < n) {
+            float64 v = (float64) k.flatGet(i);
+            sum = sum + v;
+            sq = sq + v * v;
+            i = i + 1;
+        }
+        float64 mean = sum / (float64) n;
+        float64 std = Math.sqrt(sq / (float64) n - mean * mean);
+        float64 want = Math.sqrt(2.0 / 8.0);          // 0.5
+        Assert.isTrue(mean > -0.06 && mean < 0.06);
+        Assert.isTrue(std > want * 0.85 && std < want * 1.15);
+
+        // xavier uniform: bounded by sqrt(6/(fanIn+fanOut))
+        Tensor<float32> x = Init.xavierUniform(s, 8, 4, 12L);
+        float32 bound = Math.sqrt(6.0f / 12.0f);
+        i = 0;
+        while (i < n) {
+            float32 v = x.flatGet(i);
+            Assert.isTrue(v > (0.0f - bound) && v < bound);
+            i = i + 1;
+        }
+    }
+
+    // ── 4.3.1 the reference MLP, end to end against torch ───────────────
+
+    @Test
+    public void referenceMlpMatchesTorchEndToEnd() {
+        Mlp net = heap Mlp();
+        GradTape<float32> tape = heap GradTape<float32>();
+        net.bindParameters(tape);
+        GradTensor x = tape.leaf(ModuleTreeTest.xIn(), false);
+        GradTensor target = tape.leaf(ModuleTreeTest.targetIn(), false);
+        GradTensor y = net.forward(tape, x);
+        float32[] py = [0.62500006f, -0.75f, -0.55000001f, -0.32500002f];
+        ModuleTreeTest.checkFlat(tape.valueOf(y), py, 0.0002f);
+
+        GradTensor loss = tape.mseLoss(y, target);
+        float32[] pl = [0.33093753f];
+        ModuleTreeTest.checkFlat(tape.valueOf(loss), pl, 0.0001f);
+        tape.backward(loss);
+
+        float32[] pdw1 = [0.0f, 0.046875f, -0.14062503f, 0.0f, 0.10468752f,
+                          -0.0359375f, -0.09375001f, 0.0f, 0.20937502f,
+                          -0.11875001f, -0.04687501f, 0.0f];
+        float32[] pdb1 = [0.41874999f, -0.33125001f, 0.18750003f, 0.0f];
+        float32[] pdw2 = [-0.07593749f, -0.35062501f, 0.01906251f, -0.08f,
+                          0.05000002f, -0.1f, 0.0f, 0.0f];
+        float32[] pdb2 = [-0.08749998f, -0.66250002f];
+        ModuleTreeTest.checkFlat(tape.gradOf(net.w1Param()), pdw1, 0.0002f);
+        ModuleTreeTest.checkFlat(tape.gradOf(net.b1Param()), pdb1, 0.0002f);
+        ModuleTreeTest.checkFlat(tape.gradOf(net.w2Param()), pdw2, 0.0002f);
+        ModuleTreeTest.checkFlat(tape.gradOf(net.b2Param()), pdb2, 0.0002f);
+    }
+
+    static #Tensor<float32> xIn() {
+        int64[] s = heap int64[2];
+        s[0] = 2;
+        s[1] = 3;
+        Tensor<float32> t = Tensor.zeros<float32>(s);
+        int64 f = 0;
+        while (f < 6) {
+            t.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    static #Tensor<float32> targetIn() {
+        int64[] s = heap int64[2];
+        s[0] = 2;
+        s[1] = 2;
+        Tensor<float32> t = Tensor.zeros<float32>(s);
+        t.flatSet(0, 0.5f);
+        t.flatSet(1, -0.5f);
+        t.flatSet(2, -0.25f);
+        t.flatSet(3, 0.75f);
+        return #t;
+    }
+
+    // ── the CNN stack assembles and differentiates ──────────────────────
+
+    @Test
+    public void convStackDifferentiatesEndToEnd() {
+        Cnn net = heap Cnn();
+        GradTape<float32> tape = heap GradTape<float32>();
+        net.bindParameters(tape);
+        int64[] xs = heap int64[4];
+        xs[0] = 2; xs[1] = 2; xs[2] = 4; xs[3] = 4;
+        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        int64 f = 0;
+        while (f < 64) {
+            xv.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
+            f = f + 1;
+        }
+        GradTensor x = tape.leaf(xv, false);
+        GradTensor y = net.forward(tape, x);
+        // (2,2,4,4) -> conv(3) -> pool/2 -> flatten(3*2*2=12) -> linear(2)
+        Assert.isTrue(tape.valueOf(y).ndim() == 2);
+        Assert.isTrue(tape.valueOf(y).shapeAt(0) == 2);
+        Assert.isTrue(tape.valueOf(y).shapeAt(1) == 2);
+        GradTensor loss = tape.sum(y);
+        tape.backward(loss);
+        // every parameter in the stack received a gradient of its own shape
+        Parameter[] ps = net.parameters();
+        int32 i = 0;
+        while (i < (int32) ps.count()) {
+            Tensor<float32> g = tape.gradOf(ps[i].node());
+            Assert.isTrue(g.ndim() == ps[i].get().ndim());
+            Assert.isTrue(g.shapeAt(0) == ps[i].get().shapeAt(0));
+            i = i + 1;
+        }
+    }
+
+    // ── attention block vs torch ────────────────────────────────────────
+
+    @Test
+    public void attentionMatchesTorchEndToEnd() {
+        MultiheadAttention att = heap MultiheadAttention(4, 2, 9L);
+        // overwrite the seeded init with the generator's explicit weights
+        Parameter[] ps = att.parameters();
+        // parameters(): wq.weight, wq.bias, wk.*, wv.*, wo.*
+        ModuleTreeTest.fillW(ps[0].get(), 0);
+        ModuleTreeTest.fillW(ps[2].get(), 1);
+        ModuleTreeTest.fillW(ps[4].get(), 2);
+        ModuleTreeTest.fillW(ps[6].get(), 3);
+
+        GradTape<float32> tape = heap GradTape<float32>();
+        att.bindParameters(tape);
+        int64[] xs = heap int64[3];
+        xs[0] = 2; xs[1] = 3; xs[2] = 4;
+        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        int64 f = 0;
+        while (f < 24) {
+            xv.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
+            f = f + 1;
+        }
+        GradTensor x = tape.leaf(xv, true);
+        GradTensor y = att.forward(tape, x);
+        Assert.isTrue(tape.valueOf(y).ndim() == 3);
+        float32[] po = [-0.12549827f, -0.17407258f, -0.50185353f, 0.05244872f,
+                        -0.22405809f, -0.4842115f, -0.01412144f, -0.06361014f,
+                        -0.00849262f, -0.13938734f, -0.60189754f, -0.10905124f,
+                        0.28389916f, 0.67431152f, 0.81372404f, -0.262826f,
+                        0.50043005f, 0.67268825f, 0.01583012f, -0.38869548f,
+                        0.23392162f, 0.79417062f, 1.47126377f, -0.5758751f];
+        ModuleTreeTest.checkFlat(tape.valueOf(y), po, 0.0005f);
+
+        // weighted backward, the generator's K
+        Tensor<float32> kv = tape.valueOf(y).copy();
+        int64 i = 0;
+        while (i < 24) {
+            kv.flatSet(i, (float32) (i % 3 + 1) * 0.5f);
+            i = i + 1;
+        }
+        GradTensor k = tape.leaf(kv, false);
+        tape.backward(tape.sum(tape.mul(y, k)));
+        float32[] pdx = [3.09752178f, -0.25335345f, -1.44938433f, -1.79432344f,
+                         1.19756436f, -0.974397f, -0.5015465f, -0.02240315f,
+                         2.90908813f, -0.53849643f, -1.21138239f, -1.67381978f,
+                         4.21923733f, -0.866548f, -0.85473096f, -2.66056013f,
+                         1.70581758f, -1.44049168f, -2.49904013f, 0.71834958f,
+                         2.35207438f, -0.84922451f, -1.35704315f, -0.59172374f];
+        ModuleTreeTest.checkFlat(tape.gradOf(x), pdx, 0.002f);
+        float32[] pdwo = [0.27445322f, 0.31436062f, 0.42380694f, 0.27445322f,
+                          1.50945294f, 0.96203518f, 1.3851341f, 1.50945294f,
+                          0.45338732f, 0.20288411f, 0.7533986f, 0.45338732f,
+                          -0.78318286f, -0.62993503f, -0.76601201f, -0.78318286f];
+        ModuleTreeTest.checkFlat(tape.gradOf(ps[6].node()), pdwo, 0.002f);
+    }
+
+    /** The generator's `w_` grid, offset per projection. */
+    static void fillW(Tensor<float32> w, int64 offset) {
+        int64 f = 0;
+        while (f < 16) {
+            w.flatSet(f, (float32) ((f + offset) % 5) * 0.5f - 1.0f);
+            f = f + 1;
+        }
+        int64 b = 0;
+        return;
+    }
+
+    // ── 4.1.4 the Predictor wrap ────────────────────────────────────────
+
+    @Test
+    public void netRegressorLearnsAndScores() {
+        Sequential body = heap Sequential();
+        body.add(heap Linear(1, 6, 3L));
+        body.add(heap ReLU());
+        body.add(heap Linear(6, 1, 4L));
+        NetRegressor reg = heap NetRegressor(#body, 400, 0.05f);
+        // y = 2x + 1 on ten points
+        int64[] xs = heap int64[2];
+        xs[0] = 10;
+        xs[1] = 1;
+        Tensor<float64> x = Tensor.zeros<float64>(xs);
+        int64[] ys = heap int64[1];
+        ys[0] = 10;
+        Tensor<float64> y = Tensor.zeros<float64>(ys);
+        int64 i = 0;
+        while (i < 10) {
+            float64 v = (float64) i * 0.1;
+            x.flatSet(i, v);
+            y.flatSet(i, 2.0 * v + 1.0);
+            i = i + 1;
+        }
+        Assert.isFalse(reg.isFitted());
+        reg.fit(x, y);
+        Assert.isTrue(reg.isFitted());
+        Tensor<float64> p = reg.predict(x);
+        Assert.isTrue(p.ndim() == 1);
+        Assert.isTrue(p.shapeAt(0) == 10);
+        // a relationship this simple should fit well
+        float64 r2 = reg.score(x, y);
+        Assert.isTrue(r2 > 0.9);
+    }
+
+    @Test
+    public void netClassifierSeparatesTwoClasses() {
+        Sequential body = heap Sequential();
+        body.add(heap Linear(2, 8, 7L));
+        body.add(heap ReLU());
+        body.add(heap Linear(8, 2, 8L));
+        NetClassifier clf = heap NetClassifier(#body, 2L, 400, 0.1f);
+        int64[] xs = heap int64[2];
+        xs[0] = 8;
+        xs[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(xs);
+        int64[] ys = heap int64[1];
+        ys[0] = 8;
+        Tensor<float64> y = Tensor.zeros<float64>(ys);
+        // class 0 near (-1,-1), class 1 near (1,1)
+        int64 i = 0;
+        while (i < 8) {
+            float64 sign = 1.0;
+            if (i < 4) { sign = -1.0; }
+            x.set2(i, 0, sign * (1.0 + (float64) (i % 4) * 0.1));
+            x.set2(i, 1, sign * (1.0 - (float64) (i % 4) * 0.05));
+            if (i < 4) { y.flatSet(i, 0.0); } else { y.flatSet(i, 1.0); }
+            i = i + 1;
+        }
+        clf.fit(x, y);
+        Assert.isTrue(clf.score(x, y) > 0.99);
+        Tensor<float64> p = clf.predict(x);
+        Assert.isTrue(p.flatGet(0) == 0.0);
+        Assert.isTrue(p.flatGet(7) == 1.0);
+    }
+}

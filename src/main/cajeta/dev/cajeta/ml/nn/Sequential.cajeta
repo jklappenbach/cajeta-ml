@@ -1,0 +1,53 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.collection.ArrayList;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * Runs its children in order, threading one node through the chain.
+ *
+ * Children live in an `ArrayList<Module>`, which {@link Module}'s walk
+ * names by INDEX — `layers.0.weight`, `layers.1.weight` — matching torch's
+ * `Sequential`/`ModuleList` so a `state_dict` key list transfers unchanged.
+ */
+public class Sequential extends Module {
+    ArrayList<Module> layers;
+
+    public Sequential() {
+        this.layers = heap ArrayList<Module>();
+        return;
+    }
+
+    /** Append a child (takes ownership). Returns `this` so construction
+     *  chains: `heap Sequential().add(a).add(b)`. */
+    public Sequential add(#Module m) {
+        this.layers.add(#m);
+        return this;
+    }
+
+    public int32 count() {
+        return this.layers.count();
+    }
+
+    public Module at(int32 i) {
+        return this.layers.get(i);
+    }
+
+    /** The container hook the Module walks use — children are named by
+     *  index, so this list produces `0.weight`, `1.weight`, … under
+     *  whatever prefix the parent contributes. */
+    public ArrayList<Module> children() {
+        return this.layers;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        GradTensor cur = x;
+        int32 i = 0;
+        while (i < this.layers.count()) {
+            cur = this.layers.get(i).forward(tape, cur);
+            i = i + 1;
+        }
+        return cur;
+    }
+}

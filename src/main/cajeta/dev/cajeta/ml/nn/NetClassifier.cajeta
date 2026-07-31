@@ -1,0 +1,113 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.optim.Optimizer;
+import dev.cajeta.ml.optim.SGD;
+
+/**
+ * The classifier face of {@link NetRegressor}: the module's output is
+ * treated as LOGITS over `classes` categories, trained with softmax
+ * cross-entropy, and `predict` returns the argmax class id.
+ *
+ * The softmax is fused into the loss, so the module must NOT end in a
+ * `Softmax` layer — feeding cross-entropy an already-normalized
+ * distribution trains the wrong objective (and loses the numerical
+ * stability the fused form buys).
+ */
+public class NetClassifier implements Predictor {
+    Module net;
+    int32 epochs;
+    float32 lr;
+    int64 classes;
+    boolean fitted;
+
+    public NetClassifier(#Module net, int64 classes, int32 epochs, float32 lr) {
+        this.net #= net;
+        this.classes = classes;
+        this.epochs = epochs;
+        this.lr = lr;
+        this.fitted = false;
+        return;
+    }
+
+    public Module module() {
+        return this.net;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float32> xf = Nets.toF32(x);
+        Tensor<float32> yf = Nets.toF32(y);      // class ids, one per row
+        Parameter[] ps = this.net.parameters();
+        Optimizer opt = heap SGD(this.net.parameters(), this.lr, 0.0f);
+        this.net.train();
+        int32 e = 0;
+        while (e < this.epochs) {
+            GradTape<float32> tape = heap GradTape<float32>();
+            this.net.bindParameters(tape);
+            GradTensor xn = tape.leaf(xf, false);
+            GradTensor logits = this.net.forward(tape, xn);
+            GradTensor loss = tape.crossEntropy(logits, yf);
+            tape.backward(loss);
+            Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+            opt.step(gs);
+            this.net.unbindParameters();
+            e = e + 1;
+        }
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** Predicted class ids, `(n,)`. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("NetClassifier.predict: not fitted");
+        }
+        this.net.eval();
+        Tensor<float32> logits = this.net.predict(Nets.toF32(x));
+        int64 n = logits.shapeAt(0);
+        int64 c = logits.shapeAt(1);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 r = 0;
+        while (r < n) {
+            int64 best = 0;
+            float32 bv = logits.get2(r, 0);
+            int64 j = 1;
+            while (j < c) {
+                float32 v = logits.get2(r, j);
+                if (v > bv) {
+                    bv = v;
+                    best = j;
+                }
+                j = j + 1;
+            }
+            out.flatSet(r, (float64) best);
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    /** Accuracy, the sklearn classifier convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        int64 n = y.shapeAt(0);
+        int64 hit = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (p.flatGet(i) == y.flatGet(i)) {
+                hit = hit + 1;
+            }
+            i = i + 1;
+        }
+        return (float64) hit / (float64) n;
+    }
+}

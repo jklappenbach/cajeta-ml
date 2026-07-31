@@ -1,0 +1,88 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/**
+ * Weight initialization — torch's default schemes, every one taking an
+ * EXPLICIT seed (spec §4.4). There is no global RNG and no implicit
+ * seeding: two modules built with the same seed hold bit-identical
+ * weights, which is what makes a training run reproducible and a test
+ * pinnable.
+ *
+ * Draws come from {@link Generator} (Philox), the same generator the
+ * dropout masks use, so a whole run is determined by the seeds it was
+ * given.
+ */
+public final class Init {
+
+    /** torch `nn.Linear`/`nn.Conv2d` default: uniform over ±1/√fanIn. */
+    public static #Tensor<float32> uniformBound(int64[] shape, int64 fanIn,
+                                                uint64 seed) {
+        float32 bound = 1.0f / Math.sqrt((float32) fanIn);
+        return Init.uniform(shape, 0.0f - bound, bound, seed);
+    }
+
+    /** Uniform over [lo, hi). */
+    public static #Tensor<float32> uniform(int64[] shape, float32 lo, float32 hi,
+                                           uint64 seed) {
+        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        int64 n = Init.countOf(t);
+        Generator g = heap Generator(seed);
+        Tensor<float32> u = g.uniform(n);
+        float32 span = hi - lo;
+        int64 i = 0;
+        while (i < n) {
+            t.flatSet(i, lo + u.get1(i) * span);
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    /** Zero-mean normal with the given standard deviation. */
+    public static #Tensor<float32> normal(int64[] shape, float32 std, uint64 seed) {
+        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        int64 n = Init.countOf(t);
+        Generator g = heap Generator(seed);
+        Tensor<float32> z = g.normal(n);
+        int64 i = 0;
+        while (i < n) {
+            t.flatSet(i, z.get1(i) * std);
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    /** Xavier/Glorot uniform: ±√(6/(fanIn+fanOut)) — the scheme for
+     *  symmetric activations (tanh, sigmoid). */
+    public static #Tensor<float32> xavierUniform(int64[] shape, int64 fanIn,
+                                                 int64 fanOut, uint64 seed) {
+        float32 bound = Math.sqrt(6.0f / (float32) (fanIn + fanOut));
+        return Init.uniform(shape, 0.0f - bound, bound, seed);
+    }
+
+    /** Kaiming/He normal for ReLU fan-in: std = √(2/fanIn). */
+    public static #Tensor<float32> kaimingNormal(int64[] shape, int64 fanIn,
+                                                 uint64 seed) {
+        float32 std = Math.sqrt(2.0f / (float32) fanIn);
+        return Init.normal(shape, std, seed);
+    }
+
+    /** Kaiming/He uniform for ReLU fan-in: ±√(6/fanIn). */
+    public static #Tensor<float32> kaimingUniform(int64[] shape, int64 fanIn,
+                                                  uint64 seed) {
+        float32 bound = Math.sqrt(6.0f / (float32) fanIn);
+        return Init.uniform(shape, 0.0f - bound, bound, seed);
+    }
+
+    static int64 countOf(Tensor<float32> t) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < t.ndim()) {
+            n = n * t.shapeAt(d);
+            d = d + 1;
+        }
+        return n;
+    }
+}

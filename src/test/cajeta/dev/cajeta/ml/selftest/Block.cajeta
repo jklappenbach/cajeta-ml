@@ -1,0 +1,23 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+
+/** A two-projection block — the nesting level in the naming pin
+ *  (`block.wq.weight`). */
+public class Block extends Module {
+    Linear wq;
+    Linear wo;
+
+    public Block() {
+        this.wq = heap Linear(4, 4, 21L);
+        this.wo = heap Linear(4, 4, 22L);
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return this.wo.forward(tape, this.wq.forward(tape, x));
+    }
+}

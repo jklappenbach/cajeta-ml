@@ -1,0 +1,17 @@
+package dev.cajeta.ml.nn;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/** Gaussian Error Linear Unit, `x·Φ(x)` — torch's EXACT (erf-based)
+ *  formulation, not the tanh approximation. Parameterless. */
+public class GELU extends Module {
+
+    public GELU() {
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.gelu(x);
+    }
+}

@@ -1,0 +1,16 @@
+package dev.cajeta.ml.nn;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/** Logistic sigmoid, elementwise. Parameterless. */
+public class Sigmoid extends Module {
+
+    public Sigmoid() {
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.sigmoid(x);
+    }
+}

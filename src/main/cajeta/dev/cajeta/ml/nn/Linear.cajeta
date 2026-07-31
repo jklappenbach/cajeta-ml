@@ -1,23 +1,23 @@
 package dev.cajeta.ml.nn;
 
 import cajeta.math.Tensor;
-import cajeta.math.random.Generator;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
 
 /**
- * Linear — the fully-connected layer: `y = x · W + b` with `W : [in, out]`
- * and `b : [out]` (spec §2). Both are {@link Parameter}s (declared order:
- * `weight` then `bias` — the order {@link Module#parameters} reports and a
- * `GradAll` functional step's leading args follow).
+ * The affine map `x · W + b`, `x : [batch, in]`.
  *
- * Initialization is the standard scaled uniform `U(-1/√in, +1/√in)` for the
- * weight and ZEROS for the bias, drawn from an EXPLICIT seeded
- * {@link Generator} (Philox) — reproducible by construction, no global RNG
- * (spec §4). Same seed, same weights.
+ * WEIGHT LAYOUT is `[in, out]` — the natural orientation for `x · W`, and
+ * the TRANSPOSE of torch's `nn.Linear.weight` (`[out, in]`, which exists
+ * because torch computes `x · Wᵀ`). Parameter NAMES match torch
+ * (`weight`, `bias`) so a `state_dict` key list transfers unchanged; the
+ * checkpoint reader (`ml.io`) transposes on load. Recorded here because it
+ * is the one place a torch user's intuition will mismatch.
  *
- * ```cajeta
- * Linear fc = heap Linear(784, 256, 42);
- * Tensor<float32> y = fc.forward(x);       // x: [batch, 784] -> y: [batch, 256]
- * ```
+ * Initialization is torch's `nn.Linear` default: uniform over
+ * ±1/√in_features for the weight, zeros for the bias, drawn from an
+ * EXPLICIT seeded Philox generator (see {@link Init}) — reproducible by
+ * construction, no global RNG. Same seed, same weights.
  */
 public class Linear extends Module {
     Parameter weight;
@@ -25,38 +25,30 @@ public class Linear extends Module {
 
     /** @EntryPoint */
     public Linear(int64 inFeatures, int64 outFeatures, uint64 seed) {
-        Generator g = heap Generator(seed);
-        float32 bound = 1.0f / Math.sqrt((float32) inFeatures);
         int64[] ws = heap int64[2];
         ws[0] = inFeatures;
         ws[1] = outFeatures;
-        // Construct the parameter over an owned zeros tensor, then fill it
-        // THROUGH the borrow from the 1-D draw (row-major). Rank-correct
-        // accessors: set2 on the [in, out] weight (set1/get1 index by
-        // stride[0] — 1-D ONLY); get1 on the 1-D draw. Not `reshape` — on a
-        // contiguous base that is a storage-sharing VIEW whose base would
-        // drop at ctor exit.
-        this.weight = heap Parameter(Tensor.zeros<float32>(ws));
-        Tensor<float32> u = g.uniform(inFeatures * outFeatures);
-        Tensor<float32> w = this.weight.get();
-        int64 r = 0;
-        while (r < inFeatures) {
-            int64 c = 0;
-            while (c < outFeatures) {
-                w.set2(r, c, (u.get1(r * outFeatures + c) - 0.5f) * 2.0f * bound);
-                c = c + 1;
-            }
-            r = r + 1;
-        }
+        this.weight = heap Parameter(Init.uniformBound(ws, inFeatures, seed));
         int64[] bs = heap int64[1];
         bs[0] = outFeatures;
         this.bias = heap Parameter(Tensor.zeros<float32>(bs));
+        return;
     }
 
-    /** The affine map `x · W + b` — ordinary `cajeta.math` ops; the layer
-     *  adds no compute of its own (spec §2.5). `x : [batch, in]`. */
+    public Parameter weightParam() {
+        return this.weight;
+    }
+
+    public Parameter biasParam() {
+        return this.bias;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.add(tape.matmul(x, this.weight.node()), this.bias.node());
+    }
+
+    /** Inference convenience — the same forward on a throwaway tape. */
     public #Tensor<float32> forward(Tensor<float32> x) {
-        return Tensor.add<float32>(
-            Tensor.matmul<float32>(x, this.weight.get()), this.bias.get());
+        return this.predict(x);
     }
 }

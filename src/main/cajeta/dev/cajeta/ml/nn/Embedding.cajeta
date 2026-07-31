@@ -1,0 +1,45 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * A lookup table mapping integer ids to dense rows — `weight` is
+ * `(vocab, dim)`, matching torch's name and layout.
+ *
+ * The ids are DATA, not a differentiable input, so they are supplied to
+ * {@link #lookup} rather than flowing through the tape as a node; only the
+ * table receives gradient, and a repeated id accumulates. Ids ride a
+ * `float32` tensor (exact for every value below 2²⁴), which keeps the
+ * tape's saved state one uniform type.
+ *
+ * Initialization is torch's `nn.Embedding` default: standard normal.
+ */
+public class Embedding extends Module {
+    Parameter weight;
+
+    public Embedding(int64 vocab, int64 dim, uint64 seed) {
+        int64[] ws = heap int64[2];
+        ws[0] = vocab;
+        ws[1] = dim;
+        this.weight = heap Parameter(Init.normal(ws, 1.0f, seed));
+        return;
+    }
+
+    public Parameter weightParam() {
+        return this.weight;
+    }
+
+    /** Gather the rows named by `ids` (values are class ids). */
+    public GradTensor lookup(GradTape<float32> tape, Tensor<float32> ids) {
+        return tape.embedding(this.weight.node(), ids);
+    }
+
+    /** `forward` is not the entry point for a table — the ids are data,
+     *  not an activation. Use {@link #lookup}. */
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        Tensor<float32> ids = tape.valueOf(x);
+        return tape.embedding(this.weight.node(), ids);
+    }
+}

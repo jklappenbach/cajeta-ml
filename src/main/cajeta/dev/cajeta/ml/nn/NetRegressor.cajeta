@@ -1,0 +1,118 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.optim.Optimizer;
+import dev.cajeta.ml.optim.SGD;
+
+/**
+ * A neural network wearing the ecosystem's {@link Predictor} face — so a
+ * net rides `crossValScore`, `Pipeline` and `Frames.design` with no
+ * protocol change, exactly like a `Ridge` or a gradient-boosted tree
+ * (spec §9).
+ *
+ * Full-batch gradient descent against mean squared error. This is the
+ * deliberately plain trainer: `ml.train`'s `BackpropTrainer` (minibatches,
+ * schedules, callbacks, early stopping) is the one you reach for to train
+ * something real — this exists so the PROTOCOL works today and so the
+ * cross-validation path has something to exercise.
+ *
+ * The wrapper owns its module; `fit` re-trains from the module's CURRENT
+ * weights, so calling it twice continues rather than restarting.
+ */
+public class NetRegressor implements Predictor {
+    Module net;
+    int32 epochs;
+    float32 lr;
+    boolean fitted;
+
+    public NetRegressor(#Module net, int32 epochs, float32 lr) {
+        this.net #= net;
+        this.epochs = epochs;
+        this.lr = lr;
+        this.fitted = false;
+        return;
+    }
+
+    /** The wrapped module, as a borrow. */
+    public Module module() {
+        return this.net;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float32> xf = Nets.toF32(x);
+        Tensor<float32> yf32 = Nets.toF32(y);
+        Tensor<float32> yf = Nets.asColumn(yf32);
+        Parameter[] ps = this.net.parameters();
+        Optimizer opt = heap SGD(this.net.parameters(), this.lr, 0.0f);
+        this.net.train();
+        int32 e = 0;
+        while (e < this.epochs) {
+            GradTape<float32> tape = heap GradTape<float32>();
+            this.net.bindParameters(tape);
+            GradTensor xn = tape.leaf(xf, false);
+            GradTensor tn = tape.leaf(yf, false);
+            GradTensor pred = this.net.forward(tape, xn);
+            GradTensor loss = tape.mseLoss(pred, tn);
+            tape.backward(loss);
+            Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+            opt.step(gs);
+            this.net.unbindParameters();
+            e = e + 1;
+        }
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("NetRegressor.predict: not fitted");
+        }
+        this.net.eval();
+        Tensor<float32> xf = Nets.toF32(x);
+        Tensor<float32> out = this.net.predict(xf);
+        // A single-output head emits (n, 1); the protocol wants (n,).
+        if (out.ndim() == 2 && out.shapeAt(1) == 1) {
+            int64[] sh = heap int64[1];
+            sh[0] = out.shapeAt(0);
+            Tensor<float32> vw = out.reshape(sh);
+            Tensor<float32> flat = vw.copy();
+            return Nets.toF64(flat);
+        }
+        return Nets.toF64(out);
+    }
+
+    /** R², the sklearn regressor convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        int64 n = y.shapeAt(0);
+        float64 mean = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            mean = mean + y.flatGet(i);
+            i = i + 1;
+        }
+        mean = mean / (float64) n;
+        float64 ssRes = 0.0;
+        float64 ssTot = 0.0;
+        i = 0;
+        while (i < n) {
+            float64 d = y.flatGet(i) - p.flatGet(i);
+            ssRes = ssRes + d * d;
+            float64 t = y.flatGet(i) - mean;
+            ssTot = ssTot + t * t;
+            i = i + 1;
+        }
+        if (ssTot == 0.0) {
+            return 0.0;
+        }
+        return 1.0 - ssRes / ssTot;
+    }
+}

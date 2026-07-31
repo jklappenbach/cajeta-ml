@@ -72,6 +72,7 @@ public final class Ops {
         if (op == Op.MEANAXIS)   { return Tensor.meanAxis<E, E>(a, axis, true); }
         if (op == Op.MAXAXIS)    { return Tensor.maxAxis<E>(a, axis, true); }
         if (op == Op.TRANSPOSE)  { Tensor<E> tr = a.transpose(); Tensor<E> cp = tr.copy(); return #cp; }
+        if (op == Op.TRANSPOSEB) { return Ops.transposeLast2<E>(a); }
         throw heap MlException("ml.grad: unknown unary op " + op);
     }
 
@@ -84,7 +85,34 @@ public final class Ops {
         if (op == Op.MUL)    { return Tensor.mul<E>(a, b); }
         if (op == Op.DIV)    { return Ops.divK<E>(a, b); }
         if (op == Op.MATMUL) { return Tensor.matmul<E>(a, b); }
+        if (op == Op.MATMULB) { return StructKernels.matmulBatched3<E>(a, b); }
         throw heap MlException("ml.grad: unknown binary op " + op);
+    }
+
+    /** Permute a tensor's axes (rank <= 4), materialized — the permuted
+     *  result is a view over the source's storage, which a tape node must
+     *  not alias. */
+    public static #Tensor<E> permute<E extends Floating>(Tensor<E> a, int32[] perm) {
+        Tensor<E> vw = a.transposeAxes(perm);
+        Tensor<E> out = vw.copy();
+        return #out;
+    }
+
+    /** Swap the last two axes of a rank-3 tensor, materialized (the
+     *  permuted result is a view over the source's storage, which a tape
+     *  node must not alias). */
+    public static #Tensor<E> transposeLast2<E extends Floating>(Tensor<E> a) {
+        if (a.ndim() != 3) {
+            throw heap MlException("ml.grad: transposeBatch expects rank 3, "
+                + "got " + a.ndim());
+        }
+        int32[] perm = heap int32[3];
+        perm[0] = 0;
+        perm[1] = 2;
+        perm[2] = 1;
+        Tensor<E> vw = a.transposeAxes(perm);
+        Tensor<E> out = vw.copy();
+        return #out;
     }
 
     // ── Structured-op dispatch (U3) ────────────────────────────────────
@@ -339,6 +367,9 @@ public final class Ops {
         if (op == Op.CROSSENTROPY) { return "crossEntropy"; }
         if (op == Op.MSELOSS) { return "mseLoss"; }
         if (op == Op.COSINESIM) { return "cosineSim"; }
+        if (op == Op.MATMULB) { return "matmulBatched"; }
+        if (op == Op.TRANSPOSEB) { return "transposeBatch"; }
+        if (op == Op.PERMUTE) { return "permute"; }
         return "op" + op;
     }
 

@@ -1,0 +1,40 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.BatchNorm2d;
+import dev.cajeta.ml.nn.Conv2d;
+import dev.cajeta.ml.nn.Flatten;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.MaxPool2d;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.ReLU;
+
+/** A CIFAR-shaped stack in miniature: conv → norm → relu → pool → head. */
+public class Cnn extends Module {
+    Conv2d conv;
+    BatchNorm2d bn;
+    ReLU act;
+    MaxPool2d pool;
+    Flatten flat;
+    Linear head;
+
+    public Cnn() {
+        this.conv = heap Conv2d(2, 3, 3, 1, 1, 31L);
+        this.bn = heap BatchNorm2d(3, 0.00001, 0.1);
+        this.act = heap ReLU();
+        this.pool = heap MaxPool2d(2, 2, 0);
+        this.flat = heap Flatten();
+        this.head = heap Linear(12, 2, 32L);
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        GradTensor h = this.conv.forward(tape, x);
+        h = this.bn.forward(tape, h);
+        h = this.act.forward(tape, h);
+        h = this.pool.forward(tape, h);
+        h = this.flat.forward(tape, h);
+        return this.head.forward(tape, h);
+    }
+}

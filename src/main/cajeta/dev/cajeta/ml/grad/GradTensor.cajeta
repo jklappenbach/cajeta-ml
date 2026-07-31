@@ -12,4 +12,10 @@ public record GradTensor {
     public GradTensor(int32 idx) {
         this.idx = idx;
     }
+
+    /** This node's position on its tape — the handle a module stores to
+     *  re-reference the same node later in a forward pass. */
+    public int32 index() {
+        return this.idx;
+    }
 }

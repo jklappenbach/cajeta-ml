@@ -49,7 +49,14 @@ public final class Op {
     public static int32 CROSSENTROPY = 34;  // logits    | aux1=targets
     public static int32 MSELOSS     = 35;   // pred, target
     public static int32 COSINESIM   = 36;   // a, b (row-wise, last axis)
+    // Rank-3 batched forms — attention's working shapes, with the head axis
+    // folded into the batch: (B,M,K)·(B,K,N) and the last-two-axis swap.
+    public static int32 MATMULB     = 37;
+    public static int32 TRANSPOSEB  = 38;
+    /** General axis permutation, rank <= 4 (the perm rides the 4 int
+     *  payload slots) — the head split/merge in attention. */
+    public static int32 PERMUTE     = 39;
 
     /** One past the largest id — the registry array length. */
-    public static int32 COUNT       = 37;
+    public static int32 COUNT       = 40;
 }

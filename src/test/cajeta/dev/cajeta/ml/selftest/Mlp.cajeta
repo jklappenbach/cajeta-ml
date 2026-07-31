@@ -1,0 +1,65 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Parameter;
+
+/**
+ * The reference MLP — `relu(x·W1 + b1)·W2 + b2` — with weights set from
+ * the generator's formulas rather than a seed, so the whole forward and
+ * backward is directly comparable to torch.
+ */
+public class Mlp extends Module {
+    Linear fc1;
+    Linear fc2;
+
+    public Mlp() {
+        this.fc1 = heap Linear(3, 4, 1L);
+        this.fc2 = heap Linear(4, 2, 2L);
+        // w_(f) = (f % 5) * 0.5 - 1.0, weights stored [in, out]
+        Tensor<float32> w1 = this.fc1.weightParam().get();
+        int64 f = 0;
+        while (f < 12) {
+            w1.flatSet(f, (float32) (f % 5) * 0.5f - 1.0f);
+            f = f + 1;
+        }
+        Tensor<float32> b1 = this.fc1.biasParam().get();
+        b1.flatSet(0, 0.1f);
+        b1.flatSet(1, -0.2f);
+        b1.flatSet(2, 0.3f);
+        b1.flatSet(3, -0.4f);
+        Tensor<float32> w2 = this.fc2.weightParam().get();
+        f = 0;
+        while (f < 8) {
+            w2.flatSet(f, (float32) (f % 5) * 0.5f - 1.0f);
+            f = f + 1;
+        }
+        Tensor<float32> b2 = this.fc2.biasParam().get();
+        b2.flatSet(0, 0.05f);
+        b2.flatSet(1, -0.05f);
+        return;
+    }
+
+    public GradTensor w1Param() {
+        return this.fc1.weightParam().node();
+    }
+
+    public GradTensor b1Param() {
+        return this.fc1.biasParam().node();
+    }
+
+    public GradTensor w2Param() {
+        return this.fc2.weightParam().node();
+    }
+
+    public GradTensor b2Param() {
+        return this.fc2.biasParam().node();
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return this.fc2.forward(tape, tape.relu(this.fc1.forward(tape, x)));
+    }
+}

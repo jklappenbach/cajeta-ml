@@ -48,6 +48,54 @@ public final class StructKernels {
         return (inLen + 2 * (int64) pad - (int64) kernel) / (int64) stride + 1;
     }
 
+    // ── batched matmul ──────────────────────────────────────────────────
+
+    /** Rank-3 batched matmul (B,M,K)·(B,K,N) → (B,M,N), driven through the
+     *  stdlib's OPTIMIZED 2-D `Tensor.matmul` one batch at a time.
+     *
+     *  Deliberately not `Tensor.matmulBatched`: that one reads every element
+     *  through `getAt(int64[])` (an allocated index array per element) so it
+     *  works on strided inputs, while `matmul` uses the tuned rank-2 `get2`
+     *  path. Each batch of a contiguous rank-3 tensor is itself a contiguous
+     *  (M,K) block, so a slice+reshape view hands the real GEMM exactly the
+     *  shape it wants — no elementwise fallback, no reimplemented GEMM. */
+    static #Tensor<E> matmulBatched3<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        if (a.ndim() != 3 || b.ndim() != 3) {
+            throw heap MlException("ml.grad: matmulBatched expects rank-3 "
+                + "operands, got " + a.ndim() + " and " + b.ndim());
+        }
+        int64 batch = a.shapeAt(0);
+        int64 m = a.shapeAt(1);
+        int64 k = a.shapeAt(2);
+        int64 n = b.shapeAt(2);
+        if (b.shapeAt(0) != batch || b.shapeAt(1) != k) {
+            throw heap MlException("ml.grad: matmulBatched shape mismatch");
+        }
+        int64[] osh = heap int64[3];
+        osh[0] = batch; osh[1] = m; osh[2] = n;
+        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64[] ash = heap int64[2];
+        ash[0] = m; ash[1] = k;
+        int64[] bsh = heap int64[2];
+        bsh[0] = k; bsh[1] = n;
+        int64 bt = 0;
+        while (bt < batch) {
+            Tensor<E> asl = a.slice(0, bt, bt + 1);
+            Tensor<E> av = asl.reshape(ash);
+            Tensor<E> bsl = b.slice(0, bt, bt + 1);
+            Tensor<E> bv = bsl.reshape(bsh);
+            Tensor<E> prod = Tensor.matmul<E>(av, bv);
+            int64 base = bt * m * n;
+            int64 i = 0;
+            while (i < m * n) {
+                out.flatSet(base + i, prod.flatGet(i));
+                i = i + 1;
+            }
+            bt = bt + 1;
+        }
+        return #out;
+    }
+
     // ── conv2d ──────────────────────────────────────────────────────────
 
     static #Tensor<E> conv2d<E extends Floating>(Tensor<E> x, Tensor<E> w,

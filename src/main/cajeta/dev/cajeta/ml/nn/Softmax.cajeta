@@ -1,0 +1,20 @@
+package dev.cajeta.ml.nn;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/** Softmax over the LAST axis (max-shifted). Parameterless.
+ *
+ *  For a classifier trained with cross-entropy, do NOT put this before the
+ *  loss: `GradTape.crossEntropy` takes LOGITS and fuses the softmax, which
+ *  is both faster and numerically stabler than softmax-then-log. */
+public class Softmax extends Module {
+
+    public Softmax() {
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.softmax(x);
+    }
+}

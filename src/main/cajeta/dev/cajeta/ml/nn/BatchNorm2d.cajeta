@@ -1,0 +1,65 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Ops;
+
+/**
+ * Per-channel normalization over NCHW input, with a learned scale and
+ * shift. Parameter names match torch (`weight`, `bias`), and the running
+ * statistics are plain tensor fields — so `Module.buffers()` reports them
+ * and no optimizer ever updates them.
+ *
+ * MODE MATTERS HERE. In training the batch's own statistics normalize the
+ * activations (so every element's gradient depends on the whole channel)
+ * and the running statistics are updated as a side effect. In evaluation
+ * the running statistics are used and nothing is updated — which is why
+ * `eval()` before validation is not optional.
+ */
+public class BatchNorm2d extends Module {
+    Parameter weight;
+    Parameter bias;
+    Tensor<float32> runningMean;
+    Tensor<float32> runningVar;
+    float64 eps;
+    float64 momentum;
+
+    public BatchNorm2d(int64 channels, float64 eps, float64 momentum) {
+        int64[] s = heap int64[1];
+        s[0] = channels;
+        this.weight = heap Parameter(Tensor.full<float32>(s, 1.0f));
+        this.bias = heap Parameter(Tensor.zeros<float32>(s));
+        this.runningMean = Tensor.zeros<float32>(s);
+        this.runningVar = Tensor.full<float32>(s, 1.0f);
+        this.eps = eps;
+        this.momentum = momentum;
+        return;
+    }
+
+    public Tensor<float32> mean() {
+        return this.runningMean;
+    }
+
+    public Tensor<float32> variance() {
+        return this.runningVar;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        if (!this.training) {
+            return tape.batchNorm2dEval(x, this.weight.node(), this.bias.node(),
+                                        this.runningMean, this.runningVar,
+                                        this.eps);
+        }
+        // Update the running statistics from THIS batch before normalizing;
+        // the update is module state, never a tape node.
+        Tensor<float32> xv = tape.valueOf(x);
+        Tensor<float32> bm = Ops.channelMean<float32>(xv);
+        Tensor<float32> bv = Ops.channelVar<float32>(xv, bm);
+        int64 count = xv.shapeAt(0) * xv.shapeAt(2) * xv.shapeAt(3);
+        Ops.updateRunningStats<float32>(this.runningMean, this.runningVar,
+                                        bm, bv, count, this.momentum);
+        return tape.batchNorm2dTrain(x, this.weight.node(), this.bias.node(),
+                                     this.eps);
+    }
+}

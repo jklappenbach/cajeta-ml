@@ -1,0 +1,26 @@
+package dev.cajeta.ml.nn;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * Average pooling to a FIXED output extent, whatever the input size —
+ * the head of a convolutional stack that must feed a fixed-width
+ * classifier. Window bounds follow torch: `start = ⌊i·L/out⌋`,
+ * `end = ⌈(i+1)·L/out⌉`, so windows may overlap when `out` does not
+ * divide `L`.
+ */
+public class AdaptiveAvgPool2d extends Module {
+    int32 outH;
+    int32 outW;
+
+    public AdaptiveAvgPool2d(int32 outH, int32 outW) {
+        this.outH = outH;
+        this.outW = outW;
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.adaptiveAvgPool2d(x, this.outH, this.outW);
+    }
+}

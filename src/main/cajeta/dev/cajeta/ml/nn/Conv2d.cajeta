@@ -1,0 +1,50 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * 2-D convolution over NCHW input. Weight is `(outChannels, inChannels,
+ * kH, kW)` and bias `(outChannels,)` — both torch's layout AND torch's
+ * names, so a `state_dict` key list transfers unchanged.
+ *
+ * Initialization is torch's `nn.Conv2d` default: uniform over ±1/√fanIn
+ * with fanIn = inChannels·kH·kW.
+ */
+public class Conv2d extends Module {
+    Parameter weight;
+    Parameter bias;
+    int32 stride;
+    int32 padding;
+
+    public Conv2d(int64 inChannels, int64 outChannels, int32 kernel,
+                  int32 stride, int32 padding, uint64 seed) {
+        int64[] ws = heap int64[4];
+        ws[0] = outChannels;
+        ws[1] = inChannels;
+        ws[2] = (int64) kernel;
+        ws[3] = (int64) kernel;
+        int64 fanIn = inChannels * (int64) kernel * (int64) kernel;
+        this.weight = heap Parameter(Init.uniformBound(ws, fanIn, seed));
+        int64[] bs = heap int64[1];
+        bs[0] = outChannels;
+        this.bias = heap Parameter(Tensor.zeros<float32>(bs));
+        this.stride = stride;
+        this.padding = padding;
+        return;
+    }
+
+    public Parameter weightParam() {
+        return this.weight;
+    }
+
+    public Parameter biasParam() {
+        return this.bias;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.conv2d(x, this.weight.node(), this.bias.node(),
+                           this.stride, this.padding);
+    }
+}

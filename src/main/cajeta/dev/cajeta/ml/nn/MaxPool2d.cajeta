@@ -1,0 +1,23 @@
+package dev.cajeta.ml.nn;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/** Max pooling over NCHW input. Parameterless; the cotangent routes to
+ *  the argmax each window selected. */
+public class MaxPool2d extends Module {
+    int32 kernel;
+    int32 stride;
+    int32 padding;
+
+    public MaxPool2d(int32 kernel, int32 stride, int32 padding) {
+        this.kernel = kernel;
+        this.stride = stride;
+        this.padding = padding;
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return tape.maxPool2d(x, this.kernel, this.stride, this.padding);
+    }
+}
