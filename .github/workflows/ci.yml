@@ -30,11 +30,11 @@ permissions:
   contents: write
 
 env:
-  # Must match a release tag of jklappenbach/cajeta. v0.12.1 carries the
-  # loader-materialization fix (cross-file records in Table<R> — the Frames
-  # bridge and this suite's own cross-file fixtures depend on it) on top of
-  # v0.12.0's linalg surface + iface-generic-returns dispatch fix.
-  CAJETA_VERSION: v0.12.1
+  # Must match a release tag of jklappenbach/cajeta. v0.13.0 carries
+  # nucleo.sparse (CsrMatrix — the sparse cd path) plus the codegen fixes
+  # that let Lasso and the Obs test record live in their own files
+  # (placeholder-owned-field / nested-materialize, both fixed and pinned).
+  CAJETA_VERSION: v0.13.0
 
 jobs:
   build-test:
