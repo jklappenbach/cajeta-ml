@@ -1,0 +1,173 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Losses;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.optim.Adam;
+import dev.cajeta.ml.optim.AdamW;
+import dev.cajeta.ml.optim.Optimizer;
+import dev.cajeta.ml.optim.OptimizerException;
+import dev.cajeta.ml.optim.SGD;
+
+/**
+ * cajeta-ml-v3 plan 1.1.1 — the nn/optim consolidation contract, ported
+ * from the stdlib suites (LinearTests / ModuleTests / OptimizerTests)
+ * against the NEW `dev.cajeta.ml.nn` / `ml.optim` namespaces. The stdlib
+ * copies stay green in the compiler repo until U11 removes them; these
+ * guard the moved code independently. Optimizers bind their parameters at
+ * CONSTRUCTION (`SGD(net.parameters(), lr, momentum)`), then `step(grads)`
+ * with grads[i] belonging to parameters()[i].
+ */
+public class NnOptimPortTest {
+
+    public NnOptimPortTest() { return; }
+
+    static boolean near(float32 a, float32 b, float32 tol) {
+        float32 d = a - b;
+        if (d < 0.0f) { d = 0.0f - d; }
+        return d < tol;
+    }
+
+    static #Tensor<float32>[] onesGrads() {
+        int64[] gs = [2];
+        Tensor<float32>[] grads = heap Tensor<float32>[1];
+        grads[0] = Tensor.full<float32>(gs, 1.0f);
+        return #grads;
+    }
+
+    @Test
+    public void linearForwardMatchesReference() {
+        Linear fc = heap Linear(2, 2, 7);
+        Parameter[] ps = fc.parameters();
+        Tensor<float32> w = ps[0].get();
+        w.set2(0, 0, 1.0f); w.set2(0, 1, 2.0f);
+        w.set2(1, 0, 3.0f); w.set2(1, 1, 4.0f);
+        Tensor<float32> b = ps[1].get();
+        b.set1(0, 10.0f); b.set1(1, 20.0f);
+        int64[] xs = [1, 2];
+        Tensor<float32> x = Tensor.full<float32>(xs, 1.0f);
+        Tensor<float32> y = fc.forward(x);
+        Assert.isTrue(NnOptimPortTest.near(y.get2(0, 0), 14.0f, 0.0001f));
+        Assert.isTrue(NnOptimPortTest.near(y.get2(0, 1), 26.0f, 0.0001f));
+    }
+
+    @Test
+    public void seededInitDeterministicAndBounded() {
+        Linear a = heap Linear(4, 3, 42);
+        Linear b = heap Linear(4, 3, 42);
+        Tensor<float32> wa = a.parameters()[0].get();
+        Tensor<float32> wb = b.parameters()[0].get();
+        float32 bound = 0.5f;   // 1/sqrt(4)
+        int64 i = 0;
+        while (i < 3) {
+            int64 j = 0;
+            while (j < 4) {
+                Assert.isTrue(wa.get2(i, j) == wb.get2(i, j));
+                float32 v = wa.get2(i, j);
+                Assert.isTrue(v > (0.0f - bound) && v < bound);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        Tensor<float32> ba = a.parameters()[1].get();
+        Assert.isTrue(ba.get1(0) == 0.0f && ba.get1(2) == 0.0f);
+    }
+
+    @Test
+    public void sgdPlainAndMomentumMatchHand() {
+        // plain: p=1, g=1, lr=0.1 -> 0.9 -> 0.8
+        WNet net = heap WNet(1.0f);
+        Optimizer opt = heap SGD(net.parameters(), 0.1f, 0.0f);
+        Tensor<float32>[] grads = NnOptimPortTest.onesGrads();
+        opt.step(grads);
+        Assert.isTrue(NnOptimPortTest.near(net.w.get().get1(0), 0.9f, 0.000001f));
+        opt.step(grads);
+        Assert.isTrue(NnOptimPortTest.near(net.w.get().get1(1), 0.8f, 0.000001f));
+
+        // momentum 0.9: v1=1 -> p=0.9; v2=1.9 -> p=0.71
+        WNet net2 = heap WNet(1.0f);
+        Optimizer optM = heap SGD(net2.parameters(), 0.1f, 0.9f);
+        Tensor<float32>[] grads2 = NnOptimPortTest.onesGrads();
+        optM.step(grads2);
+        optM.step(grads2);
+        Assert.isTrue(NnOptimPortTest.near(net2.w.get().get1(0), 0.71f, 0.0001f));
+    }
+
+    @Test
+    public void adamBiasCorrectionAndAdamWDecoupling() {
+        // Adam step 1 with g=1, lr=0.1: bias correction makes the update
+        // exactly lr: p = 0.9; step 2 ≈ 0.8 (state persists).
+        WNet net = heap WNet(1.0f);
+        Optimizer adam = heap Adam(net.parameters(), 0.1f);
+        Tensor<float32>[] grads = NnOptimPortTest.onesGrads();
+        adam.step(grads);
+        Assert.isTrue(NnOptimPortTest.near(net.w.get().get1(0), 0.9f, 0.001f));
+        adam.step(grads);
+        Assert.isTrue(NnOptimPortTest.near(net.w.get().get1(0), 0.8f, 0.002f));
+
+        // AdamW wd=0.1 decoupled: step 1 -> p = 1 − 0.1·(1 + 0.1·1) = 0.89
+        // (NOT Adam-plus-L2's 0.9 — the moments never see the decay).
+        WNet net2 = heap WNet(1.0f);
+        Optimizer adamw = heap AdamW(net2.parameters(), 0.1f, 0.1f);
+        Tensor<float32>[] grads2 = NnOptimPortTest.onesGrads();
+        adamw.step(grads2);
+        Assert.isTrue(NnOptimPortTest.near(net2.w.get().get1(0), 0.89f, 0.001f));
+    }
+
+    @Test
+    public void mismatchThrowsNoPartialUpdate() {
+        WNet net = heap WNet(1.0f);
+        Optimizer opt = heap SGD(net.parameters(), 0.1f, 0.0f);
+        int64[] gs = [2];
+        Tensor<float32>[] wrongCount = heap Tensor<float32>[2];
+        wrongCount[0] = Tensor.full<float32>(gs, 1.0f);
+        wrongCount[1] = Tensor.full<float32>(gs, 1.0f);
+        boolean threw = false;
+        try {
+            opt.step(wrongCount);
+        } catch (OptimizerException ex) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+        Assert.isTrue(net.w.get().get1(0) == 1.0f);   // untouched
+    }
+
+    @Test
+    public void moduleParameterWalkAndLosses() {
+        Mlp2 net = heap Mlp2();
+        Parameter[] ps = net.parameters();
+        // fc1.w, fc1.b, fc2.w, fc2.b — stable order
+        Assert.equals((int64) 4, (int64) ps.count());
+        // Losses.mse: pred==target -> 0; off-by-1 everywhere -> 1
+        int64[] s = [2, 1];
+        Tensor<float32> a = Tensor.full<float32>(s, 3.0f);
+        Tensor<float32> b = Tensor.full<float32>(s, 3.0f);
+        Assert.isTrue(Losses.mse(a, b) == 0.0f);
+        Tensor<float32> c = Tensor.full<float32>(s, 4.0f);
+        Assert.isTrue(NnOptimPortTest.near(Losses.mse(c, b), 1.0f, 0.000001f));
+    }
+}
+
+/** Single-[2]-parameter net (the stdlib optimizer-test shape). */
+class WNet extends Module {
+    Parameter w;
+
+    public WNet(float32 init) {
+        int64[] s = [2];
+        this.w = heap Parameter(Tensor.full<float32>(s, init));
+    }
+}
+
+/** 2-4-1 MLP for the walk test (module tree over the MOVED packages). */
+class Mlp2 extends Module {
+    Linear fc1;
+    Linear fc2;
+
+    public Mlp2() {
+        this.fc1 = heap Linear(2, 4, 11);
+        this.fc2 = heap Linear(4, 1, 22);
+    }
+}
