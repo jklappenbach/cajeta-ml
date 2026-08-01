@@ -284,6 +284,8 @@ public final class GradTape<E extends Floating> {
     public GradTensor meanAxis(GradTensor a, int32 axis) { return this.una(Op.MEANAXIS, a, axis, (E) 0); }
     public GradTensor maxAxis(GradTensor a, int32 axis) { return this.una(Op.MAXAXIS, a, axis, (E) 0); }
     public GradTensor transpose2d(GradTensor a) { return this.una(Op.TRANSPOSE, a, 0, (E) 0); }
+    /** Scale each row to unit L2 norm over the last axis. */
+    public GradTensor rowNorm(GradTensor a) { return this.una(Op.ROWNORM, a, 0, (E) 0); }
 
     GradTensor una(int32 op, GradTensor a, int32 axis, E c) {
         Tensor<E> v = Ops.run1<E>(op, this.values.get(a.idx), axis, c);
@@ -609,6 +611,10 @@ public final class GradTape<E extends Floating> {
         if (op == Op.TRANSPOSEB) {
             // the last-two-axis swap is its own inverse
             this.accum(a, Ops.transposeLast2<E>(g));
+            return;
+        }
+        if (op == Op.ROWNORM) {
+            this.accum(a, Ops.rowNormBack<E>(va, vo, g));
             return;
         }
         if (op == Op.PERMUTE) {

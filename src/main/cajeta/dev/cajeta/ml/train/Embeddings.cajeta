@@ -1,0 +1,172 @@
+package dev.cajeta.ml.train;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/**
+ * Fixed class vectors on the unit sphere — SPELA's targets. Each class
+ * gets one direction; a layer is trained to point its activation at the
+ * direction belonging to the sample's class.
+ *
+ * Two generators, matching the reference:
+ *
+ * - `RANDOM`: Gaussian draws normalized to unit length. Fine when the
+ *   dimension is comfortably larger than the class count, where random
+ *   directions are nearly orthogonal anyway.
+ * - `FARTHEST`: greedy farthest-point sampling from a candidate pool.
+ *   For each candidate it tracks the MAXIMUM cosine to anything already
+ *   chosen, and picks the candidate whose worst-case neighbour is most
+ *   distant. Using `min` there instead optimizes the wrong objective and
+ *   can select near-duplicate class vectors — the reference carries a
+ *   comment about exactly that bug, and this port keeps the corrected
+ *   form.
+ *
+ * The vectors are NOT bit-comparable to the reference: torch's RNG is a
+ * different stream. What must agree is the geometry — unit norm, correct
+ * shape, and genuine separation — and that is what the tests pin.
+ */
+public final class Embeddings {
+
+    /** `(numClasses, dim)` unit vectors. */
+    public static #Tensor<float32> symmetricVectors(int64 numClasses, int64 dim,
+                                                    int32 method,
+                                                    int64 candidates,
+                                                    uint64 seed) {
+        if (numClasses < 1 || dim < 1) {
+            throw heap MlException("Embeddings: numClasses and dim must be >= 1");
+        }
+        Generator g = heap Generator(seed);
+        if (method == SpelaConfig.RANDOM || numClasses >= candidates) {
+            Tensor<float32> m = Embeddings.gaussian(g, numClasses, dim);
+            Embeddings.normalizeRows(m);
+            return #m;
+        }
+        Tensor<float32> cand = Embeddings.gaussian(g, candidates, dim);
+        Embeddings.normalizeRows(cand);
+
+        int64[] osh = heap int64[2];
+        osh[0] = numClasses;
+        osh[1] = dim;
+        Tensor<float32> out = Tensor.zeros<float32>(osh);
+
+        // Seed the greedy walk from a drawn index, as the reference does.
+        Tensor<float32> pick = g.uniform(1);
+        int64 first = (int64) ((float64) pick.get1(0) * (float64) candidates);
+        if (first >= candidates) { first = candidates - 1; }
+        Embeddings.copyRow(cand, first, out, 0, dim);
+
+        // maxSim[c] = the largest cosine from candidate c to anything chosen.
+        float64[] maxSim = heap float64[candidates];
+        int64 c = 0;
+        while (c < candidates) {
+            maxSim[c] = Embeddings.dotRows(cand, c, out, 0, dim);
+            c = c + 1;
+        }
+        int64 k = 1;
+        while (k < numClasses) {
+            // the candidate whose WORST-case neighbour is most distant
+            int64 best = 0;
+            float64 bestVal = maxSim[0];
+            c = 1;
+            while (c < candidates) {
+                if (maxSim[c] < bestVal) {
+                    bestVal = maxSim[c];
+                    best = c;
+                }
+                c = c + 1;
+            }
+            Embeddings.copyRow(cand, best, out, k, dim);
+            c = 0;
+            while (c < candidates) {
+                float64 s = Embeddings.dotRows(cand, c, out, k, dim);
+                if (s > maxSim[c]) { maxSim[c] = s; }
+                c = c + 1;
+            }
+            k = k + 1;
+        }
+        Embeddings.normalizeRows(out);
+        return #out;
+    }
+
+    static #Tensor<float32> gaussian(Generator g, int64 rows, int64 cols) {
+        int64[] sh = heap int64[2];
+        sh[0] = rows;
+        sh[1] = cols;
+        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        Tensor<float32> z = g.normal(rows * cols);
+        int64 i = 0;
+        while (i < rows * cols) {
+            t.flatSet(i, z.get1(i));
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    /** Scale every row to unit L2 norm, in place. */
+    public static void normalizeRows(Tensor<float32> t) {
+        int64 cols = t.shapeAt(1);
+        int64 rows = t.shapeAt(0);
+        int64 r = 0;
+        while (r < rows) {
+            float64 sq = 0.0;
+            int64 j = 0;
+            while (j < cols) {
+                float64 v = (float64) t.flatGet(r * cols + j);
+                sq = sq + v * v;
+                j = j + 1;
+            }
+            float64 nrm = Math.sqrt(sq);
+            if (nrm < 0.00000001) { nrm = 0.00000001; }
+            j = 0;
+            while (j < cols) {
+                float64 sv = (float64) t.flatGet(r * cols + j) / nrm;
+                t.flatSet(r * cols + j, (float32) sv);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return;
+    }
+
+    static void copyRow(Tensor<float32> src, int64 sr, Tensor<float32> dst,
+                        int64 dr, int64 cols) {
+        int64 j = 0;
+        while (j < cols) {
+            dst.flatSet(dr * cols + j, src.flatGet(sr * cols + j));
+            j = j + 1;
+        }
+        return;
+    }
+
+    static float64 dotRows(Tensor<float32> a, int64 ar, Tensor<float32> b,
+                           int64 br, int64 cols) {
+        float64 acc = 0.0;
+        int64 j = 0;
+        while (j < cols) {
+            acc = acc + (float64) a.flatGet(ar * cols + j)
+                      * (float64) b.flatGet(br * cols + j);
+            j = j + 1;
+        }
+        return acc;
+    }
+
+    /** The largest cosine between any two DISTINCT rows — how close the
+     *  worst pair of class vectors is. */
+    public static float64 maxPairCosine(Tensor<float32> vecs) {
+        int64 rows = vecs.shapeAt(0);
+        int64 cols = vecs.shapeAt(1);
+        float64 worst = -2.0;
+        int64 i = 0;
+        while (i < rows) {
+            int64 j = i + 1;
+            while (j < rows) {
+                float64 s = Embeddings.dotRows(vecs, i, vecs, j, cols);
+                if (s > worst) { worst = s; }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return worst;
+    }
+}

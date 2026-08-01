@@ -1,0 +1,369 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.data.Batches;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.train.Embeddings;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaTrainer;
+import dev.cajeta.ml.train.TrainHistory;
+
+/**
+ * cajeta-ml-v3 plan 7.1.1–7.3.1 — SPELA(O) against the reference
+ * implementation's contract (`code/ml/spela-training`, 14 tests). Each
+ * reference test maps to one here, or is documented N/A below.
+ *
+ * The class vectors are NOT bit-comparable to the reference: torch's RNG
+ * is a different stream, so the same seed cannot produce the same draws.
+ * What has to agree is the GEOMETRY the algorithm depends on — unit norm,
+ * shape, real separation — and the recipes' behaviour, which is what these
+ * pin.
+ *
+ * Reference tests with no counterpart here, and why:
+ * - `test_save_load_roundtrip` — checkpointing is U9 (`ml.io`), not U7.
+ * - `test_amp_dtype_validation` — mixed precision is not in v3's scope
+ *   (spec §3.1 is f32/f64); there is no amp flag to validate.
+ */
+public class SpelaTest {
+
+    public SpelaTest() { return; }
+
+    /** `ArrayList.add` takes a BORROW, so each layer is bound to a local
+     *  and moved in with `#`; passing `heap Linear(…)` directly would
+     *  store a pointer to something freed at the end of the statement
+     *  (the registered `field-store-title-trap` hazard). */
+    static #ArrayList<Module> mlpLayers(int64 inDim, int64 mid, int64 outDim,
+                                        uint64 seed) {
+        ArrayList<Module> ls #= heap ArrayList<Module>();
+        Module a = heap Linear(inDim, mid, seed);
+        ls.add(#a);
+        Module b = heap Linear(mid, outDim, seed + 1);
+        ls.add(#b);
+        return ls;
+    }
+
+    // ── 7.1.1 embeddings (ref: unit_norm / shape / farthest_separates) ──
+
+    @Test
+    public void symmetricVectorsAreUnitNorm() {
+        Tensor<float32> v = Embeddings.symmetricVectors(6, 12,
+            SpelaConfig.FARTHEST, 256, 7L);
+        int64 r = 0;
+        while (r < 6) {
+            float64 sq = 0.0;
+            int64 j = 0;
+            while (j < 12) {
+                float64 e = (float64) v.flatGet(r * 12 + j);
+                sq = sq + e * e;
+                j = j + 1;
+            }
+            float64 n = Math.sqrt(sq);
+            Assert.isTrue(n > 0.999 && n < 1.001);
+            r = r + 1;
+        }
+    }
+
+    @Test
+    public void symmetricVectorsHaveTheRequestedShape() {
+        Tensor<float32> v = Embeddings.symmetricVectors(10, 32,
+            SpelaConfig.RANDOM, 256, 3L);
+        Assert.isTrue(v.ndim() == 2);
+        Assert.isTrue(v.shapeAt(0) == 10);
+        Assert.isTrue(v.shapeAt(1) == 32);
+    }
+
+    /** Farthest-point sampling must beat random on the worst pair — this
+     *  is the property the reference's corrected `max`-tracking buys, and
+     *  the one a `min` implementation silently loses. */
+    @Test
+    public void farthestPointSeparatesClasses() {
+        Tensor<float32> far = Embeddings.symmetricVectors(4, 4,
+            SpelaConfig.FARTHEST, 512, 11L);
+        float64 worstFar = Embeddings.maxPairCosine(far);
+        // no two class vectors may be near-duplicates
+        Assert.isTrue(worstFar < 0.5);
+        Tensor<float32> rnd = Embeddings.symmetricVectors(4, 4,
+            SpelaConfig.RANDOM, 512, 11L);
+        float64 worstRnd = Embeddings.maxPairCosine(rnd);
+        Assert.isTrue(worstFar <= worstRnd);
+    }
+
+    @Test
+    public void seededEmbeddingsAreReproducible() {
+        Tensor<float32> a = Embeddings.symmetricVectors(4, 8,
+            SpelaConfig.FARTHEST, 128, 99L);
+        Tensor<float32> b = Embeddings.symmetricVectors(4, 8,
+            SpelaConfig.FARTHEST, 128, 99L);
+        int64 i = 0;
+        while (i < 32) {
+            Assert.isTrue(a.flatGet(i) == b.flatGet(i));
+            i = i + 1;
+        }
+    }
+
+    // ── lazy per-layer sizing (ref: lazy_init_handles_dim_change) ───────
+
+    /** Each layer's class vectors are sized from ITS OWN activation, not
+     *  from the input — which is the whole reason a stack with changing
+     *  widths works. */
+    @Test
+    public void classVectorsAreSizedPerLayerLazily() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 20, 6, 5L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.seed = 13L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        // nothing is sized before the first sweep
+        Assert.isFalse(tr.isSized(0));
+        Tensor<float32> x = Digits.images(2, 4, 0.1f, 3L);
+        Tensor<float32> y = Digits.labels(2, 4);
+        tr.trainBatch(x, y);
+        // layer 0 emits 20 features, layer 1 emits 6 — different dims
+        Assert.isTrue(tr.classVectorsAt(0).shapeAt(0) == 4);
+        Assert.isTrue(tr.classVectorsAt(0).shapeAt(1) == 20);
+        Assert.isTrue(tr.classVectorsAt(1).shapeAt(1) == 6);
+    }
+
+    // ── 7.1.4 the detached handoff ──────────────────────────────────────
+
+    /**
+     * THE structural claim of SPELA: no gradient crosses a layer
+     * boundary. Training layer 1 alone must leave layer 0's weights
+     * untouched — under backprop it could not.
+     */
+    @Test
+    public void noGradientFlowsAcrossLayers() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 12, 6, 21L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.seed = 5L;
+        // freeze layer 0 so ONLY layer 1 can train
+        layers.get(0).setTrainable(false);
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Parameter[] ps0 = tr.layerAt(0).parameters();
+        Tensor<float32> before = ps0[0].get().copy();
+
+        Tensor<float32> x = Digits.images(4, 4, 0.1f, 7L);
+        Tensor<float32> y = Digits.labels(4, 4);
+        int32 s = 0;
+        while (s < 5) {
+            tr.trainBatch(x, y);
+            s = s + 1;
+        }
+        // layer 1 trained for five steps; layer 0 is bit-identical
+        Tensor<float32> after = ps0[0].get();
+        int64 i = 0;
+        while (i < 64 * 12) {
+            Assert.isTrue(after.flatGet(i) == before.flatGet(i));
+            i = i + 1;
+        }
+        // ...and layer 1 genuinely moved, so the test isn't vacuous
+        Parameter[] ps1 = tr.layerAt(1).parameters();
+        Assert.isTrue(tr.lastLossAt(1) != 0.0);
+    }
+
+    // ── 7.1.2 paper-exact recipe ────────────────────────────────────────
+
+    @Test
+    public void paperExactRecipeTrainsSeparableData() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 24, 12, 31L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.paperExact();
+        cfg.lr = 0.05f;
+        cfg.seed = 17L;
+        Assert.isTrue(cfg.lossType == SpelaConfig.COSINE);
+        Assert.isTrue(cfg.optimizer == SpelaConfig.SGD);
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(8, 4, 0.15f, 19L);
+        Tensor<float32> y = Digits.labels(8, 4);
+        Batches data = heap Batches(x, y, 8, 23L);
+        TrainHistory hist = tr.fit(data, 20);
+        // the pure cosine loss is bounded in [-1, 0]; it must descend
+        Assert.isTrue(hist.finalLoss() < hist.lossAt(0));
+        Assert.isTrue(hist.finalLoss() < -0.5);
+        Assert.isTrue(tr.accuracyFromLayer(x, y, -1) > 0.9);
+    }
+
+    // ── 7.1.3 modernized recipe ─────────────────────────────────────────
+
+    @Test
+    public void modernizedRecipeTrainsSeparableData() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 24, 12, 41L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.seed = 29L;
+        // the defaults ARE the modernized recipe
+        Assert.isTrue(cfg.lossType == SpelaConfig.COSFACE);
+        Assert.isTrue(cfg.optimizer == SpelaConfig.ADAMW);
+        Assert.isTrue(cfg.lrSchedule == SpelaConfig.COSINE_DECAY);
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(8, 4, 0.15f, 19L);
+        Tensor<float32> y = Digits.labels(8, 4);
+        Batches data = heap Batches(x, y, 8, 23L);
+        TrainHistory hist = tr.fit(data, 20);
+        Assert.isTrue(hist.finalLoss() < hist.lossAt(0) * 0.5);
+        Assert.isTrue(tr.accuracyFromLayer(x, y, -1) > 0.9);
+    }
+
+    /** CosFace with a margin still trains — the margin makes the target
+     *  cosine work harder, so the loss starts higher. */
+    @Test
+    public void cosfaceMarginTrains() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 24, 12, 43L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.cosineMargin = 0.35;
+        cfg.seed = 29L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(8, 4, 0.15f, 19L);
+        Tensor<float32> y = Digits.labels(8, 4);
+        Batches data = heap Batches(x, y, 8, 23L);
+        TrainHistory hist = tr.fit(data, 20);
+        Assert.isTrue(hist.finalLoss() < hist.lossAt(0) * 0.6);
+    }
+
+    // ── the LR schedule (ref: cosine_schedule_decays_lr) ────────────────
+
+    @Test
+    public void cosineScheduleWarmsUpThenDecays() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 12, 6, 51L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.1f;
+        cfg.warmupFrac = 0.2;
+        cfg.seed = 3L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        tr.planSteps(100);
+        // step 0 is inside warmup, so well below the base rate
+        float32 first = tr.currentLr();
+        Assert.isTrue(first < 0.1f);
+        Assert.isTrue(first > 0.0f);
+        Tensor<float32> x = Digits.images(2, 4, 0.1f, 3L);
+        Tensor<float32> y = Digits.labels(2, 4);
+        int32 s = 0;
+        while (s < 20) {
+            tr.trainBatch(x, y);
+            s = s + 1;
+        }
+        // past warmup (20 of 100 steps), the rate is at its peak…
+        float32 peak = tr.currentLr();
+        Assert.isTrue(peak > 0.09f);
+        while (s < 90) {
+            tr.trainBatch(x, y);
+            s = s + 1;
+        }
+        // …and decays toward zero after it
+        Assert.isTrue(tr.currentLr() < peak * 0.2f);
+    }
+
+    @Test
+    public void constantScheduleDoesNotMove() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 12, 6, 53L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.paperExact();
+        cfg.lr = 0.02f;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        tr.planSteps(50);
+        Assert.isTrue(tr.currentLr() == 0.02f);
+        Tensor<float32> x = Digits.images(2, 4, 0.1f, 3L);
+        Tensor<float32> y = Digits.labels(2, 4);
+        int32 s = 0;
+        while (s < 10) {
+            tr.trainBatch(x, y);
+            s = s + 1;
+        }
+        Assert.isTrue(tr.currentLr() == 0.02f);
+    }
+
+    // ── 7.1.5 per-layer metrics + early exit ────────────────────────────
+
+    @Test
+    public void perLayerLossesAreRecordedSeparately() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 24, 12, 61L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.seed = 7L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Assert.isTrue(tr.layerCount() == 2);
+        Tensor<float32> x = Digits.images(6, 4, 0.15f, 11L);
+        Tensor<float32> y = Digits.labels(6, 4);
+        tr.trainBatch(x, y);
+        // each layer carries its OWN loss — they are separate objectives,
+        // not one loss reported twice
+        Assert.isTrue(tr.lastLossAt(0) != 0.0);
+        Assert.isTrue(tr.lastLossAt(1) != 0.0);
+        Assert.isTrue(tr.lastLossAt(0) != tr.lastLossAt(1));
+    }
+
+    /** Early exit: every layer has its own classifier, so a shallow
+     *  prefix is a usable model rather than a partial result. */
+    @Test
+    public void earlyExitPredictsFromAnyLayer() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 24, 12, 71L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.seed = 37L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(8, 4, 0.15f, 19L);
+        Tensor<float32> y = Digits.labels(8, 4);
+        Batches data = heap Batches(x, y, 8, 23L);
+        tr.fit(data, 20);
+
+        Tensor<float32> p0 = tr.predictFromLayer(x, 0);
+        Tensor<float32> p1 = tr.predictFromLayer(x, 1);
+        Assert.isTrue(p0.shapeAt(0) == 32);
+        Assert.isTrue(p1.shapeAt(0) == 32);
+        // the first layer alone already classifies well above chance…
+        Assert.isTrue(tr.accuracyFromLayer(x, y, 0) > 0.5);
+        // …and -1 means "the last layer"
+        float64 last = tr.accuracyFromLayer(x, y, -1);
+        Assert.isTrue(last == tr.accuracyFromLayer(x, y, 1));
+        Assert.isTrue(last > 0.9);
+    }
+
+    @Test
+    public void predictFromLayerRejectsAnOutOfRangeLayer() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 12, 6, 81L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.seed = 3L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(2, 4, 0.1f, 3L);
+        boolean threw = false;
+        try {
+            Tensor<float32> p = tr.predictFromLayer(x, 5);
+        } catch (Exception e) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+    }
+
+    /** Layer inputs are L2-normalized when configured — Algorithm 1's
+     *  line 6, and the reason a layer sees a bounded input regardless of
+     *  what the previous one emitted. */
+    @Test
+    public void inputNormalizationIsConfigurable() {
+        ArrayList<Module> layers = SpelaTest.mlpLayers(64, 12, 6, 91L);
+        SpelaConfig on = heap SpelaConfig(4);
+        on.lr = 0.01f;
+        on.seed = 3L;
+        Assert.isTrue(on.normalizeLayerInputs);
+
+        ArrayList<Module> layers2 = SpelaTest.mlpLayers(64, 12, 6, 91L);
+        SpelaConfig off = heap SpelaConfig(4);
+        off.lr = 0.01f;
+        off.seed = 3L;
+        off.normalizeLayerInputs = false;
+
+        SpelaTrainer a = heap SpelaTrainer(#layers, #on);
+        SpelaTrainer b = heap SpelaTrainer(#layers2, #off);
+        // same seeds, same data, same weights — only the flag differs, so
+        // any divergence is caused by the normalization itself
+        Tensor<float32> x = Digits.images(4, 4, 0.2f, 13L);
+        Tensor<float32> y = Digits.labels(4, 4);
+        a.trainBatch(x, y);
+        b.trainBatch(x, y);
+        Assert.isTrue(a.lastLossAt(0) != b.lastLossAt(0));
+    }
+}

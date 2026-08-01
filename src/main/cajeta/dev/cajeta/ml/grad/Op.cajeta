@@ -56,7 +56,10 @@ public final class Op {
     /** General axis permutation, rank <= 4 (the perm rides the 4 int
      *  payload slots) — the head split/merge in attention. */
     public static int32 PERMUTE     = 39;
+    /** Row-wise L2 normalization over the last axis — SPELA's per-layer
+     *  input and activation normalization. */
+    public static int32 ROWNORM     = 40;
 
     /** One past the largest id — the registry array length. */
-    public static int32 COUNT       = 40;
+    public static int32 COUNT       = 41;
 }

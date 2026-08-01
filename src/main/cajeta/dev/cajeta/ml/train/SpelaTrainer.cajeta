@@ -1,0 +1,475 @@
+package dev.cajeta.ml.train;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.data.Batches;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Nets;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.optim.Adam;
+import dev.cajeta.ml.optim.AdamW;
+import dev.cajeta.ml.optim.Optimizer;
+import dev.cajeta.ml.optim.SGD;
+
+/**
+ * SPELA(O) — Solo Pass Embedded Learning — ported from the reference
+ * implementation at `code/ml/spela-training` (spec §5.2).
+ *
+ * The whole algorithm is one forward sweep. Each layer computes its own
+ * LOCAL loss against fixed class vectors on the unit sphere, updates
+ * immediately, and hands its output to the next layer DETACHED. No
+ * gradient ever crosses a layer boundary; there is no global backward and
+ * no stored activation graph.
+ *
+ * That structure falls out of the tape design rather than being imposed on
+ * it: each layer gets its OWN {@link GradTape}, and the incoming
+ * activation enters that tape as a non-grad leaf. A gradient physically
+ * cannot reach the previous layer, because the previous layer's nodes are
+ * on a tape that no longer exists. The detachment is not a discipline the
+ * trainer has to remember — it is a property of the object graph.
+ *
+ * Class vectors are sized LAZILY, per layer, from the first activation
+ * that layer produces. That is what lets a CNN stack work, where each
+ * layer's output dimension differs and none of them is the input's.
+ */
+public class SpelaTrainer {
+    ArrayList<Module> layers;
+    SpelaConfig cfg;
+    ArrayList<Tensor<float32>> classVectors;   // per layer; see `sized`
+    boolean[] sized;                           // has layer i's dim been fixed?
+    ArrayList<Optimizer> optimizers;
+    ArrayList<float64> lastLossPerLayer;
+    int64 stepCount;
+    int64 totalSteps;
+
+    /** Takes OWNERSHIP of the layer list and the config. A plain formal
+     *  stored into a plain field is a borrow the constructor's own drop
+     *  chain frees on exit (the registered `field-store-title-trap`), so
+     *  both transfer with `#` and the trainer keeps them alive for its
+     *  lifetime. Reach the layers back through {@link #layerAt}. */
+    public SpelaTrainer(#ArrayList<Module> layers, #SpelaConfig cfg) {
+        if (layers.count() == 0) {
+            throw heap MlException("SpelaTrainer: at least one layer is required");
+        }
+        this.layers #= layers;
+        this.cfg #= cfg;
+        this.classVectors = heap ArrayList<Tensor<float32>>();
+        this.optimizers = heap ArrayList<Optimizer>();
+        this.lastLossPerLayer = heap ArrayList<float64>();
+        this.stepCount = 0;
+        this.totalSteps = 0;
+        this.sized = heap boolean[this.layers.count()];
+        int32 i = 0;
+        while (i < this.layers.count()) {
+            // A 1x1 placeholder, NOT a zero-length one: a zero-element
+            // tensor's storage has no allocation to drop and takes the
+            // runtime down. `sized` carries the "not yet fixed" state
+            // instead of overloading the shape to mean it.
+            int64[] one = heap int64[2];
+            one[0] = 1;
+            one[1] = 1;
+            // `ArrayList.add` takes a BORROW, so a freshly built value must
+            // be bound to a local and moved in with `#` — passing the
+            // constructor call directly stores a pointer to something that
+            // drops at the end of the statement.
+            Tensor<float32> placeholder = Tensor.zeros<float32>(one);
+            this.classVectors.add(#placeholder);
+            this.sized[i] = false;
+            // Built INLINE rather than through a `#Optimizer`-returning
+            // helper: handing a fat interface value back by ownership and
+            // then storing it in a container produced a value that faulted
+            // on its first use from the field.
+            Module lm = this.layers.get(i);
+            if (this.cfg.optimizer == SpelaConfig.SGD) {
+                Optimizer o = heap SGD(lm.parameters(), this.cfg.lr,
+                                       this.cfg.momentum);
+                this.optimizers.add(#o);
+            } else if (this.cfg.optimizer == SpelaConfig.ADAMW) {
+                Optimizer o = heap AdamW(lm.parameters(), this.cfg.lr,
+                                         this.cfg.weightDecay);
+                this.optimizers.add(#o);
+            } else {
+                throw heap MlException("SpelaTrainer: unknown optimizer id "
+                    + this.cfg.optimizer);
+            }
+            this.lastLossPerLayer.add(0.0);
+            i = i + 1;
+        }
+        return;
+    }
+
+    public int32 layerCount() {
+        return this.layers.count();
+    }
+
+    /** A borrow of layer `i` — the trainer owns the stack. */
+    public Module layerAt(int32 i) {
+        return this.layers.get(i);
+    }
+
+    /** The class vectors in force at `layer`. Meaningful only once
+     *  {@link #isSized} reports true — they are sized lazily, from the
+     *  first activation the layer produces. */
+    public Tensor<float32> classVectorsAt(int32 layer) {
+        return this.classVectors.get(layer);
+    }
+
+    /** Has `layer` seen an activation and fixed its class-vector dim? */
+    public boolean isSized(int32 layer) {
+        return this.sized[layer];
+    }
+
+    public float64 lastLossAt(int32 layer) {
+        return this.lastLossPerLayer.get(layer);
+    }
+
+    /** Tell the trainer how many steps the whole run will take, so the
+     *  warmup→cosine schedule knows its horizon. `fit` does this itself. */
+    public void planSteps(int64 total) {
+        this.totalSteps = total;
+        return;
+    }
+
+    /** The learning rate for the CURRENT step under the configured
+     *  schedule — the reference's per-layer LambdaLR, evaluated directly. */
+    public float32 currentLr() {
+        if (this.cfg.lrSchedule == SpelaConfig.CONSTANT || this.totalSteps <= 0) {
+            return this.cfg.lr;
+        }
+        int64 warmup = (int64) (this.cfg.warmupFrac * (float64) this.totalSteps);
+        if (warmup < 1) { warmup = 1; }
+        float64 base = (float64) this.cfg.lr;
+        if (this.stepCount < warmup) {
+            return (float32) (base * (float64) (this.stepCount + 1)
+                              / (float64) warmup);
+        }
+        int64 span = this.totalSteps - warmup;
+        if (span < 1) { span = 1; }
+        float64 progress = (float64) (this.stepCount - warmup) / (float64) span;
+        if (progress > 1.0) { progress = 1.0; }
+        if (progress < 0.0) { progress = 0.0; }
+        float64 cos = 0.5 * (1.0 + Math.cos(3.14159265358979 * progress));
+        return (float32) (base * (this.cfg.minLrRatio
+                          + (1.0 - this.cfg.minLrRatio) * cos));
+    }
+
+    // ── the sweep ───────────────────────────────────────────────────────
+
+    /**
+     * One batch: sweep the layers, each training on its own local loss and
+     * handing its output on detached. Returns the mean local loss.
+     */
+    public float64 trainBatch(Tensor<float32> x, Tensor<float32> y) {
+        int32 lcount = this.layers.count();
+        float32 lr = this.currentLr();
+        Tensor<float32> h = x.copy();
+        float64 total = 0.0;
+        int32 i = 0;
+        while (i < lcount) {
+            Module layer = this.layers.get(i);
+            // ONE owned local. Binding a borrow of `h` in one branch and a
+            // fresh tensor in the other lets the scope-exit drop free `h`
+            // itself on the borrow path — copy once, normalize in place.
+            Tensor<float32> hIn = h.copy();
+            if (this.cfg.normalizeLayerInputs && hIn.ndim() == 2) {
+                Embeddings.normalizeRows(hIn);
+            }
+            // A tape PER LAYER — the input is a constant on it, so no
+            // gradient can reach anything upstream.
+            GradTape<float32> tape = heap GradTape<float32>();
+            layer.bindParameters(tape);
+            Parameter[] ps = layer.parameters();
+            GradTensor xn = tape.leaf(hIn, false);
+            GradTensor hOut = layer.forward(tape, xn);
+            GradTensor flatOut = this.flattenIfNeeded(tape, hOut);
+            this.sizeEmbeddings(i, tape.valueOf(flatOut));
+
+            // A layer with nothing TRAINABLE is swept but not updated —
+            // presence of parameters is not the same as trainability, and
+            // asking the tape for a frozen parameter's gradient is an
+            // error, not an empty result.
+            boolean hasTrainable = false;
+            int32 k = 0;
+            while (k < (int32) ps.count()) {
+                if (ps[k].isTrainable()) { hasTrainable = true; }
+                k = k + 1;
+            }
+            if (hasTrainable) {
+                Optimizer opt = this.optimizers.get(i);
+                opt.setLr(lr);
+                GradTensor loss = this.localLoss(tape, i, flatOut, y);
+                float64 value = (float64) tape.valueOf(loss).flatGet(0);
+                tape.backward(loss);
+                Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+                if (this.cfg.gradClipNorm > 0.0f) {
+                    BackpropTrainer.clipByGlobalNorm(gs, this.cfg.gradClipNorm);
+                }
+                opt.step(gs);
+                this.lastLossPerLayer.set(i, value);
+                total = total + value;
+            }
+            // The handoff: a COPY of the forward value, with no history.
+            h = tape.valueOf(flatOut).copy();
+            layer.unbindParameters();
+            i = i + 1;
+        }
+        this.stepCount = this.stepCount + 1;
+        return total / (float64) lcount;
+    }
+
+    /** Train for `epochs` passes, reshuffling each epoch. */
+    public #TrainHistory fit(Batches data, int32 epochs) {
+        this.planSteps((int64) epochs * data.batchCount());
+        TrainHistory hist = heap TrainHistory();
+        int32 e = 0;
+        while (e < epochs) {
+            data.reorder((int64) e);
+            float64 sum = 0.0;
+            int64 nb = data.batchCount();
+            int64 b = 0;
+            while (b < nb) {
+                sum = sum + this.trainBatch(data.batchX(b), data.batchY(b));
+                b = b + 1;
+            }
+            hist.note(sum / (float64) nb, (float64) this.currentLr(), 0.0);
+            e = e + 1;
+        }
+        return hist;
+    }
+
+    GradTensor flattenIfNeeded(GradTape<float32> tape, GradTensor h) {
+        if (!this.cfg.autoFlatten) {
+            return h;
+        }
+        Tensor<float32> v = tape.valueOf(h);
+        if (v.ndim() <= 2) {
+            return h;
+        }
+        int64 rows = v.shapeAt(0);
+        int64 rest = 1;
+        int32 d = 1;
+        while (d < v.ndim()) {
+            rest = rest * v.shapeAt(d);
+            d = d + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = rows;
+        sh[1] = rest;
+        return tape.reshape(h, sh);
+    }
+
+    /** Size this layer's class vectors from its FIRST activation. */
+    void sizeEmbeddings(int32 layer, Tensor<float32> hOut) {
+        if (this.sized[layer]) {
+            return;
+        }
+        int64 dim = hOut.shapeAt(hOut.ndim() - 1);
+        Tensor<float32> vecs = Embeddings.symmetricVectors(
+            this.cfg.numClasses, dim, this.cfg.embeddingsMethod,
+            this.cfg.embeddingsCandidates, this.cfg.seed);
+        this.classVectors.set(layer, #vecs);
+        this.sized[layer] = true;
+        return;
+    }
+
+    /**
+     * The local objective.
+     *
+     * `COSINE` is the paper's: `−mean cos(h, e[y])`, which pulls each
+     * activation toward its own class vector and says nothing about the
+     * others. `COSFACE` runs cross-entropy over the cosines to ALL class
+     * vectors (scaled, optionally with an additive margin on the target),
+     * so non-target classes are actively pushed away — which is why it
+     * closes most of the gap to backprop.
+     */
+    GradTensor localLoss(GradTape<float32> tape, int32 layer, GradTensor h,
+                         Tensor<float32> labels) {
+        Tensor<float32> vecs = this.classVectors.get(layer);
+        if (this.cfg.lossType == SpelaConfig.COSINE) {
+            Tensor<float32> targets = SpelaTrainer.gatherRows(vecs, labels);
+            GradTensor tn = tape.leaf(targets, false);
+            return tape.neg(tape.mean(tape.cosineSim(h, tn)));
+        }
+        if (this.cfg.lossType == SpelaConfig.COSFACE) {
+            GradTensor hn = tape.rowNorm(h);
+            Tensor<float32> vt = SpelaTrainer.transposed(vecs);
+            GradTensor vtn = tape.leaf(vt, false);
+            GradTensor cosAll = tape.matmul(hn, vtn);
+            if (this.cfg.cosineMargin > 0.0) {
+                Tensor<float32> marg = SpelaTrainer.marginMask(
+                    labels, this.cfg.numClasses, this.cfg.cosineMargin);
+                cosAll = tape.sub(cosAll, tape.leaf(marg, false));
+            }
+            int64[] one = heap int64[1];
+            one[0] = 1;
+            Tensor<float32> sc = Tensor.full<float32>(one,
+                (float32) this.cfg.cosineScale);
+            GradTensor logits = tape.mul(cosAll, tape.leaf(sc, false));
+            return tape.crossEntropy(logits, labels);
+        }
+        throw heap MlException("SpelaTrainer: unknown lossType "
+            + this.cfg.lossType);
+    }
+
+    // ── inference ───────────────────────────────────────────────────────
+
+    /**
+     * Predict by nearest class vector at `fromLayer` (−1 = the last) —
+     * SPELA's early exit. Every layer carries its own classifier, so a
+     * shallow prefix is a usable model on its own, not a partial result.
+     */
+    public #Tensor<float32> predictFromLayer(Tensor<float32> x, int32 fromLayer) {
+        int32 target = fromLayer;
+        if (target < 0) { target = this.layers.count() - 1; }
+        if (target >= this.layers.count()) {
+            throw heap MlException("SpelaTrainer.predictFromLayer: layer "
+                + target + " is beyond the stack (" + this.layers.count() + ")");
+        }
+        Tensor<float32> h = x.copy();
+        int32 i = 0;
+        while (i <= target) {
+            Module layer = this.layers.get(i);
+            // ONE owned local. Binding a borrow of `h` in one branch and a
+            // fresh tensor in the other lets the scope-exit drop free `h`
+            // itself on the borrow path — copy once, normalize in place.
+            Tensor<float32> hIn = h.copy();
+            if (this.cfg.normalizeLayerInputs && hIn.ndim() == 2) {
+                Embeddings.normalizeRows(hIn);
+            }
+            Tensor<float32> raw = layer.predict(hIn);
+            h = SpelaTrainer.flatten2d(raw);
+            this.sizeEmbeddings(i, h);
+            i = i + 1;
+        }
+        Tensor<float32> vecs = this.classVectors.get(target);
+        return SpelaTrainer.nearestClass(h, vecs);
+    }
+
+    /** Accuracy of the early exit at `fromLayer`. */
+    public float64 accuracyFromLayer(Tensor<float32> x, Tensor<float32> y,
+                                     int32 fromLayer) {
+        Tensor<float32> p = this.predictFromLayer(x, fromLayer);
+        int64 n = y.shapeAt(0);
+        int64 hits = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (p.flatGet(i) == y.flatGet(i)) { hits = hits + 1; }
+            i = i + 1;
+        }
+        return (float64) hits / (float64) n;
+    }
+
+    // ── helpers ─────────────────────────────────────────────────────────
+
+    /** `(n, …)` → `(n, rest)`, always a fresh tensor. */
+    static #Tensor<float32> flatten2d(Tensor<float32> t) {
+        if (t.ndim() == 2) {
+            return t.copy();
+        }
+        int64 rows = t.shapeAt(0);
+        int64 rest = 1;
+        int32 d = 1;
+        while (d < t.ndim()) {
+            rest = rest * t.shapeAt(d);
+            d = d + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = rows;
+        sh[1] = rest;
+        Tensor<float32> vw = t.reshape(sh);
+        Tensor<float32> out = vw.copy();
+        return #out;
+    }
+
+    /** `vecs[labels[i]]` per row — each sample's target direction. */
+    static #Tensor<float32> gatherRows(Tensor<float32> vecs,
+                                       Tensor<float32> labels) {
+        int64 n = labels.shapeAt(0);
+        int64 dim = vecs.shapeAt(1);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = dim;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = (int64) (float64) labels.flatGet(i);
+            int64 j = 0;
+            while (j < dim) {
+                out.flatSet(i * dim + j, vecs.flatGet(c * dim + j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    static #Tensor<float32> transposed(Tensor<float32> t) {
+        Tensor<float32> vw = t.transpose();
+        Tensor<float32> out = vw.copy();
+        return #out;
+    }
+
+    /** `(n, classes)` with `margin` at each row's target column. */
+    static #Tensor<float32> marginMask(Tensor<float32> labels, int64 classes,
+                                       float64 margin) {
+        int64 n = labels.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = classes;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = (int64) (float64) labels.flatGet(i);
+            out.flatSet(i * classes + c, (float32) margin);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Argmax over cosine to each class vector, `(n,)`. */
+    static #Tensor<float32> nearestClass(Tensor<float32> h,
+                                         Tensor<float32> vecs) {
+        int64 n = h.shapeAt(0);
+        int64 dim = h.shapeAt(1);
+        int64 classes = vecs.shapeAt(0);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) {
+            float64 hn = 0.0;
+            int64 j = 0;
+            while (j < dim) {
+                float64 v = (float64) h.flatGet(i * dim + j);
+                hn = hn + v * v;
+                j = j + 1;
+            }
+            hn = Math.sqrt(hn);
+            if (hn < 0.00000001) { hn = 0.00000001; }
+            int64 best = 0;
+            float64 bestSim = -2.0;
+            int64 c = 0;
+            while (c < classes) {
+                float64 dot = 0.0;
+                j = 0;
+                while (j < dim) {
+                    dot = dot + (float64) h.flatGet(i * dim + j)
+                              * (float64) vecs.flatGet(c * dim + j);
+                    j = j + 1;
+                }
+                float64 sim = dot / hn;
+                if (sim > bestSim) {
+                    bestSim = sim;
+                    best = c;
+                }
+                c = c + 1;
+            }
+            out.flatSet(i, (float32) best);
+            i = i + 1;
+        }
+        return #out;
+    }
+}

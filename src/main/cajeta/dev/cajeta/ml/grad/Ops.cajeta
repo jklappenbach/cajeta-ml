@@ -73,6 +73,7 @@ public final class Ops {
         if (op == Op.MAXAXIS)    { return Tensor.maxAxis<E>(a, axis, true); }
         if (op == Op.TRANSPOSE)  { Tensor<E> tr = a.transpose(); Tensor<E> cp = tr.copy(); return #cp; }
         if (op == Op.TRANSPOSEB) { return Ops.transposeLast2<E>(a); }
+        if (op == Op.ROWNORM)    { return Ops.rowNormK<E>(a); }
         throw heap MlException("ml.grad: unknown unary op " + op);
     }
 
@@ -370,7 +371,73 @@ public final class Ops {
         if (op == Op.MATMULB) { return "matmulBatched"; }
         if (op == Op.TRANSPOSEB) { return "transposeBatch"; }
         if (op == Op.PERMUTE) { return "permute"; }
+        if (op == Op.ROWNORM) { return "rowNorm"; }
         return "op" + op;
+    }
+
+    /** Scale each row to unit L2 norm over the last axis (torch's
+     *  `F.normalize(x, p=2, dim=-1)`), with an epsilon floor so an
+     *  all-zero row maps to zeros rather than NaN. */
+    static #Tensor<E> rowNormK<E extends Floating>(Tensor<E> a) {
+        Tensor<E> out = a.copy();
+        int64 cols = out.shapeAt(out.ndim() - 1);
+        int64 rows = Ops.countOf<E>(out) / cols;
+        int64 r = 0;
+        while (r < rows) {
+            float64 sq = 0.0;
+            int64 j = 0;
+            while (j < cols) {
+                float64 v = (float64) out.flatGet(r * cols + j);
+                sq = sq + v * v;
+                j = j + 1;
+            }
+            float64 nrm = Math.sqrt(sq);
+            if (nrm < 0.00000001) { nrm = 0.00000001; }
+            j = 0;
+            while (j < cols) {
+                float64 sv = (float64) out.flatGet(r * cols + j) / nrm;
+                out.flatSet(r * cols + j, (E) sv);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    /** rowNorm VJP: dx = (g − y·⟨g, y⟩)/‖x‖, with `y` the normalized
+     *  output — the projection of the cotangent onto the tangent space of
+     *  the unit sphere, which is what keeps a normalized activation from
+     *  receiving a gradient component that would only change its length. */
+    static #Tensor<E> rowNormBack<E extends Floating>(Tensor<E> x, Tensor<E> y,
+                                                      Tensor<E> g) {
+        Tensor<E> out = x.copy();
+        int64 cols = x.shapeAt(x.ndim() - 1);
+        int64 rows = Ops.countOf<E>(x) / cols;
+        int64 r = 0;
+        while (r < rows) {
+            float64 sq = 0.0;
+            float64 dot = 0.0;
+            int64 j = 0;
+            while (j < cols) {
+                float64 xv = (float64) x.flatGet(r * cols + j);
+                sq = sq + xv * xv;
+                dot = dot + (float64) g.flatGet(r * cols + j)
+                          * (float64) y.flatGet(r * cols + j);
+                j = j + 1;
+            }
+            float64 nrm = Math.sqrt(sq);
+            if (nrm < 0.00000001) { nrm = 0.00000001; }
+            j = 0;
+            while (j < cols) {
+                float64 gv = (float64) g.flatGet(r * cols + j);
+                float64 yv = (float64) y.flatGet(r * cols + j);
+                float64 dv = (gv - yv * dot) / nrm;
+                out.flatSet(r * cols + j, (E) dv);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
     }
 
     // ── CPU kernels (package-private: the seam is the only entry) ──────

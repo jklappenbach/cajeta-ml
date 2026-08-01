@@ -1,0 +1,89 @@
+package dev.cajeta.ml.train;
+
+/**
+ * Configuration for {@link SpelaTrainer} — a port of the reference
+ * implementation's `SpelaConfig` (`code/ml/spela-training`), field for
+ * field, so a recipe transfers between the two without translation.
+ *
+ * Two recipes matter:
+ *
+ * - **Paper-exact** (Algorithm 1): `optimizer = SGD`, `lossType = COSINE`,
+ *   `normalizeLayerInputs = true`, `lrSchedule = CONSTANT`, typically
+ *   `lr = 1e-2`. Pure `−cos(h, e[y])`, which only pulls activations
+ *   TOWARD the target class vector.
+ * - **Modernized** (the reference's defaults, and these): AdamW with
+ *   weight decay, warmup→cosine schedule, and the CosFace loss —
+ *   cross-entropy over cosines to ALL class vectors, so non-target
+ *   classes are actively pushed away. That difference is most of the gap
+ *   to backprop.
+ */
+public final class SpelaConfig {
+
+    /** `optimizer` values. */
+    public static int32 ADAMW = 0;
+    public static int32 SGD = 1;
+
+    /** `lossType` values. */
+    public static int32 COSINE = 0;
+    public static int32 COSFACE = 1;
+
+    /** `lrSchedule` values. */
+    public static int32 CONSTANT = 0;
+    public static int32 COSINE_DECAY = 1;
+
+    /** `embeddingsMethod` values. */
+    public static int32 FARTHEST = 0;
+    public static int32 RANDOM = 1;
+
+    public int64 numClasses;
+    public int32 optimizer;
+    public float32 lr;
+    public float32 weightDecay;
+    public float32 momentum;
+    public int32 lrSchedule;
+    public float64 warmupFrac;
+    public float64 minLrRatio;
+    public int32 lossType;
+    public float64 cosineMargin;
+    public float64 cosineScale;
+    public int32 embeddingsMethod;
+    public int64 embeddingsCandidates;
+    public boolean normalizeLayerInputs;
+    public boolean autoFlatten;
+    public float32 gradClipNorm;
+    public uint64 seed;
+
+    /** The reference's defaults — the MODERNIZED recipe. */
+    public SpelaConfig(int64 numClasses) {
+        this.numClasses = numClasses;
+        this.optimizer = SpelaConfig.ADAMW;
+        this.lr = 0.001f;
+        this.weightDecay = 0.0001f;
+        this.momentum = 0.0f;
+        this.lrSchedule = SpelaConfig.COSINE_DECAY;
+        this.warmupFrac = 0.05;
+        this.minLrRatio = 0.0;
+        this.lossType = SpelaConfig.COSFACE;
+        this.cosineMargin = 0.0;
+        this.cosineScale = 30.0;
+        this.embeddingsMethod = SpelaConfig.FARTHEST;
+        this.embeddingsCandidates = 2048;
+        this.normalizeLayerInputs = true;
+        this.autoFlatten = true;
+        this.gradClipNorm = 0.0f;
+        this.seed = 0;
+        return;
+    }
+
+    /** Switch this config to the PAPER-EXACT recipe (Algorithm 1). */
+    public SpelaConfig paperExact() {
+        this.optimizer = SpelaConfig.SGD;
+        this.lr = 0.01f;
+        this.weightDecay = 0.0f;
+        this.momentum = 0.0f;
+        this.lrSchedule = SpelaConfig.CONSTANT;
+        this.lossType = SpelaConfig.COSINE;
+        this.normalizeLayerInputs = true;
+        return this;
+    }
+}
