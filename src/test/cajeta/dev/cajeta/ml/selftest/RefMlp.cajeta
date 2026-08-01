@@ -12,11 +12,11 @@ import dev.cajeta.ml.nn.Parameter;
  * the generator's formulas rather than a seed, so the whole forward and
  * backward is directly comparable to torch.
  */
-public class Mlp extends Module {
+public class RefMlp extends Module {
     Linear fc1;
     Linear fc2;
 
-    public Mlp() {
+    public RefMlp() {
         this.fc1 = heap Linear(3, 4, 1L);
         this.fc2 = heap Linear(4, 2, 2L);
         // w_(f) = (f % 5) * 0.5 - 1.0, weights stored [in, out]

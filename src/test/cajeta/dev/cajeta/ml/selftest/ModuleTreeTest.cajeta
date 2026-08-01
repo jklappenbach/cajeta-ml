@@ -269,7 +269,7 @@ public class ModuleTreeTest {
 
     @Test
     public void referenceMlpMatchesTorchEndToEnd() {
-        Mlp net = heap Mlp();
+        RefMlp net = heap RefMlp();
         GradTape<float32> tape = heap GradTape<float32>();
         net.bindParameters(tape);
         GradTensor x = tape.leaf(ModuleTreeTest.xIn(), false);

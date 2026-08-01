@@ -1,0 +1,257 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.data.Batches;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.optim.Adam;
+import dev.cajeta.ml.optim.Optimizer;
+import dev.cajeta.ml.train.BackpropTrainer;
+import dev.cajeta.ml.train.Loss;
+import dev.cajeta.ml.train.TrainHistory;
+import dev.cajeta.ml.zoo.EncoderBlock;
+import dev.cajeta.ml.zoo.EncoderStack;
+import dev.cajeta.ml.zoo.Mlp;
+import dev.cajeta.ml.zoo.SmallCnn;
+
+/**
+ * cajeta-ml-v3 plan 6.1.1–6.3.1 — the reference architectures as
+ * executable proof: the transformer encoder block pinned against PINNED
+ * torch 2.13.0+cpu (tools/fixtures/gen_nn_module.py), and every zoo model
+ * trained through `BackpropTrainer` on the in-repo fixture.
+ */
+public class ZooTest {
+
+    public ZooTest() { return; }
+
+    static void checkFlat(Tensor<float32> t, float32[] exp, float32 tol) {
+        int64 n = (int64) exp.count();
+        int64 f = 0;
+        while (f < n) {
+            float32 v = t.flatGet(f);
+            float32 d = v - exp[f];
+            if (d < 0.0f) { d = 0.0f - d; }
+            if (d >= tol) {
+                Assert.fail("flat[" + f + "] = " + v + ", torch pin " + exp[f]);
+            }
+            f = f + 1;
+        }
+    }
+
+    /** The generator's `w_` grid with a per-matrix offset. */
+    static void fillW(Tensor<float32> w, int64 offset, int64 n) {
+        int64 f = 0;
+        while (f < n) {
+            w.flatSet(f, (float32) ((f + offset) % 5) * 0.5f - 1.0f);
+            f = f + 1;
+        }
+        return;
+    }
+
+    static #Tensor<float32> seq234() {
+        int64[] s = heap int64[3];
+        s[0] = 2; s[1] = 3; s[2] = 4;
+        Tensor<float32> t = Tensor.zeros<float32>(s);
+        int64 f = 0;
+        while (f < 24) {
+            t.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    // ── 6.1.2 encoder block vs torch ────────────────────────────────────
+
+    @Test
+    public void encoderBlockMatchesTorchEndToEnd() {
+        EncoderBlock blk = heap EncoderBlock(4L, 2, 8L, 5L);
+        // Replace the seeded init with the generator's explicit weights.
+        // The attention's parameters(): wq.w, wq.b, wk.w, wk.b, wv.w,
+        // wv.b, wo.w, wo.b — biases stay zero, matching the torch pin.
+        Parameter[] ap = blk.attention().parameters();
+        ZooTest.fillW(ap[0].get(), 0, 16);
+        ZooTest.fillW(ap[2].get(), 1, 16);
+        ZooTest.fillW(ap[4].get(), 2, 16);
+        ZooTest.fillW(ap[6].get(), 3, 16);
+        ZooTest.fillW(blk.ffIn().weightParam().get(), 1, 32);
+        ZooTest.fillW(blk.ffOut().weightParam().get(), 2, 32);
+
+        GradTape<float32> tape = heap GradTape<float32>();
+        blk.bindParameters(tape);
+        GradTensor x = tape.leaf(ZooTest.seq234(), true);
+        GradTensor y = blk.forward(tape, x);
+        Assert.isTrue(tape.valueOf(y).ndim() == 3);
+        Assert.isTrue(tape.valueOf(y).shapeAt(2) == 4);
+        float32[] po = [3.30506229f, -2.86691904f, -7.45580482f, -0.37192562f,
+                        3.38043261f, -3.2766943f, -3.42418003f, -1.35092962f,
+                        3.55506229f, -2.61691904f, -7.20580482f, -0.12192562f,
+                        0.25449491f, 4.4369154f, 7.17831516f, -5.77353859f,
+                        3.89308548f, -2.257411f, -6.40797806f, 0.04405242f,
+                        -3.79429913f, -0.13997924f, 5.67489338f, 1.93716609f];
+        ZooTest.checkFlat(tape.valueOf(y), po, 0.002f);
+
+        Tensor<float32> kv = tape.valueOf(y).copy();
+        int64 i = 0;
+        while (i < 24) {
+            kv.flatSet(i, (float32) (i % 3 + 1) * 0.5f);
+            i = i + 1;
+        }
+        GradTensor k = tape.leaf(kv, false);
+        tape.backward(tape.sum(tape.mul(y, k)));
+        float32[] pdx = [6.9354763f, -6.99498367f, -1.70978391f, 5.26929426f,
+                         0.31473291f, 1.67528152f, 1.48666918f, 0.52331614f,
+                         8.23584557f, -7.5701642f, -2.04835153f, 5.88266945f,
+                         2.0914197f, 0.62489641f, 2.31408024f, -1.5303967f,
+                         5.02684879f, -1.01133466f, -8.51870823f, 8.50319386f,
+                         2.25195503f, 0.67138219f, 1.11272407f, 0.46393883f];
+        ZooTest.checkFlat(tape.gradOf(x), pdx, 0.01f);
+    }
+
+    // ── zoo shapes and naming ───────────────────────────────────────────
+
+    @Test
+    public void encoderStackPreservesShapeAndNamesByIndex() {
+        EncoderStack st = heap EncoderStack(4L, 2, 8L, 2, 3L);
+        Assert.isTrue(st.depth() == 2);
+        Tensor<float32> out = st.predict(ZooTest.seq234());
+        // a stack maps (B,T,E) to (B,T,E) — that invariance is what lets
+        // blocks compose to any depth
+        Assert.isTrue(out.ndim() == 3);
+        Assert.isTrue(out.shapeAt(0) == 2);
+        Assert.isTrue(out.shapeAt(1) == 3);
+        Assert.isTrue(out.shapeAt(2) == 4);
+
+        ArrayList<String> names = st.parameterNames();
+        // container children are indexed, matching a torch ModuleList
+        // field name THEN index, exactly as torch names a ModuleList
+        Assert.equals("blocks.0.norm1.weight", names.get(0));
+        Assert.equals("blocks.0.attn.wq.weight", names.get(2));
+        boolean sawSecondBlock = false;
+        boolean sawFinalNorm = false;
+        int32 i = 0;
+        while (i < names.count()) {
+            if (names.get(i) == "blocks.1.attn.wq.weight") { sawSecondBlock = true; }
+            if (names.get(i) == "normOut.weight") { sawFinalNorm = true; }
+            i = i + 1;
+        }
+        Assert.isTrue(sawSecondBlock);
+        Assert.isTrue(sawFinalNorm);
+    }
+
+    @Test
+    public void mlpBuilderShapesAndDepth() {
+        int64[] hidden = heap int64[2];
+        hidden[0] = 16;
+        hidden[1] = 8;
+        Mlp net = heap Mlp(64L, hidden, 4L, 5L);
+        int64[] xs = heap int64[2];
+        xs[0] = 3;
+        xs[1] = 64;
+        Tensor<float32> out = net.predict(Tensor.full<float32>(xs, 0.5f));
+        Assert.isTrue(out.ndim() == 2);
+        Assert.isTrue(out.shapeAt(0) == 3);
+        Assert.isTrue(out.shapeAt(1) == 4);
+        // two hidden Linears + head = 3 Linears = 6 parameters
+        Assert.equals(6, (int64) net.parameters().count());
+    }
+
+    /** The adaptive pool makes the head's width independent of the input's
+     *  spatial size — the same model eats 8×8 and 16×16. */
+    @Test
+    public void smallCnnAcceptsAnySpatialSize() {
+        SmallCnn net = heap SmallCnn(1L, 4L, 4L, 7L);
+        int64[] a = heap int64[4];
+        a[0] = 2; a[1] = 1; a[2] = 8; a[3] = 8;
+        Tensor<float32> oa = net.predict(Tensor.full<float32>(a, 0.25f));
+        Assert.isTrue(oa.shapeAt(0) == 2);
+        Assert.isTrue(oa.shapeAt(1) == 4);
+        int64[] b = heap int64[4];
+        b[0] = 2; b[1] = 1; b[2] = 16; b[3] = 16;
+        Tensor<float32> ob = net.predict(Tensor.full<float32>(b, 0.25f));
+        Assert.isTrue(ob.shapeAt(0) == 2);
+        Assert.isTrue(ob.shapeAt(1) == 4);
+    }
+
+    // ── 6.1.1 / 6.3.1 the zoo trains through BackpropTrainer ────────────
+
+    @Test
+    public void mlpTrainsOnTheFixture() {
+        int64[] hidden = heap int64[1];
+        hidden[0] = 16;
+        Mlp net = heap Mlp(64L, hidden, 4L, 11L);
+        Optimizer opt = heap Adam(net.parameters(), 0.01f);
+        BackpropTrainer tr = heap BackpropTrainer(net, opt,
+                                                  Loss.CROSS_ENTROPY, 1.0f);
+        Tensor<float32> x = Digits.images(12, 4, 0.25f, 5L);
+        Tensor<float32> y = Digits.labels(12, 4);
+        Batches data = heap Batches(x, y, 8, 13L);
+        TrainHistory hist = tr.fit(data, 12);
+        Assert.isTrue(hist.finalLoss() < hist.lossAt(0) * 0.5);
+        Assert.isTrue(ZooTest.accuracy(net, x, y, 48L) >= 45);
+    }
+
+    @Test
+    public void smallCnnTrainsOnTheFixture() {
+        SmallCnn net = heap SmallCnn(1L, 4L, 4L, 17L);
+        Optimizer opt = heap Adam(net.parameters(), 0.02f);
+        BackpropTrainer tr = heap BackpropTrainer(net, opt,
+                                                  Loss.CROSS_ENTROPY, 1.0f);
+        // the fixture as (n, 1, 8, 8) images
+        Tensor<float32> flatX = Digits.images(6, 4, 0.2f, 23L);
+        int64[] is = heap int64[4];
+        is[0] = 24; is[1] = 1; is[2] = 8; is[3] = 8;
+        Tensor<float32> vw = flatX.reshape(is);
+        Tensor<float32> x = vw.copy();
+        Tensor<float32> y = Digits.labels(6, 4);
+        Batches data = heap Batches(x, y, 8, 29L);
+        TrainHistory hist = tr.fit(data, 10);
+        Assert.isTrue(hist.epochs() == 10);
+        Assert.isTrue(hist.finalLoss() < hist.lossAt(0) * 0.6);
+    }
+
+    /** A toy sequence task: the stack plus a mean-pooled head learns to
+     *  read a sequence's class off its content. */
+    @Test
+    public void encoderStackTrainsOnAToySequenceTask() {
+        SeqClassifier net = heap SeqClassifier();
+        Optimizer opt = heap Adam(net.parameters(), 0.02f);
+        BackpropTrainer tr = heap BackpropTrainer(net, opt,
+                                                  Loss.CROSS_ENTROPY, 1.0f);
+        Tensor<float32> x = SeqClassifier.inputs();
+        Tensor<float32> y = SeqClassifier.labels();
+        Batches data = heap Batches(x, y, 4, 41L);
+        TrainHistory hist = tr.fit(data, 25);
+        Assert.isTrue(hist.epochs() == 25);
+        Assert.isTrue(hist.finalLoss() < hist.lossAt(0) * 0.5);
+    }
+
+    static int64 accuracy(Module net, Tensor<float32> x, Tensor<float32> y,
+                          int64 rows) {
+        net.eval();
+        Tensor<float32> logits = net.predict(x);
+        int64 cls = logits.shapeAt(1);
+        int64 hits = 0;
+        int64 r = 0;
+        while (r < rows) {
+            int64 best = 0;
+            float32 bv = logits.get2(r, 0);
+            int64 j = 1;
+            while (j < cls) {
+                if (logits.get2(r, j) > bv) {
+                    bv = logits.get2(r, j);
+                    best = j;
+                }
+                j = j + 1;
+            }
+            if ((float32) best == y.flatGet(r)) { hits = hits + 1; }
+            r = r + 1;
+        }
+        net.train();
+        return hits;
+    }
+}

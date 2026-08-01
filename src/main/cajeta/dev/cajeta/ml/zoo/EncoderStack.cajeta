@@ -1,0 +1,50 @@
+package dev.cajeta.ml.zoo;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.LayerNorm;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Sequential;
+
+/**
+ * `depth` {@link EncoderBlock}s in sequence, with a final layer norm —
+ * the standard pre-norm stack, where that trailing norm is what keeps the
+ * output scale bounded after an unnormalized residual path runs the whole
+ * depth.
+ *
+ * The blocks live in a NAMED `Sequential` field rather than a bare
+ * container this class walks itself, so parameters come out as
+ * `blocks.0.attn.wq.weight` — field name, then index — which is exactly
+ * what torch produces for a `ModuleList` assigned to `self.blocks`. A
+ * bare container would have dropped the `blocks.` level and emitted its
+ * children after the sibling fields instead of in declaration order.
+ */
+public class EncoderStack extends Module {
+    Sequential blocks;
+    LayerNorm normOut;
+
+    public EncoderStack(int64 embed, int32 heads, int64 hidden, int32 depth,
+                        uint64 seed) {
+        this.blocks = heap Sequential();
+        int32 i = 0;
+        while (i < depth) {
+            this.blocks.add(heap EncoderBlock(embed, heads, hidden,
+                                              seed + (uint64) (i * 100)));
+            i = i + 1;
+        }
+        this.normOut = heap LayerNorm(embed, 0.00001);
+        return;
+    }
+
+    public int32 depth() {
+        return this.blocks.count();
+    }
+
+    public Module blockAt(int32 i) {
+        return this.blocks.at(i);
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return this.normOut.forward(tape, this.blocks.forward(tape, x));
+    }
+}

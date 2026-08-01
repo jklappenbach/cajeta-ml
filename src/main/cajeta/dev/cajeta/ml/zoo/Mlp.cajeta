@@ -1,0 +1,52 @@
+package dev.cajeta.ml.zoo;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+
+/**
+ * A plain fully-connected stack: one ReLU layer per entry in `hidden`,
+ * followed by a linear head.
+ *
+ * The head has NO activation, so the output is logits for a classifier
+ * (cross-entropy fuses its own softmax) or a real-valued prediction for a
+ * regressor — one architecture serving both, decided by the loss rather
+ * than by the model.
+ *
+ * Layers live in a NAMED `Sequential` field, so parameters come out as
+ * `layers.0.weight`, `layers.2.weight`, … — field name then index, the
+ * shape torch produces. Note the gaps: the activations occupy indices of
+ * their own, exactly as in a torch `Sequential`.
+ *
+ * Shapes: input `(batch, inFeatures)` → output `(batch, outFeatures)`.
+ */
+public class Mlp extends Module {
+    Sequential layers;
+
+    public Mlp(int64 inFeatures, int64[] hidden, int64 outFeatures,
+               uint64 seed) {
+        this.layers = heap Sequential();
+        int64 prev = inFeatures;
+        int32 i = 0;
+        while (i < (int32) hidden.count()) {
+            this.layers.add(heap Linear(prev, hidden[i],
+                                        seed + (uint64) (i * 7 + 1)));
+            this.layers.add(heap ReLU());
+            prev = hidden[i];
+            i = i + 1;
+        }
+        this.layers.add(heap Linear(prev, outFeatures, seed + 999));
+        return;
+    }
+
+    public int32 layerCount() {
+        return this.layers.count();
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        return this.layers.forward(tape, x);
+    }
+}

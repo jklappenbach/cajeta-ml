@@ -1,0 +1,59 @@
+package dev.cajeta.ml.zoo;
+
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.AdaptiveAvgPool2d;
+import dev.cajeta.ml.nn.BatchNorm2d;
+import dev.cajeta.ml.nn.Conv2d;
+import dev.cajeta.ml.nn.Flatten;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.MaxPool2d;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.ReLU;
+
+/**
+ * A CIFAR-shaped convolutional classifier: two conv→norm→relu→pool
+ * stages, an adaptive pool to a fixed extent, then a linear head.
+ *
+ * The adaptive pool is what makes the head's width independent of the
+ * input's — feed it 8×8 or 32×32 and the classifier is unchanged, which
+ * is the property that stops a spatial-size change from silently becoming
+ * a shape error at the head.
+ *
+ * Shapes: input `(batch, channels, H, W)` → output `(batch, classes)`
+ * logits.
+ */
+public class SmallCnn extends Module {
+    Conv2d conv1;
+    BatchNorm2d bn1;
+    ReLU act1;
+    MaxPool2d pool1;
+    Conv2d conv2;
+    BatchNorm2d bn2;
+    ReLU act2;
+    AdaptiveAvgPool2d pool2;
+    Flatten flat;
+    Linear head;
+
+    public SmallCnn(int64 channels, int64 width, int64 classes, uint64 seed) {
+        this.conv1 = heap Conv2d(channels, width, 3, 1, 1, seed);
+        this.bn1 = heap BatchNorm2d(width, 0.00001, 0.1);
+        this.act1 = heap ReLU();
+        this.pool1 = heap MaxPool2d(2, 2, 0);
+        this.conv2 = heap Conv2d(width, width * 2, 3, 1, 1, seed + 1);
+        this.bn2 = heap BatchNorm2d(width * 2, 0.00001, 0.1);
+        this.act2 = heap ReLU();
+        this.pool2 = heap AdaptiveAvgPool2d(2, 2);
+        this.flat = heap Flatten();
+        this.head = heap Linear(width * 2 * 4, classes, seed + 2);
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        GradTensor h = this.pool1.forward(tape, this.act1.forward(tape,
+            this.bn1.forward(tape, this.conv1.forward(tape, x))));
+        h = this.pool2.forward(tape, this.act2.forward(tape,
+            this.bn2.forward(tape, this.conv2.forward(tape, h))));
+        return this.head.forward(tape, this.flat.forward(tape, h));
+    }
+}

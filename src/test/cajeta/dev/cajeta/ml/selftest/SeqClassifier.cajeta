@@ -1,0 +1,82 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.zoo.EncoderStack;
+
+/**
+ * The toy sequence task: an {@link EncoderStack} over `(batch, 4, 4)`
+ * followed by mean-pooling across the sequence and a linear head.
+ *
+ * The task is "which CHANNEL carries the spike": class `c` puts a 1.0 in
+ * feature `c` at exactly one time step, and which step varies per example
+ * — so the model has to aggregate across time to find it.
+ *
+ * Note what the task deliberately is NOT: "which POSITION carries the
+ * spike". This stack has no positional encoding, so attention is
+ * permutation-equivariant — it sees a SET of tokens — and mean-pooling
+ * then erases position entirely. That task is unlearnable here by
+ * construction, not by weakness of the training loop.
+ */
+public class SeqClassifier extends Module {
+    EncoderStack encoder;
+    Linear head;
+
+    public SeqClassifier() {
+        this.encoder = heap EncoderStack(4L, 2, 8L, 1, 3L);
+        this.head = heap Linear(4L, 4L, 77L);
+        return;
+    }
+
+    /** `(16, 4, 4)` — four examples of each of four classes. */
+    public static #Tensor<float32> inputs() {
+        int64[] s = heap int64[3];
+        s[0] = 16; s[1] = 4; s[2] = 4;
+        Tensor<float32> t = Tensor.zeros<float32>(s);
+        int64 n = 0;
+        while (n < 16) {
+            int64 cls = n % 4;
+            int64 spikeStep = (n / 4) % 4;
+            int64 step = 0;
+            while (step < 4) {
+                int64 f = 0;
+                while (f < 4) {
+                    float32 v = 0.05f * (float32) ((n + step + f) % 3);
+                    if (step == spikeStep && f == cls) { v = v + 1.0f; }
+                    t.flatSet((n * 4 + step) * 4 + f, v);
+                    f = f + 1;
+                }
+                step = step + 1;
+            }
+            n = n + 1;
+        }
+        return #t;
+    }
+
+    /** `(16,)` class ids matching {@link #inputs}. */
+    public static #Tensor<float32> labels() {
+        int64[] s = heap int64[1];
+        s[0] = 16;
+        Tensor<float32> y = Tensor.zeros<float32>(s);
+        int64 n = 0;
+        while (n < 16) {
+            y.flatSet(n, (float32) (n % 4));
+            n = n + 1;
+        }
+        return #y;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        GradTensor h = this.encoder.forward(tape, x);
+        // mean-pool across the sequence axis, then drop it: (B,T,E) -> (B,E)
+        GradTensor pooled = tape.meanAxis(h, 1);
+        Tensor<float32> pv = tape.valueOf(pooled);
+        int64[] flatShape = heap int64[2];
+        flatShape[0] = pv.shapeAt(0);
+        flatShape[1] = pv.shapeAt(2);
+        return this.head.forward(tape, tape.reshape(pooled, flatShape));
+    }
+}

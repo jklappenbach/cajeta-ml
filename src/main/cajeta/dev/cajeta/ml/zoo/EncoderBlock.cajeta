@@ -1,0 +1,81 @@
+package dev.cajeta.ml.zoo;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.GELU;
+import dev.cajeta.ml.nn.LayerNorm;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.MultiheadAttention;
+
+/**
+ * One transformer encoder block over `(batch, seq, embed)`, in the
+ * PRE-NORM arrangement:
+ *
+ * ```
+ * h   = x + attn(norm1(x))
+ * out = h + ffn(norm2(h))
+ * ```
+ *
+ * Pre-norm rather than the original paper's post-norm because the
+ * residual path stays unnormalized end to end, which is what lets a deep
+ * stack train without a learning-rate warmup babysitting it. Post-norm
+ * is the better-known diagram; pre-norm is what people actually ship.
+ *
+ * The feed-forward is applied per TOKEN — the `(B,T,E)` activations are
+ * flattened to `(B·T, E)` for the two projections and restored after,
+ * since a `Linear` is a rank-2 matmul.
+ */
+public class EncoderBlock extends Module {
+    LayerNorm norm1;
+    MultiheadAttention attn;
+    LayerNorm norm2;
+    Linear ff1;
+    GELU act;
+    Linear ff2;
+    int64 embed;
+
+    public EncoderBlock(int64 embed, int32 heads, int64 hidden, uint64 seed) {
+        this.norm1 = heap LayerNorm(embed, 0.00001);
+        this.attn = heap MultiheadAttention(embed, heads, seed);
+        this.norm2 = heap LayerNorm(embed, 0.00001);
+        this.ff1 = heap Linear(embed, hidden, seed + 10);
+        this.act = heap GELU();
+        this.ff2 = heap Linear(hidden, embed, seed + 11);
+        this.embed = embed;
+        return;
+    }
+
+    public MultiheadAttention attention() {
+        return this.attn;
+    }
+
+    public Linear ffIn() {
+        return this.ff1;
+    }
+
+    public Linear ffOut() {
+        return this.ff2;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        GradTensor h = tape.add(x, this.attn.forward(tape, this.norm1.forward(tape, x)));
+        GradTensor n2 = this.norm2.forward(tape, h);
+
+        Tensor<float32> hv = tape.valueOf(n2);
+        int64 b = hv.shapeAt(0);
+        int64 t = hv.shapeAt(1);
+        int64[] flatShape = heap int64[2];
+        flatShape[0] = b * t;
+        flatShape[1] = this.embed;
+        GradTensor flat = tape.reshape(n2, flatShape);
+        GradTensor f = this.ff2.forward(tape, this.act.forward(tape,
+            this.ff1.forward(tape, flat)));
+        int64[] backShape = heap int64[3];
+        backShape[0] = b;
+        backShape[1] = t;
+        backShape[2] = this.embed;
+        return tape.add(h, tape.reshape(f, backShape));
+    }
+}

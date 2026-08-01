@@ -132,3 +132,50 @@ print("  out:", flat(out))
 print("  dx:", flat(xa.grad))
 print("  dwq:", flat(wq.grad))
 print("  dwo:", flat(wo.grad))
+
+
+# ── U6: pre-norm transformer encoder block ────────────────────────────
+# h   = x + attn(norm1(x));  out = h + ff2(gelu(ff1(norm2(h))))
+# Weights explicit so the cajeta block is directly comparable. cajeta
+# stores Linear weight [in, out]; torch's functional form wants the same
+# orientation here because we write `x @ W` by hand.
+B2, T2, E2, H2, FF = 2, 3, 4, 2, 8
+D2 = E2 // H2
+XB = grid((B2, T2, E2), x_)
+WQ2 = grid((E2, E2), w_)
+WK2 = grid((E2, E2), lambda f: w_(f + 1))
+WV2 = grid((E2, E2), lambda f: w_(f + 2))
+WO2 = grid((E2, E2), lambda f: w_(f + 3))
+F1 = grid((E2, FF), lambda f: w_(f + 1))
+F2 = grid((FF, E2), lambda f: w_(f + 2))
+G1 = torch.ones(E2)
+B1_ = torch.zeros(E2)
+
+
+def attn_fwd(xin):
+    fl = xin.reshape(B2 * T2, E2)
+
+    def sp(t):
+        return t.reshape(B2, T2, H2, D2).permute(0, 2, 1, 3).reshape(B2 * H2, T2, D2)
+
+    q, k, v = sp(fl @ WQ2), sp(fl @ WK2), sp(fl @ WV2)
+    sc = torch.bmm(q, k.transpose(1, 2)) * (1.0 / (D2 ** 0.5))
+    at = torch.softmax(sc, dim=-1)
+    cx = torch.bmm(at, v)
+    mg = cx.reshape(B2, H2, T2, D2).permute(0, 2, 1, 3).reshape(B2 * T2, E2)
+    return (mg @ WO2).reshape(B2, T2, E2)
+
+
+xb = XB.clone().requires_grad_(True)
+n1 = F.layer_norm(xb, (E2,), G1, B1_, 1e-5)
+h = xb + attn_fwd(n1)
+n2 = F.layer_norm(h, (E2,), G1, B1_, 1e-5)
+ffn = (F.gelu(n2.reshape(B2 * T2, E2) @ F1) @ F2).reshape(B2, T2, E2)
+outb = h + ffn
+Kb = torch.tensor([((i % 3) + 1) * 0.5 for i in range(outb.numel())],
+                  dtype=torch.float32).reshape(outb.shape)
+(outb * Kb).sum().backward()
+print("== encoder_block")
+print("  shape:", list(outb.shape))
+print("  out:", flat(outb))
+print("  dx:", flat(xb.grad))

@@ -136,12 +136,21 @@ public class Batches {
         return Batches.gather(this.y, rowsIdx, this.yWidth);
     }
 
+    /** Gather `rowsIdx` from `src`, PRESERVING the per-row shape: a
+     *  `(n, C, H, W)` image source yields `(k, C, H, W)`, not a flattened
+     *  `(k, C·H·W)`. Flattening here would silently hand a convolution a
+     *  rank-2 tensor. */
     static #Tensor<float32> gather(Tensor<float32> src, int64[] rowsIdx,
                                    int64 width) {
         int64 n = (int64) rowsIdx.count();
-        int64[] sh = heap int64[2];
+        int32 nd = src.ndim();
+        int64[] sh = heap int64[nd];
         sh[0] = n;
-        sh[1] = width;
+        int32 d = 1;
+        while (d < nd) {
+            sh[d] = src.shapeAt(d);
+            d = d + 1;
+        }
         Tensor<float32> out = Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
