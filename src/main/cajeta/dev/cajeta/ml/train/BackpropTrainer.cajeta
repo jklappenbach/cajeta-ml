@@ -33,11 +33,21 @@ public class BackpropTrainer {
     int32 lossKind;
     float32 clipNorm;
 
-    /** `clipNorm <= 0` disables clipping. */
-    public BackpropTrainer(Module net, Optimizer opt, int32 lossKind,
+    /**
+     * `clipNorm <= 0` disables clipping.
+     *
+     * Takes OWNERSHIP of the optimizer. An interface value stored into a
+     * plain field from a plain formal is a borrow the constructor's own
+     * drop chain frees on exit — the registered `field-store-title-trap`,
+     * which `SpelaTrainer` hit the same way. It survived a locally built
+     * toolchain and segfaulted under the released one, which is exactly
+     * how a latent use-after-free behaves. The module stays a borrow:
+     * callers keep using it after training, and it outlives the trainer.
+     */
+    public BackpropTrainer(Module net, #Optimizer opt, int32 lossKind,
                            float32 clipNorm) {
         this.net = net;
-        this.opt = opt;
+        this.opt #= opt;
         this.lossKind = lossKind;
         this.clipNorm = clipNorm;
         return;

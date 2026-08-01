@@ -314,7 +314,7 @@ public class LoraTest {
         Tensor<float32> baseBefore = wrapped.weightParam().get().copy();
 
         Optimizer opt = heap SGD(net.parameters(), 0.05f, 0.0f);
-        BackpropTrainer tr = heap BackpropTrainer(net, opt, Loss.MSE, 0.0f);
+        BackpropTrainer tr = heap BackpropTrainer(net, #opt, Loss.MSE, 0.0f);
         int64[] xs = heap int64[2];
         xs[0] = 4;
         xs[1] = 3;

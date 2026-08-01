@@ -341,7 +341,7 @@ public class TrainerTest {
         TrainMlp net = heap TrainMlp();
         Parameter[] ps = net.parameters();
         Optimizer opt = heap SGD(net.parameters(), 0.1f, 0.0f);
-        BackpropTrainer tr = heap BackpropTrainer(net, opt, Loss.MSE, 0.0f);
+        BackpropTrainer tr = heap BackpropTrainer(net, #opt, Loss.MSE, 0.0f);
 
         Tensor<float32> x = TrainMlp.inputs();
         Tensor<float32> y = TrainMlp.targets();
@@ -376,7 +376,7 @@ public class TrainerTest {
         net.add(heap ReLU());
         net.add(heap Linear(16, 4, 6L));
         Optimizer opt = heap Adam(net.parameters(), 0.01f);
-        BackpropTrainer tr = heap BackpropTrainer(net, opt,
+        BackpropTrainer tr = heap BackpropTrainer(net, #opt,
                                                   Loss.CROSS_ENTROPY, 1.0f);
         Tensor<float32> x = Digits.images(12, 4, 0.25f, 17L);
         Tensor<float32> y = Digits.labels(12, 4);
@@ -417,7 +417,7 @@ public class TrainerTest {
         Sequential net = heap Sequential();
         net.add(heap Linear(64, 1, 9L));
         Optimizer opt = heap SGD(net.parameters(), 5.0f, 0.0f);   // absurd lr
-        BackpropTrainer tr = heap BackpropTrainer(net, opt, Loss.MSE, 0.5f);
+        BackpropTrainer tr = heap BackpropTrainer(net, #opt, Loss.MSE, 0.5f);
         Tensor<float32> x = Digits.images(4, 2, 0.1f, 31L);
         int64[] ys = heap int64[1];
         ys[0] = 8;

@@ -185,7 +185,7 @@ public class ZooTest {
         hidden[0] = 16;
         Mlp net = heap Mlp(64L, hidden, 4L, 11L);
         Optimizer opt = heap Adam(net.parameters(), 0.01f);
-        BackpropTrainer tr = heap BackpropTrainer(net, opt,
+        BackpropTrainer tr = heap BackpropTrainer(net, #opt,
                                                   Loss.CROSS_ENTROPY, 1.0f);
         Tensor<float32> x = Digits.images(12, 4, 0.25f, 5L);
         Tensor<float32> y = Digits.labels(12, 4);
@@ -199,7 +199,7 @@ public class ZooTest {
     public void smallCnnTrainsOnTheFixture() {
         SmallCnn net = heap SmallCnn(1L, 4L, 4L, 17L);
         Optimizer opt = heap Adam(net.parameters(), 0.02f);
-        BackpropTrainer tr = heap BackpropTrainer(net, opt,
+        BackpropTrainer tr = heap BackpropTrainer(net, #opt,
                                                   Loss.CROSS_ENTROPY, 1.0f);
         // the fixture as (n, 1, 8, 8) images
         Tensor<float32> flatX = Digits.images(6, 4, 0.2f, 23L);
@@ -220,7 +220,7 @@ public class ZooTest {
     public void encoderStackTrainsOnAToySequenceTask() {
         SeqClassifier net = heap SeqClassifier();
         Optimizer opt = heap Adam(net.parameters(), 0.02f);
-        BackpropTrainer tr = heap BackpropTrainer(net, opt,
+        BackpropTrainer tr = heap BackpropTrainer(net, #opt,
                                                   Loss.CROSS_ENTROPY, 1.0f);
         Tensor<float32> x = SeqClassifier.inputs();
         Tensor<float32> y = SeqClassifier.labels();
