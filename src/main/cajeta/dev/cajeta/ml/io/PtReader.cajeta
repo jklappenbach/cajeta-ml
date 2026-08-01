@@ -1,0 +1,210 @@
+package dev.cajeta.ml.io;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
+import cajeta.lang.Cajeta;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+
+/**
+ * A reader for `torch.save(state_dict)` files (spec §6.2) — and
+ * emphatically NOT a pickle interpreter.
+ *
+ * A `.pt` is a ZIP holding a pickle (`data.pkl`) plus one raw storage
+ * blob per tensor. Pickle is a stack language with opcodes that construct
+ * arbitrary objects and call arbitrary callables; loading an untrusted
+ * `.pt` with a real unpickler is remote code execution, which is why
+ * torch itself moved to `weights_only` and why safetensors exists.
+ *
+ * This reader implements the SMALL subset a state_dict actually uses and
+ * rejects everything else by construction:
+ *
+ * - Opcodes outside the allowlist below throw. There is no default case
+ *   that skips an unknown opcode, because skipping is how a parser gets
+ *   walked past its own guard.
+ * - `GLOBAL` resolves against a fixed allowlist of torch storage classes
+ *   and `torch._utils._rebuild_tensor_v2`. Nothing else is nameable.
+ * - `REDUCE` calls nothing. It recognizes exactly the rebuild-tensor
+ *   shape and builds a tensor from already-parsed arguments; any other
+ *   callable is an error.
+ *
+ * So the worst a malicious file can do is fail to load.
+ *
+ * Storage entries in a torch archive are STORED (uncompressed); a
+ * deflated entry is rejected rather than silently skipped. Adding
+ * inflate would mean depending on `dev.cajeta.codec`'s DEFLATE, which is
+ * not worth a dependency for a case torch does not emit.
+ */
+public final class PtReader {
+
+    // ── the pickle opcodes this reader understands ──────────────────────
+    static int32 OP_MARK = 40;            // '('
+    static int32 OP_EMPTY_TUPLE = 41;     // ')'
+    static int32 OP_STOP = 46;            // '.'
+    static int32 OP_BINPERSID = 81;       // 'Q'
+    static int32 OP_BININT = 74;          // 'J'
+    static int32 OP_BININT1 = 75;         // 'K'
+    static int32 OP_BININT2 = 77;         // 'M'
+    static int32 OP_BINUNICODE = 88;      // 'X'
+    static int32 OP_EMPTY_DICT = 125;     // '}'
+    static int32 OP_GLOBAL = 99;          // 'c'
+    static int32 OP_REDUCE = 82;          // 'R'
+    static int32 OP_BINGET = 104;         // 'h'
+    static int32 OP_LONG_BINGET = 106;    // 'j'
+    static int32 OP_BINPUT = 113;         // 'q'
+    static int32 OP_LONG_BINPUT = 114;    // 'r'
+    static int32 OP_SETITEMS = 117;       // 'u'
+    static int32 OP_TUPLE = 116;          // 't'
+    static int32 OP_TUPLE1 = 133;         // '\x85'
+    static int32 OP_TUPLE2 = 134;         // '\x86'
+    static int32 OP_TUPLE3 = 135;         // '\x87'
+    static int32 OP_NEWTRUE = 136;        // '\x88'
+    static int32 OP_NEWFALSE = 137;       // '\x89'
+    static int32 OP_PROTO = 128;          // '\x80'
+    static int32 OP_NONE = 78;            // 'N'
+    static int32 OP_SHORT_BINUNICODE = 140; // '\x8c'
+
+    // value tags on the parse stack
+    static int32 T_INT = 0;
+    static int32 T_STR = 1;
+    static int32 T_MARK = 2;
+    static int32 T_GLOBAL = 3;
+    static int32 T_STORAGE = 4;
+    static int32 T_TUPLE = 5;
+    static int32 T_OTHER = 6;      // bool / None / dict — carried, not used
+    static int32 T_TENSOR = 7;
+
+    /** Read a `torch.save(state_dict)` file. */
+    public static #StateDict read(String path) {
+        int8[] raw = File.readAllBytes(path);
+        return PtReader.decode(raw, (int64) raw.count());
+    }
+
+    public static #StateDict decode(int8[] raw, int64 n) {
+        ArrayList<String> names = heap ArrayList<String>();
+        ArrayList<int64> offsets = heap ArrayList<int64>();
+        ArrayList<int64> sizes = heap ArrayList<int64>();
+        PtReader.scanZip(raw, n, names, offsets, sizes);
+
+        int32 pkl = PtReader.findSuffix(names, "data.pkl");
+        if (pkl < 0) {
+            throw heap MlException("pt: no data.pkl in the archive — this is "
+                + "not a torch.save file");
+        }
+        Unpickler u = heap Unpickler(raw, offsets.get(pkl), sizes.get(pkl),
+                                     names, offsets, sizes);
+        return u.run();
+    }
+
+    // ── ZIP container ───────────────────────────────────────────────────
+
+    /**
+     * Walk the CENTRAL DIRECTORY.
+     *
+     * Not the local file headers: torch writes those with the
+     * data-descriptor flag set and both size fields zero, so the local
+     * headers do not say how long anything is. The central directory is
+     * the authoritative index of a ZIP anyway — the local headers are a
+     * streaming convenience.
+     *
+     * Only STORED entries are accepted; a deflated one throws rather than
+     * being skipped, so a file this reader cannot fully see is never
+     * partially believed.
+     */
+    static void scanZip(int8[] raw, int64 n, ArrayList<String> names,
+                        ArrayList<int64> offsets, ArrayList<int64> sizes) {
+        int64 eocd = PtReader.findEocd(raw, n);
+        int64 entries = PtReader.u16(raw, eocd + 10);
+        int64 cd = PtReader.u32(raw, eocd + 16);
+        int64 p = cd;
+        int64 k = 0;
+        while (k < entries) {
+            if (p + 46 > n || PtReader.u32(raw, p) != 33639248) {   // "PK\001\002"
+                throw heap MlException("pt: central-directory entry " + k
+                    + " is malformed");
+            }
+            int64 method = PtReader.u16(raw, p + 10);
+            int64 uncompressed = PtReader.u32(raw, p + 24);
+            int64 nameLen = PtReader.u16(raw, p + 28);
+            int64 extraLen = PtReader.u16(raw, p + 30);
+            int64 commentLen = PtReader.u16(raw, p + 32);
+            int64 localAt = PtReader.u32(raw, p + 42);
+            if (method != 0) {
+                throw heap MlException("pt: archive entry uses compression "
+                    + "method " + method + "; this reader accepts STORED "
+                    + "entries only (torch does not emit compressed ones)");
+            }
+            String name = PtReader.asciiOf(raw, p + 46, nameLen);
+            // the local header's own name/extra lengths locate the data
+            int64 lNameLen = PtReader.u16(raw, localAt + 26);
+            int64 lExtraLen = PtReader.u16(raw, localAt + 28);
+            int64 dataAt = localAt + 30 + lNameLen + lExtraLen;
+            if (dataAt + uncompressed > n) {
+                throw heap MlException("pt: entry '" + name + "' runs past "
+                    + "the end of the archive");
+            }
+            names.add(#name);
+            offsets.add(dataAt);
+            sizes.add(uncompressed);
+            p = p + 46 + nameLen + extraLen + commentLen;
+            k = k + 1;
+        }
+        return;
+    }
+
+    /** Find the End-Of-Central-Directory record, scanning back from the
+     *  end (it is last, but a trailing comment can follow it). */
+    static int64 findEocd(int8[] raw, int64 n) {
+        int64 p = n - 22;
+        int64 floor = n - 65558;
+        if (floor < 0) { floor = 0; }
+        while (p >= floor) {
+            if (PtReader.u32(raw, p) == 101010256) {     // "PK\005\006"
+                return p;
+            }
+            p = p - 1;
+        }
+        throw heap MlException("pt: no end-of-central-directory record — "
+            + "this is not a ZIP archive");
+    }
+
+    static int32 findSuffix(ArrayList<String> names, String suffix) {
+        int32 i = 0;
+        while (i < names.count()) {
+            if (Checkpoints.endsWith(names.get(i), suffix)) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    static #String asciiOf(int8[] raw, int64 at, int64 len) {
+        int8[] buf = heap int8[len];
+        int64 i = 0;
+        while (i < len) {
+            buf[i] = raw[at + i];
+            i = i + 1;
+        }
+        return heap String(#buf, (int32) len);
+    }
+
+    // ── little-endian primitives ────────────────────────────────────────
+
+    static int64 byteAt(int8[] raw, int64 i) {
+        int64 b = (int64) raw[i];
+        if (b < 0) { b = b + 256; }
+        return b;
+    }
+
+    static int64 u16(int8[] raw, int64 at) {
+        return PtReader.byteAt(raw, at) | (PtReader.byteAt(raw, at + 1) << 8);
+    }
+
+    static int64 u32(int8[] raw, int64 at) {
+        return PtReader.byteAt(raw, at)
+             | (PtReader.byteAt(raw, at + 1) << 8)
+             | (PtReader.byteAt(raw, at + 2) << 16)
+             | (PtReader.byteAt(raw, at + 3) << 24);
+    }
+}

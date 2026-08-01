@@ -1,0 +1,329 @@
+package dev.cajeta.ml.io;
+
+import cajeta.codec.json.Json;
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonValue;
+import cajeta.collection.ArrayList;
+import cajeta.lang.Cajeta;
+import cajeta.io.file.File;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+
+/**
+ * The safetensors container (spec §6.1) — the format worth preferring for
+ * checkpoints because reading it cannot execute anything: an 8-byte
+ * little-endian header length, a JSON header of
+ * `name → {dtype, shape, data_offsets}`, then raw little-endian tensor
+ * bytes. No code, no object graph, no pickle.
+ *
+ * F32, F16 and BF16 all load; the narrow ones WIDEN to f32, since the
+ * rest of `ml.nn` is f32 throughout. Widening is exact — every f16 and
+ * bf16 value is representable in f32 — so a load is lossless even though
+ * a save-then-load round trip through a narrow dtype is not.
+ *
+ * Writing emits F32 only, and the f32 round trip is bit-stable.
+ */
+public final class Safetensors {
+
+    /** Read a checkpoint file. */
+    public static #StateDict read(String path) {
+        int8[] raw = File.readAllBytes(path);
+        return Safetensors.decode(raw, (int64) raw.count());
+    }
+
+    /** Decode an in-memory safetensors image. */
+    public static #StateDict decode(int8[] raw, int64 n) {
+        if (n < 8) {
+            throw heap MlException("safetensors: file is " + n + " bytes — "
+                + "too short to hold even the header length");
+        }
+        int64 headerLen = Safetensors.readU64(raw, 0);
+        if (headerLen < 0 || 8 + headerLen > n) {
+            throw heap MlException("safetensors: header length " + headerLen
+                + " runs past the end of a " + n + "-byte file");
+        }
+        int8[] hdrBytes = heap int8[headerLen];
+        int64 i = 0;
+        while (i < headerLen) {
+            hdrBytes[i] = raw[8 + i];
+            i = i + 1;
+        }
+        JsonValue hv = Json.parse(hdrBytes, headerLen);
+        JsonObject hdr = hv.asObject();
+        int64 dataStart = 8 + headerLen;
+
+        StateDict out = heap StateDict();
+        int32 k = 0;
+        while (k < hdr.count()) {
+            ArrayList<String> keys = hdr.keys();
+            String name = keys.get(k);
+            // `__metadata__` is free-form provenance, not a tensor.
+            if (name != "__metadata__") {
+                JsonObject entry = hdr.get(name).asObject();
+                String dtype = Safetensors.stringOf(entry, "dtype");
+                JsonArray shapeArr = entry.get("shape").asArray();
+                JsonArray offs = entry.get("data_offsets").asArray();
+                int64 begin = offs.get(0).asInt64();
+                int64 end = offs.get(1).asInt64();
+                int32 nd = shapeArr.count();
+                int64[] shape = heap int64[nd];
+                int64 count = 1;
+                int32 d = 0;
+                while (d < nd) {
+                    shape[d] = shapeArr.get(d).asInt64();
+                    count = count * shape[d];
+                    d = d + 1;
+                }
+                if (dataStart + end > n || begin > end) {
+                    throw heap MlException("safetensors: '" + name + "' claims "
+                        + "bytes [" + begin + ", " + end + ") which fall "
+                        + "outside the file");
+                }
+                Tensor<float32> t = Safetensors.readTensor(raw,
+                    dataStart + begin, end - begin, shape, count, dtype, name);
+                out.put(name, #t);
+            }
+            k = k + 1;
+        }
+        return #out;
+    }
+
+    /** Write a checkpoint as F32. */
+    public static void write(String path, StateDict sd) {
+        int8[] image = Safetensors.encode(sd);
+        File.writeAllBytes(path, image, (int32) image.count());
+        return;
+    }
+
+    /**
+     * Encode to a safetensors image. Entries are emitted in NAME ORDER —
+     * the reference writer sorts, and matching it keeps a cajeta-written
+     * file byte-comparable with a torch-written one for the same content.
+     */
+    public static #int8[] encode(StateDict sd) {
+        int32 n = sd.count();
+        int32[] order = Safetensors.sortedOrder(sd);
+
+        // header first, so the offsets are known before any bytes move
+        String hdr = "{";
+        int64 offset = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 idx = order[i];
+            Tensor<float32> t = sd.valueAt(idx);
+            int64 count = Safetensors.countOf(t);
+            int64 bytes = count * 4;
+            if (i > 0) { hdr = hdr + ","; }
+            hdr = hdr + "\"" + sd.nameAt(idx) + "\":{\"dtype\":\"F32\","
+                + "\"shape\":[";
+            int32 d = 0;
+            while (d < t.ndim()) {
+                if (d > 0) { hdr = hdr + ","; }
+                hdr = hdr + t.shapeAt(d);
+                d = d + 1;
+            }
+            hdr = hdr + "],\"data_offsets\":[" + offset + "," + (offset + bytes)
+                + "]}";
+            offset = offset + bytes;
+            i = i + 1;
+        }
+        hdr = hdr + "}";
+
+        int8[] hb = hdr.toBytes();
+        int64 hlen = (int64) hb.count();
+        int64 total = 8 + hlen + offset;
+        int8[] outBytes = heap int8[total];
+        Safetensors.writeU64(outBytes, 0, hlen);
+        int64 p = 0;
+        while (p < hlen) {
+            outBytes[8 + p] = hb[p];
+            p = p + 1;
+        }
+        int64 cursor = 8 + hlen;
+        i = 0;
+        while (i < n) {
+            Tensor<float32> t = sd.valueAt(order[i]);
+            int64 count = Safetensors.countOf(t);
+            int64 e = 0;
+            while (e < count) {
+                Safetensors.writeF32(outBytes, cursor, t.flatGet(e));
+                cursor = cursor + 4;
+                e = e + 1;
+            }
+            i = i + 1;
+        }
+        return #outBytes;
+    }
+
+    // ── decoding helpers ────────────────────────────────────────────────
+
+    static #Tensor<float32> readTensor(int8[] raw, int64 at, int64 byteLen,
+                                       int64[] shape, int64 count,
+                                       String dtype, String name) {
+        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        if (dtype == "F32") {
+            Safetensors.requireBytes(name, byteLen, count * 4);
+            int64 e = 0;
+            while (e < count) {
+                t.flatSet(e, Safetensors.readF32(raw, at + e * 4));
+                e = e + 1;
+            }
+            return #t;
+        }
+        if (dtype == "F16") {
+            Safetensors.requireBytes(name, byteLen, count * 2);
+            int64 e = 0;
+            while (e < count) {
+                int32 bits = (int32) Safetensors.readU16(raw, at + e * 2);
+                t.flatSet(e, Safetensors.f16ToF32(bits));
+                e = e + 1;
+            }
+            return #t;
+        }
+        if (dtype == "BF16") {
+            Safetensors.requireBytes(name, byteLen, count * 2);
+            int64 e = 0;
+            while (e < count) {
+                int32 bits = (int32) Safetensors.readU16(raw, at + e * 2);
+                // bfloat16 IS the top half of an f32 — widening is a shift.
+                int32 wide = bits << 16;
+                t.flatSet(e, Cajeta.bitsToF32(wide));
+                e = e + 1;
+            }
+            return #t;
+        }
+        throw heap MlException("safetensors: '" + name + "' has dtype '"
+            + dtype + "'; this reader handles F32, F16 and BF16");
+    }
+
+    static void requireBytes(String name, int64 got, int64 want) {
+        if (got != want) {
+            throw heap MlException("safetensors: '" + name + "' spans " + got
+                + " bytes but its shape and dtype need " + want);
+        }
+        return;
+    }
+
+    static #String stringOf(JsonObject o, String key) {
+        JsonValue v = o.get(key);
+        if (v == null) {
+            throw heap MlException("safetensors: header entry has no '"
+                + key + "'");
+        }
+        return v.asString();
+    }
+
+    static int64 countOf(Tensor<float32> t) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < t.ndim()) {
+            n = n * t.shapeAt(d);
+            d = d + 1;
+        }
+        return n;
+    }
+
+    /** Indices of `sd` in ascending name order (insertion sort — a
+     *  checkpoint has tens of entries, not millions). */
+    static #int32[] sortedOrder(StateDict sd) {
+        int32 n = sd.count();
+        int32[] order = heap int32[n];
+        int32 i = 0;
+        while (i < n) {
+            order[i] = i;
+            i = i + 1;
+        }
+        i = 1;
+        while (i < n) {
+            int32 cur = order[i];
+            int32 j = i - 1;
+            while (j >= 0 && sd.nameAt(order[j]) > sd.nameAt(cur)) {
+                order[j + 1] = order[j];
+                j = j - 1;
+            }
+            order[j + 1] = cur;
+            i = i + 1;
+        }
+        return #order;
+    }
+
+    // ── little-endian primitives ────────────────────────────────────────
+
+    static int64 byteAt(int8[] raw, int64 i) {
+        int64 b = (int64) raw[i];
+        if (b < 0) { b = b + 256; }
+        return b;
+    }
+
+    static int64 readU64(int8[] raw, int64 at) {
+        int64 v = 0;
+        int64 k = 7;
+        while (k >= 0) {
+            v = (v << 8) | Safetensors.byteAt(raw, at + k);
+            k = k - 1;
+        }
+        return v;
+    }
+
+    static void writeU64(int8[] raw, int64 at, int64 v) {
+        int64 k = 0;
+        while (k < 8) {
+            raw[at + k] = (int8) ((v >>> (k * 8)) & 255);
+            k = k + 1;
+        }
+        return;
+    }
+
+    static int64 readU16(int8[] raw, int64 at) {
+        return Safetensors.byteAt(raw, at)
+             | (Safetensors.byteAt(raw, at + 1) << 8);
+    }
+
+    static float32 readF32(int8[] raw, int64 at) {
+        int64 bits = Safetensors.byteAt(raw, at)
+                   | (Safetensors.byteAt(raw, at + 1) << 8)
+                   | (Safetensors.byteAt(raw, at + 2) << 16)
+                   | (Safetensors.byteAt(raw, at + 3) << 24);
+        // The reinterpret intrinsic needs a BOUND local, not an inline
+        // cast expression — the same element/expression-as-call-arg
+        // hazard the stdlib's Npy reader works around the same way.
+        int32 b32 = (int32) bits;
+        return Cajeta.bitsToF32(b32);
+    }
+
+    static void writeF32(int8[] raw, int64 at, float32 v) {
+        int32 bits = Cajeta.f32ToBits(v);
+        int64 k = 0;
+        while (k < 4) {
+            raw[at + k] = (int8) ((bits >>> (k * 8)) & 255);
+            k = k + 1;
+        }
+        return;
+    }
+
+    /** IEEE half → f32. Exact: every f16 value has an f32 form. */
+    static float32 f16ToF32(int32 bits) {
+        int32 sign = (bits >>> 15) & 1;
+        int32 exp = (bits >>> 10) & 31;
+        int32 frac = bits & 1023;
+        if (exp == 0) {
+            if (frac == 0) {
+                if (sign == 1) { return -0.0f; }
+                return 0.0f;
+            }
+            // subnormal: value = frac * 2^-24
+            float32 v = (float32) frac * 0.000000059604645f;
+            if (sign == 1) { return 0.0f - v; }
+            return v;
+        }
+        if (exp == 31) {
+            // inf / NaN — rebuild the f32 pattern rather than compute it
+            int32 out = (sign << 31) | 2139095040;
+            if (frac != 0) { out = out | (frac << 13); }
+            return Cajeta.bitsToF32(out);
+        }
+        int32 outBits = (sign << 31) | ((exp - 15 + 127) << 23) | (frac << 13);
+        return Cajeta.bitsToF32(outBits);
+    }
+}

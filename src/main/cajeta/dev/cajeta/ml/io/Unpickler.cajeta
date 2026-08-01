@@ -1,0 +1,506 @@
+package dev.cajeta.ml.io;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.Cajeta;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+
+/**
+ * The constrained pickle reader behind {@link PtReader} (spec §6.2).
+ *
+ * A stack machine over an ALLOWLIST of opcodes, with no default branch:
+ * an opcode this reader has not been taught is an error, never a skip.
+ * `GLOBAL` resolves against a fixed set of torch names, and `REDUCE`
+ * calls nothing — it recognizes the `_rebuild_tensor_v2` shape and
+ * assembles a tensor from arguments already on the stack. There is no
+ * path from a file's bytes to executing anything.
+ *
+ * Values live in parallel arrays with a tag, since the stack is
+ * heterogeneous: ints, strings, globals, storage references, tuples.
+ * Tuples are spans into a shared element pool, which keeps the whole
+ * machine allocation-light and avoids a nested container type.
+ */
+public class Unpickler {
+    int8[] raw;
+    int64 pos;
+    int64 end;
+
+    // the archive, for resolving storage keys to their raw bytes
+    ArrayList<String> entryNames;
+    ArrayList<int64> entryOffsets;
+    ArrayList<int64> entrySizes;
+
+    // value stack
+    ArrayList<int32> sTag;
+    ArrayList<int64> sInt;
+    ArrayList<String> sStr;
+    // tuple spans into the element pool
+    ArrayList<int32> poolTag;
+    ArrayList<int64> poolInt;
+    ArrayList<String> poolStr;
+    ArrayList<int32> tupStart;
+    ArrayList<int32> tupLen;
+
+    // memo (BINPUT / BINGET)
+    ArrayList<int32> memoTag;
+    ArrayList<int64> memoInt;
+    ArrayList<String> memoStr;
+
+    // materialized tensors, and the dict being assembled
+    ArrayList<Tensor<float32>> tensors;
+    StateDict out;
+
+    public Unpickler(int8[] raw, int64 at, int64 len,
+                     ArrayList<String> entryNames,
+                     ArrayList<int64> entryOffsets,
+                     ArrayList<int64> entrySizes) {
+        this.raw = raw;
+        this.pos = at;
+        this.end = at + len;
+        this.entryNames = entryNames;
+        this.entryOffsets = entryOffsets;
+        this.entrySizes = entrySizes;
+        this.sTag = heap ArrayList<int32>();
+        this.sInt = heap ArrayList<int64>();
+        this.sStr = heap ArrayList<String>();
+        this.poolTag = heap ArrayList<int32>();
+        this.poolInt = heap ArrayList<int64>();
+        this.poolStr = heap ArrayList<String>();
+        this.tupStart = heap ArrayList<int32>();
+        this.tupLen = heap ArrayList<int32>();
+        this.memoTag = heap ArrayList<int32>();
+        this.memoInt = heap ArrayList<int64>();
+        this.memoStr = heap ArrayList<String>();
+        this.tensors = heap ArrayList<Tensor<float32>>();
+        this.out = heap StateDict();
+        return;
+    }
+
+    // ── stack helpers ───────────────────────────────────────────────────
+
+    void push(int32 tag, int64 v, String s) {
+        this.sTag.add(tag);
+        this.sInt.add(v);
+        String own #= "" + s;
+        this.sStr.add(#own);
+        return;
+    }
+
+    int32 depth() {
+        return this.sTag.count();
+    }
+
+    void requireDepth(int32 n, String op) {
+        if (this.depth() < n) {
+            throw heap MlException("pt: opcode " + op + " needs " + n
+                + " stack values but only " + this.depth() + " are present");
+        }
+        return;
+    }
+
+    /** Drop the top `n` values. */
+    void drop(int32 n) {
+        int32 keep = this.depth() - n;
+        ArrayList<int32> nt = heap ArrayList<int32>();
+        ArrayList<int64> ni = heap ArrayList<int64>();
+        ArrayList<String> ns = heap ArrayList<String>();
+        int32 i = 0;
+        while (i < keep) {
+            nt.add(this.sTag.get(i));
+            ni.add(this.sInt.get(i));
+            String own #= "" + this.sStr.get(i);
+            ns.add(#own);
+            i = i + 1;
+        }
+        this.sTag #= nt;
+        this.sInt #= ni;
+        this.sStr #= ns;
+        return;
+    }
+
+    int32 topTag(int32 back) {
+        return this.sTag.get(this.depth() - 1 - back);
+    }
+
+    int64 topInt(int32 back) {
+        return this.sInt.get(this.depth() - 1 - back);
+    }
+
+    String topStr(int32 back) {
+        return this.sStr.get(this.depth() - 1 - back);
+    }
+
+    // ── byte reader ─────────────────────────────────────────────────────
+
+    int32 nextByte() {
+        if (this.pos >= this.end) {
+            throw heap MlException("pt: the pickle stream ended mid-opcode");
+        }
+        int64 b = (int64) this.raw[this.pos];
+        if (b < 0) { b = b + 256; }
+        this.pos = this.pos + 1;
+        return (int32) b;
+    }
+
+    int64 readU32() {
+        int64 v = PtReader.u32(this.raw, this.pos);
+        this.pos = this.pos + 4;
+        return v;
+    }
+
+    #String readAscii(int64 len) {
+        String s = PtReader.asciiOf(this.raw, this.pos, len);
+        this.pos = this.pos + len;
+        return #s;
+    }
+
+    // ── the machine ─────────────────────────────────────────────────────
+
+    /** Run to STOP and return the assembled checkpoint. */
+    public #StateDict run() {
+        boolean done = false;
+        while (!done) {
+            int32 op = this.nextByte();
+            if (op == PtReader.OP_PROTO) {
+                int32 v = this.nextByte();
+                if (v > 5) {
+                    throw heap MlException("pt: pickle protocol " + v
+                        + " is newer than this reader understands");
+                }
+            } else if (op == PtReader.OP_EMPTY_DICT) {
+                this.push(PtReader.T_OTHER, 0, "dict");
+            } else if (op == PtReader.OP_MARK) {
+                this.push(PtReader.T_MARK, 0, "");
+            } else if (op == PtReader.OP_BINPUT) {
+                this.memoPut(this.nextByte());
+            } else if (op == PtReader.OP_LONG_BINPUT) {
+                this.memoPut((int32) this.readU32());
+            } else if (op == PtReader.OP_BINGET) {
+                this.memoGet(this.nextByte());
+            } else if (op == PtReader.OP_LONG_BINGET) {
+                this.memoGet((int32) this.readU32());
+            } else if (op == PtReader.OP_BINUNICODE) {
+                int64 len = this.readU32();
+                String s = this.readAscii(len);
+                this.push(PtReader.T_STR, 0, s);
+            } else if (op == PtReader.OP_SHORT_BINUNICODE) {
+                int64 len = (int64) this.nextByte();
+                String s = this.readAscii(len);
+                this.push(PtReader.T_STR, 0, s);
+            } else if (op == PtReader.OP_BININT1) {
+                this.push(PtReader.T_INT, (int64) this.nextByte(), "");
+            } else if (op == PtReader.OP_BININT2) {
+                int64 v = PtReader.u16(this.raw, this.pos);
+                this.pos = this.pos + 2;
+                this.push(PtReader.T_INT, v, "");
+            } else if (op == PtReader.OP_BININT) {
+                int64 v = this.readU32();
+                if (v > 2147483647) { v = v - 4294967296; }
+                this.push(PtReader.T_INT, v, "");
+            } else if (op == PtReader.OP_NEWTRUE) {
+                this.push(PtReader.T_OTHER, 1, "bool");
+            } else if (op == PtReader.OP_NEWFALSE) {
+                this.push(PtReader.T_OTHER, 0, "bool");
+            } else if (op == PtReader.OP_NONE) {
+                this.push(PtReader.T_OTHER, 0, "none");
+            } else if (op == PtReader.OP_EMPTY_TUPLE) {
+                this.makeTuple(0);
+            } else if (op == PtReader.OP_TUPLE1) {
+                this.makeTuple(1);
+            } else if (op == PtReader.OP_TUPLE2) {
+                this.makeTuple(2);
+            } else if (op == PtReader.OP_TUPLE3) {
+                this.makeTuple(3);
+            } else if (op == PtReader.OP_TUPLE) {
+                this.makeTupleToMark();
+            } else if (op == PtReader.OP_GLOBAL) {
+                this.readGlobal();
+            } else if (op == PtReader.OP_BINPERSID) {
+                this.persistentId();
+            } else if (op == PtReader.OP_REDUCE) {
+                this.reduce();
+            } else if (op == PtReader.OP_SETITEMS) {
+                this.setItems();
+            } else if (op == PtReader.OP_STOP) {
+                done = true;
+            } else {
+                // No default skip. An opcode we have not been taught is a
+                // file we cannot vouch for.
+                throw heap MlException("pt: pickle opcode " + op + " is not in "
+                    + "this reader's allowlist — refusing to interpret it "
+                    + "(this reader is not a pickle executor)");
+            }
+        }
+        return #this.out;
+    }
+
+    void memoPut(int32 slot) {
+        this.requireDepth(1, "BINPUT");
+        while (this.memoTag.count() <= slot) {
+            this.memoTag.add(-1);
+            this.memoInt.add(0);
+            String empty #= "";
+            this.memoStr.add(#empty);
+        }
+        this.memoTag.set(slot, this.topTag(0));
+        this.memoInt.set(slot, this.topInt(0));
+        String own #= "" + this.topStr(0);
+        this.memoStr.set(slot, #own);
+        return;
+    }
+
+    void memoGet(int32 slot) {
+        if (slot >= this.memoTag.count() || this.memoTag.get(slot) < 0) {
+            throw heap MlException("pt: BINGET names empty memo slot " + slot);
+        }
+        this.push(this.memoTag.get(slot), this.memoInt.get(slot),
+                  this.memoStr.get(slot));
+        return;
+    }
+
+    /** Fold the top `n` values into a tuple value. */
+    void makeTuple(int32 n) {
+        this.requireDepth(n, "TUPLE");
+        int32 start = this.poolTag.count();
+        int32 i = n - 1;
+        while (i >= 0) {
+            this.poolTag.add(this.topTag(i));
+            this.poolInt.add(this.topInt(i));
+            String own #= "" + this.topStr(i);
+            this.poolStr.add(#own);
+            i = i - 1;
+        }
+        this.drop(n);
+        this.tupStart.add(start);
+        this.tupLen.add(n);
+        this.push(PtReader.T_TUPLE, (int64) (this.tupStart.count() - 1), "");
+        return;
+    }
+
+    /** TUPLE: everything back to the nearest MARK. */
+    void makeTupleToMark() {
+        int32 n = 0;
+        while (n < this.depth() && this.topTag(n) != PtReader.T_MARK) {
+            n = n + 1;
+        }
+        if (n >= this.depth()) {
+            throw heap MlException("pt: TUPLE with no matching MARK");
+        }
+        this.makeTuple(n);
+        // remove the MARK now sitting under the tuple
+        int32 tupTag = this.topTag(0);
+        int64 tupInt = this.topInt(0);
+        this.drop(2);
+        this.push(tupTag, tupInt, "");
+        return;
+    }
+
+    /**
+     * GLOBAL — the allowlist. Only torch's storage classes and the
+     * rebuild-tensor helper are nameable; every other module/name pair,
+     * including anything from `os` or `builtins`, is refused here.
+     */
+    void readGlobal() {
+        int64 mstart = this.pos;
+        while (this.raw[this.pos] != 10) { this.pos = this.pos + 1; }
+        String module = PtReader.asciiOf(this.raw, mstart, this.pos - mstart);
+        this.pos = this.pos + 1;
+        int64 nstart = this.pos;
+        while (this.raw[this.pos] != 10) { this.pos = this.pos + 1; }
+        String name = PtReader.asciiOf(this.raw, nstart, this.pos - nstart);
+        this.pos = this.pos + 1;
+
+        String full = module + " " + name;
+        if (full == "torch._utils _rebuild_tensor_v2"
+            || full == "torch FloatStorage"
+            || full == "torch HalfStorage"
+            || full == "torch BFloat16Storage"
+            || full == "torch DoubleStorage"
+            || full == "collections OrderedDict") {
+            this.push(PtReader.T_GLOBAL, 0, full);
+            return;
+        }
+        throw heap MlException("pt: the file references '" + full + "', which "
+            + "is not in this reader's allowlist. Loading it would mean "
+            + "resolving an arbitrary global — refused.");
+    }
+
+    /** BINPERSID: the top tuple describes a storage; keep it as one. */
+    void persistentId() {
+        this.requireDepth(1, "BINPERSID");
+        if (this.topTag(0) != PtReader.T_TUPLE) {
+            throw heap MlException("pt: BINPERSID expects a storage tuple");
+        }
+        int64 tup = this.topInt(0);
+        this.drop(1);
+        this.push(PtReader.T_STORAGE, tup, "");
+        return;
+    }
+
+    /**
+     * REDUCE — recognizes the rebuild-tensor shape and builds the tensor
+     * itself. It never CALLS the named global; that is the whole point.
+     */
+    void reduce() {
+        this.requireDepth(2, "REDUCE");
+        if (this.topTag(1) != PtReader.T_GLOBAL) {
+            throw heap MlException("pt: REDUCE applied to a non-global");
+        }
+        String fn = this.topStr(1);
+        // torch passes an empty OrderedDict as a tensor's backward_hooks.
+        // Constructing one is just "an empty mapping" — recognized as a
+        // VALUE here, never by calling the named class.
+        if (fn == "collections OrderedDict") {
+            this.drop(2);
+            this.push(PtReader.T_OTHER, 0, "dict");
+            return;
+        }
+        if (fn != "torch._utils _rebuild_tensor_v2") {
+            throw heap MlException("pt: REDUCE names '" + fn + "'; this reader "
+                + "only reconstructs tensors, and calls nothing");
+        }
+        if (this.topTag(0) != PtReader.T_TUPLE) {
+            throw heap MlException("pt: REDUCE expects an argument tuple");
+        }
+        int32 tup = (int32) this.topInt(0);
+        this.drop(2);
+
+        // (storage, storage_offset, size, stride, requires_grad, hooks)
+        int32 start = this.tupStart.get(tup);
+        int32 len = this.tupLen.get(tup);
+        if (len < 4) {
+            throw heap MlException("pt: _rebuild_tensor_v2 needs at least 4 "
+                + "arguments, got " + len);
+        }
+        if (this.poolTag.get(start) != PtReader.T_STORAGE) {
+            throw heap MlException("pt: _rebuild_tensor_v2's first argument "
+                + "is not a storage");
+        }
+        int32 storageTup = (int32) this.poolInt.get(start);
+        int64 storageOffset = this.poolInt.get(start + 1);
+        int32 sizeTup = (int32) this.poolInt.get(start + 2);
+
+        Tensor<float32> t = this.materialize(storageTup, storageOffset, sizeTup);
+        this.tensors.add(#t);
+        this.push(PtReader.T_TENSOR, (int64) (this.tensors.count() - 1), "");
+        return;
+    }
+
+    /**
+     * Turn a storage reference plus a shape into a tensor, reading the
+     * bytes from the archive entry the storage key names.
+     */
+    #Tensor<float32> materialize(int32 storageTup, int64 storageOffset,
+                                 int32 sizeTup) {
+        // storage tuple: ('storage', <Class>, key, device, numel)
+        int32 ss = this.tupStart.get(storageTup);
+        int32 slen = this.tupLen.get(storageTup);
+        if (slen < 5) {
+            throw heap MlException("pt: storage tuple has " + slen
+                + " fields, expected 5");
+        }
+        String cls = this.poolStr.get(ss + 1);
+        String key = this.poolStr.get(ss + 2);
+
+        int32 sizeStart = this.tupStart.get(sizeTup);
+        int32 nd = this.tupLen.get(sizeTup);
+        int64[] shape = heap int64[nd];
+        int64 count = 1;
+        int32 d = 0;
+        while (d < nd) {
+            shape[d] = this.poolInt.get(sizeStart + d);
+            count = count * shape[d];
+            d = d + 1;
+        }
+
+        int32 entry = this.findStorage(key);
+        int64 at = this.entryOffsets.get(entry);
+        int64 avail = this.entrySizes.get(entry);
+
+        int32 width = 4;
+        if (cls == "torch HalfStorage" || cls == "torch BFloat16Storage") {
+            width = 2;
+        } else if (cls == "torch DoubleStorage") {
+            width = 8;
+        } else if (cls != "torch FloatStorage") {
+            throw heap MlException("pt: storage class '" + cls + "' is not "
+                + "supported by this reader");
+        }
+        int64 need = (storageOffset + count) * (int64) width;
+        if (need > avail) {
+            throw heap MlException("pt: tensor needs " + need + " bytes from "
+                + "storage '" + key + "' but the entry holds " + avail);
+        }
+
+        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        int64 base = at + storageOffset * (int64) width;
+        int64 e = 0;
+        while (e < count) {
+            int64 p = base + e * (int64) width;
+            if (width == 4) {
+                int32 b32 = (int32) PtReader.u32(this.raw, p);
+                t.flatSet(e, Cajeta.bitsToF32(b32));
+            } else if (width == 2) {
+                int32 bits = (int32) PtReader.u16(this.raw, p);
+                if (cls == "torch HalfStorage") {
+                    t.flatSet(e, Safetensors.f16ToF32(bits));
+                } else {
+                    int32 wide = bits << 16;
+                    t.flatSet(e, Cajeta.bitsToF32(wide));
+                }
+            } else {
+                // f64 storage: narrow to the library's f32 working type
+                int64 lo = PtReader.u32(this.raw, p);
+                int64 hi = PtReader.u32(this.raw, p + 4);
+                int64 b64 = (hi << 32) | lo;
+                float64 v = Cajeta.bitsToF64(b64);
+                t.flatSet(e, (float32) v);
+            }
+            e = e + 1;
+        }
+        return #t;
+    }
+
+    int32 findStorage(String key) {
+        String suffix = "data/" + key;
+        int32 i = 0;
+        while (i < this.entryNames.count()) {
+            if (Checkpoints.endsWith(this.entryNames.get(i), suffix)) {
+                return i;
+            }
+            i = i + 1;
+        }
+        throw heap MlException("pt: the pickle references storage '" + key
+            + "' but the archive has no such entry");
+    }
+
+    /** SETITEMS: name/tensor pairs back to the MARK go into the dict. */
+    void setItems() {
+        int32 n = 0;
+        while (n < this.depth() && this.topTag(n) != PtReader.T_MARK) {
+            n = n + 1;
+        }
+        if (n >= this.depth()) {
+            throw heap MlException("pt: SETITEMS with no matching MARK");
+        }
+        if (n % 2 != 0) {
+            throw heap MlException("pt: SETITEMS has an odd number of items");
+        }
+        // walk oldest-first so insertion order matches the file
+        int32 i = n - 1;
+        while (i >= 1) {
+            int32 kTag = this.topTag(i);
+            int32 vTag = this.topTag(i - 1);
+            if (kTag == PtReader.T_STR && vTag == PtReader.T_TENSOR) {
+                String name = this.topStr(i);
+                int32 ti = (int32) this.topInt(i - 1);
+                Tensor<float32> copy = this.tensors.get(ti).copy();
+                this.out.put(name, #copy);
+            }
+            i = i - 2;
+        }
+        this.drop(n + 1);      // the pairs and the MARK
+        this.push(PtReader.T_OTHER, 0, "dict");
+        return;
+    }
+}

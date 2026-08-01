@@ -1,0 +1,169 @@
+package dev.cajeta.ml.io;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Parameter;
+
+/**
+ * Moving a {@link StateDict} in and out of a live module tree (spec §6.3),
+ * keyed by the torch-compatible names `Module.parameterNames()` produces.
+ *
+ * STRICTNESS is the interesting knob. `strict = true` demands that the
+ * checkpoint and the model agree exactly — every model parameter present,
+ * no unexpected entries, every shape matching. That is what you want when
+ * resuming your own run, where a mismatch means something is wrong. Non-
+ * strict loads what matches and REPORTS what it skipped, which is what you
+ * want when adapting a pretrained backbone to a new head: the head
+ * legitimately differs, and you need to know that it was not loaded rather
+ * than discover it as bad accuracy later.
+ */
+public final class Checkpoints {
+
+    /**
+     * Copy `sd` into `model`'s parameters by name.
+     *
+     * Returns the names that were NOT applied — model parameters the
+     * checkpoint lacked. In strict mode any discrepancy throws instead.
+     */
+    public static #ArrayList<String> loadStateDict(Module model, StateDict sd,
+                                                   boolean strict) {
+        Parameter[] ps = model.parameters();
+        ArrayList<String> names = model.parameterNames();
+        ArrayList<String> missing #= heap ArrayList<String>();
+        int32 applied = 0;
+        int32 i = 0;
+        while (i < names.count()) {
+            String name = names.get(i);
+            int32 at = sd.indexOf(name);
+            if (at < 0) {
+                if (strict) {
+                    throw heap MlException("loadStateDict: the checkpoint has "
+                        + "no entry for '" + name + "' (strict)");
+                }
+                String own #= "" + name;
+                missing.add(#own);
+            } else {
+                Tensor<float32> src = sd.valueAt(at);
+                Tensor<float32> dst = ps[i].get();
+                Checkpoints.copyInto(name, src, dst);
+                applied = applied + 1;
+            }
+            i = i + 1;
+        }
+        if (strict && applied != sd.count()) {
+            throw heap MlException("loadStateDict: the checkpoint holds "
+                + sd.count() + " entries but the model consumed only "
+                + applied + " — an unexpected key is a silently wrong model "
+                + "(strict)");
+        }
+        return missing;
+    }
+
+    /** Snapshot `model`'s parameters into a fresh checkpoint. */
+    public static #StateDict saveStateDict(Module model) {
+        Parameter[] ps = model.parameters();
+        ArrayList<String> names = model.parameterNames();
+        StateDict sd = heap StateDict();
+        int32 i = 0;
+        while (i < names.count()) {
+            Tensor<float32> copy = ps[i].get().copy();
+            sd.put(names.get(i), #copy);
+            i = i + 1;
+        }
+        return #sd;
+    }
+
+    /** Read a safetensors file straight into a module. */
+    public static #ArrayList<String> load(Module model, String path,
+                                          boolean strict) {
+        StateDict sd = Safetensors.read(path);
+        return Checkpoints.loadStateDict(model, sd, strict);
+    }
+
+    /** Write a module's parameters to a safetensors file. */
+    public static void save(Module model, String path) {
+        StateDict sd = Checkpoints.saveStateDict(model);
+        Safetensors.write(path, sd);
+        return;
+    }
+
+    /**
+     * Element-for-element copy, with a shape check first.
+     *
+     * A shape mismatch is ALWAYS an error, even non-strict: a
+     * non-strict load is permission to skip a parameter, not to
+     * reinterpret one weight matrix as a differently shaped one.
+     */
+    static void copyInto(String name, Tensor<float32> src,
+                         Tensor<float32> dst) {
+        if (src.ndim() != dst.ndim()) {
+            throw heap MlException("loadStateDict: '" + name + "' is rank "
+                + src.ndim() + " in the checkpoint but rank " + dst.ndim()
+                + " in the model");
+        }
+        int64 n = 1;
+        int32 d = 0;
+        while (d < src.ndim()) {
+            if (src.shapeAt(d) != dst.shapeAt(d)) {
+                throw heap MlException("loadStateDict: '" + name + "' has "
+                    + "extent " + src.shapeAt(d) + " on axis " + d
+                    + " but the model expects " + dst.shapeAt(d));
+            }
+            n = n * src.shapeAt(d);
+            d = d + 1;
+        }
+        int64 e = 0;
+        while (e < n) {
+            dst.flatSet(e, src.flatGet(e));
+            e = e + 1;
+        }
+        return;
+    }
+
+    /**
+     * Transpose every rank-2 entry whose name ends in `.weight`.
+     *
+     * torch's `nn.Linear` stores its weight `[out, in]` because it
+     * computes `x·Wᵀ`; cajeta's stores `[in, out]` for the plain `x·W`.
+     * A checkpoint written by torch therefore needs its Linear weights
+     * transposed on the way in — and this is the ONE place that
+     * conversion lives, rather than smeared through the layers.
+     *
+     * Conv2d weights are rank 4 and share torch's layout exactly, so the
+     * rank-2 restriction is what keeps this from corrupting them.
+     */
+    public static #StateDict transposeLinearWeights(StateDict sd) {
+        StateDict out = heap StateDict();
+        int32 i = 0;
+        while (i < sd.count()) {
+            String name = sd.nameAt(i);
+            Tensor<float32> t = sd.valueAt(i);
+            if (t.ndim() == 2 && Checkpoints.endsWith(name, ".weight")) {
+                Tensor<float32> vw = t.transpose();
+                Tensor<float32> copy = vw.copy();
+                out.put(name, #copy);
+            } else {
+                Tensor<float32> copy = t.copy();
+                out.put(name, #copy);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    static boolean endsWith(String s, String suffix) {
+        int32 n = s.byteLength();
+        int32 m = suffix.byteLength();
+        if (m > n) { return false; }
+        int32 i = 0;
+        while (i < m) {
+            if (s.byteAt(n - m + i) != suffix.byteAt(i)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

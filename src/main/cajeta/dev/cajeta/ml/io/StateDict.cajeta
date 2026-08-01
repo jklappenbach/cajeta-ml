@@ -1,0 +1,71 @@
+package dev.cajeta.ml.io;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+
+/**
+ * A checkpoint in memory: named tensors in insertion order.
+ *
+ * Deliberately not a hash map. A checkpoint's ORDER is part of what a
+ * reader and writer agree on — safetensors sorts its header, torch keeps
+ * declaration order — and preserving what was read makes a
+ * round-trip inspectable. Lookup is linear, which is irrelevant against
+ * the cost of the tensor bytes themselves.
+ */
+public class StateDict {
+    ArrayList<String> names;
+    ArrayList<Tensor<float32>> values;
+
+    public StateDict() {
+        this.names = heap ArrayList<String>();
+        this.values = heap ArrayList<Tensor<float32>>();
+        return;
+    }
+
+    /** Append an entry, taking ownership of the tensor. */
+    public void put(String name, #Tensor<float32> value) {
+        String own #= "" + name;
+        this.names.add(#own);
+        this.values.add(#value);
+        return;
+    }
+
+    public int32 count() {
+        return this.names.count();
+    }
+
+    public String nameAt(int32 i) {
+        return this.names.get(i);
+    }
+
+    public Tensor<float32> valueAt(int32 i) {
+        return this.values.get(i);
+    }
+
+    /** Index of `name`, or −1. */
+    public int32 indexOf(String name) {
+        int32 i = 0;
+        while (i < this.names.count()) {
+            if (this.names.get(i) == name) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    public boolean has(String name) {
+        return this.indexOf(name) >= 0;
+    }
+
+    /** The tensor stored under `name` — throws if absent, because a
+     *  silently missing weight is a wrong model that still runs. */
+    public Tensor<float32> get(String name) {
+        int32 i = this.indexOf(name);
+        if (i < 0) {
+            throw heap MlException("StateDict: no entry named '" + name + "'");
+        }
+        return this.values.get(i);
+    }
+}
