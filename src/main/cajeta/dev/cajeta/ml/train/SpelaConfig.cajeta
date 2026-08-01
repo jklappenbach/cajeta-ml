@@ -53,6 +53,36 @@ public final class SpelaConfig {
     public float32 gradClipNorm;
     public uint64 seed;
 
+    // ── the production surface (spec §5.3) ──────────────────────────────
+
+    /** Examples buffered per gradient step in `observe()` mode. */
+    public int32 onlineBufferSize;
+    /** Force a step after this many observations even if the buffer is
+     *  not full (0 = never) — the straggler guard for a stream that goes
+     *  quiet before filling a batch. */
+    public int32 onlineFlushEvery;
+
+    /** When true, an UNLABELLED observation is pseudo-labelled with the
+     *  model's own prediction — but only above `confidenceThreshold`. */
+    public boolean selfDistill;
+    /** Minimum top-1 cosine for a pseudo-label to be trusted. Below it
+     *  the observation is skipped and counted, not trained on with a
+     *  guess. */
+    public float64 confidenceThreshold;
+
+    /** Snapshot the weights at construction and pull back toward them —
+     *  L2-SP, the cheap catastrophic-forgetting guard. */
+    public boolean anchorToInit;
+    /** Strength of that pull; 1e-3 … 1e-2 is the useful range. */
+    public float64 anchorLambda;
+
+    /** Per-layer learning-rate scale (empty = all 1.0) — a slow backbone
+     *  under a fast head. */
+    public float32[] lrMultipliers;
+    /** Train layer i only every `updateCadences[i]` observations (empty
+     *  or 1 = every step) — a stronger form of the same idea. */
+    public int32[] updateCadences;
+
     /** The reference's defaults — the MODERNIZED recipe. */
     public SpelaConfig(int64 numClasses) {
         this.numClasses = numClasses;
@@ -72,6 +102,14 @@ public final class SpelaConfig {
         this.autoFlatten = true;
         this.gradClipNorm = 0.0f;
         this.seed = 0;
+        this.onlineBufferSize = 8;
+        this.onlineFlushEvery = 0;
+        this.selfDistill = false;
+        this.confidenceThreshold = 0.7;
+        this.anchorToInit = false;
+        this.anchorLambda = 0.0;
+        this.lrMultipliers = heap float32[0];
+        this.updateCadences = heap int32[0];
         return;
     }
 

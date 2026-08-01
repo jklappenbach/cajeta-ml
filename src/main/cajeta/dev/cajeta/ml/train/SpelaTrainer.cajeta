@@ -44,6 +44,14 @@ public class SpelaTrainer {
     ArrayList<float64> lastLossPerLayer;
     int64 stepCount;
     int64 totalSteps;
+    // streaming state
+    ArrayList<Tensor<float32>> bufX;
+    ArrayList<float64> bufY;
+    int64 observed;
+    int64 skipped;
+    // per-layer anchors (L2-SP snapshots), one flat tensor per parameter
+    ArrayList<Tensor<float32>> anchors;
+    boolean hasAnchors;
 
     /** Takes OWNERSHIP of the layer list and the config. A plain formal
      *  stored into a plain field is a borrow the constructor's own drop
@@ -62,6 +70,12 @@ public class SpelaTrainer {
         this.stepCount = 0;
         this.totalSteps = 0;
         this.sized = heap boolean[this.layers.count()];
+        this.bufX = heap ArrayList<Tensor<float32>>();
+        this.bufY = heap ArrayList<float64>();
+        this.observed = 0;
+        this.skipped = 0;
+        this.anchors = heap ArrayList<Tensor<float32>>();
+        this.hasAnchors = false;
         int32 i = 0;
         while (i < this.layers.count()) {
             // A 1x1 placeholder, NOT a zero-length one: a zero-element
@@ -98,7 +112,39 @@ public class SpelaTrainer {
             this.lastLossPerLayer.add(0.0);
             i = i + 1;
         }
+        if (this.cfg.anchorToInit) {
+            this.snapshotAnchors();
+        }
         return;
+    }
+
+    /** Snapshot every parameter as the L2-SP anchor — "where we started",
+     *  which is what the penalty pulls back toward. */
+    void snapshotAnchors() {
+        int32 i = 0;
+        while (i < this.layers.count()) {
+            Parameter[] ps = this.layers.get(i).parameters();
+            int32 k = 0;
+            while (k < (int32) ps.count()) {
+                Tensor<float32> snap = ps[k].get().copy();
+                this.anchors.add(#snap);
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        this.hasAnchors = true;
+        return;
+    }
+
+    /** Index of layer `layer`'s first parameter in the flat anchor list. */
+    int32 anchorBase(int32 layer) {
+        int32 base = 0;
+        int32 i = 0;
+        while (i < layer) {
+            base = base + (int32) this.layers.get(i).parameters().count();
+            i = i + 1;
+        }
+        return base;
     }
 
     public int32 layerCount() {
@@ -197,10 +243,30 @@ public class SpelaTrainer {
                 if (ps[k].isTrainable()) { hasTrainable = true; }
                 k = k + 1;
             }
-            if (hasTrainable) {
+            // Per-layer cadence: a backbone can be told to step only every
+            // Kth observation, so it drifts slowly under a fast head.
+            // The count is 0-based, so a throttled layer DOES take one
+            // update on the very first step and then waits — an early
+            // correction is worth having, and "every Kth from now" is the
+            // natural reading of a cadence.
+            boolean dueThisStep = true;
+            if (i < (int32) this.cfg.updateCadences.count()) {
+                int32 cad = this.cfg.updateCadences[i];
+                if (cad > 1 && this.stepCount % (int64) cad != 0) {
+                    dueThisStep = false;
+                }
+            }
+            if (hasTrainable && dueThisStep) {
                 Optimizer opt = this.optimizers.get(i);
-                opt.setLr(lr);
+                float32 layerLr = lr;
+                if (i < (int32) this.cfg.lrMultipliers.count()) {
+                    layerLr = lr * this.cfg.lrMultipliers[i];
+                }
+                opt.setLr(layerLr);
                 GradTensor loss = this.localLoss(tape, i, flatOut, y);
+                if (this.hasAnchors && this.cfg.anchorLambda > 0.0) {
+                    loss = this.withAnchor(tape, i, ps, loss);
+                }
                 float64 value = (float64) tape.valueOf(loss).flatGet(0);
                 tape.backward(loss);
                 Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
@@ -312,6 +378,196 @@ public class SpelaTrainer {
         }
         throw heap MlException("SpelaTrainer: unknown lossType "
             + this.cfg.lossType);
+    }
+
+    /**
+     * Add the L2-SP penalty `λ·Σ‖W − W₀‖²` to this layer's local loss —
+     * a spring back to the construction-time weights.
+     *
+     * It rides the SAME tape as the loss, so the pull is a real gradient
+     * contribution rather than a post-hoc shrink of the weights: the
+     * optimizer sees one objective, which is what keeps it consistent
+     * with momentum and adaptive scaling.
+     */
+    GradTensor withAnchor(GradTape<float32> tape, int32 layer, Parameter[] ps,
+                          GradTensor loss) {
+        int32 base = this.anchorBase(layer);
+        GradTensor acc = loss;
+        int32 k = 0;
+        while (k < (int32) ps.count()) {
+            if (ps[k].isTrainable()) {
+                Tensor<float32> w0 = this.anchors.get(base + k);
+                GradTensor anchor = tape.leaf(w0, false);
+                GradTensor diff = tape.sub(ps[k].node(), anchor);
+                GradTensor sq = tape.sum(tape.mul(diff, diff));
+                int64[] one = heap int64[1];
+                one[0] = 1;
+                Tensor<float32> lam = Tensor.full<float32>(one,
+                    (float32) this.cfg.anchorLambda);
+                GradTensor scaled = tape.mul(sq, tape.leaf(lam, false));
+                acc = tape.add(acc, scaled);
+            }
+            k = k + 1;
+        }
+        return acc;
+    }
+
+    // ── streaming (spec §5.3 A) ─────────────────────────────────────────
+
+    /**
+     * Observe one LABELLED example (or a batch of them), buffering until
+     * a gradient step is due. Returns true when this call triggered a
+     * step.
+     *
+     * This is the serving-loop entry point: a deployment sees examples one
+     * at a time, and promoting each to its own batch would make every
+     * update a batch of one.
+     */
+    public boolean observe(Tensor<float32> x, float64 label) {
+        Tensor<float32> row = SpelaTrainer.flatten2d(x);
+        this.bufX.add(#row);
+        this.bufY.add(label);
+        this.observed = this.observed + 1;
+        boolean full = this.bufX.count() >= this.cfg.onlineBufferSize;
+        boolean due = this.cfg.onlineFlushEvery > 0
+                   && this.observed % (int64) this.cfg.onlineFlushEvery == 0;
+        if (full || due) {
+            this.flush();
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Observe an UNLABELLED example. With `selfDistill` on, the model's
+     * own prediction becomes the label — but only when its top-1 cosine
+     * clears `confidenceThreshold`. Below the bar the example is SKIPPED
+     * and counted rather than trained on with a guess, because a
+     * confident-sounding wrong pseudo-label is how an online model
+     * teaches itself to be wrong.
+     *
+     * Returns true if the example was accepted into the buffer.
+     */
+    public boolean observeUnlabeled(Tensor<float32> x) {
+        if (!this.cfg.selfDistill) {
+            this.skipped = this.skipped + 1;
+            return false;
+        }
+        float64 conf = this.confidenceOf(x);
+        if (conf < this.cfg.confidenceThreshold) {
+            this.skipped = this.skipped + 1;
+            return false;
+        }
+        Tensor<float32> pred = this.predictFromLayer(x, -1);
+        this.observe(x, (float64) pred.flatGet(0));
+        return true;
+    }
+
+    /** Force a gradient step on whatever is buffered (a partial batch is
+     *  fine) — what a serving process calls on shutdown. */
+    public boolean flush() {
+        int32 n = this.bufX.count();
+        if (n == 0) {
+            return false;
+        }
+        int64 cols = this.bufX.get(0).shapeAt(1);
+        int64[] xs = heap int64[2];
+        xs[0] = (int64) n;
+        xs[1] = cols;
+        Tensor<float32> bx = Tensor.zeros<float32>(xs);
+        int64[] ys = heap int64[1];
+        ys[0] = (int64) n;
+        Tensor<float32> by = Tensor.zeros<float32>(ys);
+        int32 r = 0;
+        while (r < n) {
+            Tensor<float32> row = this.bufX.get(r);
+            int64 j = 0;
+            while (j < cols) {
+                bx.flatSet((int64) r * cols + j, row.flatGet(j));
+                j = j + 1;
+            }
+            by.flatSet(r, (float32) this.bufY.get(r));
+            r = r + 1;
+        }
+        // ArrayList has no clear(); replacing the lists drops the old
+        // rows with them, which is what we want after copying them out.
+        this.bufX #= heap ArrayList<Tensor<float32>>();
+        this.bufY #= heap ArrayList<float64>();
+        this.trainBatch(bx, by);
+        return true;
+    }
+
+    /** How many observations have been seen, and how many were skipped
+     *  for want of confidence. */
+    public int64 observedCount() {
+        return this.observed;
+    }
+
+    public int64 skippedCount() {
+        return this.skipped;
+    }
+
+    public int32 bufferedCount() {
+        return this.bufX.count();
+    }
+
+    /** Top-1 cosine at the last layer — how sure the model is. */
+    public float64 confidenceOf(Tensor<float32> x) {
+        int32 target = this.layers.count() - 1;
+        Tensor<float32> h = x.copy();
+        int32 i = 0;
+        while (i <= target) {
+            Module layer = this.layers.get(i);
+            Tensor<float32> hIn = h.copy();
+            if (this.cfg.normalizeLayerInputs && hIn.ndim() == 2) {
+                Embeddings.normalizeRows(hIn);
+            }
+            Tensor<float32> raw = layer.predict(hIn);
+            h = SpelaTrainer.flatten2d(raw);
+            this.sizeEmbeddings(i, h);
+            i = i + 1;
+        }
+        Tensor<float32> vecs = this.classVectors.get(target);
+        return SpelaTrainer.bestCosine(h, vecs);
+    }
+
+    // ── per-layer control (spec §5.3 B) ─────────────────────────────────
+
+    /** Freeze or unfreeze one layer by index. */
+    public void setLayerTrainable(int32 layer, boolean trainable) {
+        this.layers.get(layer).setTrainable(trainable);
+        return;
+    }
+
+    /** Freeze everything but the LAST layer — "adapt the head only", the
+     *  workhorse of on-device personalization. */
+    public void freezeBackbone() {
+        int32 last = this.layers.count() - 1;
+        int32 i = 0;
+        while (i < this.layers.count()) {
+            this.layers.get(i).setTrainable(i == last);
+            i = i + 1;
+        }
+        return;
+    }
+
+    public void unfreezeAll() {
+        int32 i = 0;
+        while (i < this.layers.count()) {
+            this.layers.get(i).setTrainable(true);
+            i = i + 1;
+        }
+        return;
+    }
+
+    public boolean isLayerTrainable(int32 layer) {
+        Parameter[] ps = this.layers.get(layer).parameters();
+        int32 k = 0;
+        while (k < (int32) ps.count()) {
+            if (ps[k].isTrainable()) { return true; }
+            k = k + 1;
+        }
+        return false;
     }
 
     // ── inference ───────────────────────────────────────────────────────
@@ -427,6 +683,37 @@ public class SpelaTrainer {
             i = i + 1;
         }
         return #out;
+    }
+
+    /** The LARGEST cosine to any class vector, for row 0 — the model's
+     *  confidence in its own top pick. */
+    static float64 bestCosine(Tensor<float32> h, Tensor<float32> vecs) {
+        int64 dim = h.shapeAt(1);
+        int64 classes = vecs.shapeAt(0);
+        float64 hn = 0.0;
+        int64 j = 0;
+        while (j < dim) {
+            float64 v = (float64) h.flatGet(j);
+            hn = hn + v * v;
+            j = j + 1;
+        }
+        hn = Math.sqrt(hn);
+        if (hn < 0.00000001) { hn = 0.00000001; }
+        float64 best = -2.0;
+        int64 c = 0;
+        while (c < classes) {
+            float64 dot = 0.0;
+            j = 0;
+            while (j < dim) {
+                dot = dot + (float64) h.flatGet(j)
+                          * (float64) vecs.flatGet(c * dim + j);
+                j = j + 1;
+            }
+            float64 sim = dot / hn;
+            if (sim > best) { best = sim; }
+            c = c + 1;
+        }
+        return best;
     }
 
     /** Argmax over cosine to each class vector, `(n,)`. */

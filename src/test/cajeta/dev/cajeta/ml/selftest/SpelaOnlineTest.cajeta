@@ -1,0 +1,437 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.data.Batches;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaTrainer;
+import dev.cajeta.ml.train.TrainHistory;
+
+/**
+ * cajeta-ml-v3 plan 8.1.1–8.3.1 — SPELA's production surface: streaming
+ * `observe`/`flush`, per-layer freeze / LR multipliers / update cadence,
+ * confidence-gated self-distillation, and L2-SP anchor regularization
+ * (the reference's `docs/api-roadmap.md` A–D1, which spec §5.3 scopes in).
+ */
+public class SpelaOnlineTest {
+
+    public SpelaOnlineTest() { return; }
+
+    static #ArrayList<Module> stack3(uint64 seed) {
+        ArrayList<Module> ls #= heap ArrayList<Module>();
+        Module a = heap Linear(64, 24, seed);
+        ls.add(#a);
+        Module b = heap Linear(24, 16, seed + 1);
+        ls.add(#b);
+        Module c = heap Linear(16, 12, seed + 2);
+        ls.add(#c);
+        return ls;
+    }
+
+    /** One row of the fixture, as its own `(1, 64)` example. */
+    static #Tensor<float32> rowOf(Tensor<float32> x, int64 r) {
+        int64[] sh = heap int64[2];
+        sh[0] = 1;
+        sh[1] = 64;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64 j = 0;
+        while (j < 64) {
+            out.flatSet(j, x.flatGet(r * 64 + j));
+            j = j + 1;
+        }
+        return #out;
+    }
+
+    // ── 8.1.1 observe / flush buffering ─────────────────────────────────
+
+    @Test
+    public void observeBuffersUntilFullThenSteps() {
+        ArrayList<Module> layers = SpelaOnlineTest.stack3(11L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.seed = 5L;
+        cfg.onlineBufferSize = 4;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        Tensor<float32> y = Digits.labels(4, 4);
+
+        // the first three buffer; the fourth triggers the step
+        Assert.isFalse(tr.observe(SpelaOnlineTest.rowOf(x, 0), 0.0));
+        Assert.isTrue(tr.bufferedCount() == 1);
+        Assert.isFalse(tr.observe(SpelaOnlineTest.rowOf(x, 1), 0.0));
+        Assert.isFalse(tr.observe(SpelaOnlineTest.rowOf(x, 2), 0.0));
+        Assert.isTrue(tr.bufferedCount() == 3);
+        Assert.isTrue(tr.observe(SpelaOnlineTest.rowOf(x, 3), 0.0));
+        // the buffer is empty again after the step
+        Assert.isTrue(tr.bufferedCount() == 0);
+        Assert.isTrue(tr.observedCount() == 4);
+        Assert.isTrue(tr.lastLossAt(0) != 0.0);
+    }
+
+    /** A partial buffer still trains on demand — what a serving process
+     *  calls on shutdown rather than discarding the tail. */
+    @Test
+    public void flushStepsOnAPartialBuffer() {
+        ArrayList<Module> layers = SpelaOnlineTest.stack3(13L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.seed = 5L;
+        cfg.onlineBufferSize = 16;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        tr.observe(SpelaOnlineTest.rowOf(x, 0), 0.0);
+        tr.observe(SpelaOnlineTest.rowOf(x, 1), 1.0);
+        Assert.isTrue(tr.bufferedCount() == 2);
+        Assert.isTrue(tr.flush());
+        Assert.isTrue(tr.bufferedCount() == 0);
+        // flushing an empty buffer is a no-op, not an error
+        Assert.isFalse(tr.flush());
+    }
+
+    /** `onlineFlushEvery` steps on a schedule regardless of fill — the
+     *  straggler guard for a stream that goes quiet. */
+    @Test
+    public void flushEveryForcesAStepBeforeTheBufferFills() {
+        ArrayList<Module> layers = SpelaOnlineTest.stack3(17L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.seed = 5L;
+        cfg.onlineBufferSize = 100;      // would never fill
+        cfg.onlineFlushEvery = 3;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        Assert.isFalse(tr.observe(SpelaOnlineTest.rowOf(x, 0), 0.0));
+        Assert.isFalse(tr.observe(SpelaOnlineTest.rowOf(x, 1), 0.0));
+        Assert.isTrue(tr.observe(SpelaOnlineTest.rowOf(x, 2), 0.0));
+        Assert.isTrue(tr.bufferedCount() == 0);
+    }
+
+    // ── 8.1.2 per-layer control ─────────────────────────────────────────
+
+    @Test
+    public void freezeBackboneLeavesOnlyTheHeadTrainable() {
+        ArrayList<Module> layers = SpelaOnlineTest.stack3(21L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.02f;
+        cfg.seed = 5L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        tr.freezeBackbone();
+        Assert.isFalse(tr.isLayerTrainable(0));
+        Assert.isFalse(tr.isLayerTrainable(1));
+        Assert.isTrue(tr.isLayerTrainable(2));
+
+        Parameter[] p0 = tr.layerAt(0).parameters();
+        Parameter[] p2 = tr.layerAt(2).parameters();
+        Tensor<float32> before0 = p0[0].get().copy();
+        Tensor<float32> before2 = p2[0].get().copy();
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        Tensor<float32> y = Digits.labels(4, 4);
+        int32 s = 0;
+        while (s < 5) {
+            tr.trainBatch(x, y);
+            s = s + 1;
+        }
+        // the frozen backbone is untouched…
+        Assert.isTrue(p0[0].get().flatGet(0) == before0.flatGet(0));
+        Assert.isTrue(p0[0].get().flatGet(50) == before0.flatGet(50));
+        // …and the head moved
+        Assert.isTrue(p2[0].get().flatGet(0) != before2.flatGet(0));
+
+        tr.unfreezeAll();
+        Assert.isTrue(tr.isLayerTrainable(0));
+        tr.trainBatch(x, y);
+        Assert.isTrue(p0[0].get().flatGet(0) != before0.flatGet(0));
+    }
+
+    @Test
+    public void setLayerTrainableIsPerIndex() {
+        ArrayList<Module> layers = SpelaOnlineTest.stack3(23L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.seed = 5L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        tr.setLayerTrainable(1, false);
+        Assert.isTrue(tr.isLayerTrainable(0));
+        Assert.isFalse(tr.isLayerTrainable(1));
+        Assert.isTrue(tr.isLayerTrainable(2));
+    }
+
+    /** A layer with a smaller LR multiplier must move LESS — that is the
+     *  whole point of a slow backbone under a fast head. */
+    @Test
+    public void lrMultipliersScalePerLayerMovement() {
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        Tensor<float32> y = Digits.labels(4, 4);
+
+        ArrayList<Module> slowLayers = SpelaOnlineTest.stack3(31L);
+        SpelaConfig slow = heap SpelaConfig(4);
+        slow.lr = 0.05f;
+        slow.seed = 5L;
+        slow.lrSchedule = SpelaConfig.CONSTANT;
+        slow.lrMultipliers = heap float32[3];
+        slow.lrMultipliers[0] = 0.01f;      // near-frozen backbone
+        slow.lrMultipliers[1] = 1.0f;
+        slow.lrMultipliers[2] = 1.0f;
+        SpelaTrainer a = heap SpelaTrainer(#slowLayers, #slow);
+        Parameter[] pa = a.layerAt(0).parameters();
+        Tensor<float32> baseA = pa[0].get().copy();
+
+        ArrayList<Module> fastLayers = SpelaOnlineTest.stack3(31L);
+        SpelaConfig fast = heap SpelaConfig(4);
+        fast.lr = 0.05f;
+        fast.seed = 5L;
+        fast.lrSchedule = SpelaConfig.CONSTANT;
+        SpelaTrainer b = heap SpelaTrainer(#fastLayers, #fast);
+        Parameter[] pb = b.layerAt(0).parameters();
+        Tensor<float32> baseB = pb[0].get().copy();
+
+        int32 s = 0;
+        while (s < 5) {
+            a.trainBatch(x, y);
+            b.trainBatch(x, y);
+            s = s + 1;
+        }
+        float64 driftA = SpelaOnlineTest.drift(pa[0].get(), baseA);
+        float64 driftB = SpelaOnlineTest.drift(pb[0].get(), baseB);
+        Assert.isTrue(driftA < driftB);
+    }
+
+    /**
+     * Cadence K lets a layer step on one observation in K. The count is
+     * 0-based, so a throttled layer takes ONE update on the first step
+     * and then waits — which is why this compares against an unthrottled
+     * control rather than asserting zero movement.
+     */
+    @Test
+    public void updateCadenceThrottlesALayer() {
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        Tensor<float32> y = Digits.labels(4, 4);
+
+        ArrayList<Module> throttledLayers = SpelaOnlineTest.stack3(41L);
+        SpelaConfig throttled = heap SpelaConfig(4);
+        throttled.lr = 0.05f;
+        throttled.seed = 5L;
+        throttled.lrSchedule = SpelaConfig.CONSTANT;
+        throttled.updateCadences = heap int32[3];
+        throttled.updateCadences[0] = 100;   // one step, then quiet
+        throttled.updateCadences[1] = 1;
+        throttled.updateCadences[2] = 1;
+        SpelaTrainer a = heap SpelaTrainer(#throttledLayers, #throttled);
+        Parameter[] pa = a.layerAt(0).parameters();
+        Tensor<float32> baseA = pa[0].get().copy();
+
+        ArrayList<Module> freeLayers = SpelaOnlineTest.stack3(41L);
+        SpelaConfig free = heap SpelaConfig(4);
+        free.lr = 0.05f;
+        free.seed = 5L;
+        free.lrSchedule = SpelaConfig.CONSTANT;
+        SpelaTrainer b = heap SpelaTrainer(#freeLayers, #free);
+        Parameter[] pb = b.layerAt(0).parameters();
+        Tensor<float32> baseB = pb[0].get().copy();
+
+        int32 s = 0;
+        while (s < 8) {
+            a.trainBatch(x, y);
+            b.trainBatch(x, y);
+            s = s + 1;
+        }
+        float64 driftThrottled = SpelaOnlineTest.drift(pa[0].get(), baseA);
+        float64 driftFree = SpelaOnlineTest.drift(pb[0].get(), baseB);
+        // one update out of eight, versus eight
+        Assert.isTrue(driftThrottled < driftFree);
+        Assert.isTrue(driftThrottled > 0.0);
+    }
+
+    // ── 8.1.3 confidence gating ─────────────────────────────────────────
+
+    /** With self-distillation OFF, an unlabelled example is never used. */
+    @Test
+    public void unlabeledIsSkippedWithoutSelfDistill() {
+        ArrayList<Module> layers = SpelaOnlineTest.stack3(51L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.seed = 5L;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        Assert.isFalse(tr.observeUnlabeled(SpelaOnlineTest.rowOf(x, 0)));
+        Assert.isTrue(tr.skippedCount() == 1);
+        Assert.isTrue(tr.bufferedCount() == 0);
+    }
+
+    /** An impossible threshold skips everything; a permissive one accepts
+     *  — and the skip is COUNTED, so a deployment can see how much of its
+     *  stream it is declining to learn from. */
+    @Test
+    public void selfDistillRespectsTheConfidenceThreshold() {
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        Tensor<float32> y = Digits.labels(4, 4);
+
+        ArrayList<Module> strictLayers = SpelaOnlineTest.stack3(61L);
+        SpelaConfig strict = heap SpelaConfig(4);
+        strict.lr = 0.01f;
+        strict.seed = 5L;
+        strict.selfDistill = true;
+        strict.confidenceThreshold = 1.5;     // unreachable: cosine ≤ 1
+        SpelaTrainer a = heap SpelaTrainer(#strictLayers, #strict);
+        a.trainBatch(x, y);                    // size the class vectors
+        int32 i = 0;
+        while (i < 4) {
+            Assert.isFalse(a.observeUnlabeled(SpelaOnlineTest.rowOf(x, i)));
+            i = i + 1;
+        }
+        Assert.isTrue(a.skippedCount() == 4);
+
+        ArrayList<Module> looseLayers = SpelaOnlineTest.stack3(61L);
+        SpelaConfig loose = heap SpelaConfig(4);
+        loose.lr = 0.01f;
+        loose.seed = 5L;
+        loose.selfDistill = true;
+        loose.confidenceThreshold = -1.5;      // always reachable
+        loose.onlineBufferSize = 100;
+        SpelaTrainer b = heap SpelaTrainer(#looseLayers, #loose);
+        b.trainBatch(x, y);
+        i = 0;
+        while (i < 4) {
+            Assert.isTrue(b.observeUnlabeled(SpelaOnlineTest.rowOf(x, i)));
+            i = i + 1;
+        }
+        Assert.isTrue(b.skippedCount() == 0);
+        Assert.isTrue(b.bufferedCount() == 4);
+    }
+
+    // ── 8.1.4 anchor regularization ─────────────────────────────────────
+
+    /** L2-SP pulls the weights back toward their construction-time
+     *  snapshot, so an anchored run drifts LESS than an identical
+     *  unanchored one. */
+    @Test
+    public void anchorRegularizationBoundsDrift() {
+        Tensor<float32> x = Digits.images(4, 4, 0.15f, 3L);
+        Tensor<float32> y = Digits.labels(4, 4);
+
+        ArrayList<Module> freeLayers = SpelaOnlineTest.stack3(71L);
+        SpelaConfig free = heap SpelaConfig(4);
+        free.lr = 0.05f;
+        free.seed = 5L;
+        free.lrSchedule = SpelaConfig.CONSTANT;
+        SpelaTrainer a = heap SpelaTrainer(#freeLayers, #free);
+        Parameter[] pa = a.layerAt(0).parameters();
+        Tensor<float32> baseA = pa[0].get().copy();
+
+        ArrayList<Module> anchoredLayers = SpelaOnlineTest.stack3(71L);
+        SpelaConfig anchored = heap SpelaConfig(4);
+        anchored.lr = 0.05f;
+        anchored.seed = 5L;
+        anchored.lrSchedule = SpelaConfig.CONSTANT;
+        anchored.anchorToInit = true;
+        anchored.anchorLambda = 0.5;
+        SpelaTrainer b = heap SpelaTrainer(#anchoredLayers, #anchored);
+        Parameter[] pb = b.layerAt(0).parameters();
+        Tensor<float32> baseB = pb[0].get().copy();
+
+        int32 s = 0;
+        while (s < 15) {
+            a.trainBatch(x, y);
+            b.trainBatch(x, y);
+            s = s + 1;
+        }
+        float64 driftFree = SpelaOnlineTest.drift(pa[0].get(), baseA);
+        float64 driftAnchored = SpelaOnlineTest.drift(pb[0].get(), baseB);
+        Assert.isTrue(driftAnchored < driftFree);
+        // the anchor restrains drift, it does not forbid learning
+        Assert.isTrue(driftAnchored > 0.0);
+    }
+
+    // ── 8.3.1 the drifting-stream scenario ──────────────────────────────
+
+    /**
+     * The online-personalization shape: pretrain on clean data, then face
+     * a SHIFTED stream, and compare three policies on the shifted data —
+     * frozen (no adaptation), head-adapt (freeze the backbone), and
+     * adapt-all.
+     *
+     * The claim under test is that ADAPTING BEATS NOT ADAPTING, for both
+     * policies. The reference demo also saw head-adapt edge out adapt-all
+     * (93% vs 91%), but that margin is small and seed-dependent, so
+     * pinning a strict ordering between the two would be pinning noise;
+     * the assertion below states what is actually robust and the comment
+     * says why the rest is not.
+     */
+    @Test
+    public void driftingStreamAdaptationBeatsFrozen() {
+        Tensor<float32> cleanX = Digits.images(8, 4, 0.15f, 3L);
+        Tensor<float32> cleanY = Digits.labels(8, 4);
+        // the shift: a systematic brightness offset the model never saw
+        Tensor<float32> shiftX = SpelaOnlineTest.shifted(
+            Digits.images(8, 4, 0.15f, 91L), 0.4f);
+        Tensor<float32> shiftY = Digits.labels(8, 4);
+
+        float64 frozen = SpelaOnlineTest.runPolicy(0, cleanX, cleanY,
+                                                   shiftX, shiftY);
+        float64 headAdapt = SpelaOnlineTest.runPolicy(1, cleanX, cleanY,
+                                                      shiftX, shiftY);
+        float64 adaptAll = SpelaOnlineTest.runPolicy(2, cleanX, cleanY,
+                                                     shiftX, shiftY);
+        Assert.isTrue(headAdapt >= frozen);
+        Assert.isTrue(adaptAll >= frozen);
+        // and adaptation actually gets somewhere, rather than all three
+        // sitting at the same number
+        Assert.isTrue(headAdapt > frozen || adaptAll > frozen);
+    }
+
+    /** policy: 0 = frozen, 1 = head-adapt, 2 = adapt-all. */
+    static float64 runPolicy(int32 policy, Tensor<float32> cleanX,
+                             Tensor<float32> cleanY, Tensor<float32> shiftX,
+                             Tensor<float32> shiftY) {
+        ArrayList<Module> layers = SpelaOnlineTest.stack3(101L);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.02f;
+        cfg.seed = 5L;
+        cfg.lrSchedule = SpelaConfig.CONSTANT;
+        SpelaTrainer tr = heap SpelaTrainer(#layers, #cfg);
+        // pretrain on the clean distribution
+        Batches pre = heap Batches(cleanX, cleanY, 8, 23L);
+        tr.fit(pre, 15);
+
+        if (policy == 0) {
+            return tr.accuracyFromLayer(shiftX, shiftY, -1);
+        }
+        if (policy == 1) {
+            tr.freezeBackbone();
+        }
+        // adapt on the shifted stream
+        Batches post = heap Batches(shiftX, shiftY, 8, 29L);
+        tr.fit(post, 10);
+        return tr.accuracyFromLayer(shiftX, shiftY, -1);
+    }
+
+    /** Add a constant to every pixel — a covariate shift the pretrained
+     *  model has no reason to be robust to. */
+    static #Tensor<float32> shifted(Tensor<float32> x, float32 delta) {
+        Tensor<float32> out = x.copy();
+        int64 n = out.shapeAt(0) * out.shapeAt(1);
+        int64 i = 0;
+        while (i < n) {
+            out.flatSet(i, out.flatGet(i) + delta);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Summed absolute change between two same-shaped tensors. */
+    static float64 drift(Tensor<float32> now, Tensor<float32> before) {
+        int64 n = now.shapeAt(0) * now.shapeAt(1);
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = (float64) now.flatGet(i) - (float64) before.flatGet(i);
+            if (d < 0.0) { d = 0.0 - d; }
+            acc = acc + d;
+            i = i + 1;
+        }
+        return acc;
+    }
+}
