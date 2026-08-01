@@ -30,11 +30,13 @@ permissions:
   contents: write
 
 env:
-  # Must match a release tag of jklappenbach/cajeta. v0.13.0 carries
-  # nucleo.sparse (CsrMatrix — the sparse cd path) plus the codegen fixes
-  # that let Lasso and the Obs test record live in their own files
-  # (placeholder-owned-field / nested-materialize, both fixed and pinned).
-  CAJETA_VERSION: v0.13.0
+  # Must match a release tag of jklappenbach/cajeta. v0.14.0 is the
+  # release that REMOVED cajeta.nucleo.nn / cajeta.nucleo.optim from the
+  # standard library — this library is where they went (ml.nn / ml.optim),
+  # so building against it proves the two copies are not both live. It
+  # also carries the bounded-method-template fix that GradTape<E extends
+  # Floating> needs, on top of v0.13.0's nucleo.sparse and codegen fixes.
+  CAJETA_VERSION: v0.14.0
 
 jobs:
   build-test:
