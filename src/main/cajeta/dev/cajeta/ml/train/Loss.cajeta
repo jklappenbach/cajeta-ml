@@ -1,0 +1,22 @@
+package dev.cajeta.ml.train;
+
+/**
+ * Which objective a trainer optimizes. An id rather than a closure so a
+ * trainer's configuration stays plain data — serializable into a
+ * checkpoint, printable in a log, comparable in a test.
+ */
+public final class Loss {
+    /** Mean squared error against a real-valued target. */
+    public static int32 MSE = 0;
+
+    /** Softmax cross-entropy against class ids. The softmax is FUSED into
+     *  the loss, so the network must emit logits — a `Softmax` layer
+     *  before this trains the wrong objective. */
+    public static int32 CROSS_ENTROPY = 1;
+
+    public static #String name(int32 kind) {
+        if (kind == Loss.MSE) { return "mse"; }
+        if (kind == Loss.CROSS_ENTROPY) { return "crossEntropy"; }
+        return "loss" + kind;
+    }
+}

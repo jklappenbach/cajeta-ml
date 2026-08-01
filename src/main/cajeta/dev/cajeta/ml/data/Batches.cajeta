@@ -1,0 +1,158 @@
+package dev.cajeta.ml.data;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/**
+ * Minibatching with a SEEDED shuffle (spec §8) — the training loop's data
+ * side.
+ *
+ * The permutation is a pure function of `(seed, epoch)`, not of a mutable
+ * generator carried across epochs. That is what makes a run reproducible
+ * from its seed alone: re-running epoch 7 gives epoch 7's order whether or
+ * not epochs 0–6 ran, so a crashed run resumes onto the same data order
+ * and a test can pin any epoch in isolation.
+ *
+ * Rows are gathered into a fresh contiguous batch tensor rather than
+ * handed out as strided views, because the kernels downstream want
+ * contiguity and a view over a shuffled index set is not expressible as a
+ * stride anyway.
+ *
+ * The last batch is SHORT rather than dropped when the batch size does not
+ * divide the row count — dropping it silently discards data, which is the
+ * kind of quiet loss that only shows up as an unexplained metric gap.
+ */
+public class Batches {
+    Tensor<float32> x;
+    Tensor<float32> y;
+    int64 batchSize;
+    uint64 seed;
+    int64[] order;
+    int64 rows;
+    int64 cols;
+    int64 yWidth;
+
+    public Batches(Tensor<float32> x, Tensor<float32> y, int64 batchSize,
+                   uint64 seed) {
+        if (batchSize < 1) {
+            throw heap MlException("Batches: batchSize must be >= 1");
+        }
+        this.rows = x.shapeAt(0);
+        if (y.shapeAt(0) != this.rows) {
+            throw heap MlException("Batches: x has " + this.rows + " rows, y "
+                + "has " + y.shapeAt(0));
+        }
+        this.x = x;
+        this.y = y;
+        this.batchSize = batchSize;
+        this.seed = seed;
+        this.cols = 1;
+        int32 d = 1;
+        while (d < x.ndim()) {
+            this.cols = this.cols * x.shapeAt(d);
+            d = d + 1;
+        }
+        this.yWidth = 1;
+        d = 1;
+        while (d < y.ndim()) {
+            this.yWidth = this.yWidth * y.shapeAt(d);
+            d = d + 1;
+        }
+        this.order = heap int64[this.rows];
+        this.reorder(0);
+        return;
+    }
+
+    /** Re-derive the row order for `epoch`. Pure in `(seed, epoch)`. */
+    public void reorder(int64 epoch) {
+        int64 i = 0;
+        while (i < this.rows) {
+            this.order[i] = i;
+            i = i + 1;
+        }
+        // Fisher–Yates against a generator seeded from (seed, epoch), so
+        // every epoch draws its own stream and any epoch is reproducible
+        // on its own.
+        Generator g = heap Generator(this.seed + (uint64) (epoch * 1000003));
+        Tensor<float32> u = g.uniform(this.rows);
+        int64 k = this.rows - 1;
+        while (k > 0) {
+            int64 j = (int64) ((float64) u.get1(k) * (float64) (k + 1));
+            if (j > k) { j = k; }
+            int64 tmp = this.order[k];
+            this.order[k] = this.order[j];
+            this.order[j] = tmp;
+            k = k - 1;
+        }
+        return;
+    }
+
+    public int64 rowCount() {
+        return this.rows;
+    }
+
+    /** Number of batches this epoch — the last one may be short. */
+    public int64 batchCount() {
+        return (this.rows + this.batchSize - 1) / this.batchSize;
+    }
+
+    /** Row indices making up batch `b`, in the current epoch's order. */
+    public #int64[] batchRows(int64 b) {
+        int64 start = b * this.batchSize;
+        int64 stop = start + this.batchSize;
+        if (stop > this.rows) { stop = this.rows; }
+        int64 n = stop - start;
+        int64[] out = heap int64[n];
+        int64 i = 0;
+        while (i < n) {
+            out[i] = this.order[start + i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Feature rows of batch `b`, gathered into a fresh `(n, cols)`. */
+    public #Tensor<float32> batchX(int64 b) {
+        int64[] rowsIdx = this.batchRows(b);
+        return Batches.gather(this.x, rowsIdx, this.cols);
+    }
+
+    /** Targets of batch `b` — `(n,)` for class ids, `(n, w)` otherwise. */
+    public #Tensor<float32> batchY(int64 b) {
+        int64[] rowsIdx = this.batchRows(b);
+        if (this.y.ndim() == 1) {
+            int64 n = (int64) rowsIdx.count();
+            int64[] sh = heap int64[1];
+            sh[0] = n;
+            Tensor<float32> out = Tensor.zeros<float32>(sh);
+            int64 i = 0;
+            while (i < n) {
+                out.flatSet(i, this.y.flatGet(rowsIdx[i]));
+                i = i + 1;
+            }
+            return #out;
+        }
+        return Batches.gather(this.y, rowsIdx, this.yWidth);
+    }
+
+    static #Tensor<float32> gather(Tensor<float32> src, int64[] rowsIdx,
+                                   int64 width) {
+        int64 n = (int64) rowsIdx.count();
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = width;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 base = rowsIdx[i] * width;
+            int64 j = 0;
+            while (j < width) {
+                out.flatSet(i * width + j, src.flatGet(base + j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+}

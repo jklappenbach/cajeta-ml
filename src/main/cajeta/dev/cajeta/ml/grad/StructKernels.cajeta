@@ -1091,6 +1091,17 @@ public final class StructKernels {
             n = n * pred.shapeAt(d);
             d = d + 1;
         }
+        int64 m = 1;
+        d = 0;
+        while (d < target.ndim()) {
+            m = m * target.shapeAt(d);
+            d = d + 1;
+        }
+        if (m != n) {
+            throw heap MlException("ml.grad: mseLoss shape mismatch — "
+                + "prediction has " + n + " elements, target has " + m
+                + " (a head emitting k outputs needs a k-wide target)");
+        }
         float64 acc = 0.0;
         int64 i = 0;
         while (i < n) {

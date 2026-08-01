@@ -1,0 +1,91 @@
+package dev.cajeta.ml.data;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * A deterministic MNIST-class fixture, generated in-repo (spec §8) — CI
+ * downloads no datasets and the fixture cannot drift under us.
+ *
+ * Each class is an 8×8 glyph built from a fixed stroke pattern, perturbed
+ * by a seeded per-sample noise draw. The classes are linearly separable
+ * enough that a small MLP reaches high accuracy in a few epochs, but not
+ * so trivially separable that a broken training loop still passes — the
+ * point is to exercise the loop, not to be a benchmark.
+ *
+ * `x` comes out `(n, 64)` in row-major glyph order and `y` as `(n,)` class
+ * ids, which is what {@link Batches} and the classifier head expect.
+ */
+public final class Digits {
+
+    /** Side of a glyph. */
+    public static int64 SIDE = 8;
+
+    /** Pixels per sample. */
+    public static int64 PIXELS = 64;
+
+    /**
+     * `nPerClass` samples of each of `classes` glyph types (max 4), with
+     * noise amplitude `noise`, drawn from `seed`.
+     */
+    public static #Tensor<float32> images(int64 nPerClass, int64 classes,
+                                          float32 noise, uint64 seed) {
+        int64 n = nPerClass * classes;
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = Digits.PIXELS;
+        Tensor<float32> x = Tensor.zeros<float32>(sh);
+        Generator g = heap Generator(seed);
+        Tensor<float32> u = g.uniform(n * Digits.PIXELS);
+        int64 i = 0;
+        while (i < n) {
+            int64 cls = i / nPerClass;
+            int64 p = 0;
+            while (p < Digits.PIXELS) {
+                int64 r = p / Digits.SIDE;
+                int64 c = p - r * Digits.SIDE;
+                float32 base = Digits.stroke(cls, r, c);
+                float32 jitter = (u.get1(i * Digits.PIXELS + p) - 0.5f) * 2.0f * noise;
+                x.flatSet(i * Digits.PIXELS + p, base + jitter);
+                p = p + 1;
+            }
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** Class ids matching {@link #images}, `(n,)`. */
+    public static #Tensor<float32> labels(int64 nPerClass, int64 classes) {
+        int64 n = nPerClass * classes;
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float32> y = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) {
+            y.flatSet(i, (float32) (i / nPerClass));
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** The noiseless glyph: 0 a vertical bar, 1 a horizontal bar,
+     *  2 a diagonal, 3 a ring. */
+    static float32 stroke(int64 cls, int64 r, int64 c) {
+        if (cls == 0) {
+            if (c == 3 || c == 4) { return 1.0f; }
+            return 0.0f;
+        }
+        if (cls == 1) {
+            if (r == 3 || r == 4) { return 1.0f; }
+            return 0.0f;
+        }
+        if (cls == 2) {
+            if (r == c || r == c + 1) { return 1.0f; }
+            return 0.0f;
+        }
+        boolean edge = r == 1 || r == 6 || c == 1 || c == 6;
+        boolean inside = r >= 1 && r <= 6 && c >= 1 && c <= 6;
+        if (edge && inside) { return 1.0f; }
+        return 0.0f;
+    }
+}

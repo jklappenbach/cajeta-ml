@@ -1,0 +1,159 @@
+package dev.cajeta.ml.train;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.data.Batches;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Nets;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.optim.Optimizer;
+
+/**
+ * The ordinary trainer: forward the whole network, one global backward,
+ * one optimizer step per minibatch (spec §5.1). SPELA's trainer is the
+ * other half of `ml.train` and takes the same shape from the outside —
+ * which is the point of the seam.
+ *
+ * Each step builds a FRESH tape. That is not a cost dodged for
+ * convenience: the tape is first-order and one-shot by construction, so a
+ * per-step tape is what makes "zero the gradients" unnecessary — there is
+ * no stale gradient state to forget to clear, which is the single most
+ * common way a hand-written torch loop silently trains wrong.
+ *
+ * Gradient clipping follows torch's `clip_grad_norm_`: the GLOBAL L2 norm
+ * across every parameter is compared to the cap and all gradients are
+ * scaled by one shared factor. Clipping each tensor separately would
+ * change the update's direction, not just its length.
+ */
+public class BackpropTrainer {
+    Module net;
+    Optimizer opt;
+    int32 lossKind;
+    float32 clipNorm;
+
+    /** `clipNorm <= 0` disables clipping. */
+    public BackpropTrainer(Module net, Optimizer opt, int32 lossKind,
+                           float32 clipNorm) {
+        this.net = net;
+        this.opt = opt;
+        this.lossKind = lossKind;
+        this.clipNorm = clipNorm;
+        return;
+    }
+
+    public Module module() {
+        return this.net;
+    }
+
+    /**
+     * Train for `epochs` passes over `data`, reshuffling each epoch.
+     * Returns the per-epoch history.
+     */
+    public #TrainHistory fit(Batches data, int32 epochs) {
+        TrainHistory hist = heap TrainHistory();
+        Parameter[] ps = this.net.parameters();
+        this.net.train();
+        int32 e = 0;
+        while (e < epochs) {
+            data.reorder((int64) e);
+            float64 sum = 0.0;
+            int64 nb = data.batchCount();
+            int64 b = 0;
+            while (b < nb) {
+                Tensor<float32> xb = data.batchX(b);
+                Tensor<float32> yb = data.batchY(b);
+                sum = sum + this.stepOn(xb, yb, ps);
+                b = b + 1;
+            }
+            hist.note(sum / (float64) nb, (float64) this.opt.getLr(), 0.0);
+            e = e + 1;
+        }
+        return hist;
+    }
+
+    /**
+     * One minibatch: forward, loss, backward, clip, step. Returns the
+     * batch loss. Public so a caller can drive its own loop (a custom
+     * schedule, an early-stopping rule) without reimplementing the step.
+     */
+    public float64 stepOn(Tensor<float32> xb, Tensor<float32> yb,
+                          Parameter[] ps) {
+        GradTape<float32> tape = heap GradTape<float32>();
+        this.net.bindParameters(tape);
+        GradTensor x = tape.leaf(xb, false);
+        GradTensor out = this.net.forward(tape, x);
+        if (this.lossKind != Loss.CROSS_ENTROPY && this.lossKind != Loss.MSE) {
+            throw heap MlException("BackpropTrainer: unknown loss kind "
+                + this.lossKind);
+        }
+        GradTensor loss = out;
+        if (this.lossKind == Loss.CROSS_ENTROPY) {
+            loss = tape.crossEntropy(out, yb);
+        } else {
+            GradTensor target = tape.leaf(Nets.asColumn(yb), false);
+            loss = tape.mseLoss(out, target);
+        }
+        float64 value = (float64) tape.valueOf(loss).flatGet(0);
+        tape.backward(loss);
+        Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+        if (this.clipNorm > 0.0f) {
+            BackpropTrainer.clipByGlobalNorm(gs, this.clipNorm);
+        }
+        this.opt.step(gs);
+        this.net.unbindParameters();
+        return value;
+    }
+
+    /**
+     * torch's `clip_grad_norm_`: if the global L2 norm across ALL grads
+     * exceeds `maxNorm`, scale every gradient by `maxNorm/total`. Returns
+     * the norm BEFORE clipping (torch's return value), which is the
+     * number worth logging when a run diverges.
+     */
+    public static float64 clipByGlobalNorm(Tensor<float32>[] grads,
+                                           float32 maxNorm) {
+        float64 sq = 0.0;
+        int32 i = 0;
+        while (i < (int32) grads.count()) {
+            Tensor<float32> g = grads[i];
+            int64 n = BackpropTrainer.countOf(g);
+            int64 k = 0;
+            while (k < n) {
+                float64 v = (float64) g.flatGet(k);
+                sq = sq + v * v;
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        float64 total = Math.sqrt(sq);
+        if (total <= (float64) maxNorm || total == 0.0) {
+            return total;
+        }
+        float64 scale = (float64) maxNorm / total;
+        i = 0;
+        while (i < (int32) grads.count()) {
+            Tensor<float32> g = grads[i];
+            int64 n = BackpropTrainer.countOf(g);
+            int64 k = 0;
+            while (k < n) {
+                float64 scaled = (float64) g.flatGet(k) * scale;
+                g.flatSet(k, (float32) scaled);
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        return total;
+    }
+
+    static int64 countOf(Tensor<float32> t) {
+        int64 n = 1;
+        int32 d = 0;
+        while (d < t.ndim()) {
+            n = n * t.shapeAt(d);
+            d = d + 1;
+        }
+        return n;
+    }
+}

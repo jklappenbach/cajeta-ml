@@ -1,0 +1,58 @@
+package dev.cajeta.ml.train;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * What a training run actually did, epoch by epoch — mean loss, the
+ * learning rate in force, and (when the trainer was given labels it can
+ * score) accuracy.
+ *
+ * Noted rather than printed: a caller decides whether to log it, plot
+ * it, or assert on it, and a test can pin a whole trajectory instead of
+ * one final number, which is what catches a loop that converges to the
+ * right place for the wrong reason.
+ */
+public class TrainHistory {
+    ArrayList<float64> losses;
+    ArrayList<float64> lrs;
+    ArrayList<float64> accuracies;
+
+    public TrainHistory() {
+        this.losses = heap ArrayList<float64>();
+        this.lrs = heap ArrayList<float64>();
+        this.accuracies = heap ArrayList<float64>();
+        return;
+    }
+
+    public void note(float64 loss, float64 lr, float64 accuracy) {
+        this.losses.add(loss);
+        this.lrs.add(lr);
+        this.accuracies.add(accuracy);
+        return;
+    }
+
+    public int32 epochs() {
+        return this.losses.count();
+    }
+
+    public float64 lossAt(int32 epoch) {
+        return this.losses.get(epoch);
+    }
+
+    public float64 lrAt(int32 epoch) {
+        return this.lrs.get(epoch);
+    }
+
+    public float64 accuracyAt(int32 epoch) {
+        return this.accuracies.get(epoch);
+    }
+
+    /** The last epoch's mean loss. */
+    public float64 finalLoss() {
+        return this.losses.get(this.losses.count() - 1);
+    }
+
+    public float64 finalAccuracy() {
+        return this.accuracies.get(this.accuracies.count() - 1);
+    }
+}
