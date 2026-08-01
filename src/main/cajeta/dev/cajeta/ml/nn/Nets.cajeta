@@ -91,15 +91,27 @@ public final class Nets {
         return #out;
     }
 
-    /** Collect this pass's gradients in `parameters()` order — the shape
-     *  the optimizers consume. */
+    /**
+     * Collect this pass's gradients in `parameters()` order — the shape
+     * the optimizers consume.
+     *
+     * A FROZEN parameter yields zeros rather than throwing. Partial
+     * freezing is the normal case (LoRA freezes a base and trains an
+     * adapter beside it), so the tape legitimately has no gradient for
+     * some entries; the optimizers skip those by trainability, which is
+     * what keeps weight decay from moving a weight nobody is training.
+     */
     public static #Tensor<float32>[] gradsOf(GradTape<float32> tape,
                                              Parameter[] ps) {
         int32 n = (int32) ps.count();
         Tensor<float32>[] gs = heap Tensor<float32>[n];
         int32 i = 0;
         while (i < n) {
-            gs[i] = tape.gradOf(ps[i].node()).copy();
+            if (ps[i].isTrainable()) {
+                gs[i] = tape.gradOf(ps[i].node()).copy();
+            } else {
+                gs[i] = Tensor.zerosLike<float32>(ps[i].get());
+            }
             i = i + 1;
         }
         return gs;

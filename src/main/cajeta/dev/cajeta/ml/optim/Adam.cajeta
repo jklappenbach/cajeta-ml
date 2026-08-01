@@ -54,8 +54,10 @@ public final class Adam implements Optimizer {
         float32 c2 = 1.0f - this.beta2Power;
         int32 i = 0;
         while (i < n) {
-            Adam.updateOne(this.params[i].get(), grads[i], this.m[i],
-                           this.v[i], this.lr, c1, c2);
+            if (this.params[i].isTrainable()) {
+                Adam.updateOne(this.params[i].get(), grads[i], this.m[i],
+                               this.v[i], this.lr, c1, c2);
+            }
             i = i + 1;
         }
     }

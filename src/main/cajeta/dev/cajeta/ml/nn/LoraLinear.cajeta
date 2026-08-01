@@ -1,0 +1,164 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * A Linear with a low-rank adapter (spec §7):
+ *
+ * ```
+ * y = x·W + b  +  (x·A)·B · (alpha / rank)
+ * ```
+ *
+ * `A` is `(in, rank)` and `B` is `(rank, out)`, so the adapter carries
+ * `rank·(in + out)` parameters instead of `in·out` — the reason a large
+ * model can be fine-tuned on a small machine.
+ *
+ * **B starts at ZERO.** That is not an arbitrary initialization choice:
+ * it makes a freshly wrapped model produce EXACTLY the base model's
+ * output, so wrapping is observationally a no-op and training starts from
+ * the pretrained behaviour rather than from a perturbation of it. `A` is
+ * drawn seeded and nonzero so the pair has a gradient to follow.
+ *
+ * It COMPOSES a {@link Linear} rather than extending one. The module
+ * walk enumerates a class's own declared fields, not inherited ones, so
+ * a subclass of `Linear` would silently lose the base weight and bias
+ * from `parameters()` — the adapter would train and the base would never
+ * even be bound. Holding the base as a sub-module keeps both halves
+ * visible, and names them `base.weight` / `base.bias` alongside
+ * `loraA` / `loraB`.
+ *
+ * {@link #merge} folds `A·B·scale` into the base weight, after which the
+ * layer computes the same function with no adapter cost at all. That is
+ * the deployment step: train small, then merge and serve a plain Linear.
+ */
+public class LoraLinear extends Module {
+    Linear base;
+    Parameter loraA;
+    Parameter loraB;
+    int64 rank;
+    float32 scale;
+    boolean merged;
+
+    /**
+     * Wrap a fresh Linear of the given shape. `alpha` is the usual LoRA
+     * scaling numerator; the applied factor is `alpha / rank`, which is
+     * what keeps a rank change from silently rescaling the update.
+     */
+    public LoraLinear(int64 inFeatures, int64 outFeatures, int64 rank,
+                      float32 alpha, uint64 seed) {
+        if (rank < 1) {
+            throw heap MlException("LoraLinear: rank must be >= 1, got " + rank);
+        }
+        this.base = heap Linear(inFeatures, outFeatures, seed);
+        int64[] as = heap int64[2];
+        as[0] = inFeatures;
+        as[1] = rank;
+        this.loraA = heap Parameter(Init.kaimingUniform(as, inFeatures,
+                                                        seed + 7717));
+        int64[] bs = heap int64[2];
+        bs[0] = rank;
+        bs[1] = outFeatures;
+        // ZERO — so the wrapped layer starts identical to the base.
+        this.loraB = heap Parameter(Tensor.zeros<float32>(bs));
+        this.rank = rank;
+        this.scale = alpha / (float32) rank;
+        this.merged = false;
+        return;
+    }
+
+    /** The wrapped base layer. */
+    public Linear baseLinear() {
+        return this.base;
+    }
+
+    public Parameter weightParam() {
+        return this.base.weightParam();
+    }
+
+    public Parameter biasParam() {
+        return this.base.biasParam();
+    }
+
+    public Parameter aParam() {
+        return this.loraA;
+    }
+
+    public Parameter bParam() {
+        return this.loraB;
+    }
+
+    public float32 scaling() {
+        return this.scale;
+    }
+
+    public boolean isMerged() {
+        return this.merged;
+    }
+
+    /** Freeze the base weight and bias, leaving only the adapter
+     *  trainable — the usual LoRA setup. */
+    public void freezeBase() {
+        this.weightParam().setTrainable(false);
+        this.biasParam().setTrainable(false);
+        this.loraA.setTrainable(true);
+        this.loraB.setTrainable(true);
+        return;
+    }
+
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        GradTensor base = tape.add(tape.matmul(x, this.weightParam().node()),
+                                   this.biasParam().node());
+        if (this.merged) {
+            // the adapter is already inside the base weight; adding it
+            // again would apply it twice
+            return base;
+        }
+        GradTensor low = tape.matmul(tape.matmul(x, this.loraA.node()),
+                                     this.loraB.node());
+        int64[] one = heap int64[1];
+        one[0] = 1;
+        Tensor<float32> s = Tensor.full<float32>(one, this.scale);
+        return tape.add(base, tape.mul(low, tape.leaf(s, false)));
+    }
+
+    /**
+     * Fold the adapter into the base weight: `W += A·B·scale`.
+     *
+     * Idempotent by refusal rather than by silence — merging twice would
+     * double-apply the adapter, so a second call throws instead of
+     * quietly corrupting the weights.
+     */
+    public void merge() {
+        if (this.merged) {
+            throw heap MlException("LoraLinear.merge: already merged — "
+                + "merging again would apply the adapter twice");
+        }
+        Tensor<float32> w = this.weightParam().get();
+        Tensor<float32> a = this.loraA.get();
+        Tensor<float32> b = this.loraB.get();
+        int64 inF = w.shapeAt(0);
+        int64 outF = w.shapeAt(1);
+        int64 i = 0;
+        while (i < inF) {
+            int64 j = 0;
+            while (j < outF) {
+                float64 acc = 0.0;
+                int64 r = 0;
+                while (r < this.rank) {
+                    acc = acc + (float64) a.get2(i, r) * (float64) b.get2(r, j);
+                    r = r + 1;
+                }
+                float64 updated = (float64) w.get2(i, j)
+                                + acc * (float64) this.scale;
+                w.set2(i, j, (float32) updated);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        this.merged = true;
+        return;
+    }
+}

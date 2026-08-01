@@ -31,10 +31,13 @@ import dev.cajeta.ml.grad.GradTensor;
  * are the transformer unit's work, not the block's.
  */
 public class MultiheadAttention extends Module {
-    Linear wq;
-    Linear wk;
-    Linear wv;
-    Linear wo;
+    // Module, not Linear: a LoRA-adapted projection COMPOSES a Linear
+    // rather than extending it (the module walk does not see inherited
+    // fields), so the field type has to be the common base.
+    Module wq;
+    Module wk;
+    Module wv;
+    Module wo;
     int32 heads;
     int64 embed;
 
@@ -49,6 +52,48 @@ public class MultiheadAttention extends Module {
         this.wo = heap Linear(embed, embed, seed + 3);
         this.heads = heads;
         this.embed = embed;
+        return;
+    }
+
+    /**
+     * The LoRA-adapted form: every projection is a {@link LoraLinear}.
+     * It is a `Module` like any other layer, so nothing else about the block
+     * changes except the names, which gain the wrapper's level:
+     * `wq.base.weight` and `wq.base.bias` for the frozen projection,
+     * `wq.loraA` / `wq.loraB` for the adapter.
+     *
+     * Adapting the projections is where LoRA earns its keep in a
+     * transformer: they are the bulk of a block's parameters.
+     */
+    public MultiheadAttention(int64 embed, int32 heads, int64 rank,
+                              float32 alpha, uint64 seed) {
+        if (embed % (int64) heads != 0) {
+            throw heap MlException("MultiheadAttention: embed " + embed
+                + " is not divisible by heads " + heads);
+        }
+        this.wq = heap LoraLinear(embed, embed, rank, alpha, seed);
+        this.wk = heap LoraLinear(embed, embed, rank, alpha, seed + 1);
+        this.wv = heap LoraLinear(embed, embed, rank, alpha, seed + 2);
+        this.wo = heap LoraLinear(embed, embed, rank, alpha, seed + 3);
+        this.heads = heads;
+        this.embed = embed;
+        return;
+    }
+
+    /** Freeze every projection's base weights, leaving only the LoRA
+     *  adapters trainable. No-op on a block built without adapters. */
+    public void freezeBaseProjections() {
+        MultiheadAttention.freezeIfLora(this.wq);
+        MultiheadAttention.freezeIfLora(this.wk);
+        MultiheadAttention.freezeIfLora(this.wv);
+        MultiheadAttention.freezeIfLora(this.wo);
+        return;
+    }
+
+    static void freezeIfLora(Module l) {
+        if (l instanceof LoraLinear ll) {
+            ll.freezeBase();
+        }
         return;
     }
 

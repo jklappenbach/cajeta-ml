@@ -1,0 +1,363 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.io.Checkpoints;
+import dev.cajeta.ml.io.PtReader;
+import dev.cajeta.ml.io.StateDict;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.LoraLinear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.MultiheadAttention;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+import dev.cajeta.ml.optim.Optimizer;
+import dev.cajeta.ml.optim.SGD;
+import dev.cajeta.ml.train.BackpropTrainer;
+import dev.cajeta.ml.train.Loss;
+
+/**
+ * cajeta-ml-v3 plan 10.1.1–10.3.1 — LoRA. The rank/alpha arithmetic is
+ * pinned against PINNED torch (`tools/fixtures/gen_lora.py`), which
+ * computes the adapter the standard way: `y = xW + b + (xA)B·(α/r)`.
+ */
+public class LoraTest {
+
+    public LoraTest() { return; }
+
+    static float32 xAt(int64 f) { return (float32) (f % 7) * 0.25f - 0.75f; }
+    static float32 wAt(int64 f) { return (float32) (f % 5) * 0.5f - 1.0f; }
+    static float32 aAt(int64 f) { return (float32) (f % 3) * 0.25f - 0.25f; }
+    static float32 bAt(int64 f) { return (float32) (f % 4) * 0.5f - 0.5f; }
+
+    static void checkFlat(Tensor<float32> t, float32[] exp, float32 tol) {
+        int64 n = (int64) exp.count();
+        int64 f = 0;
+        while (f < n) {
+            float32 v = t.flatGet(f);
+            float32 d = v - exp[f];
+            if (d < 0.0f) { d = 0.0f - d; }
+            if (d >= tol) {
+                Assert.fail("flat[" + f + "] = " + v + ", torch pin " + exp[f]);
+            }
+            f = f + 1;
+        }
+    }
+
+    /** The generator's layer: in=4, out=3, rank=2, alpha=4 (scale 2). */
+    static #LoraLinear pinnedLayer() {
+        LoraLinear l = heap LoraLinear(4, 3, 2, 4.0f, 5L);
+        Tensor<float32> w = l.weightParam().get();
+        int64 f = 0;
+        while (f < 12) {
+            w.flatSet(f, LoraTest.wAt(f));
+            f = f + 1;
+        }
+        Tensor<float32> b = l.biasParam().get();
+        b.flatSet(0, 0.1f);
+        b.flatSet(1, -0.2f);
+        b.flatSet(2, 0.3f);
+        Tensor<float32> a = l.aParam().get();
+        f = 0;
+        while (f < 8) {
+            a.flatSet(f, LoraTest.aAt(f));
+            f = f + 1;
+        }
+        return #l;
+    }
+
+    static #Tensor<float32> pinnedInput() {
+        int64[] xs = heap int64[2];
+        xs[0] = 2;
+        xs[1] = 4;
+        Tensor<float32> x = Tensor.zeros<float32>(xs);
+        int64 f = 0;
+        while (f < 8) {
+            x.flatSet(f, LoraTest.xAt(f));
+            f = f + 1;
+        }
+        return #x;
+    }
+
+    /** Fill B with the generator's grid — the trained-adapter state. */
+    static void fillB(LoraLinear l) {
+        Tensor<float32> b = l.bParam().get();
+        int64 f = 0;
+        while (f < 6) {
+            b.flatSet(f, LoraTest.bAt(f));
+            f = f + 1;
+        }
+        return;
+    }
+
+    // ── 10.1.1 the adapter's arithmetic ─────────────────────────────────
+
+    /**
+     * B starts at ZERO, so a freshly wrapped layer reproduces the base
+     * model EXACTLY. Wrapping a pretrained model must not change what it
+     * predicts before any training happens.
+     */
+    @Test
+    public void zeroInitMakesTheAdapterANoOp() {
+        LoraLinear l = LoraTest.pinnedLayer();
+        Tensor<float32> out = l.predict(LoraTest.pinnedInput());
+        float32[] base = [0.72500002f, -0.32499999f, 0.67500001f,
+                          -1.02499998f, 0.92500001f, 0.55000001f];
+        LoraTest.checkFlat(out, base, 0.0002f);
+    }
+
+    @Test
+    public void adaptedForwardMatchesTorch() {
+        LoraLinear l = LoraTest.pinnedLayer();
+        LoraTest.fillB(l);
+        Assert.isTrue(l.scaling() == 2.0f);          // alpha 4 / rank 2
+        Tensor<float32> out = l.predict(LoraTest.pinnedInput());
+        float32[] want = [0.78750002f, -0.38749999f, 0.73750001f,
+                          -1.14999998f, 0.86250001f, 0.80000001f];
+        LoraTest.checkFlat(out, want, 0.0002f);
+    }
+
+    /** `merge()` folds A·B·scale into the base weight — after which the
+     *  layer computes the SAME function with no adapter cost. */
+    @Test
+    public void mergeEqualsTheAdaptedForward() {
+        LoraLinear l = LoraTest.pinnedLayer();
+        LoraTest.fillB(l);
+        Tensor<float32> x = LoraTest.pinnedInput();
+        Tensor<float32> before = l.predict(x);
+
+        Assert.isFalse(l.isMerged());
+        l.merge();
+        Assert.isTrue(l.isMerged());
+
+        // the folded weight matches torch's W + A·B·scale
+        float32[] mergedW = [-0.75f, -0.5f, -0.25f, -0.25f, 1.25f, -0.75f,
+                             0.0f, -0.25f, 0.5f, 1.25f, -1.0f, -0.75f];
+        LoraTest.checkFlat(l.weightParam().get(), mergedW, 0.0002f);
+
+        // and the forward is unchanged by merging
+        Tensor<float32> after = l.predict(x);
+        int64 f = 0;
+        while (f < 6) {
+            float32 d = after.flatGet(f) - before.flatGet(f);
+            if (d < 0.0f) { d = 0.0f - d; }
+            Assert.isTrue(d < 0.0002f);
+            f = f + 1;
+        }
+    }
+
+    /** Merging twice would apply the adapter twice — refused, not
+     *  silently repeated. */
+    @Test
+    public void doubleMergeIsRefused() {
+        LoraLinear l = LoraTest.pinnedLayer();
+        LoraTest.fillB(l);
+        l.merge();
+        boolean threw = false;
+        try {
+            l.merge();
+        } catch (Exception e) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+    }
+
+    /** Adapter gradients match torch's, and the FROZEN base collects
+     *  none — the two halves of "train the adapter only". */
+    @Test
+    public void adapterGradientsMatchTorchAndBaseIsFrozen() {
+        LoraLinear l = LoraTest.pinnedLayer();
+        LoraTest.fillB(l);
+        l.freezeBase();
+
+        GradTape<float32> tape = heap GradTape<float32>();
+        l.bindParameters(tape);
+        GradTensor x = tape.leaf(LoraTest.pinnedInput(), false);
+        GradTensor y = l.forward(tape, x);
+        // the generator's weighted scalar
+        Tensor<float32> kv = tape.valueOf(y).copy();
+        int64 i = 0;
+        while (i < 6) {
+            kv.flatSet(i, (float32) (i % 3 + 1) * 0.5f);
+            i = i + 1;
+        }
+        GradTensor k = tape.leaf(kv, false);
+        tape.backward(tape.sum(tape.mul(y, k)));
+
+        float32[] dA = [-0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 0.0f, -0.75f, 0.0f];
+        float32[] dB = [0.3125f, 0.625f, 0.9375f, 0.125f, 0.25f, 0.375f];
+        LoraTest.checkFlat(tape.gradOf(l.aParam().node()), dA, 0.0002f);
+        LoraTest.checkFlat(tape.gradOf(l.bParam().node()), dB, 0.0002f);
+
+        // the base weight is frozen, so asking for its gradient is an error
+        boolean threw = false;
+        try {
+            Tensor<float32> dw = tape.gradOf(l.weightParam().node());
+        } catch (Exception e) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+    }
+
+    /** The adapter is the point: `rank·(in+out)` parameters instead of
+     *  `in·out`. */
+    @Test
+    public void adapterIsSmallerThanTheWeightItAdapts() {
+        LoraLinear l = heap LoraLinear(64, 64, 2, 8.0f, 3L);
+        Parameter[] ps = l.parameters();
+        // weight, bias, loraA, loraB — inherited fields are collected too
+        Assert.equals(4, (int64) ps.count());
+        int64 baseCount = 64 * 64;
+        int64 adapterCount = 64 * 2 + 2 * 64;
+        Assert.isTrue(adapterCount < baseCount / 8);
+    }
+
+    // ── 10.2.1 attention projections ────────────────────────────────────
+
+    @Test
+    public void attentionProjectionsCarryAdapters() {
+        MultiheadAttention att = heap MultiheadAttention(4, 2, 2, 4.0f, 9L);
+        ArrayList<String> names = att.parameterNames();
+        // the wrapper adds a level: the frozen projection is
+        // `wq.base.weight`, the adapter `wq.loraA`
+        boolean sawBase = false;
+        boolean sawA = false;
+        boolean sawB = false;
+        int32 i = 0;
+        while (i < names.count()) {
+            if (names.get(i) == "wq.base.weight") { sawBase = true; }
+            if (names.get(i) == "wq.loraA") { sawA = true; }
+            if (names.get(i) == "wq.loraB") { sawB = true; }
+            i = i + 1;
+        }
+        Assert.isTrue(sawBase);
+        Assert.isTrue(sawA);
+        Assert.isTrue(sawB);
+
+        // freezing leaves only the adapters trainable
+        att.freezeBaseProjections();
+        Parameter[] ps = att.parameters();
+        ArrayList<String> pn = att.parameterNames();
+        i = 0;
+        while (i < pn.count()) {
+            String n = pn.get(i);
+            boolean isAdapter = n == "wq.loraA" || n == "wq.loraB"
+                             || n == "wk.loraA" || n == "wk.loraB"
+                             || n == "wv.loraA" || n == "wv.loraB"
+                             || n == "wo.loraA" || n == "wo.loraB";
+            Assert.isTrue(ps[i].isTrainable() == isAdapter);
+            i = i + 1;
+        }
+    }
+
+    /** A LoRA-adapted attention block starts identical to the plain one
+     *  built from the same seed — zero-init all the way up. */
+    @Test
+    public void loraAttentionStartsEqualToTheBaseBlock() {
+        MultiheadAttention plain = heap MultiheadAttention(4, 2, 9L);
+        MultiheadAttention lora = heap MultiheadAttention(4, 2, 2, 4.0f, 9L);
+        int64[] xs = heap int64[3];
+        xs[0] = 2; xs[1] = 3; xs[2] = 4;
+        Tensor<float32> x = Tensor.zeros<float32>(xs);
+        int64 f = 0;
+        while (f < 24) {
+            x.flatSet(f, LoraTest.xAt(f));
+            f = f + 1;
+        }
+        Tensor<float32> a = plain.predict(x);
+        Tensor<float32> b = lora.predict(x);
+        f = 0;
+        while (f < 24) {
+            float32 d = a.flatGet(f) - b.flatGet(f);
+            if (d < 0.0f) { d = 0.0f - d; }
+            Assert.isTrue(d < 0.0002f);
+            f = f + 1;
+        }
+    }
+
+    // ── 10.3.1 fine-tuning a real checkpoint through the adapter ────────
+
+    /**
+     * The acceptance: load the U9 torch checkpoint into a LoRA-wrapped
+     * model, freeze the base, and fine-tune. The base weights must come
+     * out BIT-identical — all the learning lives in the adapter — and
+     * merging must then reproduce the fine-tuned function.
+     */
+    @Test
+    public void loraFineTuneOfATorchCheckpoint() {
+        LoraLinear head = heap LoraLinear(3, 4, 2, 4.0f, 11L);
+        Sequential net = heap Sequential();
+        net.add(#head);
+
+        // load layers.0.* from the torch checkpoint into this layer
+        StateDict sd = PtReader.read(
+            "src/test/resources/checkpoints/mlp_state.pt");
+        StateDict mapped = heap StateDict();
+        Tensor<float32> w = sd.get("layers.0.weight").copy();
+        mapped.put("0.base.weight", #w);
+        Tensor<float32> b = sd.get("layers.0.bias").copy();
+        mapped.put("0.base.bias", #b);
+        ArrayList<String> missing = Checkpoints.loadStateDict(net, mapped, false);
+        // the adapters are legitimately absent from a base checkpoint
+        Assert.equals(2, (int64) missing.count());
+        Assert.equals("0.loraA", missing.get(0));
+
+        LoraLinear wrapped = null;
+        Module m = net.at(0);
+        if (m instanceof LoraLinear ll) { wrapped = ll; }
+        Assert.isTrue(wrapped != null);
+        wrapped.freezeBase();
+        Tensor<float32> baseBefore = wrapped.weightParam().get().copy();
+
+        Optimizer opt = heap SGD(net.parameters(), 0.05f, 0.0f);
+        BackpropTrainer tr = heap BackpropTrainer(net, opt, Loss.MSE, 0.0f);
+        int64[] xs = heap int64[2];
+        xs[0] = 4;
+        xs[1] = 3;
+        Tensor<float32> x = Tensor.zeros<float32>(xs);
+        int64 f = 0;
+        while (f < 12) {
+            x.flatSet(f, LoraTest.xAt(f));
+            f = f + 1;
+        }
+        int64[] ys = heap int64[2];
+        ys[0] = 4;
+        ys[1] = 4;
+        Tensor<float32> y = Tensor.full<float32>(ys, 0.25f);
+        Parameter[] ps = net.parameters();
+        float64 first = tr.stepOn(x, y, ps);
+        int32 s = 0;
+        float64 last = first;
+        while (s < 30) {
+            last = tr.stepOn(x, y, ps);
+            s = s + 1;
+        }
+        Assert.isTrue(last < first);
+
+        // the base is untouched — bit-identical, not merely close
+        Tensor<float32> baseAfter = wrapped.weightParam().get();
+        f = 0;
+        while (f < 12) {
+            Assert.isTrue(baseAfter.flatGet(f) == baseBefore.flatGet(f));
+            f = f + 1;
+        }
+        // the adapter did the learning
+        Assert.isTrue(wrapped.bParam().get().flatGet(0) != 0.0f);
+
+        // and merging preserves the fine-tuned function
+        Tensor<float32> beforeMerge = net.predict(x);
+        wrapped.merge();
+        Tensor<float32> afterMerge = net.predict(x);
+        f = 0;
+        while (f < 16) {
+            float32 d = afterMerge.flatGet(f) - beforeMerge.flatGet(f);
+            if (d < 0.0f) { d = 0.0f - d; }
+            Assert.isTrue(d < 0.0005f);
+            f = f + 1;
+        }
+    }
+}

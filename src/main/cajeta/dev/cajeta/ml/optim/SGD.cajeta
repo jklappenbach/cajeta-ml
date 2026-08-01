@@ -39,7 +39,12 @@ public final class SGD implements Optimizer {
         if (this.momentum == 0.0f) {
             int32 i = 0;
             while (i < n) {
-                Updates.axpyInto(this.params[i].get(), grads[i], -this.lr);
+                // A frozen parameter is skipped outright. Applying a zero
+                // gradient would still let weight decay move it, which is
+                // not what "frozen" means.
+                if (this.params[i].isTrainable()) {
+                    Updates.axpyInto(this.params[i].get(), grads[i], -this.lr);
+                }
                 i = i + 1;
             }
             return;
@@ -57,10 +62,12 @@ public final class SGD implements Optimizer {
         int32 i = 0;
         while (i < n) {
             // v = momentum*v + g (in place on the state), then p -= lr*v.
-            Tensor<float32> v = this.velocity[i];
-            Updates.axpyInto(v, v, this.momentum - 1.0f);   // v *= momentum
-            Updates.axpyInto(v, grads[i], 1.0f);            // v += g
-            Updates.axpyInto(this.params[i].get(), v, -this.lr);
+            if (this.params[i].isTrainable()) {
+                Tensor<float32> v = this.velocity[i];
+                Updates.axpyInto(v, v, this.momentum - 1.0f);   // v *= momentum
+                Updates.axpyInto(v, grads[i], 1.0f);            // v += g
+                Updates.axpyInto(this.params[i].get(), v, -this.lr);
+            }
             i = i + 1;
         }
     }
