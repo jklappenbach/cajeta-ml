@@ -132,3 +132,143 @@ average-rank ties — matches sklearn exactly, ties included).
 
 Misuse throws `MlException` (recoverable): predict-before-fit, shape
 mismatches, bad hyperparameters, single-class ROC.
+
+---
+
+# Neural networks
+
+The torch role, in the same package. Everything above is `float64` (the
+estimator protocol's precision); everything below is `float32`. The boundary is
+crossed exactly once, in `Nets`, at the adapter — never smeared through layers.
+
+Numerics are pinned against **torch 2.13.0+cpu**; deliberate departures are in
+`DifferencesFromTorch.md`.
+
+## Autodiff — `ml.grad`
+
+`GradTape<E extends Floating>` is define-by-run reverse-mode autodiff: ops
+record as they execute, `backward` replays them in reverse. `E` is `float32`
+(the whole `ml.nn` stack) or `float64` (for gradient checking).
+
+```cajeta
+GradTape<float32> tape = heap GradTape<float32>();
+GradTensor x = tape.leaf(xb, false);      // input: no gradient
+GradTensor w = tape.leaf(weights, true);  // parameter: gradient
+GradTensor loss = tape.mseLoss(tape.relu(tape.matmul(x, w)), target);
+tape.backward(loss);
+Tensor<float32> gw = tape.gradOf(w);
+```
+
+**Build a fresh tape every step.** The tape is one-shot and first-order by
+construction, which is what makes "zero the gradients" unnecessary — there is
+no stale gradient state to forget to clear. No double backward.
+
+41 ops: elementwise arithmetic, `matmul`/`matmulBatched`, the activations
+(`relu` `gelu` `tanh` `sigmoid` `softmax` `logSoftmax`), reductions (`sum`
+`mean` `sumAxis` `meanAxis` `maxAxis` `rowNorm`), shape ops (`reshape`
+`transpose2d` `permute` `slice` `concat`), the structured kernels (`conv2d`,
+the pools, `batchNorm2d`, `layerNorm`, `embedding`, `dropout`) and the losses
+(`crossEntropy` `mseLoss` `cosineSim`). Broadcast-widened ops restore input
+shapes on the backward pass via `Tensor.sumTo`.
+
+`noGradBegin()`/`noGradEnd()` bracket an inference region; `detached(node)` is
+the per-node stop-gradient.
+
+`Ops` is the **device seam** — every forward kernel routes through it, so
+adding a backend does not touch `GradTape`. The CPU column is complete; the GPU
+column is empty. Mixed residency is refused loudly rather than resolved with a
+silent copy.
+
+## Modules and layers — `ml.nn`
+
+A `Module` owns `Parameter` fields, declares a forward pass over a tape, and
+composes into trees. `parameters()` / `parameterNames()` walk the tree by
+reflection over **own declared fields** — inherited ones are not enumerated, so
+compose rather than inherit when adding parameters. Names match torch's
+`state_dict` keys exactly, which is what lets a torch-written checkpoint load.
+
+Hold submodule containers in a **named field**: that is the difference between
+`blocks.0.attn.wq.weight` and an unmatchable `0.attn.wq.weight`.
+
+Layers: `Linear`, `Conv2d`, `MaxPool2d`/`AvgPool2d`/`AdaptiveAvgPool2d`,
+`BatchNorm2d`, `LayerNorm`, `MultiheadAttention`, `Embedding`, `Dropout`,
+`Flatten`, `LoraLinear`, and the activations. Containers: `Sequential`.
+Prebuilt in `ml.zoo`: `Mlp`, `SmallCnn`, `EncoderBlock`, `EncoderStack`.
+
+`train()`/`eval()` propagate through the tree (Dropout samples vs is identity;
+BatchNorm updates vs uses running stats). `predict(x)` is the inference
+wrapper. `setTrainable(false)` freezes a parameter, honored by **both**
+`Nets.gradsOf` (zeros) and every optimizer (skip) — both are needed, or
+AdamW's decoupled decay still moves a "frozen" weight.
+
+Every layer constructor takes an explicit `uint64` seed. There is no global RNG.
+
+`NetRegressor` / `NetClassifier` wrap a module as a `Predictor`, so a network
+drops into `Pipeline` and `crossValScore` like any other estimator.
+
+## Training — `ml.train` + `ml.optim`
+
+Two trainers, the same shape from outside.
+
+**`BackpropTrainer`** — forward the whole network, one global backward, one
+optimizer step per batch:
+
+```cajeta
+Optimizer opt = heap Adam(net.parameters(), 0.01f);
+BackpropTrainer tr = heap BackpropTrainer(net, #opt, Loss.CROSS_ENTROPY, 1.0f);
+TrainHistory hist = tr.fit(heap Batches(x, y, 32, 23L), 12);
+```
+
+`clipNorm <= 0` disables clipping. `stepOn(xb, yb, ps)` is public if you want
+your own loop.
+
+**`SpelaTrainer`** — each layer trains against its **own local objective**;
+there is no backward pass spanning the network. Per-layer losses
+(`lastLossAt(i)`), per-layer freezing (`freezeBackbone`, `setLayerTrainable`),
+truncatable inference (`predictFromLayer`, `accuracyFromLayer`). Configure via
+`SpelaConfig(numClasses)`; `paperExact()` selects the reference settings.
+
+SPELA also adapts **online, without labels** — opt in with
+`cfg.selfDistill = true`, then `observeUnlabeled(x)` buffers a sample if it
+clears `confidenceThreshold` and `flush()` applies the buffer. Samples below
+the gate are skipped, not guessed, and `skippedCount()` records them. The
+config transfers into the trainer, so the gate is fixed at construction.
+
+Optimizers: `SGD(#params, lr, momentum)`, `Adam(#params, lr)`,
+`AdamW(#params, lr, weightDecay)` (decoupled decay). Schedules are pure
+functions — `stepLr`, `exponentialLr`, `cosineLr`, `warmupCosineLr` — so an LR
+is reproducible from `(base, step)` with no hidden counter.
+
+`Batches(x, y, batchSize, seed)` reshuffles deterministically per epoch via
+`reorder(epoch)` and preserves each sample's row shape (a CNN batch stays 4-D).
+
+`BackpropTrainer.clipByGlobalNorm` follows torch's `clip_grad_norm_`: one
+global L2 norm, one shared scale factor, returning the pre-clip norm.
+
+## Checkpoints and LoRA — `ml.io`
+
+```cajeta
+ArrayList<String> missing = Checkpoints.load(model, "model.safetensors", strict);
+Checkpoints.save(model, "out.safetensors");
+```
+
+**Prefer safetensors**, for a security reason rather than a taste one: reading
+it cannot execute anything — a header length, a JSON header, raw tensor bytes.
+F16/BF16 widen to f32 exactly on load; the f32 round trip is bit-stable.
+
+`PtReader` reads torch `.pt` (a ZIP holding a pickle) through the ZIP **central
+directory**, with an **allowlisted** unpickler that refuses anything outside the
+tensor-rebuilding vocabulary rather than skipping it. Compressed entries are
+refused. Writing `.pt` is not supported.
+
+`Checkpoints.transposeLinearWeights(sd)` converts torch's `(out, in)` dense
+weights to this library's `(in, out)`. With `strict=false`, `load` returns the
+unmatched names — check the return, or a non-strict load is indistinguishable
+from a successful one.
+
+**LoRA**: `LoraLinear(in, out, rank, alpha, seed)` and the
+`MultiheadAttention(embed, heads, rank, alpha, seed)` overload. `B` is
+zero-initialized, so the adapter is exactly a no-op before training. Freezing is
+**explicit** — call `freezeBase()` / `freezeBaseProjections()`; construction
+alone leaves the base trainable. `merge()` folds `A·B` into the base weight and
+refuses a second merge.

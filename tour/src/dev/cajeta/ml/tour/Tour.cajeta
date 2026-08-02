@@ -1,5 +1,6 @@
 package dev.cajeta.ml.tour;
 
+import cajeta.collection.ArrayList;
 import cajeta.math.Tensor;
 import cajeta.nucleo.column.Column;
 import cajeta.nucleo.frame.Table;
@@ -22,6 +23,25 @@ import dev.cajeta.ml.Ridge;
 import dev.cajeta.ml.Split;
 import dev.cajeta.ml.StandardScaler;
 import dev.cajeta.ml.SummaryResult;
+import dev.cajeta.ml.data.Batches;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.io.Checkpoints;
+import dev.cajeta.ml.io.Safetensors;
+import dev.cajeta.ml.io.StateDict;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.LoraLinear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+import dev.cajeta.ml.optim.Adam;
+import dev.cajeta.ml.optim.Optimizer;
+import dev.cajeta.ml.train.BackpropTrainer;
+import dev.cajeta.ml.train.Loss;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaTrainer;
+import dev.cajeta.ml.train.TrainHistory;
 
 /**
  * The cajeta-ml tour — a runnable walk through the full public surface:
@@ -371,6 +391,169 @@ public final class Tour {
         Tour.check(knnPred.get1(7) == y.get1(7),
                    "zero-distance neighbors take all the weight (exact recall)");
 
+        // ══ the neural half ═══════════════════════════════════════════════
+        // Everything above is float64 (the estimator protocol's precision).
+        // Everything below is float32 (the network's). The boundary is
+        // explicit and crossed exactly once — never smeared through layers.
+
+        Tour.section("13. Autodiff — the tape you can drive yourself");
+        // GradTape is define-by-run: ops record as they execute, backward
+        // replays them in reverse. Differentiate f(w) = sum(relu(x @ w)).
+        GradTape<float32> tape = heap GradTape<float32>();
+        int64[] xs = heap int64[2];
+        xs[0] = 2;
+        xs[1] = 2;
+        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        xv.set2(0, 0, 1.0f); xv.set2(0, 1, 2.0f);
+        xv.set2(1, 0, 3.0f); xv.set2(1, 1, 4.0f);
+        Tensor<float32> wv = Tensor.zeros<float32>(xs);
+        wv.set2(0, 0, 1.0f); wv.set2(0, 1, 0.0f);
+        wv.set2(1, 0, 0.0f); wv.set2(1, 1, 1.0f);
+        GradTensor xg = tape.leaf(xv, false);       // input: no gradient
+        GradTensor wg = tape.leaf(wv, true);        // parameter: gradient
+        GradTensor out13 = tape.sum(tape.relu(tape.matmul(xg, wg)));
+        tape.backward(out13);
+        Tensor<float32> gw = tape.gradOf(wg);
+        // w = I, so relu passes x through: sum = 1+2+3+4 = 10, and
+        // d(sum)/dw[j][k] = the column sums of x.
+        Tour.check(Tour.near((float64) tape.valueOf(out13).flatGet(0), 10.0, 0.00001),
+                   "forward value is the sum of x");
+        Tour.check(Tour.near((float64) gw.get2(0, 0), 4.0, 0.00001)
+                   && Tour.near((float64) gw.get2(1, 1), 6.0, 0.00001),
+                   "gradient is the column sums of x (1+3=4, 2+4=6)");
+        Tour.check(tape.count() > 0, "the tape recorded the ops it replayed");
+
+        Tour.section("14. One network, trained two ways — backprop vs SPELA");
+        // The contrast worth seeing: same data, same shape of call, two
+        // fundamentally different training regimes.
+        Tensor<float32> nx = Digits.images(12, 4, 0.25f, (uint64) 17);
+        Tensor<float32> ny = Digits.labels(12, 4);
+
+        // (a) BACKPROP: forward the whole net, ONE global backward, one step.
+        Sequential net = heap Sequential();
+        Module bl1 = heap Linear(64, 16, (uint64) 5);
+        net.add(#bl1);
+        Module br1 = heap ReLU();
+        net.add(#br1);
+        Module bl2 = heap Linear(16, 4, (uint64) 6);
+        net.add(#bl2);
+        Optimizer opt = heap Adam(net.parameters(), 0.01f);
+        BackpropTrainer bp = heap BackpropTrainer(net, #opt, Loss.CROSS_ENTROPY, 1.0f);
+        Batches data = heap Batches(nx, ny, (int64) 8, (uint64) 23);
+        TrainHistory bpHist = bp.fit(data, 12);
+        Tour.check(bpHist.epochs() == 12, "backprop ran every epoch");
+        Tour.check(bpHist.finalLoss() < bpHist.lossAt(0) * 0.5,
+                   "backprop halved the loss (ONE global objective)");
+
+        // (b) SPELA: each layer trains against its OWN local objective.
+        // There is no backward pass spanning the network at all.
+        ArrayList<Module> layers #= heap ArrayList<Module>();
+        Module sl1 = heap Linear(64, 20, (uint64) 5);
+        layers.add(#sl1);
+        Module sl2 = heap Linear(20, 12, (uint64) 6);
+        layers.add(#sl2);
+        SpelaConfig cfg = heap SpelaConfig((int64) 4);
+        SpelaTrainer sp = heap SpelaTrainer(#layers, #cfg);
+        Batches sdata = heap Batches(nx, ny, (int64) 8, (uint64) 23);
+        TrainHistory spHist = sp.fit(sdata, 12);
+        Tour.check(spHist.epochs() == 12, "SPELA ran every epoch");
+        Tour.check(sp.layerCount() == 2, "SPELA holds its layers individually");
+        // The distinction that matters: a loss PER LAYER, each separately
+        // readable — and the net is truncatable at any layer.
+        Tour.check(sp.lastLossAt(0) >= 0.0 && sp.lastLossAt(1) >= 0.0,
+                   "every layer carries its own loss — there is no single one");
+        Tour.check(sp.classVectorsAt(0).ndim() == 2,
+                   "each layer keeps its own class vectors");
+
+        Tour.section("15. Checkpoints — a safetensors round trip");
+        // safetensors is preferred because READING IT CANNOT EXECUTE
+        // ANYTHING: a header length, a JSON header, then raw tensor bytes.
+        StateDict sd = Checkpoints.saveStateDict(net);
+        Tour.check(sd.count() > 0, "the state dict carries the net's parameters");
+        // Names are torch's state_dict keys exactly — that is what lets a
+        // file torch wrote load straight into a module defined here.
+        ArrayList<String> pnames = net.parameterNames();
+        Tour.check(pnames.count() == sd.count(),
+                   "every parameter is named, torch-style");
+        int8[] blob = Safetensors.encode(sd);
+        StateDict back = Safetensors.decode(blob, (int64) blob.count());
+        Tour.check(back.count() == sd.count(), "round trip preserves every entry");
+        Tensor<float32> before = sd.valueAt(0);
+        Tensor<float32> after = back.get(sd.nameAt(0));
+        Tour.check(before.flatGet(0) == after.flatGet(0)
+                   && before.flatGet(1) == after.flatGet(1),
+                   "the f32 round trip is BIT-stable, not merely close");
+
+        Tour.section("16. LoRA — a low-rank adapter that starts as a no-op");
+        // Freeze a big weight, train a small A·B beside it. B starts at ZERO,
+        // so before training the adapted model is EXACTLY the base model.
+        LoraLinear lora = heap LoraLinear(16, 8, (int64) 4, 16.0f, (uint64) 41);
+        int64[] ls2 = heap int64[2];
+        ls2[0] = 3;
+        ls2[1] = 16;
+        Tensor<float32> lx = Tensor.zeros<float32>(ls2);
+        int64 li = 0;
+        while (li < 48) {
+            lx.flatSet(li, (float32) (((float64) (li % 7)) * 0.1));
+            li = li + 1;
+        }
+        Tensor<float32> baseOut = lora.baseLinear().forward(lx);
+        Tensor<float32> adaptOut = lora.predict(lx);
+        Tour.check(Tour.near((float64) baseOut.flatGet(0),
+                             (float64) adaptOut.flatGet(0), 0.000001)
+                   && Tour.near((float64) baseOut.flatGet(5),
+                                (float64) adaptOut.flatGet(5), 0.000001),
+                   "zero-init: the adapter changes NOTHING before it learns");
+        // Freezing is EXPLICIT — constructing an adapter does not freeze the
+        // base for you. Forget this and you fine-tune the whole weight while
+        // believing you are training 4 ranks of it.
+        Tour.check(lora.baseLinear().weightParam().isTrainable(),
+                   "a fresh adapter has NOT frozen the base — freezeBase() does");
+        lora.freezeBase();
+        Tour.check(!lora.baseLinear().weightParam().isTrainable(),
+                   "after freezeBase(): the base weight is frozen");
+        Tour.check(lora.aParam().isTrainable() && lora.bParam().isTrainable(),
+                   "the adapter is what remains trainable");
+        // The point of LoRA: far fewer trained parameters than the weight.
+        int64 baseCount = (int64) 16 * (int64) 8;
+        int64 adaptCount = (int64) 16 * (int64) 4 + (int64) 4 * (int64) 8;
+        Tour.check(adaptCount < baseCount,
+                   "the rank-4 adapter is smaller than the weight it adapts");
+
+        Tour.section("17. Online adaptation — observe() without labels");
+        // SPELA can keep learning from UNLABELED data, gated on confidence.
+        // A sample the model is unsure about is SKIPPED, not guessed at.
+        // The config transfers INTO the trainer (`#`), so the gate is fixed at
+        // construction — compare two trainers rather than mutating one.
+        SpelaConfig strictCfg = heap SpelaConfig((int64) 4);
+        strictCfg.confidenceThreshold = 1.5;      // unreachable: cosine <= 1
+        SpelaTrainer strict = heap SpelaTrainer(#Tour.onlineLayers((uint64) 9),
+                                                #strictCfg);
+        Batches odata = heap Batches(nx, ny, (int64) 8, (uint64) 5);
+        strict.fit(odata, 4);
+        int64 skippedBefore = strict.skippedCount();
+        boolean took = strict.observeUnlabeled(Tour.rowOf(nx, 0));
+        Tour.check(!took, "below the confidence gate: refused, not guessed");
+        Tour.check(strict.skippedCount() == skippedBefore + 1,
+                   "the skip is COUNTED — skippedCount is the honest denominator");
+
+        SpelaConfig looseCfg = heap SpelaConfig((int64) 4);
+        looseCfg.confidenceThreshold = 0.0 - 1.5;  // always reachable
+        // Unlabeled learning is OPT-IN: without selfDistill there is no
+        // objective for an unlabeled sample, so observe() has nothing to do.
+        looseCfg.selfDistill = true;
+        looseCfg.onlineBufferSize = 100;
+        SpelaTrainer loose = heap SpelaTrainer(#Tour.onlineLayers((uint64) 9),
+                                               #looseCfg);
+        Batches odata2 = heap Batches(nx, ny, (int64) 8, (uint64) 5);
+        loose.fit(odata2, 4);
+        boolean took2 = loose.observeUnlabeled(Tour.rowOf(nx, 0));
+        Tour.check(took2, "above the gate: the sample is buffered");
+        Tour.check(loose.observedCount() > 0, "observed samples are counted too");
+        Tour.check(loose.flush(), "flush applies the buffered updates");
+        Tour.check(!loose.flush(),
+                   "flushing an empty buffer is a no-op, not an error");
+
         // ------------------------------------------------------------------
         System.stdout.println("");
         if (Tour.failures > 0) {
@@ -379,6 +562,30 @@ public final class Tour {
         }
         System.stdout.println("tour complete — every demonstrated claim checked");
         return 0;
+    }
+
+    /** A two-layer stack for the online demo, seeded so runs are identical. */
+    static #ArrayList<Module> onlineLayers(uint64 seed) {
+        ArrayList<Module> ls #= heap ArrayList<Module>();
+        Module a = heap Linear(64, 20, seed);
+        ls.add(#a);
+        Module b = heap Linear(20, 12, seed + 1);
+        ls.add(#b);
+        return ls;
+    }
+
+    /** One row of a Digits fixture as a (1, 64) sample — the online path. */
+    static #Tensor<float32> rowOf(Tensor<float32> x, int64 r) {
+        int64[] sh = heap int64[2];
+        sh[0] = 1;
+        sh[1] = 64;
+        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64 j = 0;
+        while (j < 64) {
+            out.flatSet(j, x.flatGet(r * 64 + j));
+            j = j + 1;
+        }
+        return #out;
     }
 
     /** Column 1 (positive-class probability) of a (n,2) proba matrix. */

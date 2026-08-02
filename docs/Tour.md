@@ -52,3 +52,41 @@ The dataset is a deterministic quadratic — `y = 2 + t − 1.5t² ± 0.01` over
     centers; `score` = negative inertia, sklearn's convention) and
     distance-weighted kNN's zero-distance rule (a training row predicts
     its own target exactly).
+
+---
+
+Sections 13–17 cross into the neural half. The precision changes with them:
+everything above is `float64`, everything below `float32`, and the fixture
+becomes `Digits` — a deterministic 4-class, 64-feature synthetic set.
+
+13. **Autodiff.** `GradTape` driven directly, with a case whose answer is
+    checkable by hand: `f(w) = sum(relu(x @ w))` at `w = I` forwards to the
+    sum of `x` (10) and backwards to `x`'s column sums (4 and 6). The tape is
+    define-by-run — the ops record as they execute and `backward` replays
+    them in reverse.
+14. **One network, two training regimes.** The contrast worth seeing.
+    `BackpropTrainer` forwards the whole net, takes ONE global backward and
+    steps — the tour checks the loss halved. `SpelaTrainer` trains each layer
+    against its own local objective with no backward pass spanning the
+    network at all, so there is no single loss to report: the tour reads
+    `lastLossAt(0)` and `lastLossAt(1)` separately, and each layer's own
+    class vectors. Same data, same shape of call, fundamentally different
+    regimes.
+15. **Checkpoints.** A safetensors round trip: `saveStateDict` → `encode` →
+    `decode`, checked **bit**-stable rather than merely close, with the
+    parameter names confirmed torch-shaped (which is what lets a file torch
+    wrote load into a module defined here). Safetensors is preferred because
+    reading it cannot execute anything.
+16. **LoRA.** Zero-init means the adapter is *exactly* a no-op before it
+    learns — the tour checks the adapted forward equals the base forward.
+    Then the trap: a freshly constructed adapter has a **trainable** base.
+    The tour asserts that, calls `freezeBase()`, and asserts the freeze —
+    because skipping that call fine-tunes the whole weight while looking
+    like LoRA.
+17. **Online adaptation.** `observeUnlabeled` on a strict trainer refuses a
+    sample below the confidence gate and *counts* the refusal — nothing is
+    pseudo-labeled. A second trainer with the gate lowered and
+    `selfDistill` enabled accepts, buffers, and flushes it; flushing an
+    empty buffer is a no-op rather than an error. Two trainers rather than
+    one because the config transfers into the trainer, so the gate is fixed
+    at construction.
