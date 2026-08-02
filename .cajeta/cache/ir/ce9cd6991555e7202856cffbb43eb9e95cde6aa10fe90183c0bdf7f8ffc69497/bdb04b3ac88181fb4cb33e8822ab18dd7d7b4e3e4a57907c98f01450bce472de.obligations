@@ -1,3 +1,0 @@
-cajeta.math.Tensor<?>
-cajeta.math.Tensor<?>::shapeOf(cajeta.math.Tensor<float32>)<float32>
-cajeta.math.Tensor<?>::zeros(int64[])<float32>

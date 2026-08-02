@@ -1,8 +1,0 @@
-cajeta.math.Storage<float32>
-cajeta.math.Tensor<? extends cajeta.lang.Numeric>
-cajeta.math.Tensor<?>
-cajeta.math.Tensor<?>::add(cajeta.math.Tensor<float32>,cajeta.math.Tensor<float32>)<float32,float32>
-cajeta.math.Tensor<?>::add(cajeta.math.Tensor<float32>,cajeta.math.Tensor<float32>)<float32>
-cajeta.math.Tensor<?>::matmul(cajeta.math.Tensor<float32>,cajeta.math.Tensor<float32>)<float32>
-cajeta.math.Tensor<?>::zeros(int64[])<float32>
-cajeta.math.Tensor<float32>
