@@ -45,7 +45,7 @@ env:
   # so building against it proves the two copies are not both live. It also
   # carries the bounded-method-template fix that GradTape<E extends Floating>
   # needs, on top of v0.13.0's nucleo.sparse and codegen fixes.
-  CAJETA_VERSION: v0.14.1
+  CAJETA_VERSION: v0.15.0
 
 jobs:
   build-test:
