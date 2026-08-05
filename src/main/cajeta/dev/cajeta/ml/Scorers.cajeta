@@ -21,6 +21,10 @@ public final class Scorers {
             Tensor<float64> pred = est.predict(x);
             return Metrics.f1(y, pred);
         }
+        if (metric.equals("r2")) {
+            Tensor<float64> pred = est.predict(x);
+            return Metrics.r2(y, pred);
+        }
         if (metric.equals("rocAuc")) {
             // Concrete downcasts, not `instanceof ProbClassifier pc`: a
             // generic-returning call through an iface→iface downcast
@@ -47,7 +51,7 @@ public final class Scorers {
                 + "(ProbClassifier)");
         }
         throw heap MlException("Scorers: unknown metric \"" + metric
-            + "\" — supported: accuracy, f1, rocAuc");
+            + "\" — supported: accuracy, f1, rocAuc, r2");
     }
 
     static float64 aucFromProba(Tensor<float64> y, Tensor<float64> pr) {

@@ -1,0 +1,17 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.KernelRegressor;
+import dev.cajeta.ml.Predictor;
+
+/** Kernel-regressor factory for §9.4's bandwidth search: params[0] = h. */
+public final class KernelFactory implements EstimatorFactory {
+
+    public KernelFactory() { return; }
+
+    public #Predictor create(Tensor<float64> params) {
+        Predictor p = heap KernelRegressor("gaussian", params.flatGet(0));
+        return #p;
+    }
+}
