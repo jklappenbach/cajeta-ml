@@ -1,0 +1,403 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.ClassificationReport;
+import dev.cajeta.ml.ForwardSelector;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.Pipeline;
+import dev.cajeta.ml.PrCurve;
+import dev.cajeta.ml.Predictor;
+
+/**
+ * ml-classification-gaps plan Unit 8 — reporting, curves, feature
+ * selection (spec §10). Numeric pins from sklearn 1.9.0
+ * (tools/fixtures/gen_reporting.py): `precision_recall_curve` /
+ * `average_precision_score` / `classification_report` on fixed fixtures,
+ * and `SequentialFeatureSelector` agreeing on the informative pair {1, 3}
+ * of the lattice fixture.
+ */
+public class ReportingTest {
+
+    public ReportingTest() { return; }
+
+    static boolean near(float64 a, float64 b, float64 tol) {
+        float64 d = a - b;
+        if (d < 0.0) {
+            d = -d;
+        }
+        return d < tol;
+    }
+
+    /** Binary curve fixture: 12 rows, one tied score pair (0.60). */
+    static #Tensor<float64> curveY() {
+        float64[] d = heap float64[12];
+        d[0] = 0.0; d[1] = 1.0; d[2] = 1.0; d[3] = 0.0;
+        d[4] = 1.0; d[5] = 0.0; d[6] = 1.0; d[7] = 0.0;
+        d[8] = 1.0; d[9] = 0.0; d[10] = 0.0; d[11] = 1.0;
+        int64[] sh = heap int64[1];
+        sh[0] = 12;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> curveS() {
+        float64[] d = heap float64[12];
+        d[0] = 0.15; d[1] = 0.85; d[2] = 0.60; d[3] = 0.35;
+        d[4] = 0.70; d[5] = 0.20; d[6] = 0.60; d[7] = 0.72;
+        d[8] = 0.90; d[9] = 0.10; d[10] = 0.65; d[11] = 0.75;
+        int64[] sh = heap int64[1];
+        sh[0] = 12;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    // §10.1 / 8.1.1 — the PR curve matches sklearn's
+    // `precision_recall_curve` point for point, including the endpoint
+    // convention: a final (precision=1, recall=0) point with NO threshold,
+    // so points() == thresholds() + 1.
+    @Test
+    public void prCurveMatchesSklearnIncludingEndpoints() {
+        Tensor<float64> y = curveY();
+        Tensor<float64> s = curveS();
+        PrCurve c = Metrics.precisionRecallCurve(y, s);
+
+        Assert.equals(c.points(), (int64) 12);
+        Assert.equals(c.thresholds(), (int64) 11);
+
+        float64[] ep = heap float64[12];
+        ep[0] = 0.5; ep[1] = 0.5454545454545454; ep[2] = 0.6;
+        ep[3] = 0.6666666666666666; ep[4] = 0.75;
+        ep[5] = 0.6666666666666666; ep[6] = 0.8; ep[7] = 0.75;
+        ep[8] = 1.0; ep[9] = 1.0; ep[10] = 1.0; ep[11] = 1.0;
+        float64[] er = heap float64[12];
+        er[0] = 1.0; er[1] = 1.0; er[2] = 1.0; er[3] = 1.0; er[4] = 1.0;
+        er[5] = 0.6666666666666666; er[6] = 0.6666666666666666;
+        er[7] = 0.5; er[8] = 0.5; er[9] = 0.3333333333333333;
+        er[10] = 0.16666666666666666; er[11] = 0.0;
+        float64[] et = heap float64[11];
+        et[0] = 0.1; et[1] = 0.15; et[2] = 0.2; et[3] = 0.35; et[4] = 0.6;
+        et[5] = 0.65; et[6] = 0.7; et[7] = 0.72; et[8] = 0.75;
+        et[9] = 0.85; et[10] = 0.9;
+
+        int64 i = 0;
+        while (i < 12) {
+            Assert.isTrue(near(c.precisionAt(i), ep[i], 0.000000001));
+            Assert.isTrue(near(c.recallAt(i), er[i], 0.000000001));
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 11) {
+            Assert.isTrue(near(c.thresholdAt(i), et[i], 0.000000001));
+            i = i + 1;
+        }
+
+        // Reading past the last threshold is loud, not silent.
+        Assert.assertThrows(() -> {
+            Tensor<float64> y2 = curveY();
+            Tensor<float64> s2 = curveS();
+            PrCurve c2 = Metrics.precisionRecallCurve(y2, s2);
+            float64 t = c2.thresholdAt((int64) 11);
+        });
+    }
+
+    // §10.2 / 8.1.2 — average precision matches
+    // sklearn `average_precision_score`.
+    @Test
+    public void averagePrecisionMatchesSklearn() {
+        Tensor<float64> y = curveY();
+        Tensor<float64> s = curveS();
+        float64 ap = Metrics.averagePrecision(y, s);
+        Assert.isTrue(near(ap, 0.8833333333333333, 0.000000001));
+    }
+
+    /** 3-class report fixture (12 rows). */
+    static #Tensor<float64> repT() {
+        float64[] d = heap float64[12];
+        d[0] = 0.0; d[1] = 0.0; d[2] = 0.0; d[3] = 0.0;
+        d[4] = 1.0; d[5] = 1.0; d[6] = 1.0;
+        d[7] = 2.0; d[8] = 2.0; d[9] = 2.0; d[10] = 2.0; d[11] = 2.0;
+        int64[] sh = heap int64[1];
+        sh[0] = 12;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> repP() {
+        float64[] d = heap float64[12];
+        d[0] = 0.0; d[1] = 0.0; d[2] = 1.0; d[3] = 2.0;
+        d[4] = 1.0; d[5] = 1.0; d[6] = 0.0;
+        d[7] = 2.0; d[8] = 2.0; d[9] = 2.0; d[10] = 1.0; d[11] = 2.0;
+        int64[] sh = heap int64[1];
+        sh[0] = 12;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    // §10.3 / 8.1.3 — the classification report carries per-class
+    // precision/recall/F1/support plus macro and weighted averages, in
+    // sklearn's shape, matching `classification_report` numerically.
+    @Test
+    public void classificationReportMatchesSklearnShape() {
+        Tensor<float64> yt = repT();
+        Tensor<float64> yp = repP();
+        ClassificationReport r =
+            Metrics.classificationReport(yt, yp, (int64) 3);
+
+        Assert.equals(r.classes(), (int64) 3);
+        float64 tol = 0.000000001;
+
+        Assert.isTrue(near(r.precision((int64) 0), 0.6666666666666666, tol));
+        Assert.isTrue(near(r.recall((int64) 0), 0.5, tol));
+        Assert.isTrue(near(r.f1((int64) 0), 0.5714285714285714, tol));
+        Assert.equals(r.support((int64) 0), (int64) 4);
+
+        Assert.isTrue(near(r.precision((int64) 1), 0.5, tol));
+        Assert.isTrue(near(r.recall((int64) 1), 0.6666666666666666, tol));
+        Assert.isTrue(near(r.f1((int64) 1), 0.5714285714285714, tol));
+        Assert.equals(r.support((int64) 1), (int64) 3);
+
+        Assert.isTrue(near(r.precision((int64) 2), 0.8, tol));
+        Assert.isTrue(near(r.recall((int64) 2), 0.8, tol));
+        Assert.isTrue(near(r.f1((int64) 2), 0.8, tol));
+        Assert.equals(r.support((int64) 2), (int64) 5);
+
+        Assert.isTrue(near(r.macroPrecision(), 0.6555555555555556, tol));
+        Assert.isTrue(near(r.macroRecall(), 0.6555555555555556, tol));
+        Assert.isTrue(near(r.macroF1(), 0.6476190476190476, tol));
+
+        Assert.isTrue(near(r.weightedPrecision(), 0.6805555555555555, tol));
+        Assert.isTrue(near(r.weightedRecall(), 0.6666666666666666, tol));
+        Assert.isTrue(near(r.weightedF1(), 0.6666666666666666, tol));
+
+        Assert.equals(r.totalSupport(), (int64) 12);
+    }
+
+    /**
+     * The forward-selection lattice fixture (gen_reporting.py): 30 x 5,
+     * features 1 and 3 informative, the rest ±0.01 lattice noise;
+     * y = 1 when x1 > x3. sklearn's SequentialFeatureSelector picks {1, 3}.
+     */
+    static #Tensor<float64> latX() {
+        float64[] d = heap float64[150];
+        int64 i = 0;
+        while (i < 30) {
+            int64 j = 0;
+            while (j < 5) {
+                d[i * 5 + j] =
+                    ((float64) ((i * (2 + j) + j * 3) % 11) * 0.2 - 1.0)
+                    * 0.01;
+                j = j + 1;
+            }
+            d[i * 5 + 1] = (float64) ((3 * i + 5) % 13) * 0.3 - 1.8;
+            d[i * 5 + 3] = (float64) ((7 * i + 2) % 13) * 0.3 - 1.8;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 30;
+        sh[1] = 5;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> latY() {
+        Tensor<float64> x = latX();
+        float64[] d = heap float64[30];
+        int64 i = 0;
+        while (i < 30) {
+            if (x.get2(i, 1) - x.get2(i, 3) > 0.0) {
+                d[i] = 1.0;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = 30;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    // §10.4 / 8.1.4 — forward selection adds features greedily by
+    // cross-validated score and finds the informative pair, agreeing with
+    // sklearn's SequentialFeatureSelector support {1, 3}.
+    @Test
+    public void forwardSelectionFindsInformativePair() {
+        Tensor<float64> x = latX();
+        Tensor<float64> y = latY();
+        float64[] pd = heap float64[2];
+        pd[0] = 1.0;
+        pd[1] = 0.00000001;
+        int64[] ps = heap int64[1];
+        ps[0] = 2;
+        ForwardSelector fs = heap ForwardSelector(heap LogisticCFactory(),
+            Tensor.of<float64>(pd, ps), (int64) 2, (int64) 3, "accuracy",
+            (uint64) 7);
+        fs.fit(x, y);
+        Assert.isTrue(fs.isFitted());
+        Assert.equals(fs.selectedCount(), (int64) 2);
+        Assert.equals(fs.selectedAt((int64) 0), (int64) 1);
+        Assert.equals(fs.selectedAt((int64) 1), (int64) 3);
+    }
+
+    // 8.1.5 — selection is seeded: two runs under the same seed agree
+    // feature for feature.
+    @Test
+    public void forwardSelectionSeededReproducible() {
+        float64[] pd = heap float64[2];
+        pd[0] = 1.0;
+        pd[1] = 0.00000001;
+        int64[] ps = heap int64[1];
+        ps[0] = 2;
+        Tensor<float64> params = Tensor.of<float64>(pd, ps);
+
+        Tensor<float64> x1 = latX();
+        Tensor<float64> y1 = latY();
+        ForwardSelector a = heap ForwardSelector(heap LogisticCFactory(),
+            params.copy(), (int64) 2, (int64) 3, "accuracy", (uint64) 42);
+        a.fit(x1, y1);
+
+        Tensor<float64> x2 = latX();
+        Tensor<float64> y2 = latY();
+        ForwardSelector b = heap ForwardSelector(heap LogisticCFactory(),
+            params.copy(), (int64) 2, (int64) 3, "accuracy", (uint64) 42);
+        b.fit(x2, y2);
+
+        Assert.equals(a.selectedCount(), b.selectedCount());
+        int64 i = 0;
+        while (i < a.selectedCount()) {
+            Assert.equals(a.selectedAt(i), b.selectedAt(i));
+            i = i + 1;
+        }
+    }
+
+    /** Perfectly separable on feature 0 alone; columns 1-2 are noise. */
+    static #Tensor<float64> sepX() {
+        float64[] d = heap float64[72];
+        int64 i = 0;
+        while (i < 24) {
+            float64 side = -1.0;
+            if (i % 2 == 1) {
+                side = 1.0;
+            }
+            d[i * 3] = side * (1.0 + (float64) (i % 5) * 0.2);
+            d[i * 3 + 1] = (float64) ((i * 7) % 11) * 0.002 - 0.01;
+            d[i * 3 + 2] = (float64) ((i * 5) % 9) * 0.002 - 0.008;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 24;
+        sh[1] = 3;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> sepY() {
+        float64[] d = heap float64[24];
+        int64 i = 0;
+        while (i < 24) {
+            if (i % 2 == 1) {
+                d[i] = 1.0;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = 24;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    // 8.1.4 (stop rule) — once the score cannot strictly improve (feature
+    // 0 alone already scores 1.0), selection stops short of the target
+    // count rather than padding with noise features.
+    @Test
+    public void forwardSelectionStopsWithoutImprovement() {
+        Tensor<float64> x = sepX();
+        Tensor<float64> y = sepY();
+        float64[] pd = heap float64[2];
+        pd[0] = 1.0;
+        pd[1] = 0.00000001;
+        int64[] ps = heap int64[1];
+        ps[0] = 2;
+        ForwardSelector fs = heap ForwardSelector(heap LogisticCFactory(),
+            Tensor.of<float64>(pd, ps), (int64) 3, (int64) 3, "accuracy",
+            (uint64) 5);
+        fs.fit(x, y);
+        Assert.equals(fs.selectedCount(), (int64) 1);
+        Assert.equals(fs.selectedAt((int64) 0), (int64) 0);
+    }
+
+    // §10.5 — ForwardSelector is a Transformer: transform picks the
+    // selected columns (ascending original order), fitTransform equals
+    // fit-then-transform, and the selector composes in a Pipeline.
+    @Test
+    public void forwardSelectorComposesAsTransformer() {
+        Tensor<float64> x = latX();
+        Tensor<float64> y = latY();
+        float64[] pd = heap float64[2];
+        pd[0] = 1.0;
+        pd[1] = 0.00000001;
+        int64[] ps = heap int64[1];
+        ps[0] = 2;
+        Tensor<float64> params = Tensor.of<float64>(pd, ps);
+
+        ForwardSelector fs = heap ForwardSelector(heap LogisticCFactory(),
+            params.copy(), (int64) 2, (int64) 3, "accuracy", (uint64) 7);
+        Tensor<float64> ft = fs.fitTransform(x, y);
+        Assert.equals(ft.shapeAt(0), (int64) 30);
+        Assert.equals(ft.shapeAt(1), (int64) 2);
+        Tensor<float64> tx = fs.transform(x);
+        int64 i = 0;
+        while (i < 30) {
+            Assert.isTrue(ft.get2(i, 0) == tx.get2(i, 0));
+            Assert.isTrue(ft.get2(i, 1) == tx.get2(i, 1));
+            // and the columns really are x's columns 1 and 3
+            Assert.isTrue(tx.get2(i, 0) == x.get2(i, 1));
+            Assert.isTrue(tx.get2(i, 1) == x.get2(i, 3));
+            i = i + 1;
+        }
+
+        // Pipeline: select then classify; the chain must be accurate on
+        // the separable-by-{1,3} fixture.
+        ForwardSelector st = heap ForwardSelector(heap LogisticCFactory(),
+            params.copy(), (int64) 2, (int64) 3, "accuracy", (uint64) 7);
+        Predictor lr = heap LogisticRegression(1.0, 0.00000001, (int64) 500);
+        Pipeline pl = Pipeline.of(#st, #lr);
+        pl.fit(x, y);
+        Tensor<float64> pred = pl.predict(x);
+        float64 acc = Metrics.accuracy(y, pred);
+        Assert.isTrue(acc > 0.9);
+    }
+
+    // §12.4 — invalid construction and unfitted use are loud.
+    @Test
+    public void forwardSelectorValidation() {
+        Assert.assertThrows(() -> {
+            float64[] pd = heap float64[2];
+            pd[0] = 1.0;
+            pd[1] = 0.00000001;
+            int64[] ps = heap int64[1];
+            ps[0] = 2;
+            ForwardSelector bad = heap ForwardSelector(
+                heap LogisticCFactory(), Tensor.of<float64>(pd, ps),
+                (int64) 0, (int64) 3, "accuracy", (uint64) 1);
+        });
+        Assert.assertThrows(() -> {
+            Tensor<float64> x = latX();
+            float64[] pd = heap float64[2];
+            pd[0] = 1.0;
+            pd[1] = 0.00000001;
+            int64[] ps = heap int64[1];
+            ps[0] = 2;
+            ForwardSelector un = heap ForwardSelector(
+                heap LogisticCFactory(), Tensor.of<float64>(pd, ps),
+                (int64) 2, (int64) 3, "accuracy", (uint64) 1);
+            Tensor<float64> t = un.transform(x);
+        });
+        // Target count beyond the feature count is rejected at fit.
+        Assert.assertThrows(() -> {
+            Tensor<float64> x = sepX();
+            Tensor<float64> y = sepY();
+            float64[] pd = heap float64[2];
+            pd[0] = 1.0;
+            pd[1] = 0.00000001;
+            int64[] ps = heap int64[1];
+            ps[0] = 2;
+            ForwardSelector big = heap ForwardSelector(
+                heap LogisticCFactory(), Tensor.of<float64>(pd, ps),
+                (int64) 9, (int64) 3, "accuracy", (uint64) 1);
+            big.fit(x, y);
+        });
+    }
+}

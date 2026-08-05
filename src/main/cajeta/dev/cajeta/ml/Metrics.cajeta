@@ -91,7 +91,13 @@ public final class Metrics {
         return (float64) hit / (float64) n;
     }
 
-    /** Confusion matrix `(nClasses, nClasses)`: rows = true class, cols = predicted. */
+    /**
+     * Confusion matrix `(nClasses, nClasses)`: rows = true class, cols =
+     * predicted — sklearn's orientation. NOTE much of the literature draws
+     * the matrix TRANSPOSED (predicted on rows, true on columns); a reader
+     * comparing against a textbook should transpose before comparing (spec
+     * ml-classification-gaps §11.5 — documented, deliberately not changed).
+     */
     public static #Tensor<int64> confusionMatrix(
             Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
         int64[] sh = heap int64[2];
@@ -626,6 +632,149 @@ public final class Metrics {
             return 1.0;
         }
         return r;
+    }
+
+    /**
+     * Precision-recall curve (spec classification-gaps §10.1), matching
+     * sklearn's `precision_recall_curve` exactly: one point per DISTINCT
+     * score, ascending — precision and recall of predicting positive at
+     * `score >= threshold` — plus the terminal (precision=1, recall=0)
+     * point that has no threshold. Needs at least one positive label.
+     */
+    public static #PrCurve precisionRecallCurve(Tensor<float64> yTrue,
+                                                Tensor<float64> scores) {
+        int64 n = yTrue.shapeAt(0);
+        int64 nPos = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (yTrue.get1(i) == 1.0) { nPos = nPos + 1; }
+            i = i + 1;
+        }
+        if (nPos == 0) {
+            throw heap MlException("Metrics.precisionRecallCurve: needs at "
+                + "least one positive (1.0) label");
+        }
+        // Distinct thresholds, ascending (insertion sort + dedup; n is
+        // curve-sized, not dataset-sized concerns).
+        float64[] st = heap float64[n];
+        i = 0;
+        while (i < n) {
+            st[i] = scores.get1(i);
+            i = i + 1;
+        }
+        i = 1;
+        while (i < n) {
+            float64 v = st[i];
+            int64 j = i - 1;
+            boolean walk = true;
+            while (walk) {
+                if (j >= 0 && st[j] > v) {
+                    st[j + 1] = st[j];
+                    j = j - 1;
+                } else {
+                    walk = false;
+                }
+            }
+            st[j + 1] = v;
+            i = i + 1;
+        }
+        int64 m = 0;
+        i = 0;
+        while (i < n) {
+            if (m == 0 || st[i] != st[m - 1]) {
+                st[m] = st[i];
+                m = m + 1;
+            }
+            i = i + 1;
+        }
+        int64[] cs = heap int64[1];
+        cs[0] = m + 1;
+        int64[] ts = heap int64[1];
+        ts[0] = m;
+        Tensor<float64> prec = Tensor.zeros<float64>(cs);
+        Tensor<float64> rec = Tensor.zeros<float64>(cs);
+        Tensor<float64> thr = Tensor.zeros<float64>(ts);
+        int64 t = 0;
+        while (t < m) {
+            int64 tp = 0;
+            int64 fp = 0;
+            i = 0;
+            while (i < n) {
+                if (scores.get1(i) >= st[t]) {
+                    if (yTrue.get1(i) == 1.0) {
+                        tp = tp + 1;
+                    } else {
+                        fp = fp + 1;
+                    }
+                }
+                i = i + 1;
+            }
+            prec.set1(t, (float64) tp / (float64) (tp + fp));
+            rec.set1(t, (float64) tp / (float64) nPos);
+            thr.set1(t, st[t]);
+            t = t + 1;
+        }
+        prec.set1(m, 1.0);
+        rec.set1(m, 0.0);
+        PrCurve out = heap PrCurve(#prec, #rec, #thr);
+        return #out;
+    }
+
+    /**
+     * Average precision (§10.2, sklearn `average_precision_score`):
+     * `Σ (Rᵢ − Rᵢ₊₁) · Pᵢ` over the curve — the step-function area, never
+     * the interpolated trapezoid.
+     */
+    public static float64 averagePrecision(Tensor<float64> yTrue,
+                                           Tensor<float64> scores) {
+        PrCurve c = Metrics.precisionRecallCurve(yTrue, scores);
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < c.points() - 1) {
+            acc = acc + (c.recallAt(i) - c.recallAt(i + 1))
+                * c.precisionAt(i);
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    /**
+     * Per-class precision/recall/F1/support plus macro and weighted
+     * averages (§10.3) — sklearn's `classification_report` shape. Classes
+     * are the label values `0..nClasses-1`.
+     */
+    public static #ClassificationReport classificationReport(
+            Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
+        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, nClasses);
+        int64[] ks = heap int64[1];
+        ks[0] = nClasses;
+        Tensor<float64> prec = Tensor.zeros<float64>(ks);
+        Tensor<float64> rec = Tensor.zeros<float64>(ks);
+        Tensor<float64> f1 = Tensor.zeros<float64>(ks);
+        Tensor<int64> sup = Tensor.zeros<int64>(ks);
+        int64 total = 0;
+        int64 c = 0;
+        while (c < nClasses) {
+            float64 p = Metrics.precisionOf(cm, c, nClasses);
+            float64 r = Metrics.recallOf(cm, c, nClasses);
+            float64 f = 0.0;
+            if (p + r > 0.0) { f = 2.0 * p * r / (p + r); }
+            prec.set1(c, p);
+            rec.set1(c, r);
+            f1.set1(c, f);
+            int64 rowSum = 0;
+            int64 j = 0;
+            while (j < nClasses) {
+                rowSum = rowSum + cm.get2(c, j);
+                j = j + 1;
+            }
+            sup.set1(c, rowSum);
+            total = total + rowSum;
+            c = c + 1;
+        }
+        ClassificationReport out = heap ClassificationReport(#prec, #rec,
+            #f1, #sup, nClasses, total);
+        return #out;
     }
 
     /** Inertias for seeded K-means fits at k = 1..kMax (§8.5) — the

@@ -1,0 +1,55 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * A precision-recall curve (spec §10.1): one point per distinct score
+ * threshold, ascending, plus sklearn's terminal (precision=1, recall=0)
+ * point — so `points() == thresholds() + 1` and the last point has NO
+ * threshold (`thresholdAt` past `thresholds()-1` throws). This is the
+ * exact shape sklearn's `precision_recall_curve` returns, and it pairs
+ * with the decision-threshold knob (§6.4): the curve is how a threshold
+ * gets chosen.
+ */
+public final class PrCurve {
+
+    private Tensor<float64> precV;   // (m+1,)
+    private Tensor<float64> recV;    // (m+1,)
+    private Tensor<float64> thrV;    // (m,)
+
+    PrCurve(#Tensor<float64> precision, #Tensor<float64> recall,
+            #Tensor<float64> thresholds) {
+        this.precV #= precision;
+        this.recV #= recall;
+        this.thrV #= thresholds;
+        return;
+    }
+
+    /** Curve points, including the terminal (1, 0) point. */
+    public int64 points() {
+        return this.precV.size();
+    }
+
+    /** Distinct thresholds — always `points() - 1`. */
+    public int64 thresholds() {
+        return this.thrV.size();
+    }
+
+    public float64 precisionAt(int64 i) {
+        return this.precV.get1(i);
+    }
+
+    public float64 recallAt(int64 i) {
+        return this.recV.get1(i);
+    }
+
+    /** The score cut producing point `i`; the terminal point has none. */
+    public float64 thresholdAt(int64 i) {
+        if (i < 0 || i >= this.thrV.size()) {
+            throw heap MlException("PrCurve.thresholdAt: the terminal "
+                + "(precision=1, recall=0) point has no threshold — valid "
+                + "indices are 0..thresholds()-1");
+        }
+        return this.thrV.get1(i);
+    }
+}
