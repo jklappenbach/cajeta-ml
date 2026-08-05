@@ -1,10 +1,12 @@
 package dev.cajeta.ml;
 
 import cajeta.math.Tensor;
+import cajeta.math.distance.Metric;
 
 /**
  * k-nearest-neighbors regression (sklearn `KNeighborsRegressor`):
- * brute-force euclidean, `uniform` or `distance` weights (sklearn's
+ * brute-force with any {@link cajeta.math.distance.Metric} (euclidean
+ * default, spec §5.1), `uniform` or `distance` weights (sklearn's
  * zero-distance rule: exact matches take all the weight). Neighbor ties at
  * equal distance break to the LOWEST training index — documented where
  * sklearn's order is an implementation detail; the pinned fixtures are
@@ -14,6 +16,8 @@ public final class KNeighborsRegressor implements Predictor {
 
     private int64 kNeighbors;
     private boolean distanceWeights;
+    private Metric metricM;             // null-free: hasMetric gates
+    private boolean hasMetric;
     private Tensor<float64> trainX;     // (n, p)
     private Tensor<float64> trainY;     // (n,)
     private boolean fitted;
@@ -24,6 +28,21 @@ public final class KNeighborsRegressor implements Predictor {
         }
         this.kNeighbors = k;
         this.distanceWeights = distanceWeights;
+        this.hasMetric = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** Any stdlib or caller-defined metric through the §5.6 seam. */
+    public KNeighborsRegressor(int64 k, boolean distanceWeights,
+                               #Metric metric) {
+        if (k < 1) {
+            throw heap MlException("KNeighborsRegressor: k must be >= 1");
+        }
+        this.kNeighbors = k;
+        this.distanceWeights = distanceWeights;
+        this.metricM #= metric;
+        this.hasMetric = true;
         this.fitted = false;
         return;
     }
@@ -51,6 +70,60 @@ public final class KNeighborsRegressor implements Predictor {
 
     public boolean isFitted() {
         return this.fitted;
+    }
+
+    /**
+     * The metric-agnostic seam (§5.6): k nearest training indices of query
+     * row `qi` under `m`, nearest first, TRUE distances in `outDist`.
+     * Equal distances break to the lowest training index (strict `<`).
+     */
+    static void nearestWith(Tensor<float64> tx, Tensor<float64> q, int64 qi,
+                            int64 k, Metric m, int64[] outIdx,
+                            float64[] outDist) {
+        int64 n = tx.shapeAt(0);
+        int64 p = tx.shapeAt(1);
+        int64[] vs = heap int64[1];
+        vs[0] = p;
+        Tensor<float64> qv = Tensor.zeros<float64>(vs);
+        Tensor<float64> tv = Tensor.zeros<float64>(vs);
+        int64 j = 0;
+        while (j < p) {
+            qv.flatSet(j, q.get2(qi, j));
+            j = j + 1;
+        }
+        float64[] dist = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            j = 0;
+            while (j < p) {
+                tv.flatSet(j, tx.get2(i, j));
+                j = j + 1;
+            }
+            dist[i] = m.distance(tv, qv);
+            i = i + 1;
+        }
+        boolean[] used = heap boolean[n];
+        int64 s = 0;
+        while (s < k) {
+            int64 best = -1;
+            float64 bd = 0.0;
+            i = 0;
+            while (i < n) {
+                if (!used[i]) {
+                    float64 dv = dist[i];
+                    if (best < 0 || dv < bd) {
+                        bd = dv;
+                        best = i;
+                    }
+                }
+                i = i + 1;
+            }
+            used[best] = true;
+            outIdx[s] = best;
+            outDist[s] = bd;
+            s = s + 1;
+        }
+        return;
     }
 
     /** The k nearest training indices of query row `qi`, nearest first. */
@@ -101,7 +174,19 @@ public final class KNeighborsRegressor implements Predictor {
         float64[] out = heap float64[n];
         int64 i = 0;
         while (i < n) {
-            KNeighborsRegressor.nearest(this.trainX, x, i, k, idx, d2);
+            if (this.hasMetric) {
+                // The seam returns TRUE distances; square them so the
+                // d2-based weighting below stays one code path.
+                KNeighborsRegressor.nearestWith(this.trainX, x, i, k,
+                    this.metricM, idx, d2);
+                int64 s0 = 0;
+                while (s0 < k) {
+                    d2[s0] = d2[s0] * d2[s0];
+                    s0 = s0 + 1;
+                }
+            } else {
+                KNeighborsRegressor.nearest(this.trainX, x, i, k, idx, d2);
+            }
             if (!this.distanceWeights) {
                 float64 acc = 0.0;
                 int64 s = 0;

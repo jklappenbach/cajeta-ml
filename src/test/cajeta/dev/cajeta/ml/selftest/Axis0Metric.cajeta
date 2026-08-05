@@ -1,0 +1,19 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import cajeta.math.distance.Metric;
+
+/** A metric defined outside the library (KnnMetricTest 3.1.5): distance on
+ *  axis 0 only — plugs into the k-NN seam with no estimator change. */
+public final class Axis0Metric implements Metric {
+
+    public Axis0Metric() { return; }
+
+    public float64 distance(Tensor<float64> a, Tensor<float64> b) {
+        float64 d = a.flatGet(0) - b.flatGet(0);
+        if (d < 0.0) {
+            d = -d;
+        }
+        return d;
+    }
+}

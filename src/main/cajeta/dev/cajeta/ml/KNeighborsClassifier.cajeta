@@ -1,16 +1,22 @@
 package dev.cajeta.ml;
 
 import cajeta.math.Tensor;
+import cajeta.math.distance.Metric;
 
 /**
- * k-nearest-neighbors classification (sklearn `KNeighborsClassifier`,
- * uniform weights): brute-force euclidean, vote by neighbor count,
- * `predictProba` = vote fractions, argmax ties to the LOWEST label
- * (sklearn's argmax does the same). Integer labels `0..K-1`.
+ * k-nearest-neighbors classification (sklearn `KNeighborsClassifier`):
+ * brute-force with any {@link cajeta.math.distance.Metric} (euclidean
+ * default, spec §5.1), `uniform` or `distance` vote weights (§5.3 —
+ * sklearn's zero-distance rule: exact matches take all the weight, §5.4).
+ * `predictProba` = (weighted) vote fractions, argmax ties to the LOWEST
+ * label (§5.5, sklearn's argmax does the same). Integer labels `0..K-1`.
  */
 public final class KNeighborsClassifier implements Predictor {
 
     private int64 kNeighbors;
+    private boolean distanceWeights;
+    private Metric metricM;             // hasMetric gates every use
+    private boolean hasMetric;
     private Tensor<float64> trainX;     // (n, p)
     private Tensor<float64> trainY;     // (n,)
     private int64 nClasses;
@@ -21,6 +27,47 @@ public final class KNeighborsClassifier implements Predictor {
             throw heap MlException("KNeighborsClassifier: k must be >= 1");
         }
         this.kNeighbors = k;
+        this.distanceWeights = false;
+        this.hasMetric = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** Distance-weighted votes under the default euclidean (§5.3). */
+    public KNeighborsClassifier(int64 k, boolean distanceWeights) {
+        if (k < 1) {
+            throw heap MlException("KNeighborsClassifier: k must be >= 1");
+        }
+        this.kNeighbors = k;
+        this.distanceWeights = distanceWeights;
+        this.hasMetric = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** Any stdlib or caller-defined metric through the §5.6 seam. */
+    public KNeighborsClassifier(int64 k, #Metric metric) {
+        if (k < 1) {
+            throw heap MlException("KNeighborsClassifier: k must be >= 1");
+        }
+        this.kNeighbors = k;
+        this.distanceWeights = false;
+        this.metricM #= metric;
+        this.hasMetric = true;
+        this.fitted = false;
+        return;
+    }
+
+    /** Metric + distance weighting together. */
+    public KNeighborsClassifier(int64 k, #Metric metric,
+                                boolean distanceWeights) {
+        if (k < 1) {
+            throw heap MlException("KNeighborsClassifier: k must be >= 1");
+        }
+        this.kNeighbors = k;
+        this.distanceWeights = distanceWeights;
+        this.metricM #= metric;
+        this.hasMetric = true;
         this.fitted = false;
         return;
     }
@@ -86,14 +133,61 @@ public final class KNeighborsClassifier implements Predictor {
         Tensor<float64> out = Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
-            KNeighborsRegressor.nearest(this.trainX, x, i, k, idx, d2);
-            int64 s = 0;
-            while (s < k) {
-                int64 ix = idx[s];
-                int64 lab = (int64) this.trainY.get1(ix);
-                out.flatSet(i * kc + lab,
-                    out.get2(i, lab) + 1.0 / (float64) k);
-                s = s + 1;
+            if (this.hasMetric) {
+                KNeighborsRegressor.nearestWith(this.trainX, x, i, k,
+                    this.metricM, idx, d2);
+                int64 s0 = 0;
+                while (s0 < k) {
+                    d2[s0] = d2[s0] * d2[s0];
+                    s0 = s0 + 1;
+                }
+            } else {
+                KNeighborsRegressor.nearest(this.trainX, x, i, k, idx, d2);
+            }
+            if (!this.distanceWeights) {
+                int64 s = 0;
+                while (s < k) {
+                    int64 ix = idx[s];
+                    int64 lab = (int64) this.trainY.get1(ix);
+                    out.flatSet(i * kc + lab,
+                        out.get2(i, lab) + 1.0 / (float64) k);
+                    s = s + 1;
+                }
+            } else {
+                // §5.4: exact matches take all the weight, uniformly
+                // among themselves (the regressor's rule).
+                int64 zeros = 0;
+                int64 s = 0;
+                while (s < k) {
+                    if (d2[s] == 0.0) {
+                        zeros = zeros + 1;
+                    }
+                    s = s + 1;
+                }
+                float64 wsum = 0.0;
+                float64[] w = heap float64[k];
+                s = 0;
+                while (s < k) {
+                    if (zeros > 0) {
+                        if (d2[s] == 0.0) {
+                            w[s] = 1.0;
+                        } else {
+                            w[s] = 0.0;
+                        }
+                    } else {
+                        w[s] = 1.0 / Math.sqrt(d2[s]);
+                    }
+                    wsum = wsum + w[s];
+                    s = s + 1;
+                }
+                s = 0;
+                while (s < k) {
+                    int64 ix = idx[s];
+                    int64 lab = (int64) this.trainY.get1(ix);
+                    out.flatSet(i * kc + lab,
+                        out.get2(i, lab) + w[s] / wsum);
+                    s = s + 1;
+                }
             }
             i = i + 1;
         }

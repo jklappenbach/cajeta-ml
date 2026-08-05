@@ -101,6 +101,27 @@ Neighbor ties at equal distance break to the lowest training index
 - `Split.crossValScore(est, x, y, kfold)` — per-fold `score()` of any
   `Predictor` (refit per fold; the final state is the last fold's).
 
+### Scaling and k-NN — a worked example
+
+k-NN is scale-sensitive under EVERY metric: a feature measured in
+thousands dominates one measured in tenths, because the distance simply
+adds their contributions. Put the scaler in the same pipeline as the
+estimator so cross-validation refits it per fold (no leakage):
+
+```cajeta
+Transformer sc = heap StandardScaler();
+Metric man = heap Manhattan();                      // any metric composes
+Predictor kn = heap KNeighborsClassifier((int64) 3, #man, true);
+Pipeline pl = Pipeline.of(#sc, #kn);
+pl.fit(xTrain, yTrain);
+float64 acc = pl.score(xTest, yTest);
+```
+
+Without the scaler, a raw-unit feature (say, income in dollars beside age
+in years) decides every neighbourhood on its own; after `StandardScaler`
+each feature contributes on equal terms. This needs no k-NN API — the
+pipeline IS the mechanism (§5.7).
+
 ## From the frame to the fit — `Frames` / `Design`
 
 Any `Table<R>` (Parquet/Arrow/CSV-loaded or built in memory) becomes any
