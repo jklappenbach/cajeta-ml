@@ -1,0 +1,410 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.FastICA;
+import dev.cajeta.ml.NMF;
+import dev.cajeta.ml.FactorAnalysis;
+import dev.cajeta.ml.Pipeline;
+import dev.cajeta.ml.LinearRegression;
+
+/**
+ * ml-unsupervised plan 9.1 — linear decomposition (spec §10, §12.9).
+ * All comparisons are INDETERMINACY-AWARE: ICA components matched by
+ * |correlation| (sign/permutation/scale-free), NMF factors matched by
+ * permutation with the deterministic NNDSVD init, FA compared through
+ * the identifiable `ΛΛᵀ` and `Ψ` — never raw loadings. Oracles: sklearn
+ * 1.9.0 on formula-based fixtures reproduced identically here
+ * (recorded 2026-08-05).
+ */
+public class DecompositionTest {
+
+    public DecompositionTest() { return; }
+
+    /** 3 deterministic sources, 200 samples: sine, square, sawtooth. */
+    static #Tensor<float64> icaSources() {
+        float64[] d = heap float64[600];
+        int64 i = 0;
+        while (i < 200) {
+            float64 t = (float64) i;
+            d[i * 3] = Math.sin(0.09 * t);
+            float64 sq = Math.sin(0.041 * t + 0.5);
+            if (sq >= 0.0) {
+                d[i * 3 + 1] = 1.0;
+            } else {
+                d[i * 3 + 1] = 0.0 - 1.0;
+            }
+            d[i * 3 + 2] = (float64) (i - (i / (int64) 23) * (int64) 23)
+                / 23.0 - 0.5;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 200;
+        sh[1] = 3;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** X = S·Aᵀ, A = [[1,1,1],[0.5,2,1],[1.5,1,2]]. */
+    static #Tensor<float64> icaMix(Tensor<float64> s) {
+        float64[] a = heap float64[9];
+        a[0] = 1.0; a[1] = 1.0; a[2] = 1.0;
+        a[3] = 0.5; a[4] = 2.0; a[5] = 1.0;
+        a[6] = 1.5; a[7] = 1.0; a[8] = 2.0;
+        float64[] d = heap float64[600];
+        int64 i = 0;
+        while (i < 200) {
+            int64 r = 0;
+            while (r < 3) {
+                float64 acc = 0.0;
+                int64 c = 0;
+                while (c < 3) {
+                    acc = acc + a[r * 3 + c] * s.get2(i, c);
+                    c = c + 1;
+                }
+                d[i * 3 + r] = acc;
+                r = r + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 200;
+        sh[1] = 3;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** |Pearson correlation| between true source column `sc` and
+     *  recovered column `rc`. */
+    static float64 absCorr(Tensor<float64> s, int64 sc,
+                           Tensor<float64> r, int64 rc) {
+        int64 n = s.shapeAt(0);
+        float64 ma = 0.0;
+        float64 mb = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            ma = ma + s.get2(i, sc);
+            mb = mb + r.get2(i, rc);
+            i = i + 1;
+        }
+        ma = ma / (float64) n;
+        mb = mb / (float64) n;
+        float64 sab = 0.0;
+        float64 saa = 0.0;
+        float64 sbb = 0.0;
+        i = 0;
+        while (i < n) {
+            float64 da = s.get2(i, sc) - ma;
+            float64 db = r.get2(i, rc) - mb;
+            sab = sab + da * db;
+            saa = saa + da * da;
+            sbb = sbb + db * db;
+            i = i + 1;
+        }
+        float64 c = sab / Math.sqrt(saa * sbb);
+        if (c < 0.0) {
+            return 0.0 - c;
+        }
+        return c;
+    }
+
+    /** Rank-2 exactly factorable non-negative 8×5 matrix. */
+    static #Tensor<float64> nmfX() {
+        float64[] w0 = heap float64[16];
+        w0[0] = 1.0;  w0[1] = 0.0;
+        w0[2] = 2.0;  w0[3] = 1.0;
+        w0[4] = 0.0;  w0[5] = 3.0;
+        w0[6] = 1.0;  w0[7] = 1.0;
+        w0[8] = 3.0;  w0[9] = 0.5;
+        w0[10] = 0.5; w0[11] = 2.0;
+        w0[12] = 2.0; w0[13] = 2.0;
+        w0[14] = 0.0; w0[15] = 1.0;
+        float64[] h0 = heap float64[10];
+        h0[0] = 1.0; h0[1] = 0.5; h0[2] = 2.0; h0[3] = 0.0; h0[4] = 1.0;
+        h0[5] = 0.0; h0[6] = 1.0; h0[7] = 0.5; h0[8] = 2.0; h0[9] = 1.0;
+        float64[] d = heap float64[40];
+        int64 i = 0;
+        while (i < 8) {
+            int64 j = 0;
+            while (j < 5) {
+                d[i * 5 + j] = w0[i * 2] * h0[j]
+                    + w0[i * 2 + 1] * h0[5 + j];
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 8;
+        sh[1] = 5;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** 300×5 FA fixture: 2 factors, per-feature deterministic noise. */
+    static #Tensor<float64> faX() {
+        float64[] l0 = heap float64[10];
+        l0[0] = 1.0;  l0[1] = 0.0;
+        l0[2] = 0.8;  l0[3] = 0.4;
+        l0[4] = 0.2;  l0[5] = 0.9;
+        l0[6] = 0.0 - 0.5; l0[7] = 0.7;
+        l0[8] = 0.6;  l0[9] = 0.0 - 0.3;
+        float64[] d = heap float64[1500];
+        int64 i = 0;
+        while (i < 300) {
+            float64 t = (float64) i;
+            float64 f1 = Math.sin(0.13 * t);
+            float64 f2 = Math.cos(0.077 * t);
+            int64 j = 0;
+            while (j < 5) {
+                float64 amp = 0.1 + 0.05 * (float64) j;
+                float64 noise = amp
+                    * Math.sin(3.1 * t * (1.3 + (float64) j));
+                d[i * 5 + j] = f1 * l0[j * 2] + f2 * l0[j * 2 + 1] + noise;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 300;
+        sh[1] = 5;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> ignoredY(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.zeros<float64>(sh);
+    }
+
+    // 9.1.1 / §10.1 / §10.2 — FastICA unmixes the 3-source mix: every
+    // true source matched by a DISTINCT component at |corr| > 0.97
+    // (sklearn's benchmark on this fixture: 0.988 / 0.9996 / 0.991 —
+    // the sources are not perfectly independent over the window, so
+    // ~0.99 is the oracle ceiling, not a weakness). Non-convergence
+    // is loud. Both contrasts work.
+    @Test
+    public void fastIcaUnmixesThreeSources() {
+        Tensor<float64> s = DecompositionTest.icaSources();
+        Tensor<float64> x = DecompositionTest.icaMix(s);
+        Tensor<float64> y = DecompositionTest.ignoredY((int64) 200);
+        FastICA ica = heap FastICA((int64) 3, (uint64) 5);
+        Tensor<float64> r = ica.fitTransform(x, y);
+        Assert.equals((int64) 200, r.shapeAt(0));
+        Assert.equals((int64) 3, r.shapeAt(1));
+        boolean[] taken = heap boolean[3];
+        int64 sc = 0;
+        while (sc < 3) {
+            int64 best = 0 - (int64) 1;
+            float64 bc = 0.0;
+            int64 rc = 0;
+            while (rc < 3) {
+                if (!taken[rc]) {
+                    float64 c = DecompositionTest.absCorr(s, sc, r, rc);
+                    if (c > bc) {
+                        bc = c;
+                        best = rc;
+                    }
+                }
+                rc = rc + 1;
+            }
+            taken[best] = true;
+            Assert.isTrue(bc > 0.97);
+            sc = sc + 1;
+        }
+        // exp contrast recovers as well.
+        FastICA icaE = heap FastICA((int64) 3, (uint64) 5, "exp",
+            (int64) 400, 0.0000001);
+        Tensor<float64> re = icaE.fitTransform(x, y);
+        float64 bestAny = DecompositionTest.absCorr(s, (int64) 1, re,
+            (int64) 0);
+        float64 c1 = DecompositionTest.absCorr(s, (int64) 1, re, (int64) 1);
+        float64 c2 = DecompositionTest.absCorr(s, (int64) 1, re, (int64) 2);
+        if (c1 > bestAny) {
+            bestAny = c1;
+        }
+        if (c2 > bestAny) {
+            bestAny = c2;
+        }
+        Assert.isTrue(bestAny > 0.97);
+        // Non-convergence within maxIter is LOUD, never silent.
+        Assert.assertThrows(() -> {
+            Tensor<float64> s2 = DecompositionTest.icaSources();
+            Tensor<float64> x2 = DecompositionTest.icaMix(s2);
+            FastICA bad = heap FastICA((int64) 3, (uint64) 5, "logcosh",
+                (int64) 1, 0.000000000001);
+            bad.fit(x2, DecompositionTest.ignoredY((int64) 200));
+        });
+    }
+
+    // 9.1.2 / §10.3 / §10.4 — NMF with NNDSVD + coordinate descent
+    // matches sklearn: near-zero reconstruction error on the rank-2
+    // fixture, H rows matching the oracle up to permutation, both
+    // factors non-negative, negative input rejected NAMING the entry.
+    @Test
+    public void nmfMatchesSklearnOnRankTwoFixture() {
+        Tensor<float64> x = DecompositionTest.nmfX();
+        Tensor<float64> y = DecompositionTest.ignoredY((int64) 8);
+        NMF nmf = heap NMF((int64) 2);
+        nmf.fit(x, y);
+        Assert.isTrue(nmf.reconstructionError() < 0.00000001);
+        Tensor<float64> h = nmf.components();
+        // Oracle rows (sklearn, nndsvd+cd): [1.342064·(1,.5,2,0,1)] and
+        // [1.235698·(0,~.81,.5,2,1)] — identify by the zero column.
+        int64 rA = 0;                 // row with h[·,3] == 0
+        if (h.get2(0, 3) > h.get2(1, 3)) {
+            rA = 1;
+        }
+        int64 rB = 1 - rA;
+        Assert.isTrue(Fixtures.close(h.get2(rA, 0), 1.342064, 0.002));
+        Assert.isTrue(Fixtures.close(h.get2(rA, 2), 2.684129, 0.004));
+        Assert.isTrue(Fixtures.close(h.get2(rA, 3), 0.0, 0.002));
+        Assert.isTrue(Fixtures.close(h.get2(rB, 0), 0.0, 0.002));
+        Assert.isTrue(Fixtures.close(h.get2(rB, 3), 2.471397, 0.004));
+        // Non-negativity of BOTH factors; reconstruction matches X.
+        Tensor<float64> w = nmf.transform(x);
+        int64 i = 0;
+        while (i < w.size()) {
+            Assert.isTrue(w.flatGet(i) >= 0.0);
+            i = i + 1;
+        }
+        i = 0;
+        while (i < h.size()) {
+            Assert.isTrue(h.flatGet(i) >= 0.0);
+            i = i + 1;
+        }
+        Tensor<float64> back = nmf.inverseTransform(w);
+        i = 0;
+        while (i < 8) {
+            int64 j = 0;
+            while (j < 5) {
+                Assert.isTrue(Fixtures.close(back.get2(i, j),
+                    x.get2(i, j), 0.0001));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        // Negative input: rejected naming the entry.
+        Assert.assertThrows(() -> {
+            float64[] d = heap float64[4];
+            d[0] = 1.0;
+            d[1] = 0.0 - 0.5;
+            d[2] = 2.0;
+            d[3] = 3.0;
+            int64[] sh = heap int64[2];
+            sh[0] = 2;
+            sh[1] = 2;
+            Tensor<float64> neg = Tensor.of<float64>(d, sh);
+            NMF bad = heap NMF((int64) 2);
+            bad.fit(neg, DecompositionTest.ignoredY((int64) 2));
+        });
+    }
+
+    // 9.1.3 / §10.5 / §10.6 — FactorAnalysis: the identifiable model
+    // (ΛΛᵀ and per-feature Ψ) matches sklearn; the log-likelihood is
+    // non-decreasing across EM iterations; the mean LL matches.
+    @Test
+    public void factorAnalysisRecoversModelMonotonically() {
+        Tensor<float64> x = DecompositionTest.faX();
+        Tensor<float64> y = DecompositionTest.ignoredY((int64) 300);
+        FactorAnalysis fa = heap FactorAnalysis((int64) 2);
+        fa.fit(x, y);
+        Tensor<float64> lam = fa.loadings();
+        // ΛΛᵀ — rotation-invariant. Oracle diag and row 0.
+        float64[] llDiag = heap float64[5];
+        llDiag[0] = 0.494456;
+        llDiag[1] = 0.44117;
+        llDiag[2] = 0.45543;
+        llDiag[3] = 0.326998;
+        llDiag[4] = 0.200048;
+        float64[] llRow0 = heap float64[5];
+        llRow0[0] = 0.494456;
+        llRow0[1] = 0.422442;
+        llRow0[2] = 0.157764;
+        llRow0[3] = 0.0 - 0.20053;
+        llRow0[4] = 0.276805;
+        int64 a = 0;
+        while (a < 5) {
+            float64 dv = 0.0;
+            float64 rv = 0.0;
+            int64 c = 0;
+            while (c < 2) {
+                dv = dv + lam.get2(a, c) * lam.get2(a, c);
+                rv = rv + lam.get2(0, c) * lam.get2(a, c);
+                c = c + 1;
+            }
+            Assert.isTrue(Fixtures.close(dv, llDiag[a], 0.003));
+            Assert.isTrue(Fixtures.close(rv, llRow0[a], 0.003));
+            a = a + 1;
+        }
+        // Per-feature noise variances (FA's reason to exist vs PCA).
+        float64[] psiO = heap float64[5];
+        psiO[0] = 0.00514587;
+        psiO[1] = 0.01121361;
+        psiO[2] = 0.01985446;
+        psiO[3] = 0.03138348;
+        psiO[4] = 0.04501293;
+        Tensor<float64> psi = fa.noiseVariances();
+        a = 0;
+        while (a < 5) {
+            Assert.isTrue(Fixtures.close(psi.get1(a), psiO[a], 0.001));
+            a = a + 1;
+        }
+        Assert.isTrue(Fixtures.close(fa.meanLogLikelihood(x),
+            0.0 - 1.2220484502587987, 0.001));
+        // EM's defining property, asserted every iteration.
+        float64[] h = fa.logLikelihoodHistory();
+        int64 n = (int64) h.count();
+        Assert.isTrue(n >= 2);
+        int64 i = 1;
+        while (i < n) {
+            Assert.isTrue(h[i] >= h[i - 1] - 0.000000001);
+            i = i + 1;
+        }
+    }
+
+    // 9.1.4 / §10.7 — all three are Transformers: fitTransform equals
+    // fit-then-transform, inverses round-trip where sklearn has them
+    // (ICA, NMF), and one composes in a Pipeline ahead of a predictor.
+    @Test
+    public void transformersConformAndCompose() {
+        Tensor<float64> s = DecompositionTest.icaSources();
+        Tensor<float64> x = DecompositionTest.icaMix(s);
+        Tensor<float64> y = DecompositionTest.ignoredY((int64) 200);
+        // ICA round-trip: inverseTransform(transform(x)) ≈ x.
+        FastICA ica = heap FastICA((int64) 3, (uint64) 5);
+        Tensor<float64> src = ica.fitTransform(x, y);
+        Tensor<float64> back = ica.inverseTransform(src);
+        int64 i = 0;
+        while (i < 200) {
+            Assert.isTrue(Fixtures.close(back.get2(i, 0), x.get2(i, 0),
+                0.0001));
+            i = i + 1;
+        }
+        // fitTransform == fit + transform.
+        FastICA ica2 = heap FastICA((int64) 3, (uint64) 5);
+        ica2.fit(x, y);
+        Tensor<float64> t2 = ica2.transform(x);
+        i = 0;
+        while (i < t2.size()) {
+            Assert.isTrue(Fixtures.close(src.flatGet(i), t2.flatGet(i),
+                0.0000000001));
+            i = i + 1;
+        }
+        // Pipeline composition: FA features → linear regression on a
+        // target that is itself linear in the factors.
+        Tensor<float64> xf = DecompositionTest.faX();
+        float64[] yv = heap float64[300];
+        i = 0;
+        while (i < 300) {
+            float64 t = (float64) i;
+            yv[i] = 2.0 * Math.sin(0.13 * t) - 1.0 * Math.cos(0.077 * t);
+            i = i + 1;
+        }
+        int64[] ys = heap int64[1];
+        ys[0] = 300;
+        Tensor<float64> yt = Tensor.of<float64>(yv, ys);
+        FactorAnalysis fa = heap FactorAnalysis((int64) 2);
+        LinearRegression lr = heap LinearRegression(true);
+        Pipeline pl = Pipeline.of(#fa, #lr);
+        pl.fit(xf, yt);
+        float64 r2 = pl.score(xf, yt);
+        Assert.isTrue(r2 > 0.95);
+    }
+}

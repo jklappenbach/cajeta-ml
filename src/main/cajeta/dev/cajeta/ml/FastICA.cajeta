@@ -1,0 +1,458 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+import cajeta.math.random.Generator;
+
+/**
+ * FastICA (sklearn `FastICA`, parallel algorithm): unmix linearly mixed
+ * statistically independent sources by maximizing non-Gaussianity —
+ * PCA whitening first, then fixed-point iteration on the unmixing matrix
+ * with symmetric decorrelation. Contrast functions: `"logcosh"` (default)
+ * and `"exp"` (§10.2).
+ *
+ * ICA is identifiable only UP TO SIGN, PERMUTATION, AND SCALE of the
+ * recovered sources (§12.9) — comparisons must be indeterminacy-aware
+ * (match components by |correlation|), never raw-value.
+ *
+ * Non-convergence within `maxIter` is LOUD: `fit` throws rather than
+ * returning a silently unconverged unmixing (§10.1). Seeded — the
+ * unmixing initialization is random.
+ */
+public final class FastICA implements Transformer {
+
+    private int64 kComp;
+    private uint64 seed;
+    private int64 funKind;       // 0 logcosh, 1 exp
+    private int64 maxIter;
+    private float64 tol;
+    private int64 pFeat;
+    private float64[] meanA;     // (p)
+    private float64[] tMat;      // (p*k): sources = centered x · tMat
+    private Tensor<float64> tPinv;   // (k, p) for inverseTransform
+    private boolean fitted;
+
+    static float64 tanhF(float64 x) {
+        if (x > 20.0) {
+            return 1.0;
+        }
+        if (x < 0.0 - 20.0) {
+            return 0.0 - 1.0;
+        }
+        return 1.0 - 2.0 / (Math.exp(2.0 * x) + 1.0);
+    }
+
+    /** logcosh contrast, maxIter 200, tol 1e-4 (sklearn defaults). */
+    public FastICA(int64 k, uint64 seed) {
+        if (k < 1) {
+            throw heap MlException("FastICA: k must be >= 1");
+        }
+        this.kComp = k;
+        this.seed = seed;
+        this.funKind = 0;
+        this.maxIter = 200;
+        this.tol = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    public FastICA(int64 k, uint64 seed, String fun, int64 maxIter,
+                   float64 tol) {
+        if (k < 1) {
+            throw heap MlException("FastICA: k must be >= 1");
+        }
+        this.kComp = k;
+        this.seed = seed;
+        if (fun.equals("logcosh")) {
+            this.funKind = 0;
+        } else if (fun.equals("exp")) {
+            this.funKind = 1;
+        } else {
+            throw heap MlException("FastICA: fun must be logcosh|exp");
+        }
+        this.maxIter = maxIter;
+        this.tol = tol;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("FastICA.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 k = this.kComp;
+        if (k > p) {
+            throw heap MlException("FastICA.fit: k must be <= p");
+        }
+        this.pFeat = p;
+
+        // Center.
+        float64[] mean = heap float64[p];
+        int64 j = 0;
+        while (j < p) {
+            float64 s = 0.0;
+            int64 i = 0;
+            while (i < n) {
+                s = s + x.get2(i, j);
+                i = i + 1;
+            }
+            mean[j] = s / (float64) n;
+            j = j + 1;
+        }
+
+        // PCA whitening: eigh of the covariance, top-k components scaled
+        // to unit variance. eigh returns ASCENDING eigenvalues.
+        int64[] cs = heap int64[2];
+        cs[0] = p;
+        cs[1] = p;
+        Tensor<float64> cov = Tensor.zeros<float64>(cs);
+        int64 a = 0;
+        while (a < p) {
+            int64 b = 0;
+            while (b < p) {
+                float64 s = 0.0;
+                int64 i = 0;
+                while (i < n) {
+                    s = s + (x.get2(i, a) - mean[a])
+                          * (x.get2(i, b) - mean[b]);
+                    i = i + 1;
+                }
+                cov.flatSet(a * p + b, s / (float64) n);
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        Tensor<float64>[] ev = LinAlg.eigh<float64>(cov);
+        Tensor<float64> w = ev[0];
+        Tensor<float64> v = ev[1];
+        float64[] kMat = heap float64[p * k];    // whitening (p, k)
+        int64 c = 0;
+        while (c < k) {
+            int64 src = p - (int64) 1 - c;       // largest first
+            float64 lam = w.get1(src);
+            if (lam < 1.0E-12) {
+                lam = 1.0E-12;
+            }
+            float64 sc = 1.0 / Math.sqrt(lam);
+            int64 r = 0;
+            while (r < p) {
+                kMat[r * k + c] = v.get2(r, src) * sc;
+                r = r + 1;
+            }
+            c = c + 1;
+        }
+
+        // Whitened data (n, k).
+        float64[] xw = heap float64[n * k];
+        int64 i2 = 0;
+        while (i2 < n) {
+            c = 0;
+            while (c < k) {
+                float64 s = 0.0;
+                int64 r = 0;
+                while (r < p) {
+                    s = s + (x.get2(i2, r) - mean[r]) * kMat[r * k + c];
+                    r = r + 1;
+                }
+                xw[i2 * k + c] = s;
+                c = c + 1;
+            }
+            i2 = i2 + 1;
+        }
+
+        // Unmixing W (k, k): seeded normal init, symmetric decorrelation,
+        // parallel fixed-point updates.
+        Generator gen = heap Generator(this.seed);
+        Tensor<float32> r0 = gen.normal(k * k);
+        float64[] wU = heap float64[k * k];
+        int64 z = 0;
+        while (z < k * k) {
+            wU[z] = (float64) r0.get1(z);
+            z = z + 1;
+        }
+        FastICA.decorrelate(wU, k);
+
+        float64[] u = heap float64[n * k];
+        float64[] wNew = heap float64[k * k];
+        boolean converged = false;
+        int64 it = 0;
+        while (it < this.maxIter && !converged) {
+            // U = Xw · Wᵀ.
+            int64 i = 0;
+            while (i < n) {
+                c = 0;
+                while (c < k) {
+                    float64 s = 0.0;
+                    int64 d = 0;
+                    while (d < k) {
+                        s = s + xw[i * k + d] * wU[c * k + d];
+                        d = d + 1;
+                    }
+                    u[i * k + c] = s;
+                    c = c + 1;
+                }
+                i = i + 1;
+            }
+            // w_new[c] = E[xw·g(u_c)] − E[g'(u_c)]·w[c].
+            c = 0;
+            while (c < k) {
+                float64 gpMean = 0.0;
+                int64 d = 0;
+                while (d < k) {
+                    wNew[c * k + d] = 0.0;
+                    d = d + 1;
+                }
+                i = 0;
+                while (i < n) {
+                    float64 uv = u[i * k + c];
+                    float64 g = 0.0;
+                    float64 gp = 0.0;
+                    if (this.funKind == (int64) 0) {
+                        g = FastICA.tanhF(uv);
+                        gp = 1.0 - g * g;
+                    } else {
+                        float64 e = Math.exp(0.0 - uv * uv / 2.0);
+                        g = uv * e;
+                        gp = (1.0 - uv * uv) * e;
+                    }
+                    gpMean = gpMean + gp;
+                    d = 0;
+                    while (d < k) {
+                        wNew[c * k + d] = wNew[c * k + d]
+                            + xw[i * k + d] * g;
+                        d = d + 1;
+                    }
+                    i = i + 1;
+                }
+                gpMean = gpMean / (float64) n;
+                d = 0;
+                while (d < k) {
+                    wNew[c * k + d] = wNew[c * k + d] / (float64) n
+                        - gpMean * wU[c * k + d];
+                    d = d + 1;
+                }
+                c = c + 1;
+            }
+            FastICA.decorrelate(wNew, k);
+            // Convergence: rows aligned with previous up to sign.
+            float64 worst = 0.0;
+            c = 0;
+            while (c < k) {
+                float64 dot = 0.0;
+                int64 d = 0;
+                while (d < k) {
+                    dot = dot + wNew[c * k + d] * wU[c * k + d];
+                    d = d + 1;
+                }
+                if (dot < 0.0) {
+                    dot = 0.0 - dot;
+                }
+                float64 dev = dot - 1.0;
+                if (dev < 0.0) {
+                    dev = 0.0 - dev;
+                }
+                if (dev > worst) {
+                    worst = dev;
+                }
+                c = c + 1;
+            }
+            z = 0;
+            while (z < k * k) {
+                wU[z] = wNew[z];
+                z = z + 1;
+            }
+            converged = worst < this.tol;
+            it = it + 1;
+        }
+        if (!converged) {
+            throw heap MlException(
+                "FastICA.fit: did not converge within maxIter="
+                + Int64.of(this.maxIter).toString()
+                + " — raise maxIter or loosen tol; an unconverged "
+                + "unmixing is never returned as fitted");
+        }
+
+        // sources = centered x · (K · Wᵀ).
+        float64[] t = heap float64[p * k];
+        int64 r2 = 0;
+        while (r2 < p) {
+            c = 0;
+            while (c < k) {
+                float64 s = 0.0;
+                int64 d = 0;
+                while (d < k) {
+                    s = s + kMat[r2 * k + d] * wU[c * k + d];
+                    d = d + 1;
+                }
+                t[r2 * k + c] = s;
+                c = c + 1;
+            }
+            r2 = r2 + 1;
+        }
+        int64[] ts = heap int64[2];
+        ts[0] = p;
+        ts[1] = k;
+        Tensor<float64> tt = Tensor.of<float64>(t, ts);
+        Tensor<float64> pin = LinAlg.pinv<float64>(tt);
+        float64[] t2 = heap float64[p * k];
+        z = 0;
+        while (z < p * k) {
+            t2[z] = t[z];
+            z = z + 1;
+        }
+        this.meanA #= mean;
+        this.tMat #= t2;
+        this.tPinv #= pin;
+        this.fitted = true;
+        return;
+    }
+
+    /** Symmetric decorrelation in place: `W ← (W·Wᵀ)^(-1/2)·W`. */
+    static void decorrelate(float64[] wU, int64 k) {
+        int64[] ss = heap int64[2];
+        ss[0] = k;
+        ss[1] = k;
+        Tensor<float64> wwt = Tensor.zeros<float64>(ss);
+        int64 a = 0;
+        while (a < k) {
+            int64 b = 0;
+            while (b < k) {
+                float64 s = 0.0;
+                int64 d = 0;
+                while (d < k) {
+                    s = s + wU[a * k + d] * wU[b * k + d];
+                    d = d + 1;
+                }
+                wwt.flatSet(a * k + b, s);
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        Tensor<float64>[] ev = LinAlg.eigh<float64>(wwt);
+        Tensor<float64> w = ev[0];
+        Tensor<float64> v = ev[1];
+        // M = V diag(1/sqrt(w)) Vᵀ, then W ← M·W.
+        float64[] m = heap float64[k * k];
+        a = 0;
+        while (a < k) {
+            int64 b = 0;
+            while (b < k) {
+                float64 s = 0.0;
+                int64 d = 0;
+                while (d < k) {
+                    float64 lam = w.get1(d);
+                    if (lam < 1.0E-12) {
+                        lam = 1.0E-12;
+                    }
+                    s = s + v.get2(a, d) * v.get2(b, d) / Math.sqrt(lam);
+                    d = d + 1;
+                }
+                m[a * k + b] = s;
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        float64[] outW = heap float64[k * k];
+        a = 0;
+        while (a < k) {
+            int64 b = 0;
+            while (b < k) {
+                float64 s = 0.0;
+                int64 d = 0;
+                while (d < k) {
+                    s = s + m[a * k + d] * wU[d * k + b];
+                    d = d + 1;
+                }
+                outW[a * k + b] = s;
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        a = 0;
+        while (a < k * k) {
+            wU[a] = outW[a];
+            a = a + 1;
+        }
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(n, k)` recovered sources for `x` — identifiable up to sign,
+     *  permutation, and scale (§12.9). */
+    public #Tensor<float64> transform(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("FastICA.transform: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = this.pFeat;
+        int64 k = this.kComp;
+        if (x.ndim() != 2 || x.shapeAt(1) != p) {
+            throw heap MlException(
+                "FastICA.transform: x must be (n, p) matching the fit");
+        }
+        float64[] out = heap float64[n * k];
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                float64 s = 0.0;
+                int64 r = 0;
+                while (r < p) {
+                    s = s + (x.get2(i, r) - this.meanA[r])
+                          * this.tMat[r * k + c];
+                    r = r + 1;
+                }
+                out[i * k + c] = s;
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    public #Tensor<float64> fitTransform(Tensor<float64> x,
+                                         Tensor<float64> y) {
+        this.fit(x, y);
+        return this.transform(x);
+    }
+
+    /** Mix sources back: `s · pinv(T) + mean` (sklearn
+     *  `inverse_transform`). */
+    public #Tensor<float64> inverseTransform(Tensor<float64> s) {
+        if (!this.fitted) {
+            throw heap MlException(
+                "FastICA.inverseTransform: fit first");
+        }
+        int64 n = s.shapeAt(0);
+        int64 p = this.pFeat;
+        int64 k = this.kComp;
+        float64[] out = heap float64[n * p];
+        int64 i = 0;
+        while (i < n) {
+            int64 r = 0;
+            while (r < p) {
+                float64 acc = this.meanA[r];
+                int64 c = 0;
+                while (c < k) {
+                    acc = acc + s.get2(i, c) * this.tPinv.get2(c, r);
+                    c = c + 1;
+                }
+                out[i * p + r] = acc;
+                r = r + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = p;
+        return Tensor.of<float64>(out, sh);
+    }
+}
