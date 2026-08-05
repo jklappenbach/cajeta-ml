@@ -1,0 +1,193 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.KMeans;
+import dev.cajeta.ml.KMedoids;
+import dev.cajeta.ml.GaussianMixture;
+import dev.cajeta.ml.AgglomerativeClustering;
+import dev.cajeta.ml.DBSCAN;
+import dev.cajeta.ml.StandardScaler;
+import dev.cajeta.ml.Pipeline;
+
+/**
+ * ml-unsupervised plan 12.1 — the §12.6 selection matrix, consolidated:
+ * every clustering algorithm scored against the three separating shapes
+ * through U1's harness, WINNING WHERE IT SHOULD AND LOSING WHERE IT
+ * SHOULD. This is the algorithm-selection guidance of the README made
+ * executable — a suite graded on blobs alone could never show it.
+ *
+ * Thread counts (§12.7): every estimator here is single-threaded and
+ * deterministic per seed, so thread-count invariance is structural;
+ * seeded refits are asserted bit-identical.
+ */
+public class SelectionMatrixTest {
+
+    public SelectionMatrixTest() { return; }
+
+    static #Tensor<float64> ignoredY(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.zeros<float64>(sh);
+    }
+
+    static #int64[] intLabels(Tensor<float64> lv, int64 n) {
+        int64[] out = heap int64[n];
+        int64 i = 0;
+        while (i < n) {
+            out[i] = (int64) lv.get1(i);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // §12.6 row 1 — BLOBS: every partitional/hierarchical method is
+    // exact; DBSCAN discovers the count. Nobody loses here — blobs are
+    // the shape that cannot discriminate, which is why they are never
+    // the only fixture.
+    @Test
+    public void everyAlgorithmWinsOnBlobs() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 60);
+        int64[] truth = Shapes.blobLabels();
+        KMeans km = heap KMeans((int64) 3, (uint64) 1);
+        km.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(km.labels(), (int64) 60),
+            truth) == 1.0);
+        KMedoids kd = heap KMedoids((int64) 3);
+        kd.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(kd.labels(), (int64) 60),
+            truth) == 1.0);
+        GaussianMixture gm = heap GaussianMixture((int64) 3, (uint64) 1);
+        gm.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(gm.predict(x), (int64) 60),
+            truth) == 1.0);
+        AgglomerativeClustering ag = heap AgglomerativeClustering(
+            (int64) 3);
+        ag.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(ag.labels(), (int64) 60),
+            truth) == 1.0);
+        DBSCAN db = heap DBSCAN(1.5, (int64) 4);
+        db.fit(x, y);
+        Assert.equals((int64) 3, db.nClusters());
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(db.labels(), (int64) 60),
+            truth) == 1.0);
+    }
+
+    // §12.6 row 2 — NESTED NON-CONVEX (dense rings): density and
+    // chaining win exactly; every convex partitioner loses. The row that
+    // justifies DBSCAN and single linkage.
+    @Test
+    public void onlyDensityAndChainingWinOnRings() {
+        Tensor<float64> x = Shapes.denseCircles((uint64) 31);
+        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 160);
+        int64[] truth = Shapes.denseCircleLabels();
+        DBSCAN db = heap DBSCAN(0.45, (int64) 3);
+        db.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(db.labels(), (int64) 160),
+            truth) == 1.0);
+        AgglomerativeClustering si = heap AgglomerativeClustering(
+            (int64) 2, "single");
+        si.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(si.labels(), (int64) 160),
+            truth) == 1.0);
+        // The convex partitioners lose.
+        KMeans km = heap KMeans((int64) 2, (uint64) 3);
+        km.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(km.labels(), (int64) 160),
+            truth) < 0.8);
+        KMedoids kd = heap KMedoids((int64) 2);
+        kd.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(kd.labels(), (int64) 160),
+            truth) < 0.8);
+        GaussianMixture gm = heap GaussianMixture((int64) 2, (uint64) 3);
+        gm.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(gm.predict(x), (int64) 160),
+            truth) < 0.9);
+        AgglomerativeClustering wa = heap AgglomerativeClustering(
+            (int64) 2);
+        wa.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            SelectionMatrixTest.intLabels(wa.labels(), (int64) 160),
+            truth) < 0.8);
+    }
+
+    // §12.6 row 3 — OVERLAP/UNEQUAL VARIANCE: GMM's per-component
+    // covariance beats K-means' midpoint boundary (the U4 margin), and
+    // DBSCAN cannot separate what density does not separate — its
+    // failure mode, shown rather than hidden.
+    @Test
+    public void gmmWinsWhereDensityAndMidpointsFail() {
+        Tensor<float64> x = Shapes.unequalVariance((uint64) 29);
+        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 120);
+        int64[] truth = Shapes.unequalVarianceLabels();
+        KMeans km = heap KMeans((int64) 2, (uint64) 5);
+        km.fit(x, y);
+        float64 rk = Harness.randIndex(
+            SelectionMatrixTest.intLabels(km.labels(), (int64) 120),
+            truth);
+        GaussianMixture gm = heap GaussianMixture((int64) 2, (uint64) 5);
+        gm.fit(x, y);
+        float64 rg = Harness.randIndex(
+            SelectionMatrixTest.intLabels(gm.predict(x), (int64) 120),
+            truth);
+        Assert.isTrue(rg > 0.8);
+        Assert.isTrue(rg - rk > 0.05);
+        // Density cannot draw a boundary through continuous density:
+        // DBSCAN either merges the two Gaussians or shatters them.
+        DBSCAN db = heap DBSCAN(0.6, (int64) 4);
+        db.fit(x, y);
+        boolean merged = db.nClusters() != (int64) 2;
+        float64 rd = Harness.randIndex(
+            SelectionMatrixTest.intLabels(db.labels(), (int64) 120),
+            truth);
+        Assert.isTrue(merged || rd < 0.8);
+    }
+
+    // 12.1.2 — protocol conformance composes: a Transformer feeds a
+    // Predictor in Pipeline (scale → cluster), and the exceptions are
+    // exactly the documented ones (TSNE/MDS/SpectralEmbedding are
+    // fitTransform-only BY DESIGN — §9.7/§9.14 — and are asserted as
+    // such in their own suites).
+    @Test
+    public void protocolsComposeInPipeline() {
+        Tensor<float64> x = Shapes.mixedUnits((uint64) 23);
+        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 40);
+        StandardScaler sc = heap StandardScaler();
+        KMeans km = heap KMeans((int64) 2, (uint64) 6);
+        Pipeline pl = Pipeline.of(#sc, #km);
+        pl.fit(x, y);
+        Tensor<float64> pred = pl.predict(x);
+        int64[] lab = SelectionMatrixTest.intLabels(pred, (int64) 40);
+        Assert.isTrue(Harness.randIndex(lab,
+            Shapes.mixedUnitLabels()) == 1.0);
+    }
+
+    // 12.1.3 / §12.7 — seeded fits reproduce bit-identically (and the
+    // estimators are single-threaded, so thread count cannot enter).
+    @Test
+    public void seededFitsReproduceAcrossRuns() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 60);
+        KMeans a = heap KMeans((int64) 3, (uint64) 9);
+        a.fit(x, y);
+        KMeans b = heap KMeans((int64) 3, (uint64) 9);
+        b.fit(x, y);
+        Assert.isTrue(a.inertia() == b.inertia());
+        GaussianMixture ga = heap GaussianMixture((int64) 3, (uint64) 9);
+        ga.fit(x, y);
+        GaussianMixture gb = heap GaussianMixture((int64) 3, (uint64) 9);
+        gb.fit(x, y);
+        Assert.isTrue(ga.score(x, y) == gb.score(x, y));
+    }
+}

@@ -121,12 +121,66 @@ or non-float64 target/feature, zero features, a nullable selected column
 (fill or drop nulls first — imputation belongs to the frame), the target
 listed as a feature.
 
+## Clustering
+
+Five algorithms over the `cajeta.math.distance.Metric` seam, chosen by
+data shape (the suite's `SelectionMatrixTest` is the executable version
+of this guidance):
+
+- `KMeans(k, seed)` — seeded k-means++, Lloyd iterations. Cheapest;
+  right when clusters are compact and separated.
+- `KMedoids(k[, metric])` — PAM; centres are actual data rows, robust to
+  the outliers that drag a mean. Deterministic (no seed). Any metric.
+- `GaussianMixture(k, seed[, covType, init, maxIter, tol, regCovar])` —
+  EM, four covariance types, `predictProba` soft responsibilities,
+  `aic`/`bic` for choosing k, `collapsed()` reporting, monotone
+  `logLikelihoodHistory()`.
+- `AgglomerativeClustering(k[, linkage[, metric]])` — ward (default,
+  Euclidean-only BY CONSTRUCTION) / complete / average / single. One fit
+  answers many k: `linkageMatrix()` (scipy format), `cutByCount`,
+  `cutByHeight`, `leafOrder()` (dendrogram data), `copheneticCorrelation`.
+- `DBSCAN(eps, minSamples[, metric])` — density clustering: noise stays
+  `-1`, the cluster count is discovered, `coreMask()` distinguishes
+  core/border/noise, `DBSCAN.kDistances` derives the eps-elbow.
+
+Cluster evaluation lives in `Metrics` (below). Standardize mixed-unit
+features before clustering — the widest column otherwise decides.
+
+## Embeddings & decomposition
+
+- `TSNE(2|3, perplexity, seed)` — exact t-SNE, `fitTransform`-only (no
+  `transform` for unseen points EXISTS, so none is offered), n capped at
+  2000, `klDivergence()` from the stdlib. Between-cluster distances in
+  the picture are not meaningful.
+- `MDS(k, seed[, "metric"|"nonmetric", nInit, maxIter, eps])` — SMACOF
+  with restarts, `stress()` exposed; `fitTransformDissimilarity` embeds
+  any precomputed square dissimilarity matrix.
+- `Isomap(nNeighbors, k)` / `LLE(nNeighbors, k[, reg])` — manifold
+  methods WITH out-of-sample `transform`; a disconnected neighbour graph
+  throws, naming `nNeighbors`.
+- `SpectralEmbedding(k, nNeighbors | gamma)` — Laplacian eigenmaps over
+  k-NN or RBF affinity, `fitTransform`-only, trivial eigenvector dropped.
+- `FastICA(k, seed[, fun, maxIter, tol])` — source separation
+  (logcosh/exp); non-convergence throws.
+- `NMF(k[, maxIter, tol])` — non-negative factorization (NNDSVD + HALS),
+  `reconstructionError()`, negative input rejected naming the entry.
+- `FactorAnalysis(k[, maxIter, tol])` — EM with per-feature noise
+  variances (the distinction from PCA), monotone log-likelihood.
+
+All spectral results are deterministic up to eigenvector sign; ICA/NMF
+factors up to permutation and scale; MDS/FA up to rotation. Compare
+structure (eigenvalues, distances, |correlation|, `ΛΛᵀ`), never raw
+coordinates. Departures from sklearn: `docs/DifferencesFromSklearn.md`.
+
 ## Metrics
 
 Static functions over `(n,)` tensors: `mse`/`rmse`/`mae`/`r2`;
 `accuracy`, binary `precision`/`recall`/`f1`, macro variants,
 `confusionMatrix`, `logLoss` (1e-15 clip), `rocAuc` (rank form with
-average-rank ties — matches sklearn exactly, ties included).
+average-rank ties — matches sklearn exactly, ties included). Unsupervised:
+`silhouetteScore`/`silhouetteSamples` (throws on 1 or n clusters —
+undefined must say so), `daviesBouldin`, `calinskiHarabasz`,
+`adjustedRand`, `nmi`, and `kmeansElbow` for the k sweep.
 
 ## Errors
 

@@ -45,7 +45,14 @@ env:
   # so building against it proves the two copies are not both live. It also
   # carries the bounded-method-template fix that GradTape<E extends Floating>
   # needs, on top of v0.13.0's nucleo.sparse and codegen fixes.
-  CAJETA_VERSION: v0.15.0
+  #
+  # v0.17.0 ships cajeta.math.distance — the Metric seam every clustering
+  # estimator and manifold method consumes (0.6.0's unsupervised surface
+  # does not BUILD below it) — plus math.random.Generator's stabilized
+  # surface and the linalg pieces (eigh/svd/solve/pinv/slogdet) the
+  # decomposition family rides. 0.5.0 (the neural re-home) baselines
+  # v0.16.0+; this pin supersedes it compatibly — do not step back.
+  CAJETA_VERSION: v0.17.0
 
 jobs:
   build-test:

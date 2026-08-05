@@ -17,7 +17,7 @@
 
     "details": {
         "name":               "dev.cajeta.ml",
-        "version":            "0.4.0",
+        "version":            "0.6.0",
         "description":        "cajeta-ml — classical ML: linear models with inference, preprocessing, model selection, metrics, and the ecosystem estimator protocol",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],

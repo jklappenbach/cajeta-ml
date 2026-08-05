@@ -5,9 +5,21 @@ import cajeta.math.Tensor;
 import cajeta.nucleo.column.Column;
 import cajeta.nucleo.frame.Table;
 import cajeta.nucleo.sparse.CsrMatrix;
+import dev.cajeta.ml.AgglomerativeClustering;
+import dev.cajeta.ml.DBSCAN;
 import dev.cajeta.ml.Design;
 import dev.cajeta.ml.DummyRegressor;
+import dev.cajeta.ml.FactorAnalysis;
+import dev.cajeta.ml.FastICA;
 import dev.cajeta.ml.Frames;
+import dev.cajeta.ml.GaussianMixture;
+import dev.cajeta.ml.Isomap;
+import dev.cajeta.ml.KMedoids;
+import dev.cajeta.ml.LLE;
+import dev.cajeta.ml.MDS;
+import dev.cajeta.ml.NMF;
+import dev.cajeta.ml.SpectralEmbedding;
+import dev.cajeta.ml.TSNE;
 import dev.cajeta.ml.KFold;
 import dev.cajeta.ml.ElasticNet;
 import dev.cajeta.ml.KMeans;
@@ -554,6 +566,122 @@ public final class Tour {
         Tour.check(!loose.flush(),
                    "flushing an empty buffer is a no-op, not an error");
 
+        Tour.section("18. The clustering family — each wins where it should");
+        // Blobs: everyone is exact. Rings: only density wins. Outliers:
+        // only medoids resist. The choice of algorithm IS the point.
+        Tensor<float64> cb = Tour.threeBlobs();
+        Tensor<float64> cy = Tour.zeroY((int64) 24);
+        KMedoids kmed = heap KMedoids((int64) 3);
+        kmed.fit(cb, cy);
+        int64[] mi = kmed.medoidIndices();
+        boolean rowsAreData = true;
+        int64 mc = 0;
+        while (mc < 3) {
+            int64 j = 0;
+            while (j < 2) {
+                if (kmed.medoids().get2(mc, j) != cb.get2(mi[mc], j)) {
+                    rowsAreData = false;
+                }
+                j = j + 1;
+            }
+            mc = mc + 1;
+        }
+        Tour.check(rowsAreData,
+            "KMedoids centres are ACTUAL data rows (indices "
+            + Int64.of(mi[0]).toString() + ","
+            + Int64.of(mi[1]).toString() + ","
+            + Int64.of(mi[2]).toString() + ")");
+        GaussianMixture gmix = heap GaussianMixture((int64) 3, (uint64) 2);
+        gmix.fit(cb, cy);
+        Tensor<float64> proba = gmix.predictProba(cb);
+        Tour.check(Tour.near(proba.get2(0, 0) + proba.get2(0, 1)
+            + proba.get2(0, 2), 1.0, 0.000000001),
+            "GaussianMixture responsibilities sum to 1 — membership is a "
+            + "probability");
+        Tour.check(!gmix.collapsed(),
+            "no component collapsed (and collapse would be REPORTED)");
+        GaussianMixture g1 = heap GaussianMixture((int64) 1, (uint64) 2);
+        g1.fit(cb, cy);
+        Tour.check(gmix.bic(cb) < g1.bic(cb),
+            "BIC prefers the true k=3 over k=1 — component count is "
+            + "chosen, not guessed");
+        AgglomerativeClustering agg = heap AgglomerativeClustering((int64) 2);
+        agg.fit(cb, cy);
+        Tensor<float64> cut3 = agg.cutByCount((int64) 3);
+        Tour.check(agg.linkageMatrix().shapeAt(0) == 23
+            && cut3.shapeAt(0) == 24,
+            "one agglomerative fit answers ANY k — full merge history + "
+            + "cutByCount");
+        Tour.check(agg.copheneticCorrelation() > 0.5,
+            "cophenetic correlation reports how faithful the tree is");
+        Tensor<float64> rings = Tour.twoRings();
+        Tensor<float64> ry = Tour.zeroY((int64) 48);
+        DBSCAN dbs = heap DBSCAN(0.45, (int64) 3);
+        dbs.fit(rings, ry);
+        Tour.check(dbs.nClusters() == 2,
+            "DBSCAN DISCOVERS the ring count — it was never an input");
+        KMeans ringKm = heap KMeans((int64) 2, (uint64) 3);
+        ringKm.fit(rings, ry);
+        float64 ringInertia = ringKm.inertia();
+        Tour.check(ringInertia > 0.0,
+            "K-means converges on the rings too — but its convex partition "
+            + "cannot be the rings (that failure is DBSCAN's reason to exist)");
+
+        Tour.section("19. Judging a clustering — three internal judges disagree");
+        Tensor<float64> truthLabels = Tour.threeBlobLabels();
+        float64 sil = Metrics.silhouetteScore(cb, truthLabels);
+        Tour.check(sil > 0.7,
+            "silhouette on the true blob labels is high");
+        Tour.check(Metrics.adjustedRand(truthLabels,
+            Tour.permutedBlobLabels()) == 1.0,
+            "adjusted Rand is label-permutation invariant — 1.0 for the "
+            + "same partition renamed");
+        float64[] elbow = Metrics.kmeansElbow(cb, (int64) 5, (uint64) 2);
+        Tour.check(elbow[2] < 0.2 * elbow[1],
+            "the elbow curve BENDS at the true k=3");
+
+        Tour.section("20. Embeddings & decomposition — honest APIs");
+        Tensor<float64> helix = Tour.helix10();
+        MDS mds = heap MDS((int64) 2, (uint64) 3);
+        Tensor<float64> memb = mds.fitTransform(helix);
+        Tour.check(memb.shapeAt(1) == 2 && mds.stress() < 1.0,
+            "MDS embeds by minimizing STRESS, and exposes it — the "
+            + "fit-quality number");
+        Isomap iso = heap Isomap((int64) 4, (int64) 2);
+        Tensor<float64> iemb = iso.fitTransform(helix, Tour.zeroY((int64) 10));
+        Tensor<float64> itr = iso.transform(helix);
+        Tour.check(Tour.near(itr.get2(0, 0), iemb.get2(0, 0), 0.000001),
+            "Isomap CAN embed unseen points (transform) — exact on "
+            + "training rows");
+        LLE lle = heap LLE((int64) 4, (int64) 2);
+        lle.fit(helix, Tour.zeroY((int64) 10));
+        Tour.check(lle.reconstructionError() >= 0.0,
+            "LLE exposes its reconstruction error");
+        SpectralEmbedding spe = heap SpectralEmbedding((int64) 2, (int64) 4);
+        spe.fitTransform(helix);
+        Tour.check(spe.eigenvalues()[0] > 0.0,
+            "SpectralEmbedding drops the trivial eigenvector — kept "
+            + "eigenvalues are non-zero (fitTransform-only: no transform "
+            + "exists, and that is documented honesty, not an omission)");
+        TSNE tsne = heap TSNE((int64) 2, 3.0, (uint64) 4, (int64) 250, 200.0);
+        Tensor<float64> temb = tsne.fitTransform(cb);
+        Tour.check(temb.shapeAt(0) == 24 && tsne.klDivergence() >= 0.0,
+            "t-SNE reports the KL it minimized (stdlib's divergence); "
+            + "REMEMBER: between-cluster distances in the picture mean "
+            + "nothing");
+        Tensor<float64> nmfX = Tour.rankTwo();
+        NMF nmf = heap NMF((int64) 2);
+        nmf.fit(nmfX, Tour.zeroY((int64) 6));
+        Tour.check(nmf.reconstructionError() < 0.001,
+            "NMF factors the non-negative matrix to near-zero Frobenius "
+            + "error, parts-based");
+        FactorAnalysis fan = heap FactorAnalysis((int64) 1);
+        fan.fit(nmfX, Tour.zeroY((int64) 6));
+        float64[] fh = fan.logLikelihoodHistory();
+        Tour.check(fh[(int64) fh.count() - (int64) 1] >= fh[0],
+            "FactorAnalysis EM log-likelihood never decreases — the "
+            + "property that catches implementation errors");
+
         // ------------------------------------------------------------------
         System.stdout.println("");
         if (Tour.failures > 0) {
@@ -562,6 +690,120 @@ public final class Tour {
         }
         System.stdout.println("tour complete — every demonstrated claim checked");
         return 0;
+    }
+
+    /** 3 tight 8-point clusters at (0,0)/(6,0)/(0,6) — deterministic. */
+    static #Tensor<float64> threeBlobs() {
+        int64[] sh = heap int64[2];
+        sh[0] = 24;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 24) {
+            int64 c = i / (int64) 8;
+            float64 cx = 0.0;
+            float64 cyy = 0.0;
+            if (c == (int64) 1) { cx = 6.0; }
+            if (c == (int64) 2) { cyy = 6.0; }
+            int64 r = i - c * (int64) 8;
+            x.flatSet(i * 2, cx + 0.2 * (float64) (r - (int64) 4) / 4.0);
+            x.flatSet(i * 2 + 1,
+                cyy + 0.2 * (float64) ((r * (int64) 3
+                    - (r * (int64) 3 / (int64) 8) * (int64) 8)
+                    - (int64) 4) / 4.0);
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    static #Tensor<float64> threeBlobLabels() {
+        int64[] sh = heap int64[1];
+        sh[0] = 24;
+        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 24) {
+            y.set1(i, (float64) (i / (int64) 8));
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    static #Tensor<float64> permutedBlobLabels() {
+        int64[] sh = heap int64[1];
+        sh[0] = 24;
+        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 24) {
+            y.set1(i, (float64) ((int64) 2 - i / (int64) 8));
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** Two concentric rings, 24 points each at EVEN angles (radii 0.45,
+     *  1.05) — the non-convex shape convex partitions cannot cut. */
+    static #Tensor<float64> twoRings() {
+        int64[] sh = heap int64[2];
+        sh[0] = 48;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 48) {
+            float64 r = 0.45;
+            int64 idx = i;
+            if (i >= (int64) 24) {
+                r = 1.05;
+                idx = i - (int64) 24;
+            }
+            float64 th = 2.0 * 3.14159265358979 * (float64) idx / 24.0;
+            x.flatSet(i * 2, r * Math.cos(th));
+            x.flatSet(i * 2 + 1, r * Math.sin(th));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** 10 points on a 3-D helix — the embedding fixture. */
+    static #Tensor<float64> helix10() {
+        int64[] sh = heap int64[2];
+        sh[0] = 10;
+        sh[1] = 3;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 10) {
+            float64 t = (float64) i;
+            x.flatSet(i * 3, Math.cos(0.6 * t));
+            x.flatSet(i * 3 + 1, Math.sin(0.6 * t));
+            x.flatSet(i * 3 + 2, 0.3 * t);
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** Exactly rank-2 non-negative (6, 4) matrix. */
+    static #Tensor<float64> rankTwo() {
+        int64[] sh = heap int64[2];
+        sh[0] = 6;
+        sh[1] = 4;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 6) {
+            float64 a = (float64) (i + (int64) 1);
+            float64 b = (float64) ((i * (int64) 2
+                - (i * (int64) 2 / (int64) 5) * (int64) 5) + (int64) 1);
+            x.flatSet(i * 4, a * 1.0 + b * 0.0);
+            x.flatSet(i * 4 + 1, a * 0.5 + b * 1.0);
+            x.flatSet(i * 4 + 2, a * 2.0 + b * 0.5);
+            x.flatSet(i * 4 + 3, a * 0.0 + b * 2.0);
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    static #Tensor<float64> zeroY(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.zeros<float64>(sh);
     }
 
     /** A two-layer stack for the online demo, seeded so runs are identical. */

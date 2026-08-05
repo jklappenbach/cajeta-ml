@@ -64,9 +64,18 @@ duck-typing.
 | Sparse design matrix fit | `Lasso/ElasticNet.fitSparse(CsrMatrix, y)` | requires `fitIntercept=false` — see hazards |
 | Binary / one-vs-rest classification | `LogisticRegression(c, tol, maxIter)` | newton-cholesky; L2 ON by default (`C=1`) |
 | True multiclass softmax | `LogisticRegression(c, tol, maxIter, /*multinomial=*/true)` | explicit knob, never a silent switch |
-| Clustering | `KMeans(k, seed)` | seeded k-means++; `score` = −inertia |
+| Clustering (compact clusters) | `KMeans(k, seed)` | seeded k-means++; `score` = −inertia |
+| Clustering with outliers / any metric | `KMedoids(k[, metric])` | PAM; centres are data rows — `ml-clustering` |
+| Soft/probabilistic clustering, model selection | `GaussianMixture(k, seed)` — `predictProba`, `aic`/`bic` | 4 covariance types; collapse reported — `ml-clustering` |
+| Hierarchy, many k from one fit | `AgglomerativeClustering(k[, linkage])` — `cutByCount`/`cutByHeight` | ward/complete/average/single; scipy linkage matrix — `ml-clustering` |
+| Non-convex shapes, noise, unknown k | `DBSCAN(eps, minSamples)` | noise = −1; count discovered; `kDistances` elbow — `ml-clustering` |
+| Judge a clustering | `Metrics.silhouetteScore/Samples`, `daviesBouldin`, `calinskiHarabasz`, `adjustedRand`, `nmi`, `kmeansElbow` | the judges DISAGREE by design — `ml-cluster-evaluation` |
 | Nearest-neighbor regression / classification | `KNeighborsRegressor(k, distanceWeights)` / `KNeighborsClassifier(k)` | brute-force euclidean |
 | Dimensionality reduction | `PCA(nComponents)` | a `Transformer` — drops into Pipeline |
+| 2-D visualization embedding | `TSNE(2, perplexity, seed)` — `fitTransform`-only | exact O(n²), capped at 2000 — `ml-embeddings-decomposition` |
+| Embed dissimilarities (incl. precomputed) | `MDS(k, seed[, "nonmetric", …])` — stress exposed | `ml-embeddings-decomposition` |
+| Manifold learning | `Isomap` / `LLE` (transform unseen) · `SpectralEmbedding` (fitTransform-only) | disconnection is loud — `ml-embeddings-decomposition` |
+| Source separation / parts / latent factors | `FastICA` / `NMF` / `FactorAnalysis` | indeterminacy-aware — `ml-embeddings-decomposition` |
 | Feature scaling | `StandardScaler()` / `MinMaxScaler()` | sklearn semantics, `inverseTransform` |
 | Train/test split, K folds, CV scores | `Split.trainTestSplit(x, y, frac, seed)` / `KFold(k, shuffle, seed)` / `Split.crossValScore(est, x, y, kf)` | deterministic per seed |
 | Chain preprocessing + model, leakage-free CV | `Pipeline.of(#t1[, #t2[, #t3]], #final)` | a `Predictor`; refits whole chain per fold |

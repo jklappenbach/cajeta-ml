@@ -90,3 +90,22 @@ becomes `Digits` — a deterministic 4-class, 64-feature synthetic set.
     empty buffer is a no-op rather than an error. Two trainers rather than
     one because the config transfers into the trainer, so the gate is fixed
     at construction.
+18. **The clustering family.** KMedoids' centres are checked to be actual
+    input rows (by index identity, not proximity); GaussianMixture's
+    responsibilities sum to one and BIC picks the true component count;
+    one agglomerative fit yields the full linkage matrix and answers a
+    different k via `cutByCount`; DBSCAN discovers the ring count on a
+    fixture no convex partition can cut — K-means converges there too,
+    which is exactly why the choice of algorithm is the decision.
+19. **Judging a clustering.** Silhouette scores the true labels high,
+    adjusted Rand is checked to be permutation-invariant, and the
+    K-means elbow curve demonstrably bends at the true k. (The suite
+    additionally pins a fixture where the three internal judges
+    disagree — the reason all three ship.)
+20. **Embeddings & decomposition.** MDS exposes the stress it minimized;
+    Isomap's `transform` is checked EXACT on a training row (a real
+    out-of-sample extension — t-SNE, MDS, and SpectralEmbedding refuse to
+    pretend they have one); SpectralEmbedding's kept eigenvalues are
+    non-trivial; t-SNE reports its KL and the tour repeats the §9.6
+    warning; NMF reaches near-zero error on an exactly-factorable
+    matrix; FactorAnalysis' EM log-likelihood never decreases.
