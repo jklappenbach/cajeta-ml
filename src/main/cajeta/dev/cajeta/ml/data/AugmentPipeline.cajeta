@@ -1,0 +1,77 @@
+package dev.cajeta.ml.data;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/**
+ * An ordered, SEEDED transform pipeline over NCHW batches (spec §13.4):
+ * transforms run in the order added, drawing from one Philox generator
+ * seeded at construction — same seed, same augmented batches, run after
+ * run (§13.4.1; an unseeded augmentation makes training unreproducible).
+ *
+ * Train/eval follows `Dropout`'s discipline (§13.4.2): in eval mode
+ * STOCHASTIC transforms are inert (skipped — they draw nothing, so the
+ * eval path stays deterministic), while deterministic preprocessing
+ * (`Normalize`) still applies.
+ */
+public class AugmentPipeline {
+    ArrayList<Transform> transforms;
+    Generator gen;
+    boolean training;
+
+    public AugmentPipeline(uint64 seed) {
+        ArrayList<Transform> ts #= heap ArrayList<Transform>();
+        this.transforms #= ts;
+        this.gen = heap Generator(seed);
+        this.training = true;
+        return;
+    }
+
+    /** Append a transform (takes ownership); order is application order. */
+    public void add(#Transform t) {
+        this.transforms.add(#t);
+        return;
+    }
+
+    public void train() {
+        this.training = true;
+        return;
+    }
+
+    public void eval() {
+        this.training = false;
+        return;
+    }
+
+    public boolean isTraining() {
+        return this.training;
+    }
+
+    /** Run the pipeline over an `(N, C, H, W)` batch. */
+    public #Tensor<float32> apply(Tensor<float32> x) {
+        if (x.ndim() != 4) {
+            throw heap MlException(
+                "AugmentPipeline: expected NCHW rank-4 input");
+        }
+        Tensor<float32> cur = x.copy();
+        int32 i = 0;
+        while (i < this.transforms.count()) {
+            Transform t = this.transforms.get(i);
+            if (this.training || !t.stochastic()) {
+                // Copy-in-place into the standing buffer: every transform
+                // preserves NCHW shape, and rebinding an outer local to a
+                // loop-scoped value is the recorded dangling hazard.
+                Tensor<float32> nxt = t.apply(cur, this.gen);
+                int64 e = 0;
+                while (e < cur.size()) {
+                    cur.flatSet(e, nxt.flatGet(e));
+                    e = e + 1;
+                }
+            }
+            i = i + 1;
+        }
+        return #cur;
+    }
+}

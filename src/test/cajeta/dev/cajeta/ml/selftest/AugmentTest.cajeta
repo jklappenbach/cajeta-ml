@@ -1,0 +1,240 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.data.Transform;
+import dev.cajeta.ml.data.RandomHorizontalFlip;
+import dev.cajeta.ml.data.RandomCrop;
+import dev.cajeta.ml.data.RandomRotation;
+import dev.cajeta.ml.data.Normalize;
+import dev.cajeta.ml.data.AugmentPipeline;
+
+/**
+ * cajeta-ml-v3 §13 plan 3.1 — data augmentation (spec §13.4). Every
+ * transform is seeded through the Philox `Generator`; augmentation is
+ * inert in eval mode while deterministic preprocessing still applies
+ * (Dropout's discipline); normalization statistics are EXPLICIT;
+ * NCHW is preserved throughout.
+ */
+public class AugmentTest {
+
+    public AugmentTest() { return; }
+
+    /** A (1, 1, 2, 3) batch with distinct values 1..6. */
+    static #Tensor<float32> tiny() {
+        int64[] sh = heap int64[4];
+        sh[0] = 1;
+        sh[1] = 1;
+        sh[2] = 2;
+        sh[3] = 3;
+        Tensor<float32> x = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < 6) {
+            x.flatSet(i, (float32) (i + (int64) 1));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    // 3.1.1 / 3.1.6 — each transform is correct and keeps NCHW: flip at
+    // p=1 reverses W exactly; p=0 is the identity; normalize applies the
+    // explicit per-channel formula; crop and rotation keep shape and are
+    // seeded.
+    @Test
+    public void transformsAreCorrectAndKeepNchw() {
+        Tensor<float32> x = AugmentTest.tiny();
+        Generator g = heap Generator((uint64) 1);
+        RandomHorizontalFlip always = heap RandomHorizontalFlip(1.0);
+        Tensor<float32> f = always.apply(x, g);
+        // Rows [1,2,3],[4,5,6] -> [3,2,1],[6,5,4].
+        Assert.isTrue(f.flatGet(0) == 3.0f && f.flatGet(1) == 2.0f
+            && f.flatGet(2) == 1.0f && f.flatGet(3) == 6.0f
+            && f.flatGet(4) == 5.0f && f.flatGet(5) == 4.0f);
+        RandomHorizontalFlip never = heap RandomHorizontalFlip(0.0);
+        Tensor<float32> nf = never.apply(x, g);
+        int64 i = 0;
+        while (i < 6) {
+            Assert.isTrue(nf.flatGet(i) == x.flatGet(i));
+            i = i + 1;
+        }
+        // Normalize: one channel, mean 2, std 2: (v-2)/2.
+        float32[] mean = heap float32[1];
+        mean[0] = 2.0f;
+        float32[] std = heap float32[1];
+        std[0] = 2.0f;
+        Normalize nm = heap Normalize(#mean, #std);
+        Tensor<float32> nz = nm.apply(x, g);
+        i = 0;
+        while (i < 6) {
+            float32 want = (x.flatGet(i) - 2.0f) / 2.0f;
+            Assert.isTrue(nz.flatGet(i) == want);
+            i = i + 1;
+        }
+        Assert.isFalse(nm.stochastic());
+        // Crop and rotation: NCHW shape preserved.
+        RandomCrop cr = heap RandomCrop((int64) 1);
+        Tensor<float32> cc = cr.apply(x, g);
+        Assert.isTrue(cc.ndim() == 4 && cc.shapeAt(2) == 2
+            && cc.shapeAt(3) == 3);
+        RandomRotation rt = heap RandomRotation(30.0);
+        Tensor<float32> rr = rt.apply(x, g);
+        Assert.isTrue(rr.ndim() == 4 && rr.shapeAt(2) == 2
+            && rr.shapeAt(3) == 3);
+        Assert.isTrue(cr.stochastic() && rt.stochastic()
+            && always.stochastic());
+    }
+
+    // 3.1.2 — a composed pipeline applies transforms IN ORDER:
+    // flip(p=1) then normalize equals the hand-applied sequence.
+    @Test
+    public void pipelineAppliesInOrder() {
+        Tensor<float32> x = AugmentTest.tiny();
+        AugmentPipeline pl = heap AugmentPipeline((uint64) 5);
+        Transform t1 = heap RandomHorizontalFlip(1.0);
+        pl.add(#t1);
+        float32[] mean = heap float32[1];
+        mean[0] = 1.0f;
+        float32[] std = heap float32[1];
+        std[0] = 2.0f;
+        Transform t2 = heap Normalize(#mean, #std);
+        pl.add(#t2);
+        Tensor<float32> y = pl.apply(x);
+        // flip first: [3,2,1,6,5,4]; then (v-1)/2.
+        float32[] want = heap float32[6];
+        want[0] = 1.0f;
+        want[1] = 0.5f;
+        want[2] = 0.0f;
+        want[3] = 2.5f;
+        want[4] = 2.0f;
+        want[5] = 1.5f;
+        int64 i = 0;
+        while (i < 6) {
+            Assert.isTrue(y.flatGet(i) == want[i]);
+            i = i + 1;
+        }
+    }
+
+    // 3.1.3 / 3.3.1 — eval mode: stochastic transforms are INERT, the
+    // deterministic Normalize still applies, and repeated eval runs are
+    // bit-identical.
+    @Test
+    public void evalModeIsInertAndDeterministic() {
+        Tensor<float32> x = AugmentTest.tiny();
+        AugmentPipeline pl = heap AugmentPipeline((uint64) 7);
+        Transform t1 = heap RandomHorizontalFlip(1.0);
+        pl.add(#t1);
+        Transform t2 = heap RandomCrop((int64) 1);
+        pl.add(#t2);
+        Transform t3 = heap RandomRotation(45.0);
+        pl.add(#t3);
+        float32[] mean = heap float32[1];
+        mean[0] = 0.0f;
+        float32[] std = heap float32[1];
+        std[0] = 1.0f;
+        Transform t4 = heap Normalize(#mean, #std);
+        pl.add(#t4);
+        pl.eval();
+        Assert.isFalse(pl.isTraining());
+        Tensor<float32> a = pl.apply(x);
+        Tensor<float32> b = pl.apply(x);
+        int64 i = 0;
+        while (i < 6) {
+            // Untransformed by augmentation (normalize here is identity).
+            Assert.isTrue(a.flatGet(i) == x.flatGet(i));
+            Assert.isTrue(a.flatGet(i) == b.flatGet(i));
+            i = i + 1;
+        }
+        // Back in training mode the same pipeline DOES transform.
+        pl.train();
+        Tensor<float32> t = pl.apply(x);
+        boolean changed = false;
+        i = 0;
+        while (i < 6) {
+            if (t.flatGet(i) != x.flatGet(i)) {
+                changed = true;
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(changed);
+    }
+
+    // 3.1.4 — a fixed seed reproduces the same augmented batch across
+    // pipeline instances; a different seed diverges somewhere.
+    @Test
+    public void fixedSeedReproducesAcrossRuns() {
+        int64[] sh = heap int64[4];
+        sh[0] = 4;
+        sh[1] = 1;
+        sh[2] = 5;
+        sh[3] = 5;
+        Tensor<float32> x = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < x.size()) {
+            x.flatSet(i, (float32) (i - (i / (int64) 9) * (int64) 9));
+            i = i + 1;
+        }
+        AugmentPipeline p1 = heap AugmentPipeline((uint64) 11);
+        Transform a1 = heap RandomHorizontalFlip(0.5);
+        p1.add(#a1);
+        Transform a2 = heap RandomCrop((int64) 2);
+        p1.add(#a2);
+        Transform a3 = heap RandomRotation(60.0);
+        p1.add(#a3);
+        Tensor<float32> y1 = p1.apply(x);
+        AugmentPipeline p2 = heap AugmentPipeline((uint64) 11);
+        Transform b1 = heap RandomHorizontalFlip(0.5);
+        p2.add(#b1);
+        Transform b2 = heap RandomCrop((int64) 2);
+        p2.add(#b2);
+        Transform b3 = heap RandomRotation(60.0);
+        p2.add(#b3);
+        Tensor<float32> y2 = p2.apply(x);
+        i = 0;
+        while (i < y1.size()) {
+            Assert.isTrue(y1.flatGet(i) == y2.flatGet(i));
+            i = i + 1;
+        }
+        AugmentPipeline p3 = heap AugmentPipeline((uint64) 12);
+        Transform c1 = heap RandomHorizontalFlip(0.5);
+        p3.add(#c1);
+        Transform c2 = heap RandomCrop((int64) 2);
+        p3.add(#c2);
+        Transform c3 = heap RandomRotation(60.0);
+        p3.add(#c3);
+        Tensor<float32> y3 = p3.apply(x);
+        boolean differs = false;
+        i = 0;
+        while (i < y1.size()) {
+            if (y1.flatGet(i) != y3.flatGet(i)) {
+                differs = true;
+                i = y1.size();
+            } else {
+                i = i + 1;
+            }
+        }
+        Assert.isTrue(differs);
+    }
+
+    // 3.1.5 — normalization statistics are explicit constructor
+    // arguments; a mismatched channel count or nonpositive std throws.
+    @Test
+    public void normalizationStatsAreExplicit() {
+        Assert.assertThrows(() -> {
+            float32[] mean = heap float32[2];
+            float32[] std = heap float32[2];
+            std[0] = 1.0f;
+            std[1] = 1.0f;
+            Normalize nm = heap Normalize(#mean, #std);
+            Tensor<float32> x = AugmentTest.tiny();   // 1 channel, stats say 2
+            Generator g = heap Generator((uint64) 1);
+            nm.apply(x, g);
+        });
+        Assert.assertThrows(() -> {
+            float32[] mean = heap float32[1];
+            float32[] std = heap float32[1];
+            Normalize nm = heap Normalize(#mean, #std);   // std 0
+            nm.stochastic();
+        });
+    }
+}

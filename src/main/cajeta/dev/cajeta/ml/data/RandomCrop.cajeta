@@ -1,0 +1,69 @@
+package dev.cajeta.ml.data;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/** Zero-pad each side by `pad`, then crop back to `(H, W)` at a random
+ *  offset — torchvision's `RandomCrop(size, padding=pad)` recipe. Two
+ *  uniform draws per sample (top, left); NCHW preserved. */
+public class RandomCrop implements Transform {
+    int64 pad;
+
+    public RandomCrop(int64 pad) {
+        if (pad < 1) {
+            throw heap MlException("RandomCrop: pad must be >= 1");
+        }
+        this.pad = pad;
+        return;
+    }
+
+    public boolean stochastic() {
+        return true;
+    }
+
+    public #Tensor<float32> apply(Tensor<float32> x, Generator gen) {
+        if (x.ndim() != 4) {
+            throw heap MlException("RandomCrop: expected NCHW rank-4 input");
+        }
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 w = x.shapeAt(3);
+        int64 span = 2 * this.pad + 1;
+        Tensor<float32> u = gen.uniform(n * 2);
+        Tensor<float32> out = Tensor.zeros<float32>(x.shape());
+        int64 s = 0;
+        while (s < n) {
+            int64 top = (int64) ((float64) u.get1(s * 2)
+                * (float64) span);
+            int64 left = (int64) ((float64) u.get1(s * 2 + 1)
+                * (float64) span);
+            if (top >= span) { top = span - (int64) 1; }
+            if (left >= span) { left = span - (int64) 1; }
+            // Source row in the PADDED image is (r + top); back in the
+            // original frame that is r + top - pad — zero outside.
+            int64 ci = 0;
+            while (ci < c) {
+                int64 r = 0;
+                while (r < h) {
+                    int64 sr = r + top - this.pad;
+                    int64 col = 0;
+                    while (col < w) {
+                        int64 sc = col + left - this.pad;
+                        float32 v = 0.0f;
+                        if (sr >= 0 && sr < h && sc >= 0 && sc < w) {
+                            v = x.flatGet(((s * c + ci) * h + sr) * w + sc);
+                        }
+                        out.flatSet(((s * c + ci) * h + r) * w + col, v);
+                        col = col + 1;
+                    }
+                    r = r + 1;
+                }
+                ci = ci + 1;
+            }
+            s = s + 1;
+        }
+        return #out;
+    }
+}

@@ -1,0 +1,19 @@
+package dev.cajeta.ml.data;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * One data transform over an NCHW `float32` batch (spec §13.4). A
+ * STOCHASTIC transform draws from the pipeline's seeded generator and
+ * runs on the training path only; a deterministic one (normalization)
+ * runs in eval too — augmentation is inert in eval, preprocessing is
+ * not (§13.4.2).
+ */
+public interface Transform {
+    /** Map an `(N, C, H, W)` batch to its transformed batch. */
+    #Tensor<float32> apply(Tensor<float32> x, Generator gen);
+
+    /** True if this transform draws randomness — skipped in eval mode. */
+    boolean stochastic();
+}

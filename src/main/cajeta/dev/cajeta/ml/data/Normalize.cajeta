@@ -1,0 +1,65 @@
+package dev.cajeta.ml.data;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/** Per-channel normalization `(x - mean_c) / std_c` with EXPLICIT
+ *  statistics (spec §13.4 / plan 3.1.5) — batch-inferred normalization
+ *  leaks between samples, so the stats are constructor arguments, never
+ *  computed from the data. DETERMINISTIC: applies in eval mode too
+ *  (preprocessing, not augmentation). */
+public class Normalize implements Transform {
+    float32[] mean;
+    float32[] std;
+
+    /** Takes ownership of both stat arrays, one entry per channel. */
+    public Normalize(#float32[] mean, #float32[] std) {
+        if (mean.count() != std.count() || mean.count() == 0) {
+            throw heap MlException(
+                "Normalize: mean/std must be same nonzero length");
+        }
+        int64 i = 0;
+        while (i < (int64) std.count()) {
+            if (std[i] <= 0.0f) {
+                throw heap MlException("Normalize: std must be > 0");
+            }
+            i = i + 1;
+        }
+        this.mean #= mean;
+        this.std #= std;
+        return;
+    }
+
+    public boolean stochastic() {
+        return false;
+    }
+
+    public #Tensor<float32> apply(Tensor<float32> x, Generator gen) {
+        if (x.ndim() != 4 || x.shapeAt(1) != (int64) this.mean.count()) {
+            throw heap MlException("Normalize: expected NCHW with "
+                + Int64.of((int64) this.mean.count()).toString()
+                + " channels");
+        }
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 hw = x.shapeAt(2) * x.shapeAt(3);
+        Tensor<float32> out = Tensor.zeros<float32>(x.shape());
+        int64 s = 0;
+        while (s < n) {
+            int64 ci = 0;
+            while (ci < c) {
+                int64 e = 0;
+                while (e < hw) {
+                    int64 idx = (s * c + ci) * hw + e;
+                    out.flatSet(idx,
+                        (x.flatGet(idx) - this.mean[ci]) / this.std[ci]);
+                    e = e + 1;
+                }
+                ci = ci + 1;
+            }
+            s = s + 1;
+        }
+        return #out;
+    }
+}

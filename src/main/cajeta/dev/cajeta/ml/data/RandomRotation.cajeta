@@ -1,0 +1,75 @@
+package dev.cajeta.ml.data;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/** Rotate each sample by a uniform angle in `[-maxDegrees, +maxDegrees]`
+ *  about the image centre — NEAREST-NEIGHBOUR sampling (documented; the
+ *  bilinear variant is a later refinement), out-of-bounds reads as zero.
+ *  One uniform draw per sample; NCHW preserved. */
+public class RandomRotation implements Transform {
+    float64 maxDegrees;
+
+    public RandomRotation(float64 maxDegrees) {
+        if (maxDegrees <= 0.0 || maxDegrees > 180.0) {
+            throw heap MlException(
+                "RandomRotation: maxDegrees must be in (0, 180]");
+        }
+        this.maxDegrees = maxDegrees;
+        return;
+    }
+
+    public boolean stochastic() {
+        return true;
+    }
+
+    public #Tensor<float32> apply(Tensor<float32> x, Generator gen) {
+        if (x.ndim() != 4) {
+            throw heap MlException(
+                "RandomRotation: expected NCHW rank-4 input");
+        }
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 w = x.shapeAt(3);
+        Tensor<float32> u = gen.uniform(n);
+        Tensor<float32> out = Tensor.zeros<float32>(x.shape());
+        float64 cy = ((float64) h - 1.0) / 2.0;
+        float64 cx = ((float64) w - 1.0) / 2.0;
+        int64 s = 0;
+        while (s < n) {
+            float64 deg = (2.0 * (float64) u.get1(s) - 1.0)
+                * this.maxDegrees;
+            float64 rad = deg * 3.14159265358979 / 180.0;
+            float64 cs = Math.cos(rad);
+            float64 sn = Math.sin(rad);
+            int64 ci = 0;
+            while (ci < c) {
+                int64 r = 0;
+                while (r < h) {
+                    int64 col = 0;
+                    while (col < w) {
+                        // Inverse-map the OUTPUT pixel to its source.
+                        float64 dy = (float64) r - cy;
+                        float64 dx = (float64) col - cx;
+                        int64 sr = (int64) Math.round(
+                            cy + cs * dy - sn * dx);
+                        int64 sc = (int64) Math.round(
+                            cx + sn * dy + cs * dx);
+                        float32 v = 0.0f;
+                        if (sr >= 0 && sr < h && sc >= 0 && sc < w) {
+                            v = x.flatGet(((s * c + ci) * h + sr) * w + sc);
+                        }
+                        out.flatSet(((s * c + ci) * h + r) * w + col, v);
+                        col = col + 1;
+                    }
+                    r = r + 1;
+                }
+                ci = ci + 1;
+            }
+            s = s + 1;
+        }
+        return #out;
+    }
+}

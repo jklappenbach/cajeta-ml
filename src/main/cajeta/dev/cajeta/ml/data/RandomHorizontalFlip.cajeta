@@ -1,0 +1,58 @@
+package dev.cajeta.ml.data;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/** Flip each sample's W axis with probability `p` (spec §13.4.1) — one
+ *  uniform draw per sample, NCHW preserved. */
+public class RandomHorizontalFlip implements Transform {
+    float64 p;
+
+    public RandomHorizontalFlip(float64 p) {
+        if (p < 0.0 || p > 1.0) {
+            throw heap MlException("RandomHorizontalFlip: p must be in [0,1]");
+        }
+        this.p = p;
+        return;
+    }
+
+    public boolean stochastic() {
+        return true;
+    }
+
+    public #Tensor<float32> apply(Tensor<float32> x, Generator gen) {
+        if (x.ndim() != 4) {
+            throw heap MlException(
+                "RandomHorizontalFlip: expected NCHW rank-4 input");
+        }
+        int64 n = x.shapeAt(0);
+        int64 c = x.shapeAt(1);
+        int64 h = x.shapeAt(2);
+        int64 w = x.shapeAt(3);
+        Tensor<float32> u = gen.uniform(n);
+        Tensor<float32> out = x.copy();
+        int64 s = 0;
+        while (s < n) {
+            if ((float64) u.get1(s) < this.p) {
+                int64 ci = 0;
+                while (ci < c) {
+                    int64 r = 0;
+                    while (r < h) {
+                        int64 col = 0;
+                        while (col < w) {
+                            out.flatSet(((s * c + ci) * h + r) * w + col,
+                                x.flatGet(((s * c + ci) * h + r) * w
+                                    + (w - (int64) 1 - col)));
+                            col = col + 1;
+                        }
+                        r = r + 1;
+                    }
+                    ci = ci + 1;
+                }
+            }
+            s = s + 1;
+        }
+        return #out;
+    }
+}
