@@ -319,6 +319,35 @@ public class LogisticCostSparseTest {
             0.0463014320455757, 0.0001));
     }
 
+    // 4.1.6 — stronger regularization (smaller C) never has fewer zeros.
+    @Test
+    public void zeroCountMonotoneInStrength() {
+        float64[] cs = heap float64[3];
+        cs[0] = 5.0;
+        cs[1] = 1.5;
+        cs[2] = 0.5;
+        int64 prev = -1;
+        int64 t = 0;
+        while (t < 3) {
+            LogisticRegression l1 = heap LogisticRegression(cs[t],
+                0.000000000001, (int64) 100000, "l1");
+            l1.fit(fixtureX(), fixtureY());
+            Tensor<float64> c = l1.coefMatrix();
+            int64 zeros = 0;
+            int64 j = 0;
+            while (j < 2) {
+                if (c.flatGet(j) == 0.0) {
+                    zeros = zeros + 1;
+                }
+                j = j + 1;
+            }
+            Assert.isTrue(zeros >= prev);
+            prev = zeros;
+            t = t + 1;
+        }
+        Assert.equals(prev, (int64) 2);    // C=0.5 kills both (saga agrees)
+    }
+
     // §6.8 — no standard errors on a penalized fit; it says why.
     @Test
     public void penalizedSummaryRefuses() {
