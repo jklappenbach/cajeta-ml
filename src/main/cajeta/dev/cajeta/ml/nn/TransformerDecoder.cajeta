@@ -1,0 +1,65 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * A stack of {@link TransformerDecoderLayer}s (torch
+ * `TransformerDecoder`): each layer decodes against the SAME encoder
+ * memory under the same masks. Layers live in a container, so parameter
+ * names come out indexed (`layers.0.self_attn.wq.weight`, …) — torch's
+ * naming, transferable key lists.
+ */
+public class TransformerDecoder extends Module {
+    ArrayList<Module> layers;
+    int64 embed;
+
+    public TransformerDecoder(int64 nLayers, int64 embed, int32 heads,
+                              int64 ff, uint64 seed) {
+        if (nLayers < 1) {
+            throw heap MlException("TransformerDecoder: nLayers must be >= 1");
+        }
+        ArrayList<Module> ls #= heap ArrayList<Module>();
+        int64 i = 0;
+        while (i < nLayers) {
+            Module l = heap TransformerDecoderLayer(embed, heads, ff,
+                seed + (uint64) (i * (int64) 100));
+            ls.add(#l);
+            i = i + 1;
+        }
+        this.layers #= ls;
+        this.embed = embed;
+        return;
+    }
+
+    public ArrayList<Module> children() {
+        return this.layers;
+    }
+
+    /** Run every layer against the same memory and masks (§13.3). */
+    public GradTensor decode(GradTape<float32> tape, GradTensor x,
+                             GradTensor memory, boolean hasSelfMask,
+                             Tensor<float32> selfMask, boolean hasMemMask,
+                             Tensor<float32> memMask) {
+        GradTensor cur = x;
+        int32 i = 0;
+        while (i < this.layers.count()) {
+            Module m = this.layers.get(i);
+            if (m instanceof TransformerDecoderLayer l) {
+                cur = l.decode(tape, cur, memory, hasSelfMask, selfMask,
+                    hasMemMask, memMask);
+            }
+            i = i + 1;
+        }
+        return cur;
+    }
+
+    /** Use {@link #decode} — a decoder needs the encoder memory. */
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        throw heap MlException("TransformerDecoder: use decode(tape, x, "
+            + "memory, ...) — a decoder needs the encoder memory");
+    }
+}

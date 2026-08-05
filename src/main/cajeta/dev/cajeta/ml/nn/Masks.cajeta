@@ -1,0 +1,91 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+
+/**
+ * Additive attention masks (spec §13.3): `(B, Tq, Tk)` float32 tensors
+ * added to the scaled scores before softmax — 0 lets a position attend,
+ * {@link #NEG} blocks it. `exp(NEG)` underflows to exactly 0 in float32,
+ * so a blocked attention weight is EXACTLY zero and everything reached
+ * only through it gets an exactly-zero gradient (§13.3.3) — not merely a
+ * small one.
+ *
+ * Causal and padding masks COMPOSE by addition ({@link #combine}) —
+ * doubly-blocked entries just get more negative.
+ */
+public final class Masks {
+
+    /** The blocking value: large enough that `exp` underflows to 0. */
+    public static float32 NEG = -1000000000.0f;
+
+    /** Causal `(b, t, t)`: position `i` attends only to positions <= i —
+     *  strictly-upper entries blocked (§13.3.2). */
+    public static #Tensor<float32> causal(int64 b, int64 t) {
+        int64[] sh = heap int64[3];
+        sh[0] = b;
+        sh[1] = t;
+        sh[2] = t;
+        Tensor<float32> m = Tensor.zeros<float32>(sh);
+        int64 bi = 0;
+        while (bi < b) {
+            int64 r = 0;
+            while (r < t) {
+                int64 c = r + 1;
+                while (c < t) {
+                    m.flatSet((bi * t + r) * t + c, Masks.NEG);
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            bi = bi + 1;
+        }
+        return #m;
+    }
+
+    /** Key-padding `(B, tq, tk)` from per-batch valid lengths: key
+     *  columns at and past `lengths[b]` are blocked for every query —
+     *  the varying-length batching case (§13.3.3). */
+    public static #Tensor<float32> keyPadding(int64[] lengths, int64 tq,
+                                              int64 tk) {
+        int64 b = (int64) lengths.count();
+        int64[] sh = heap int64[3];
+        sh[0] = b;
+        sh[1] = tq;
+        sh[2] = tk;
+        Tensor<float32> m = Tensor.zeros<float32>(sh);
+        int64 bi = 0;
+        while (bi < b) {
+            if (lengths[bi] < 1 || lengths[bi] > tk) {
+                throw heap MlException(
+                    "Masks.keyPadding: length must be in 1..Tk");
+            }
+            int64 r = 0;
+            while (r < tq) {
+                int64 c = lengths[bi];
+                while (c < tk) {
+                    m.flatSet((bi * tq + r) * tk + c, Masks.NEG);
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            bi = bi + 1;
+        }
+        return #m;
+    }
+
+    /** Compose two masks of identical shape by addition (§13.3). */
+    public static #Tensor<float32> combine(Tensor<float32> a,
+                                           Tensor<float32> b) {
+        if (a.size() != b.size()) {
+            throw heap MlException("Masks.combine: shape mismatch");
+        }
+        Tensor<float32> out = a.copy();
+        int64 i = 0;
+        while (i < out.size()) {
+            out.flatSet(i, out.flatGet(i) + b.flatGet(i));
+            i = i + 1;
+        }
+        return #out;
+    }
+}

@@ -1,0 +1,133 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * One transformer decoder layer (torch `TransformerDecoderLayer`,
+ * post-norm, ReLU feed-forward, spec §13.3): masked self-attention over
+ * the target, CROSS-ATTENTION over the encoder memory (§13.3.1), then
+ * the position-wise feed-forward — each with a residual and LayerNorm:
+ *
+ * ```
+ * x = norm1(x + selfAttn(x, selfMask))
+ * x = norm2(x + crossAttn(x, memory, memMask))
+ * x = norm3(x + linear2(relu(linear1(x))))
+ * ```
+ *
+ * Field names mirror torch's (`self_attn`, `multihead_attn`, `linear1`,
+ * `linear2`, `norm1..3`) so checkpoint keys line up at the layer level;
+ * the per-projection split under each attention block (`wq/wk/wv/wo` vs
+ * torch's fused `in_proj`) is `ml.io`'s mapping business (§13.6).
+ * Dropout is omitted (parity fixtures run torch at `dropout=0`; a caller
+ * wanting it composes {@link Dropout} outside).
+ *
+ * The entry point is {@link #decode} — a decoder needs two inputs and
+ * two masks, so plain single-input `forward` throws with directions.
+ */
+public class TransformerDecoderLayer extends Module {
+    MultiheadAttention self_attn;
+    MultiheadAttention multihead_attn;
+    Linear linear1;
+    Linear linear2;
+    LayerNorm norm1;
+    LayerNorm norm2;
+    LayerNorm norm3;
+    int64 embed;
+
+    public TransformerDecoderLayer(int64 embed, int32 heads, int64 ff,
+                                   uint64 seed) {
+        this.self_attn = heap MultiheadAttention(embed, heads, seed);
+        this.multihead_attn = heap MultiheadAttention(embed, heads,
+            seed + 10);
+        this.linear1 = heap Linear(embed, ff, seed + 20);
+        this.linear2 = heap Linear(ff, embed, seed + 21);
+        this.norm1 = heap LayerNorm(embed, 0.00001);
+        this.norm2 = heap LayerNorm(embed, 0.00001);
+        this.norm3 = heap LayerNorm(embed, 0.00001);
+        this.embed = embed;
+        return;
+    }
+
+    public MultiheadAttention selfAttention() {
+        return this.self_attn;
+    }
+
+    public MultiheadAttention crossAttention() {
+        return this.multihead_attn;
+    }
+
+    /** LayerNorm over the last axis of a `(B, T, E)` tensor: flatten,
+     *  normalize, restore. */
+    GradTensor norm3d(GradTape<float32> tape, LayerNorm n, GradTensor x,
+                      int64 b, int64 t) {
+        int64[] s2 = heap int64[2];
+        s2[0] = b * t;
+        s2[1] = this.embed;
+        GradTensor flat = tape.reshape(x, s2);
+        GradTensor y = n.forward(tape, flat);
+        int64[] s3 = heap int64[3];
+        s3[0] = b;
+        s3[1] = t;
+        s3[2] = this.embed;
+        return tape.reshape(y, s3);
+    }
+
+    /** Decode `x (B, Tq, E)` against encoder `memory (B, Tk, E)` under a
+     *  self mask `(B, Tq, Tq)` and a memory mask `(B, Tq, Tk)` (§13.3).
+     *  Pass `hasSelfMask`/`hasMemMask` false to run unmasked. */
+    public GradTensor decode(GradTape<float32> tape, GradTensor x,
+                             GradTensor memory, boolean hasSelfMask,
+                             Tensor<float32> selfMask, boolean hasMemMask,
+                             Tensor<float32> memMask) {
+        Tensor<float32> xv = tape.valueOf(x);
+        int64 b = xv.shapeAt(0);
+        int64 tq = xv.shapeAt(1);
+
+        GradTensor sa;
+        if (hasSelfMask) {
+            sa = this.self_attn.forwardMasked(tape, x, selfMask);
+        } else {
+            sa = this.self_attn.forward(tape, x);
+        }
+        GradTensor x1 = this.norm3d(tape, this.norm1, tape.add(x, sa),
+            b, tq);
+
+        GradTensor ca;
+        if (hasMemMask) {
+            ca = this.multihead_attn.forwardCross(tape, x1, memory,
+                memMask);
+        } else {
+            Tensor<float32> mv = tape.valueOf(memory);
+            int64[] zs = heap int64[3];
+            zs[0] = b;
+            zs[1] = tq;
+            zs[2] = mv.shapeAt(1);
+            Tensor<float32> zero = Tensor.zeros<float32>(zs);
+            ca = this.multihead_attn.forwardCross(tape, x1, memory, zero);
+        }
+        GradTensor x2 = this.norm3d(tape, this.norm2, tape.add(x1, ca),
+            b, tq);
+
+        int64[] s2 = heap int64[2];
+        s2[0] = b * tq;
+        s2[1] = this.embed;
+        GradTensor flat = tape.reshape(x2, s2);
+        GradTensor h = tape.relu(this.linear1.forward(tape, flat));
+        GradTensor f2 = this.linear2.forward(tape, h);
+        int64[] s3 = heap int64[3];
+        s3[0] = b;
+        s3[1] = tq;
+        s3[2] = this.embed;
+        GradTensor ff3 = tape.reshape(f2, s3);
+        return this.norm3d(tape, this.norm3, tape.add(x2, ff3), b, tq);
+    }
+
+    /** A decoder layer needs `(x, memory, masks)` — use {@link #decode}. */
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        throw heap MlException("TransformerDecoderLayer: use decode(tape, "
+            + "x, memory, ...) — a decoder needs the encoder memory");
+    }
+}

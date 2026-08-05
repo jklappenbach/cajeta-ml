@@ -1,0 +1,402 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Masks;
+import dev.cajeta.ml.nn.MultiheadAttention;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.nn.TransformerDecoderLayer;
+import dev.cajeta.ml.nn.TransformerDecoder;
+
+/**
+ * cajeta-ml-v3 §13 plan 2.1 — encoder-decoder attention and masking
+ * (spec §13.3). The decoder layer pins END TO END against torch
+ * 2.13.0+cpu `TransformerDecoderLayer` with explicit grid weights
+ * (tools/fixtures/gen_decoder.py, recorded 2026-08-05); the causal mask
+ * is verified STRUCTURALLY (attention weights exactly zero above the
+ * diagonal — a subtly wrong mask leaks the future while training
+ * beautifully); padded positions get EXACTLY zero gradient; masks
+ * compose; varying per-batch lengths behave.
+ */
+public class DecoderTest {
+
+    public DecoderTest() { return; }
+
+    /** The fixture's parameter formula: (((f+off) % 5)·0.5 − 1)·0.2. */
+    static float32 gv(int64 f, int64 off) {
+        int64 m = f + off - ((f + off) / (int64) 5) * (int64) 5;
+        return (float32) (((float64) m * 0.5 - 1.0) * 0.2);
+    }
+
+    /** Fill a grid tensor with {@link #gv} values. */
+    static void fill(Tensor<float32> t, int64 off) {
+        int64 i = 0;
+        while (i < t.size()) {
+            t.flatSet(i, DecoderTest.gv(i, off));
+            i = i + 1;
+        }
+        return;
+    }
+
+    static boolean near(float32 a, float64 b, float64 tol) {
+        float64 d = (float64) a - b;
+        if (d < 0.0) { d = 0.0 - d; }
+        return d < tol;
+    }
+
+    /** Set one attention block's 8 params (wq/wk/wv w+b, wo w+b) from
+     *  torch's fused in_proj layout at the given fixture offsets.
+     *  `ps` is the block's parameters() slice starting at `base`. */
+    static void setAttention(Parameter[] ps, int32 base, int64 offW,
+                             int64 offB, int64 offOw, int64 offOb) {
+        // wq/wk/wv weight: ours (in=4, out=4) = transpose of torch's
+        // in_proj rows [proj*4 + o][i], f = (proj*4 + o)*4 + i.
+        int32 proj = 0;
+        while (proj < 3) {
+            Tensor<float32> w = ps[base + proj * 2].get();
+            int64 i = 0;
+            while (i < 4) {
+                int64 o = 0;
+                while (o < 4) {
+                    w.flatSet(i * 4 + o, DecoderTest.gv(
+                        ((int64) proj * 4 + o) * 4 + i, offW));
+                    o = o + 1;
+                }
+                i = i + 1;
+            }
+            Tensor<float32> bv = ps[base + proj * 2 + 1].get();
+            int64 o2 = 0;
+            while (o2 < 4) {
+                bv.set1(o2, DecoderTest.gv((int64) proj * 4 + o2, offB));
+                o2 = o2 + 1;
+            }
+            proj = proj + 1;
+        }
+        // wo: ours (4,4) = transpose of torch out_proj (4,4).
+        Tensor<float32> ow = ps[base + 6].get();
+        int64 i2 = 0;
+        while (i2 < 4) {
+            int64 o = 0;
+            while (o < 4) {
+                ow.flatSet(i2 * 4 + o, DecoderTest.gv(o * 4 + i2, offOw));
+                o = o + 1;
+            }
+            i2 = i2 + 1;
+        }
+        Tensor<float32> ob = ps[base + 7].get();
+        int64 o3 = 0;
+        while (o3 < 4) {
+            ob.set1(o3, DecoderTest.gv(o3, offOb));
+            o3 = o3 + 1;
+        }
+        return;
+    }
+
+    // 2.1.1 / 2.1.5 / 2.1.6 — the full decoder layer matches torch's
+    // TransformerDecoderLayer end to end: causal self mask + a memory
+    // padding mask with VARYING lengths (batch 0 all 4 keys, batch 1
+    // only 3).
+    @Test
+    public void decoderLayerMatchesTorchEndToEnd() {
+        TransformerDecoderLayer layer = heap TransformerDecoderLayer(
+            (int64) 4, (int32) 2, (int64) 8, (uint64) 1);
+        Parameter[] ps = layer.parameters();
+        Assert.equals((int64) 26, (int64) ps.count());
+        // self_attn (fixture offsets 1/4/7/10), multihead_attn
+        // (13/16/19/22).
+        DecoderTest.setAttention(ps, (int32) 0, (int64) 1, (int64) 4,
+            (int64) 7, (int64) 10);
+        DecoderTest.setAttention(ps, (int32) 8, (int64) 13, (int64) 16,
+            (int64) 19, (int64) 22);
+        // linear1: ours (4,8) = transpose of torch (8,4), off 25/28.
+        Tensor<float32> l1w = ps[16].get();
+        int64 i = 0;
+        while (i < 4) {
+            int64 o = 0;
+            while (o < 8) {
+                l1w.flatSet(i * 8 + o, DecoderTest.gv(o * 4 + i,
+                    (int64) 25));
+                o = o + 1;
+            }
+            i = i + 1;
+        }
+        DecoderTest.fill(ps[17].get(), (int64) 28);
+        // linear2: ours (8,4) = transpose of torch (4,8), off 31/34.
+        Tensor<float32> l2w = ps[18].get();
+        i = 0;
+        while (i < 8) {
+            int64 o = 0;
+            while (o < 4) {
+                l2w.flatSet(i * 4 + o, DecoderTest.gv(o * 8 + i,
+                    (int64) 31));
+                o = o + 1;
+            }
+            i = i + 1;
+        }
+        DecoderTest.fill(ps[19].get(), (int64) 34);
+        // norms 1..3: weight/bias direct, offs 37/40, 43/46, 49/52.
+        DecoderTest.fill(ps[20].get(), (int64) 37);
+        DecoderTest.fill(ps[21].get(), (int64) 40);
+        DecoderTest.fill(ps[22].get(), (int64) 43);
+        DecoderTest.fill(ps[23].get(), (int64) 46);
+        DecoderTest.fill(ps[24].get(), (int64) 49);
+        DecoderTest.fill(ps[25].get(), (int64) 52);
+
+        GradTape<float32> tape = heap GradTape<float32>();
+        layer.bindParameters(tape);
+        int64[] ts = heap int64[3];
+        ts[0] = 2;
+        ts[1] = 3;
+        ts[2] = 4;
+        Tensor<float32> tgt = Tensor.zeros<float32>(ts);
+        DecoderTest.fill(tgt, (int64) 0);
+        int64[] ms = heap int64[3];
+        ms[0] = 2;
+        ms[1] = 4;
+        ms[2] = 4;
+        Tensor<float32> mem = Tensor.zeros<float32>(ms);
+        DecoderTest.fill(mem, (int64) 2);
+        GradTensor x = tape.leaf(tgt, false);
+        GradTensor m = tape.leaf(mem, false);
+        Tensor<float32> selfMask = Masks.causal((int64) 2, (int64) 3);
+        int64[] lens = heap int64[2];
+        lens[0] = 4;
+        lens[1] = 3;
+        Tensor<float32> memMask = Masks.keyPadding(lens, (int64) 3,
+            (int64) 4);
+        GradTensor y = layer.decode(tape, x, m, true, selfMask, true,
+            memMask);
+        Tensor<float32> yv = tape.valueOf(y);
+        float64[] ref = heap float64[24];
+        ref[0] = 0.08016250282526016;
+        ref[1] = 0.25259461998939514;
+        ref[2] = 0.3081977963447571;
+        ref[3] = 0.0 - 0.20000000298023224;
+        ref[4] = 0.10969362407922745;
+        ref[5] = 0.29121214151382446;
+        ref[6] = 0.2958356440067291;
+        ref[7] = 0.0 - 0.20000000298023224;
+        ref[8] = 0.0 - 0.3138783276081085;
+        ref[9] = 0.056121475994586945;
+        ref[10] = 0.18584828078746796;
+        ref[11] = 0.0 - 0.20000000298023224;
+        ref[12] = 0.10570438951253891;
+        ref[13] = 0.3051793575286865;
+        ref[14] = 0.28789737820625305;
+        ref[15] = 0.0 - 0.20000000298023224;
+        ref[16] = 0.08602365851402283;
+        ref[17] = 0.2597019374370575;
+        ref[18] = 0.3062509000301361;
+        ref[19] = 0.0 - 0.20000000298023224;
+        ref[20] = 0.08560439944267273;
+        ref[21] = 0.25901657342910767;
+        ref[22] = 0.30647268891334534;
+        ref[23] = 0.0 - 0.20000000298023224;
+        int64 e = 0;
+        while (e < 24) {
+            Assert.isTrue(DecoderTest.near(yv.flatGet(e), ref[e],
+                0.00002));
+            e = e + 1;
+        }
+        layer.unbindParameters();
+    }
+
+    // 2.1.2 / 2.3.1 — the causal mask is verified STRUCTURALLY: the
+    // softmaxed attention matrix is lower-triangular with EXACT zeros
+    // above the diagonal, and rows still sum to 1.
+    @Test
+    public void causalMaskIsStructurallyLowerTriangular() {
+        MultiheadAttention at = heap MultiheadAttention((int64) 4,
+            (int32) 2, (uint64) 3);
+        GradTape<float32> tape = heap GradTape<float32>();
+        at.bindParameters(tape);
+        int64[] xs = heap int64[3];
+        xs[0] = 1;
+        xs[1] = 3;
+        xs[2] = 4;
+        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        DecoderTest.fill(xv, (int64) 5);
+        GradTensor x = tape.leaf(xv, false);
+        at.forwardMasked(tape, x, Masks.causal((int64) 1, (int64) 3));
+        Tensor<float32> w = tape.valueOf(at.lastAttentionNode());
+        // (B·H, 3, 3) = (2, 3, 3).
+        int64 h = 0;
+        while (h < 2) {
+            int64 r = 0;
+            while (r < 3) {
+                float32 rowSum = 0.0f;
+                int64 c = 0;
+                while (c < 3) {
+                    float32 v = w.flatGet((h * 3 + r) * 3 + c);
+                    if (c > r) {
+                        Assert.isTrue(v == 0.0f);
+                    }
+                    rowSum = rowSum + v;
+                    c = c + 1;
+                }
+                Assert.isTrue(DecoderTest.near(rowSum, 1.0, 0.00001));
+                r = r + 1;
+            }
+            h = h + 1;
+        }
+        at.unbindParameters();
+    }
+
+    // 2.1.3 / 2.3.2 — padded key positions contribute nothing and their
+    // input rows receive EXACTLY zero gradient when the loss reads only
+    // valid outputs.
+    @Test
+    public void paddedPositionsGetExactlyZeroGradient() {
+        MultiheadAttention at = heap MultiheadAttention((int64) 4,
+            (int32) 2, (uint64) 4);
+        GradTape<float32> tape = heap GradTape<float32>();
+        at.bindParameters(tape);
+        int64[] xs = heap int64[3];
+        xs[0] = 1;
+        xs[1] = 4;
+        xs[2] = 4;
+        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        DecoderTest.fill(xv, (int64) 6);
+        GradTensor x = tape.leaf(xv, true);
+        int64[] lens = heap int64[1];
+        lens[0] = 2;
+        GradTensor out = at.forwardMasked(tape, x,
+            Masks.keyPadding(lens, (int64) 4, (int64) 4));
+        // Loss over the VALID positions only: a constant 0/1 selector
+        // (slice backward is rank-2-only in v3; 0·x keeps exact zeros).
+        Tensor<float32> sel = Tensor.zeros<float32>(xs);
+        int64 s = 0;
+        while (s < 8) {
+            sel.flatSet(s, 1.0f);
+            s = s + 1;
+        }
+        GradTensor selLeaf = tape.leaf(sel, false);
+        GradTensor loss = tape.sum(tape.mul(out, selLeaf));
+        tape.backward(loss);
+        Tensor<float32> g = tape.gradOf(x);
+        // Tokens 2 and 3 (flat 8..15): exactly zero.
+        int64 i = 8;
+        while (i < 16) {
+            Assert.isTrue(g.flatGet(i) == 0.0f);
+            i = i + 1;
+        }
+        // The valid tokens carry gradient.
+        boolean any = false;
+        i = 0;
+        while (i < 8) {
+            if (g.flatGet(i) != 0.0f) {
+                any = true;
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(any);
+        at.unbindParameters();
+    }
+
+    // 2.1.4 / 2.1.6 — causal and padding masks COMPOSE, and per-batch
+    // varying lengths mask independently: batch 0 attends its column 2,
+    // batch 1's column 2 is exactly zero everywhere.
+    @Test
+    public void masksComposeAndVaryPerBatch() {
+        MultiheadAttention at = heap MultiheadAttention((int64) 4,
+            (int32) 2, (uint64) 5);
+        GradTape<float32> tape = heap GradTape<float32>();
+        at.bindParameters(tape);
+        int64[] xs = heap int64[3];
+        xs[0] = 2;
+        xs[1] = 3;
+        xs[2] = 4;
+        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        DecoderTest.fill(xv, (int64) 7);
+        GradTensor x = tape.leaf(xv, false);
+        int64[] lens = heap int64[2];
+        lens[0] = 3;
+        lens[1] = 2;
+        Tensor<float32> combined = Masks.combine(
+            Masks.causal((int64) 2, (int64) 3),
+            Masks.keyPadding(lens, (int64) 3, (int64) 3));
+        at.forwardMasked(tape, x, combined);
+        Tensor<float32> w = tape.valueOf(at.lastAttentionNode());
+        // (B·H, 3, 3) = (4, 3, 3); heads 0-1 = batch 0, heads 2-3 = batch 1.
+        int64 h = 0;
+        while (h < 4) {
+            int64 r = 0;
+            while (r < 3) {
+                int64 c = 0;
+                while (c < 3) {
+                    float32 v = w.flatGet((h * 3 + r) * 3 + c);
+                    if (c > r) {
+                        Assert.isTrue(v == 0.0f);      // causal everywhere
+                    }
+                    if (h >= (int64) 2 && c == (int64) 2) {
+                        Assert.isTrue(v == 0.0f);      // batch 1 padding
+                    }
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            h = h + 1;
+        }
+        // Batch 0 row 2 DOES attend its column 2 (no padding there).
+        boolean attends = false;
+        h = 0;
+        while (h < 2) {
+            if (w.flatGet((h * 3 + 2) * 3 + 2) > 0.0f) {
+                attends = true;
+            }
+            h = h + 1;
+        }
+        Assert.isTrue(attends);
+        at.unbindParameters();
+    }
+
+    // 2.2.3 — the stack: layers compose against one memory, output keeps
+    // shape, and repeated runs are bit-identical.
+    @Test
+    public void decoderStackRunsDeterministically() {
+        TransformerDecoder dec = heap TransformerDecoder((int64) 2,
+            (int64) 4, (int32) 2, (int64) 8, (uint64) 9);
+        int64[] xs = heap int64[3];
+        xs[0] = 1;
+        xs[1] = 3;
+        xs[2] = 4;
+        Tensor<float32> tgt = Tensor.zeros<float32>(xs);
+        DecoderTest.fill(tgt, (int64) 0);
+        int64[] ms = heap int64[3];
+        ms[0] = 1;
+        ms[1] = 4;
+        ms[2] = 4;
+        Tensor<float32> mem = Tensor.zeros<float32>(ms);
+        DecoderTest.fill(mem, (int64) 2);
+        Tensor<float32> selfMask = Masks.causal((int64) 1, (int64) 3);
+        int64[] zs = heap int64[3];
+        zs[0] = 1;
+        zs[1] = 3;
+        zs[2] = 4;
+        Tensor<float32> noMem = Tensor.zeros<float32>(zs);
+
+        GradTape<float32> t1 = heap GradTape<float32>();
+        dec.bindParameters(t1);
+        GradTensor y1 = dec.decode(t1, t1.leaf(tgt, false),
+            t1.leaf(mem, false), true, selfMask, false, noMem);
+        Tensor<float32> v1 = t1.valueOf(y1).copy();
+        dec.unbindParameters();
+        Assert.equals((int64) 1, v1.shapeAt(0));
+        Assert.equals((int64) 3, v1.shapeAt(1));
+        Assert.equals((int64) 4, v1.shapeAt(2));
+
+        GradTape<float32> t2 = heap GradTape<float32>();
+        dec.bindParameters(t2);
+        GradTensor y2 = dec.decode(t2, t2.leaf(tgt, false),
+            t2.leaf(mem, false), true, selfMask, false, noMem);
+        Tensor<float32> v2 = t2.valueOf(y2);
+        int64 i = 0;
+        while (i < v1.size()) {
+            Assert.isTrue(v1.flatGet(i) == v2.flatGet(i));
+            i = i + 1;
+        }
+        dec.unbindParameters();
+    }
+}
