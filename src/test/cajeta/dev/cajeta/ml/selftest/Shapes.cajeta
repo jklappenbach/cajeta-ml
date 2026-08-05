@@ -200,8 +200,10 @@ public final class Shapes {
         return #y;
     }
 
-    /** Mixed units (§3.4): col 0 in kilometres (span ~1), col 1 in grams
-     *  (span ~50000) — the kilometre must not weigh the same as the gram. */
+    /** Mixed units (§3.4): col 0 in kilometres carries the REAL structure —
+     *  two tight groups at 0 km and 1 km — while col 1 in grams (span
+     *  ~50000) is pure noise. Unscaled, the gram axis swamps the kilometre
+     *  axis and clustering follows noise; scaled, the true grouping wins. */
     public static #Tensor<float64> mixedUnits(uint64 seed) {
         Generator gen = heap Generator(seed);
         Tensor<float32> u = gen.uniform((int64) 80);
@@ -211,11 +213,26 @@ public final class Shapes {
         Tensor<float64> x = Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 40) {
-            x.flatSet(i * 2, (float64) u.get1(i * 2));
+            float64 c = 0.0;
+            if (i >= (int64) 20) {
+                c = 1.0;
+            }
+            x.flatSet(i * 2, c + 0.05 * (float64) u.get1(i * 2));
             x.flatSet(i * 2 + 1, 50000.0 * (float64) u.get1(i * 2 + 1));
             i = i + 1;
         }
         return #x;
+    }
+
+    /** Labels for `mixedUnits`: the kilometre grouping, 20×0 then 20×1. */
+    public static #int64[] mixedUnitLabels() {
+        int64[] y = heap int64[40];
+        int64 i = 20;
+        while (i < 40) {
+            y[i] = 1;
+            i = i + 1;
+        }
+        return #y;
     }
 
     /** max − min of column `c` — the span the mixed-unit test compares. */
