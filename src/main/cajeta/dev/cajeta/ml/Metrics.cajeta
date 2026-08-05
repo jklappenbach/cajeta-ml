@@ -1,6 +1,10 @@
 package dev.cajeta.ml;
 
 import cajeta.math.Tensor;
+import cajeta.math.distance.Distance;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+import cajeta.math.random.Generator;
 
 /**
  * The metric surface (sklearn.metrics parity): pure static functions over
@@ -10,6 +14,17 @@ import cajeta.math.Tensor;
  * confusion matrix, log-loss (sklearn's 1e-15 clipping), ROC-AUC (the
  * Mann-Whitney rank form — average ranks, so ties match sklearn's
  * trapezoidal result exactly).
+ *
+ * Unsupervised (spec ml-unsupervised §8): internal metrics — silhouette
+ * (aggregate + per-sample; UNDEFINED at one cluster or n clusters, and it
+ * throws rather than mislead), Davies-Bouldin (lower better),
+ * Calinski-Harabasz (higher better) — plus external benchmarking against
+ * ground truth (adjusted Rand, NMI with arithmetic normalization) and the
+ * K-means elbow sweep. The three internal metrics can DISAGREE (silhouette
+ * and DB reward merging two close tight clusters; CH rewards the true
+ * split) — offering all three is the point. Cluster labels are float64
+ * values compared exactly; any distinct values work, including DBSCAN's
+ * `-1` (treated as its own group by the external metrics).
  */
 public final class Metrics {
 
@@ -245,5 +260,393 @@ public final class Metrics {
         }
         float64 fp = (float64) nPos;
         return (rankSum - fp * (fp + 1.0) / 2.0) / (fp * (float64) nNeg);
+    }
+
+    /** Remap arbitrary label values to contiguous ids 0..k-1 in
+     *  first-appearance order; returns k. `out` must be length n. */
+    static int64 contiguousIds(Tensor<float64> labels, int64[] out) {
+        int64 n = labels.shapeAt(0);
+        float64[] seen = heap float64[n];
+        int64 k = 0;
+        int64 i = 0;
+        while (i < n) {
+            float64 v = labels.get1(i);
+            int64 id = 0 - (int64) 1;
+            int64 t = 0;
+            while (t < k) {
+                if (seen[t] == v) {
+                    id = t;
+                    t = k;
+                } else {
+                    t = t + 1;
+                }
+            }
+            if (id < (int64) 0) {
+                seen[k] = v;
+                id = k;
+                k = k + 1;
+            }
+            out[i] = id;
+            i = i + 1;
+        }
+        return k;
+    }
+
+    /** Per-sample silhouettes `(n,)` (§8.1, Euclidean): `a` the mean
+     *  intra-cluster distance, `b` the best neighbouring cluster's mean,
+     *  `s = (b-a)/max(a,b)`; singleton clusters score 0 (sklearn). */
+    public static #Tensor<float64> silhouetteSamples(Tensor<float64> x,
+                                                     Tensor<float64> labels) {
+        int64 n = x.shapeAt(0);
+        int64[] lab = heap int64[n];
+        int64 k = Metrics.contiguousIds(labels, lab);
+        if (k < 2 || k >= n) {
+            throw heap MlException(
+                "Metrics.silhouetteSamples: silhouette is undefined for "
+                + "1 cluster or n clusters (need 2 <= k <= n-1)");
+        }
+        Metric eu = heap Euclidean();
+        Tensor<float64> dm = Distance.pdist(x, eu);
+        int64[] size = heap int64[k];
+        int64 i = 0;
+        while (i < n) {
+            size[lab[i]] = size[lab[i]] + 1;
+            i = i + 1;
+        }
+        float64[] out = heap float64[n];
+        float64[] sums = heap float64[k];
+        i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                sums[c] = 0.0;
+                c = c + 1;
+            }
+            int64 j = 0;
+            while (j < n) {
+                if (j != i) {
+                    sums[lab[j]] = sums[lab[j]] + dm.get2(i, j);
+                }
+                j = j + 1;
+            }
+            int64 own = lab[i];
+            if (size[own] == (int64) 1) {
+                out[i] = 0.0;
+            } else {
+                float64 a = sums[own] / (float64) (size[own] - (int64) 1);
+                float64 b = 0.0;
+                boolean first = true;
+                c = 0;
+                while (c < k) {
+                    if (c != own) {
+                        float64 m = sums[c] / (float64) size[c];
+                        if (first || m < b) {
+                            b = m;
+                            first = false;
+                        }
+                    }
+                    c = c + 1;
+                }
+                float64 mx = a;
+                if (b > mx) {
+                    mx = b;
+                }
+                out[i] = (b - a) / mx;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** Mean silhouette (§8.1); throws on the §8.2 degenerate cases. */
+    public static float64 silhouetteScore(Tensor<float64> x,
+                                          Tensor<float64> labels) {
+        Tensor<float64> s = Metrics.silhouetteSamples(x, labels);
+        int64 n = s.shapeAt(0);
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            acc = acc + s.get1(i);
+            i = i + 1;
+        }
+        return acc / (float64) n;
+    }
+
+    /** Davies-Bouldin (§8.3, lower is better): mean over clusters of the
+     *  worst (Si+Sj)/Mij ratio, S the mean distance to centroid. */
+    public static float64 daviesBouldin(Tensor<float64> x,
+                                        Tensor<float64> labels) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64[] lab = heap int64[n];
+        int64 k = Metrics.contiguousIds(labels, lab);
+        if (k < 2) {
+            throw heap MlException(
+                "Metrics.daviesBouldin: need at least 2 clusters");
+        }
+        float64[] cen = heap float64[k * p];
+        int64[] size = heap int64[k];
+        int64 i = 0;
+        while (i < n) {
+            int64 c = lab[i];
+            size[c] = size[c] + 1;
+            int64 j = 0;
+            while (j < p) {
+                cen[c * p + j] = cen[c * p + j] + x.get2(i, j);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64 c2 = 0;
+        while (c2 < k) {
+            int64 j = 0;
+            while (j < p) {
+                cen[c2 * p + j] = cen[c2 * p + j] / (float64) size[c2];
+                j = j + 1;
+            }
+            c2 = c2 + 1;
+        }
+        float64[] s = heap float64[k];
+        i = 0;
+        while (i < n) {
+            int64 c = lab[i];
+            float64 d2 = 0.0;
+            int64 j = 0;
+            while (j < p) {
+                float64 d = x.get2(i, j) - cen[c * p + j];
+                d2 = d2 + d * d;
+                j = j + 1;
+            }
+            s[c] = s[c] + Math.sqrt(d2);
+            i = i + 1;
+        }
+        c2 = 0;
+        while (c2 < k) {
+            s[c2] = s[c2] / (float64) size[c2];
+            c2 = c2 + 1;
+        }
+        float64 total = 0.0;
+        int64 a = 0;
+        while (a < k) {
+            float64 worst = 0.0;
+            int64 b = 0;
+            while (b < k) {
+                if (b != a) {
+                    float64 m2 = 0.0;
+                    int64 j = 0;
+                    while (j < p) {
+                        float64 d = cen[a * p + j] - cen[b * p + j];
+                        m2 = m2 + d * d;
+                        j = j + 1;
+                    }
+                    float64 r = (s[a] + s[b]) / Math.sqrt(m2);
+                    if (r > worst) {
+                        worst = r;
+                    }
+                }
+                b = b + 1;
+            }
+            total = total + worst;
+            a = a + 1;
+        }
+        return total / (float64) k;
+    }
+
+    /** Calinski-Harabasz (§8.3, higher is better): the between/within
+     *  variance ratio `(B/(k-1)) / (W/(n-k))`. */
+    public static float64 calinskiHarabasz(Tensor<float64> x,
+                                           Tensor<float64> labels) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64[] lab = heap int64[n];
+        int64 k = Metrics.contiguousIds(labels, lab);
+        if (k < 2 || k >= n) {
+            throw heap MlException(
+                "Metrics.calinskiHarabasz: need 2 <= k <= n-1");
+        }
+        float64[] cen = heap float64[k * p];
+        float64[] gm = heap float64[p];
+        int64[] size = heap int64[k];
+        int64 i = 0;
+        while (i < n) {
+            int64 c = lab[i];
+            size[c] = size[c] + 1;
+            int64 j = 0;
+            while (j < p) {
+                cen[c * p + j] = cen[c * p + j] + x.get2(i, j);
+                gm[j] = gm[j] + x.get2(i, j);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64 j2 = 0;
+        while (j2 < p) {
+            gm[j2] = gm[j2] / (float64) n;
+            j2 = j2 + 1;
+        }
+        int64 c2 = 0;
+        while (c2 < k) {
+            int64 j = 0;
+            while (j < p) {
+                cen[c2 * p + j] = cen[c2 * p + j] / (float64) size[c2];
+                j = j + 1;
+            }
+            c2 = c2 + 1;
+        }
+        float64 between = 0.0;
+        c2 = 0;
+        while (c2 < k) {
+            float64 d2 = 0.0;
+            int64 j = 0;
+            while (j < p) {
+                float64 d = cen[c2 * p + j] - gm[j];
+                d2 = d2 + d * d;
+                j = j + 1;
+            }
+            between = between + (float64) size[c2] * d2;
+            c2 = c2 + 1;
+        }
+        float64 within = 0.0;
+        i = 0;
+        while (i < n) {
+            int64 c = lab[i];
+            int64 j = 0;
+            while (j < p) {
+                float64 d = x.get2(i, j) - cen[c * p + j];
+                within = within + d * d;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return (between / (float64) (k - (int64) 1))
+            / (within / (float64) (n - k));
+    }
+
+    /** Adjusted Rand index (§8.4): pair-counting Rand, chance-corrected —
+     *  1 identical partitions, ~0 random agreement. */
+    public static float64 adjustedRand(Tensor<float64> yTrue,
+                                       Tensor<float64> yPred) {
+        int64 n = yTrue.shapeAt(0);
+        int64[] a = heap int64[n];
+        int64[] b = heap int64[n];
+        int64 ka = Metrics.contiguousIds(yTrue, a);
+        int64 kb = Metrics.contiguousIds(yPred, b);
+        float64[] cont = heap float64[ka * kb];
+        float64[] ra = heap float64[ka];
+        float64[] rb = heap float64[kb];
+        int64 i = 0;
+        while (i < n) {
+            cont[a[i] * kb + b[i]] = cont[a[i] * kb + b[i]] + 1.0;
+            ra[a[i]] = ra[a[i]] + 1.0;
+            rb[b[i]] = rb[b[i]] + 1.0;
+            i = i + 1;
+        }
+        float64 sumIj = 0.0;
+        i = 0;
+        while (i < ka * kb) {
+            sumIj = sumIj + cont[i] * (cont[i] - 1.0) / 2.0;
+            i = i + 1;
+        }
+        float64 sumA = 0.0;
+        i = 0;
+        while (i < ka) {
+            sumA = sumA + ra[i] * (ra[i] - 1.0) / 2.0;
+            i = i + 1;
+        }
+        float64 sumB = 0.0;
+        i = 0;
+        while (i < kb) {
+            sumB = sumB + rb[i] * (rb[i] - 1.0) / 2.0;
+            i = i + 1;
+        }
+        float64 nn = (float64) n;
+        float64 total = nn * (nn - 1.0) / 2.0;
+        float64 expected = sumA * sumB / total;
+        float64 maxIdx = (sumA + sumB) / 2.0;
+        if (maxIdx == expected) {
+            return 1.0;
+        }
+        return (sumIj - expected) / (maxIdx - expected);
+    }
+
+    /** Normalized mutual information (§8.4), arithmetic normalization
+     *  (the sklearn default): `MI / ((H(a)+H(b))/2)`. */
+    public static float64 nmi(Tensor<float64> yTrue,
+                              Tensor<float64> yPred) {
+        int64 n = yTrue.shapeAt(0);
+        int64[] a = heap int64[n];
+        int64[] b = heap int64[n];
+        int64 ka = Metrics.contiguousIds(yTrue, a);
+        int64 kb = Metrics.contiguousIds(yPred, b);
+        float64[] cont = heap float64[ka * kb];
+        float64[] ra = heap float64[ka];
+        float64[] rb = heap float64[kb];
+        int64 i = 0;
+        while (i < n) {
+            cont[a[i] * kb + b[i]] = cont[a[i] * kb + b[i]] + 1.0;
+            ra[a[i]] = ra[a[i]] + 1.0;
+            rb[b[i]] = rb[b[i]] + 1.0;
+            i = i + 1;
+        }
+        float64 nn = (float64) n;
+        float64 mi = 0.0;
+        int64 u = 0;
+        while (u < ka) {
+            int64 v = 0;
+            while (v < kb) {
+                float64 c = cont[u * kb + v];
+                if (c > 0.0) {
+                    mi = mi + (c / nn)
+                        * Math.log(nn * c / (ra[u] * rb[v]));
+                }
+                v = v + 1;
+            }
+            u = u + 1;
+        }
+        float64 ha = 0.0;
+        i = 0;
+        while (i < ka) {
+            ha = ha - (ra[i] / nn) * Math.log(ra[i] / nn);
+            i = i + 1;
+        }
+        float64 hb = 0.0;
+        i = 0;
+        while (i < kb) {
+            hb = hb - (rb[i] / nn) * Math.log(rb[i] / nn);
+            i = i + 1;
+        }
+        float64 denom = (ha + hb) / 2.0;
+        if (denom <= 0.0) {
+            return 0.0;
+        }
+        float64 r = mi / denom;
+        if (r > 1.0) {
+            return 1.0;
+        }
+        return r;
+    }
+
+    /** Inertias for seeded K-means fits at k = 1..kMax (§8.5) — the
+     *  elbow curve, as data. */
+    public static #float64[] kmeansElbow(Tensor<float64> x, int64 kMax,
+                                         uint64 seed) {
+        if (kMax < 1) {
+            throw heap MlException("Metrics.kmeansElbow: kMax must be >= 1");
+        }
+        int64 n = x.shapeAt(0);
+        int64[] ys = heap int64[1];
+        ys[0] = n;
+        Tensor<float64> y = Tensor.zeros<float64>(ys);
+        float64[] out = heap float64[kMax];
+        int64 k = 1;
+        while (k <= kMax) {
+            KMeans km = heap KMeans(k, seed);
+            km.fit(x, y);
+            out[k - 1] = km.inertia();
+            k = k + 1;
+        }
+        return #out;
     }
 }
