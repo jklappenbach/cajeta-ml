@@ -1,0 +1,341 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.SummaryResult;
+
+/**
+ * ml-classification-gaps plan Unit 4 — cost-aware and sparse logistic
+ * regression (spec §6), pinned against sklearn 1.9.0
+ * (gen_logistic_weights.py). The L1/elastic-net oracle is saga at
+ * tol 1e-12 (liblinear penalizes the intercept; saga matches §6.6's
+ * unpenalized intercept). The L2-penalized optimum is unique, so a tightly
+ * converged solver matches regardless of path.
+ */
+public class LogisticCostSparseTest {
+
+    public LogisticCostSparseTest() { return; }
+
+    static boolean near(float64 a, float64 b, float64 tol) {
+        float64 d = a - b;
+        if (d < 0.0) {
+            d = -d;
+        }
+        return d < tol;
+    }
+
+    /** 20 x 2 overlapping binary fixture (gen_logistic_weights.py). */
+    static #Tensor<float64> fixtureX() {
+        float64[] d = heap float64[40];
+        int64 i = 0;
+        while (i < 20) {
+            d[i * 2] = (float64) ((i * 7) % 13) * 0.3 - 1.8;
+            d[i * 2 + 1] = (float64) ((i * 5) % 11) * 0.35 - 1.6;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 20;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** y from the generator's threshold rule (printed and frozen). */
+    static #Tensor<float64> fixtureY() {
+        float64[] d = heap float64[20];
+        d[1] = 1.0;  d[2] = 1.0;  d[4] = 1.0;  d[6] = 1.0;
+        d[8] = 1.0;  d[9] = 1.0;  d[11] = 1.0; d[13] = 1.0;
+        d[16] = 1.0; d[18] = 1.0;
+        int64[] sh = heap int64[1];
+        sh[0] = 20;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** The 4-positive imbalanced labels. */
+    static #Tensor<float64> fixtureY2() {
+        float64[] d = heap float64[20];
+        d[3] = 1.0;
+        d[8] = 1.0;
+        d[15] = 1.0;
+        d[19] = 1.0;
+        int64[] sh = heap int64[1];
+        sh[0] = 20;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** The 20 x 5 wide fixture for sparse fits. */
+    static #Tensor<float64> fixtureXw() {
+        float64[] d = heap float64[100];
+        int64 i = 0;
+        while (i < 20) {
+            int64 j = 0;
+            while (j < 5) {
+                d[i * 5 + j] =
+                    (float64) ((i * (3 + j) + j * 2) % 9) * 0.3 - 1.2;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 20;
+        sh[1] = 5;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    // §6.1 — explicit class weights scale the likelihood, matching sklearn.
+    @Test
+    public void classWeightsMatchSklearn() {
+        float64[] w = heap float64[2];
+        w[0] = 1.0;
+        w[1] = 3.0;
+        LogisticRegression lr = heap LogisticRegression(1.0, 0.000000000001,
+            (int64) 10000, false, #w);
+        lr.fit(fixtureX(), fixtureY());
+        Tensor<float64> c = lr.coefMatrix();
+        Assert.isTrue(near(c.flatGet(0), 0.6285890840672702, 0.00001));
+        Assert.isTrue(near(c.flatGet(1), 0.637398419309217, 0.00001));
+        Assert.isTrue(near(lr.interceptVector().flatGet(0),
+            1.030584458989167, 0.00001));
+        float64[] q = heap float64[6];
+        Tensor<float64> x = fixtureX();
+        int64 i = 0;
+        while (i < 6) {
+            q[i] = x.flatGet(i);
+            i = i + 1;
+        }
+        int64[] qs = heap int64[2];
+        qs[0] = 3;
+        qs[1] = 2;
+        Tensor<float64> pr = lr.predictProba(Tensor.of<float64>(q, qs));
+        Assert.isTrue(near(pr.get2(0, 1), 0.24587898597348543, 0.00001));
+        Assert.isTrue(near(pr.get2(1, 1), 0.7883104128482471, 0.00001));
+        Assert.isTrue(near(pr.get2(2, 1), 0.7856258535685195, 0.00001));
+    }
+
+    // §6.2 — `balanced` reproduces sklearn's n/(K·n_k) weights.
+    @Test
+    public void balancedMatchesSklearn() {
+        LogisticRegression lr = heap LogisticRegression(1.0, 0.000000000001,
+            (int64) 10000, false, "balanced");
+        lr.fit(fixtureX(), fixtureY2());
+        Tensor<float64> c = lr.coefMatrix();
+        Assert.isTrue(near(c.flatGet(0), -0.08281229105189379, 0.00001));
+        Assert.isTrue(near(c.flatGet(1), 0.561383339679265, 0.00001));
+        Assert.isTrue(near(lr.interceptVector().flatGet(0),
+            -0.26572694897152455, 0.00001));
+    }
+
+    // §6.3 — sample weights compose multiplicatively with class weights.
+    @Test
+    public void sampleWeightsCompose() {
+        float64[] w = heap float64[2];
+        w[0] = 1.0;
+        w[1] = 2.0;
+        LogisticRegression lr = heap LogisticRegression(1.0, 0.000000000001,
+            (int64) 10000, false, #w);
+        float64[] sw = heap float64[20];
+        int64 i = 0;
+        while (i < 20) {
+            sw[i] = 1.0 + (float64) (i % 4) * 0.5;
+            i = i + 1;
+        }
+        int64[] ss = heap int64[1];
+        ss[0] = 20;
+        lr.fit(fixtureX(), fixtureY(), Tensor.of<float64>(sw, ss));
+        Tensor<float64> c = lr.coefMatrix();
+        Assert.isTrue(near(c.flatGet(0), 0.6377303313066048, 0.00001));
+        Assert.isTrue(near(c.flatGet(1), 0.5701127008988619, 0.00001));
+        Assert.isTrue(near(lr.interceptVector().flatGet(0),
+            0.4447113907022333, 0.00001));
+    }
+
+    // §6.1 multiclass — class weights under the softmax fit.
+    @Test
+    public void multiclassClassWeights() {
+        float64[] yd = heap float64[20];
+        yd[1] = 1.0;  yd[3] = 1.0;  yd[8] = 1.0;  yd[12] = 1.0;
+        yd[14] = 1.0; yd[16] = 1.0; yd[19] = 1.0;
+        yd[5] = 2.0;  yd[7] = 2.0;  yd[9] = 2.0;  yd[11] = 2.0;
+        yd[18] = 2.0;
+        int64[] ys = heap int64[1];
+        ys[0] = 20;
+        float64[] w = heap float64[3];
+        w[0] = 1.0;
+        w[1] = 2.0;
+        w[2] = 3.0;
+        LogisticRegression lr = heap LogisticRegression(1.0, 0.000000000001,
+            (int64) 10000, true, #w);
+        lr.fit(fixtureX(), Tensor.of<float64>(yd, ys));
+        float64[] q = heap float64[4];
+        Tensor<float64> x = fixtureX();
+        int64 i = 0;
+        while (i < 4) {
+            q[i] = x.flatGet(i);
+            i = i + 1;
+        }
+        int64[] qs = heap int64[2];
+        qs[0] = 2;
+        qs[1] = 2;
+        Tensor<float64> pr = lr.predictProba(Tensor.of<float64>(q, qs));
+        Assert.isTrue(near(pr.get2(0, 0), 0.7016540803713854, 0.0001));
+        Assert.isTrue(near(pr.get2(0, 1), 0.2519264857988911, 0.0001));
+        Assert.isTrue(near(pr.get2(0, 2), 0.04641943382972346, 0.0001));
+        Assert.isTrue(near(pr.get2(1, 1), 0.7735693393804202, 0.0001));
+    }
+
+    // §6.4 + §6.5 — the threshold knob moves the binary cut; the no-arg
+    // predict is unchanged; bad thresholds and multiclass use are loud.
+    @Test
+    public void thresholdPredict() {
+        LogisticRegression lr = heap LogisticRegression(1.0, 0.0000000001,
+            (int64) 1000);
+        lr.fit(fixtureX(), fixtureY());
+        Tensor<float64> x = fixtureX();
+        Tensor<float64> pr = lr.predictProba(x);
+        Tensor<float64> base = lr.predict(x);
+        Tensor<float64> hi = lr.predict(x, 0.9);
+        Tensor<float64> lo = lr.predict(x, 0.1);
+        int64 i = 0;
+        int64 nHi = 0;
+        int64 nLo = 0;
+        int64 nBase = 0;
+        while (i < 20) {
+            float64 p1 = pr.get2(i, 1);
+            float64 expHi = 0.0;
+            if (p1 > 0.9) {
+                expHi = 1.0;
+            }
+            Assert.isTrue(near(hi.flatGet(i), expHi, 0.0000001));
+            float64 expLo = 0.0;
+            if (p1 > 0.1) {
+                expLo = 1.0;
+            }
+            Assert.isTrue(near(lo.flatGet(i), expLo, 0.0000001));
+            nHi = nHi + (int64) hi.flatGet(i);
+            nLo = nLo + (int64) lo.flatGet(i);
+            nBase = nBase + (int64) base.flatGet(i);
+            i = i + 1;
+        }
+        // The knob actually moves the cut on this fixture.
+        Assert.isTrue(nHi < nBase);
+        Assert.isTrue(nLo > nBase);
+
+        Assert.assertThrows(() -> {
+            LogisticRegression b = heap LogisticRegression(1.0, 0.0001,
+                (int64) 100);
+            b.fit(fixtureX(), fixtureY());
+            Tensor<float64> bad = b.predict(fixtureX(), 1.5);
+        });
+        Assert.assertThrows(() -> {
+            float64[] yd = heap float64[20];
+            int64 j = 0;
+            while (j < 20) {
+                yd[j] = (float64) (j % 3);
+                j = j + 1;
+            }
+            int64[] ys = heap int64[1];
+            ys[0] = 20;
+            LogisticRegression b = heap LogisticRegression(1.0, 0.0001,
+                (int64) 200);
+            b.fit(fixtureX(), Tensor.of<float64>(yd, ys));
+            Tensor<float64> bad = b.predict(fixtureX(), 0.7);
+        });
+    }
+
+    // §6.6 — L1 coordinate descent matches saga; exact zeros appear; the
+    // intercept is unpenalized.
+    @Test
+    public void l1MatchesSaga() {
+        LogisticRegression a = heap LogisticRegression(5.0, 0.000000000001,
+            (int64) 100000, "l1");
+        a.fit(fixtureX(), fixtureY());
+        Tensor<float64> ca = a.coefMatrix();
+        Assert.isTrue(near(ca.flatGet(0), 0.8515128889444079, 0.0001));
+        Assert.isTrue(near(ca.flatGet(1), 0.8853753876020112, 0.0001));
+        Assert.isTrue(near(a.interceptVector().flatGet(0),
+            -0.08649794043130678, 0.0001));
+
+        LogisticRegression b = heap LogisticRegression(1.5, 0.000000000001,
+            (int64) 100000, "l1");
+        b.fit(fixtureX(), fixtureY());
+        Tensor<float64> cb = b.coefMatrix();
+        Assert.isTrue(near(cb.flatGet(0), 0.24877203623242938, 0.0001));
+        Assert.isTrue(near(cb.flatGet(1), 0.2786673914825593, 0.0001));
+
+        // The wide fixture: features 0, 3, 4 are EXACTLY zero.
+        LogisticRegression w = heap LogisticRegression(0.8, 0.000000000001,
+            (int64) 100000, "l1");
+        w.fit(fixtureXw(), fixtureY());
+        Tensor<float64> cw = w.coefMatrix();
+        Assert.isTrue(cw.flatGet(0) == 0.0);
+        Assert.isTrue(cw.flatGet(3) == 0.0);
+        Assert.isTrue(cw.flatGet(4) == 0.0);
+        Assert.isTrue(near(cw.flatGet(1), -0.6468433508940856, 0.0001));
+        Assert.isTrue(near(cw.flatGet(2), 0.6123062334574951, 0.0001));
+        Assert.isTrue(near(w.interceptVector().flatGet(0),
+            0.036263973308498634, 0.0001));
+    }
+
+    // §6.7 — elastic-net: ratio 0.5 matches saga; ratio 1 reproduces the
+    // L1 fit; ratio 0 reproduces the L2 fit.
+    @Test
+    public void elasticNetRatios() {
+        LogisticRegression en = heap LogisticRegression(0.5, 0.000000000001,
+            (int64) 100000, "elasticnet", 0.5);
+        en.fit(fixtureXw(), fixtureY());
+        Tensor<float64> c = en.coefMatrix();
+        Assert.isTrue(c.flatGet(0) == 0.0);
+        Assert.isTrue(near(c.flatGet(1), -0.5305970652215986, 0.0001));
+        Assert.isTrue(near(c.flatGet(2), 0.5093832155193468, 0.0001));
+        Assert.isTrue(c.flatGet(3) == 0.0);
+        Assert.isTrue(c.flatGet(4) == 0.0);
+        Assert.isTrue(near(en.interceptVector().flatGet(0),
+            0.0301794610489576, 0.0001));
+
+        // ratio 1 == the L1 fit.
+        LogisticRegression r1 = heap LogisticRegression(0.8, 0.000000000001,
+            (int64) 100000, "elasticnet", 1.0);
+        r1.fit(fixtureXw(), fixtureY());
+        LogisticRegression l1 = heap LogisticRegression(0.8, 0.000000000001,
+            (int64) 100000, "l1");
+        l1.fit(fixtureXw(), fixtureY());
+        Tensor<float64> cr = r1.coefMatrix();
+        Tensor<float64> cl = l1.coefMatrix();
+        int64 j = 0;
+        while (j < 5) {
+            Assert.isTrue(near(cr.flatGet(j), cl.flatGet(j), 0.00000001));
+            j = j + 1;
+        }
+
+        // ratio 0 == the L2 fit (sklearn's own l2 pins).
+        LogisticRegression r0 = heap LogisticRegression(0.5, 0.000000000001,
+            (int64) 100000, "elasticnet", 0.0);
+        r0.fit(fixtureXw(), fixtureY());
+        Tensor<float64> c0 = r0.coefMatrix();
+        Assert.isTrue(near(c0.flatGet(1), -0.6380934715569778, 0.0001));
+        Assert.isTrue(near(c0.flatGet(2), 0.5967537543450601, 0.0001));
+        Assert.isTrue(near(c0.flatGet(4), -0.09395134472219768, 0.0001));
+        Assert.isTrue(near(r0.interceptVector().flatGet(0),
+            0.0463014320455757, 0.0001));
+    }
+
+    // §6.8 — no standard errors on a penalized fit; it says why.
+    @Test
+    public void penalizedSummaryRefuses() {
+        Assert.assertThrows(() -> {
+            LogisticRegression l1 = heap LogisticRegression(0.8,
+                0.000000000001, (int64) 100000, "l1");
+            l1.fit(fixtureXw(), fixtureY());
+            SummaryResult s = l1.summary(fixtureXw(), fixtureY());
+        });
+    }
+
+    // §6.9 — a starved L1 fit reports non-convergence.
+    @Test
+    public void l1NonConvergenceIsLoud() {
+        LogisticRegression l1 = heap LogisticRegression(5.0,
+            0.000000000001, (int64) 1, "l1");
+        l1.fit(fixtureX(), fixtureY());
+        Assert.isFalse(l1.converged());
+    }
+}

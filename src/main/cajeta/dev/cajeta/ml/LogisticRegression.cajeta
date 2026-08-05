@@ -24,6 +24,11 @@ public final class LogisticRegression implements Predictor {
     private float64 tol;
     private int64 maxIter;
     private boolean multinomialV;
+    private int32 penaltyC;             // 0 l2 (IRLS), 1 l1/elastic-net (CD)
+    private float64 l1Ratio;            // elastic-net mix; 1 = pure L1
+    private boolean hasClassW;
+    private float64[] classWA;
+    private boolean balancedW;
     private Tensor<float64> coefM;      // (p, K') — K'=1 binary, else K
     private Tensor<float64> iceptV;     // (K',)
     private int64 nClasses;
@@ -38,6 +43,112 @@ public final class LogisticRegression implements Predictor {
         this.tol = tol;
         this.maxIter = maxIter;
         this.multinomialV = false;
+        this.penaltyC = (int32) 0;
+        this.hasClassW = false;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /**
+     * Penalty selection (spec §6.6): `"l1"` fits the L1-penalized
+     * likelihood by glmnet-style coordinate descent — exact zeros appear,
+     * the intercept is unpenalized.
+     */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              String penalty) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        if (!penalty.equals("l1")) {
+            throw heap MlException("LogisticRegression: unknown penalty \""
+                + penalty + "\" — supported: l1 (or the elasticnet ctor)");
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = false;
+        this.penaltyC = (int32) 1;
+        this.l1Ratio = 1.0;
+        this.hasClassW = false;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /**
+     * Elastic net (spec §6.7): `ratio = 1` reproduces the L1 fit,
+     * `ratio = 0` the L2 fit.
+     */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              String penalty, float64 ratio) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        if (!penalty.equals("elasticnet")) {
+            throw heap MlException("LogisticRegression: unknown penalty \""
+                + penalty + "\" — the mixing-ratio ctor takes elasticnet");
+        }
+        if (ratio < 0.0 || ratio > 1.0) {
+            throw heap MlException(
+                "LogisticRegression: l1 ratio must be in [0, 1]");
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = false;
+        this.penaltyC = (int32) 1;
+        this.l1Ratio = ratio;
+        this.hasClassW = false;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** Explicit per-class weights (spec §6.1), indexed by label. */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              boolean multinomial, #float64[] classWeights) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        int64 i = 0;
+        while (i < (int64) classWeights.count()) {
+            if (classWeights[i] <= 0.0) {
+                throw heap MlException(
+                    "LogisticRegression: class weights must be > 0");
+            }
+            i = i + 1;
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = multinomial;
+        this.penaltyC = (int32) 0;
+        this.hasClassW = true;
+        this.classWA #= classWeights;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** `"balanced"`: weights `n / (K · n_k)` from the data (spec §6.2). */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              boolean multinomial, String balanced) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        if (!balanced.equals("balanced")) {
+            throw heap MlException("LogisticRegression: the String weight "
+                + "mode must be \"balanced\" — pass explicit weights as "
+                + "float64[]");
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = multinomial;
+        this.penaltyC = (int32) 0;
+        this.hasClassW = false;
+        this.balancedW = true;
         this.fitted = false;
         return;
     }
@@ -58,6 +169,9 @@ public final class LogisticRegression implements Predictor {
         this.tol = tol;
         this.maxIter = maxIter;
         this.multinomialV = multinomial;
+        this.penaltyC = (int32) 0;
+        this.hasClassW = false;
+        this.balancedW = false;
         this.fitted = false;
         return;
     }
@@ -67,7 +181,8 @@ public final class LogisticRegression implements Predictor {
      * (weights, then intercept). Sets `convergedV` false (and warns) on a
      * blown iteration cap.
      */
-    #Tensor<float64> newtonBinary(Tensor<float64> x, Tensor<float64> yb) {
+    #Tensor<float64> newtonBinary(Tensor<float64> x, Tensor<float64> yb,
+                                  Tensor<float64> obsW) {
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
         int64 d = p + 1;
@@ -102,8 +217,9 @@ public final class LogisticRegression implements Predictor {
                     j2 = j2 + 1;
                 }
                 float64 pi = Stats.expit(z);
-                float64 gi = this.cReg * (pi - yb.get1(i));
-                float64 wi = this.cReg * pi * (1.0 - pi);
+                float64 ow = obsW.get1(i);
+                float64 gi = this.cReg * ow * (pi - yb.get1(i));
+                float64 wi = this.cReg * ow * pi * (1.0 - pi);
                 j2 = 0;
                 while (j2 < p) {
                     grad.set1(j2, grad.get1(j2) + gi * x.get2(i, j2));
@@ -153,6 +269,27 @@ public final class LogisticRegression implements Predictor {
     }
 
     public void fit(Tensor<float64> x, Tensor<float64> y) {
+        int64[] zs = heap int64[1];
+        zs[0] = 0;
+        Tensor<float64> none = Tensor.zeros<float64>(zs);
+        this.fitW(x, y, none);
+        return;
+    }
+
+    /** Per-observation sample weights (spec §6.3) — they compose
+     *  multiplicatively with any class weights. */
+    public void fit(Tensor<float64> x, Tensor<float64> y,
+                    Tensor<float64> sampleWeights) {
+        if (sampleWeights.ndim() != 1
+                || sampleWeights.shapeAt(0) != x.shapeAt(0)) {
+            throw heap MlException("LogisticRegression.fit: sampleWeights "
+                + "must be (n,) matching x rows");
+        }
+        this.fitW(x, y, sampleWeights);
+        return;
+    }
+
+    void fitW(Tensor<float64> x, Tensor<float64> y, Tensor<float64> sw) {
         if (x.ndim() != 2) {
             throw heap MlException("LogisticRegression.fit: x must be 2-D (n, p)");
         }
@@ -177,8 +314,55 @@ public final class LogisticRegression implements Predictor {
         if (kcls < 2) { kcls = 2; }
         this.nClasses = kcls;
         this.convergedV = true;
+
+        // Effective observation weights: sample × class (spec §6.1–§6.3).
+        int64[] wm = heap int64[1];
+        wm[0] = n;
+        Tensor<float64> obsW = Tensor.zeros<float64>(wm);
+        i = 0;
+        while (i < n) {
+            float64 base = 1.0;
+            if (sw.size() == n) {
+                base = sw.get1(i);
+            }
+            obsW.set1(i, base);
+            i = i + 1;
+        }
+        if (this.hasClassW) {
+            if ((int64) this.classWA.count() != kcls) {
+                throw heap MlException("LogisticRegression.fit: class "
+                    + "weights length must equal the class count");
+            }
+            i = 0;
+            while (i < n) {
+                int64 li2 = (int64) y.get1(i);
+                obsW.set1(i, obsW.get1(i) * this.classWA[li2]);
+                i = i + 1;
+            }
+        } else if (this.balancedW) {
+            float64[] counts = heap float64[kcls];
+            i = 0;
+            while (i < n) {
+                int64 li2 = (int64) y.get1(i);
+                counts[li2] = counts[li2] + 1.0;
+                i = i + 1;
+            }
+            i = 0;
+            while (i < n) {
+                int64 li2 = (int64) y.get1(i);
+                obsW.set1(i, obsW.get1(i) * (float64) n
+                    / ((float64) kcls * counts[li2]));
+                i = i + 1;
+            }
+        }
+
         if (this.multinomialV && kcls > 2) {
-            this.fitSoftmax(x, y, kcls);
+            if (this.penaltyC != (int32) 0) {
+                throw heap MlException("LogisticRegression.fit: the L1/"
+                    + "elastic-net penalty is not supported with the "
+                    + "multinomial fit — use the OvR default");
+            }
+            this.fitSoftmax(x, y, kcls, obsW);
             return;
         }
         int64 kcols = 1;
@@ -206,7 +390,7 @@ public final class LogisticRegression implements Predictor {
                 }
                 i2 = i2 + 1;
             }
-            Tensor<float64> theta = this.newtonBinary(x, yb);
+            Tensor<float64> theta = this.fitColumn(x, yb, obsW);
             int64 j = 0;
             while (j < p) {
                 cm.flatSet(j * kcols + col, theta.get1(j));
@@ -221,6 +405,142 @@ public final class LogisticRegression implements Predictor {
         return;
     }
 
+    /** One binary column: Newton/IRLS (L2) or coordinate descent (L1/enet). */
+    #Tensor<float64> fitColumn(Tensor<float64> x, Tensor<float64> yb,
+                               Tensor<float64> obsW) {
+        if (this.penaltyC == (int32) 0) {
+            Tensor<float64> t = this.newtonBinary(x, yb, obsW);
+            return #t;
+        }
+        Tensor<float64> t = this.cdBinary(x, yb, obsW);
+        return #t;
+    }
+
+    /**
+     * glmnet-style coordinate descent (spec §6.6, resolved §11.2) for the
+     * elastic-net objective `ρ·‖w‖₁ + (1−ρ)/2·‖w‖² + C·Σ obsWᵢ·logloss`
+     * (intercept unpenalized): outer IRLS re-quadratization, one full CD
+     * sweep with the soft-threshold update per outer pass. `ρ = 1` is pure
+     * L1 — exact zeros survive because the update IS a soft threshold.
+     */
+    #Tensor<float64> cdBinary(Tensor<float64> x, Tensor<float64> yb,
+                              Tensor<float64> obsW) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64[] dm = heap int64[1];
+        dm[0] = p + 1;
+        Tensor<float64> theta = Tensor.zeros<float64>(dm);   // [w, b]
+        float64 rho = this.l1Ratio;
+        float64[] eta = heap float64[n];
+        float64[] wq = heap float64[n];
+        float64[] r = heap float64[n];
+        boolean ok = false;
+        int64 it = 0;
+        while (it < this.maxIter) {
+            // Quadratize: working weights and residuals at the current θ.
+            int64 i = 0;
+            while (i < n) {
+                float64 z = theta.get1(p);
+                int64 j = 0;
+                while (j < p) {
+                    z = z + x.get2(i, j) * theta.get1(j);
+                    j = j + 1;
+                }
+                eta[i] = z;
+                float64 mu = Stats.expit(z);
+                if (mu < 0.000001) {
+                    mu = 0.000001;
+                }
+                if (mu > 0.999999) {
+                    mu = 0.999999;
+                }
+                float64 vv = mu * (1.0 - mu);
+                wq[i] = this.cReg * obsW.get1(i) * vv;
+                // r = working target − η
+                r[i] = (yb.get1(i) - mu) / vv;
+                i = i + 1;
+            }
+            // One CD sweep over the coordinates + the intercept.
+            float64 maxD = 0.0;
+            int64 j = 0;
+            while (j < p) {
+                float64 wj = theta.get1(j);
+                float64 num = 0.0;
+                float64 den = 0.0;
+                i = 0;
+                while (i < n) {
+                    float64 xij = x.get2(i, j);
+                    num = num + wq[i] * xij * (r[i] + xij * wj);
+                    den = den + wq[i] * xij * xij;
+                    i = i + 1;
+                }
+                // Soft threshold at ρ; ridge term (1−ρ) in the denominator.
+                float64 wNew = 0.0;
+                if (num > rho) {
+                    wNew = (num - rho) / (den + (1.0 - rho));
+                } else if (num < -rho) {
+                    wNew = (num + rho) / (den + (1.0 - rho));
+                }
+                float64 delta = wNew - wj;
+                if (delta != 0.0) {
+                    i = 0;
+                    while (i < n) {
+                        r[i] = r[i] - x.get2(i, j) * delta;
+                        i = i + 1;
+                    }
+                    theta.set1(j, wNew);
+                }
+                float64 ad = delta;
+                if (ad < 0.0) {
+                    ad = -ad;
+                }
+                if (ad > maxD) {
+                    maxD = ad;
+                }
+                j = j + 1;
+            }
+            // Intercept: weighted mean of the residual, unpenalized.
+            float64 num = 0.0;
+            float64 den = 0.0;
+            i = 0;
+            while (i < n) {
+                num = num + wq[i] * r[i];
+                den = den + wq[i];
+                i = i + 1;
+            }
+            float64 db = num / den;
+            if (db != 0.0) {
+                i = 0;
+                while (i < n) {
+                    r[i] = r[i] - db;
+                    i = i + 1;
+                }
+                theta.set1(p, theta.get1(p) + db);
+            }
+            float64 adb = db;
+            if (adb < 0.0) {
+                adb = -adb;
+            }
+            if (adb > maxD) {
+                maxD = adb;
+            }
+            if (maxD < this.tol) {
+                ok = true;
+                break;
+            }
+            it = it + 1;
+        }
+        if (!ok) {
+            this.convergedV = false;
+            System.stdout.println(
+                "warning: LogisticRegression (L1/elastic-net) did not"
+                + " converge within maxIter (parameter change still above"
+                + " tol) — results are the last iterate; raise maxIter or"
+                + " tol");
+        }
+        return #theta;
+    }
+
     /**
      * The softmax fit (spec §3): damped full Newton on the SYMMETRIC
      * K-block parametrization — sklearn's objective
@@ -232,7 +552,8 @@ public final class LogisticRegression implements Predictor {
      * intercepts (probabilities are invariant; raw sklearn intercepts are
      * optimizer-path noise and are never pinned).
      */
-    void fitSoftmax(Tensor<float64> x, Tensor<float64> y, int64 kcls) {
+    void fitSoftmax(Tensor<float64> x, Tensor<float64> y, int64 kcls,
+                    Tensor<float64> obsW) {
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
         int64 blk = p + 1;                  // [w_k (p), b_k]
@@ -297,11 +618,12 @@ public final class LogisticRegression implements Predictor {
                     c = c + 1;
                 }
                 int64 yi = (int64) y.get1(i);
+                float64 owi = obsW.get1(i);
                 c = 0;
                 while (c < kcls) {
                     float64 resid = probs[c];
                     if (c == yi) { resid = resid - 1.0; }
-                    float64 gi = this.cReg * resid;
+                    float64 gi = this.cReg * owi * resid;
                     int64 j = 0;
                     while (j < p) {
                         grad.set1(c * blk + j,
@@ -318,7 +640,7 @@ public final class LogisticRegression implements Predictor {
                     while (c2 < kcls) {
                         float64 wcc = -probs[c] * probs[c2];
                         if (c == c2) { wcc = wcc + probs[c]; }
-                        wcc = this.cReg * wcc;
+                        wcc = this.cReg * owi * wcc;
                         if (wcc != 0.0) {
                             int64 a = 0;
                             while (a < blk) {
@@ -545,6 +867,39 @@ public final class LogisticRegression implements Predictor {
         return #out;
     }
 
+    /**
+     * The binary decision at an explicit probability cut (spec §6.4):
+     * label 1 iff `P(y=1|x) > threshold`. The no-argument `predict` keeps
+     * the 0.5 behaviour untouched (§12.5).
+     */
+    public #Tensor<float64> predict(Tensor<float64> x, float64 threshold) {
+        if (!this.fitted) {
+            throw heap MlException("LogisticRegression.predict: fit first");
+        }
+        if (threshold <= 0.0 || threshold >= 1.0) {
+            throw heap MlException("LogisticRegression.predict: threshold "
+                + "must be strictly inside (0, 1)");
+        }
+        if (this.nClasses != 2) {
+            throw heap MlException("LogisticRegression.predict: a decision "
+                + "threshold applies to BINARY fits only — multiclass "
+                + "predictions are the posterior argmax");
+        }
+        Tensor<float64> pr = this.predictProba(x);
+        int64 n = pr.shapeAt(0);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            if (pr.get2(i, 1) > threshold) {
+                out.set1(i, 1.0);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
     /** Accuracy — the classifier `score` convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
         Tensor<float64> pred = this.predict(x);
@@ -571,6 +926,13 @@ public final class LogisticRegression implements Predictor {
         }
         if (this.nClasses > 2) {
             throw heap MlException("LogisticRegression.summary: binary fits only");
+        }
+        if (this.penaltyC != (int32) 0) {
+            throw heap MlException("LogisticRegression.summary: standard "
+                + "errors, z statistics, and p-values are not valid for an "
+                + "L1/elastic-net fit (the penalty biases the optimum and "
+                + "breaks the Wald approximation) — refit with the L2 ctor "
+                + "for a summary");
         }
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
