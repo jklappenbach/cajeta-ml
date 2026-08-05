@@ -1,0 +1,346 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.distance.Distance;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+import cajeta.math.random.Generator;
+
+/**
+ * Multidimensional scaling by SMACOF (sklearn `MDS`): find a
+ * low-dimensional configuration whose pairwise distances minimize
+ * STRESS against the input dissimilarities, via iterated Guttman
+ * transforms from seeded random starts — `nInit` restarts, best kept
+ * (§9.8). `stress()` exposes the fit-quality number.
+ *
+ * The NON-METRIC variant is requested BY NAME (`"nonmetric"`, §9.9):
+ * only the rank order of the dissimilarities is preserved, with
+ * disparities from isotonic regression (pool-adjacent-violators) inside
+ * each SMACOF sweep; its reported stress is sklearn's normalized
+ * stress-1 `sqrt(Σ(d−d̂)²/Σd̂²)`. The metric variant reports raw stress
+ * `Σ(δ−d)²` over pairs.
+ *
+ * `fitTransformDissimilarity` embeds a PRECOMPUTED square dissimilarity
+ * matrix (a §2 `pdist` result or any caller-supplied one, §9.10) —
+ * which is why MDS composes with `cajeta.math.distance` instead of
+ * owning metrics. The API is `fitTransform`-only (§9.14): MDS has no
+ * out-of-sample extension, so no `transform` exists and the class does
+ * not implement `Transformer`. Embeddings are identifiable only up to
+ * rotation/reflection/translation (§12.9) — compare distance structure,
+ * never coordinates.
+ */
+public final class MDS {
+
+    private int64 kComp;
+    private uint64 seed;
+    private boolean nonMetric;
+    private int64 nInit;
+    private int64 maxIter;
+    private float64 eps;
+    private float64 stressV;
+    private boolean fitted;
+
+    /** Metric SMACOF, nInit 8, maxIter 500, eps 1e-9. */
+    public MDS(int64 k, uint64 seed) {
+        if (k < 1) {
+            throw heap MlException("MDS: k must be >= 1");
+        }
+        this.kComp = k;
+        this.seed = seed;
+        this.nonMetric = false;
+        this.nInit = 8;
+        this.maxIter = 500;
+        this.eps = 0.000000001;
+        this.fitted = false;
+        return;
+    }
+
+    /** `variant` is `"metric"` or `"nonmetric"` — named, never a silent
+     *  default (§9.9). */
+    public MDS(int64 k, uint64 seed, String variant, int64 nInit,
+               int64 maxIter, float64 eps) {
+        if (k < 1) {
+            throw heap MlException("MDS: k must be >= 1");
+        }
+        if (variant.equals("metric")) {
+            this.nonMetric = false;
+        } else if (variant.equals("nonmetric")) {
+            this.nonMetric = true;
+        } else {
+            throw heap MlException(
+                "MDS: variant must be metric|nonmetric");
+        }
+        this.kComp = k;
+        this.seed = seed;
+        this.nInit = nInit;
+        this.maxIter = maxIter;
+        this.eps = eps;
+        this.fitted = false;
+        return;
+    }
+
+    /** Embed the rows of `x` from their Euclidean dissimilarities. */
+    public #Tensor<float64> fitTransform(Tensor<float64> x) {
+        if (x.ndim() != 2) {
+            throw heap MlException("MDS.fitTransform: x must be 2-D (n, p)");
+        }
+        Metric eu = heap Euclidean();
+        Tensor<float64> d = Distance.pdist(x, eu);
+        return this.fitTransformDissimilarity(d);
+    }
+
+    /** Embed a precomputed square dissimilarity matrix directly (§9.10). */
+    public #Tensor<float64> fitTransformDissimilarity(Tensor<float64> d) {
+        if (d.ndim() != 2 || d.shapeAt(0) != d.shapeAt(1)) {
+            throw heap MlException(
+                "MDS.fitTransformDissimilarity: d must be square (n, n)");
+        }
+        int64 n = d.shapeAt(0);
+        int64 k = this.kComp;
+        int64 m = n * (n - (int64) 1) / (int64) 2;
+
+        // Condensed dissimilarities + index maps.
+        float64[] delta = heap float64[m];
+        int64[] pi = heap int64[m];
+        int64[] pj = heap int64[m];
+        int64 t = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 j = i + 1;
+            while (j < n) {
+                delta[t] = d.get2(i, j);
+                pi[t] = i;
+                pj[t] = j;
+                t = t + 1;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        // Rank order of delta for the isotonic pass (insertion sort).
+        int64[] order = heap int64[m];
+        t = 0;
+        while (t < m) {
+            order[t] = t;
+            t = t + 1;
+        }
+        int64 a = 1;
+        while (a < m) {
+            int64 v = order[a];
+            int64 b = a - 1;
+            while (b >= (int64) 0 && delta[order[b]] > delta[v]) {
+                order[b + 1] = order[b];
+                b = b - 1;
+            }
+            order[b + 1] = v;
+            a = a + 1;
+        }
+
+        Generator gen = heap Generator(this.seed);
+        float64[] best = heap float64[n * k];
+        float64 bestStress = 0.0;
+        boolean haveBest = false;
+
+        float64[] xE = heap float64[n * k];
+        float64[] xN = heap float64[n * k];
+        float64[] dist = heap float64[m];
+        float64[] disp = heap float64[m];
+        float64[] iso = heap float64[m];
+        float64[] wts = heap float64[m];
+
+        int64 run = 0;
+        while (run < this.nInit) {
+            Tensor<float32> u = gen.uniform(n * k);
+            i = 0;
+            while (i < n * k) {
+                xE[i] = (float64) u.get1(i);
+                i = i + 1;
+            }
+            float64 prev = 0.0 - 1.0;
+            float64 stress = 0.0;
+            int64 it = 0;
+            boolean go = true;
+            while (it < this.maxIter && go) {
+                // Current embedded distances.
+                t = 0;
+                while (t < m) {
+                    float64 s = 0.0;
+                    int64 c = 0;
+                    while (c < k) {
+                        float64 df = xE[pi[t] * k + c] - xE[pj[t] * k + c];
+                        s = s + df * df;
+                        c = c + 1;
+                    }
+                    dist[t] = Math.sqrt(s);
+                    t = t + 1;
+                }
+                // Disparities: the input (metric) or the isotonic fit of
+                // dist against delta's rank order, rescaled (non-metric).
+                if (!this.nonMetric) {
+                    t = 0;
+                    while (t < m) {
+                        disp[t] = delta[t];
+                        t = t + 1;
+                    }
+                } else {
+                    // PAVA over dist in delta-ascending order.
+                    int64 nb = 0;
+                    t = 0;
+                    while (t < m) {
+                        iso[nb] = dist[order[t]];
+                        wts[nb] = 1.0;
+                        nb = nb + 1;
+                        while (nb > (int64) 1
+                               && iso[nb - 2] > iso[nb - 1]) {
+                            float64 wsum = wts[nb - 2] + wts[nb - 1];
+                            iso[nb - 2] = (wts[nb - 2] * iso[nb - 2]
+                                + wts[nb - 1] * iso[nb - 1]) / wsum;
+                            wts[nb - 2] = wsum;
+                            nb = nb - 1;
+                        }
+                        t = t + 1;
+                    }
+                    int64 pos = 0;
+                    int64 blk = 0;
+                    while (blk < nb) {
+                        int64 c2 = (int64) wts[blk];
+                        int64 e = 0;
+                        while (e < c2) {
+                            disp[order[pos]] = iso[blk];
+                            pos = pos + 1;
+                            e = e + 1;
+                        }
+                        blk = blk + 1;
+                    }
+                    // Rescale so Σ disparity² = m (sklearn's convention).
+                    float64 ss = 0.0;
+                    t = 0;
+                    while (t < m) {
+                        ss = ss + disp[t] * disp[t];
+                        t = t + 1;
+                    }
+                    if (ss < 1.0E-300) {
+                        ss = 1.0E-300;
+                    }
+                    float64 sc = Math.sqrt((float64) m / ss);
+                    t = 0;
+                    while (t < m) {
+                        disp[t] = disp[t] * sc;
+                        t = t + 1;
+                    }
+                }
+                // Stress.
+                stress = 0.0;
+                t = 0;
+                while (t < m) {
+                    float64 df = disp[t] - dist[t];
+                    stress = stress + df * df;
+                    t = t + 1;
+                }
+                // Guttman transform: X ← (1/n)·B·X.
+                i = 0;
+                while (i < n * k) {
+                    xN[i] = 0.0;
+                    i = i + 1;
+                }
+                float64[] bDiag = heap float64[n];
+                i = 0;
+                while (i < n) {
+                    bDiag[i] = 0.0;
+                    i = i + 1;
+                }
+                t = 0;
+                while (t < m) {
+                    float64 bij = 0.0;
+                    if (dist[t] > 1.0E-12) {
+                        bij = 0.0 - disp[t] / dist[t];
+                    }
+                    int64 ia = pi[t];
+                    int64 ib = pj[t];
+                    bDiag[ia] = bDiag[ia] - bij;
+                    bDiag[ib] = bDiag[ib] - bij;
+                    int64 c = 0;
+                    while (c < k) {
+                        xN[ia * k + c] = xN[ia * k + c]
+                            + bij * xE[ib * k + c];
+                        xN[ib * k + c] = xN[ib * k + c]
+                            + bij * xE[ia * k + c];
+                        c = c + 1;
+                    }
+                    t = t + 1;
+                }
+                i = 0;
+                while (i < n) {
+                    int64 c = 0;
+                    while (c < k) {
+                        xN[i * k + c] = (xN[i * k + c]
+                            + bDiag[i] * xE[i * k + c]) / (float64) n;
+                        c = c + 1;
+                    }
+                    i = i + 1;
+                }
+                i = 0;
+                while (i < n * k) {
+                    xE[i] = xN[i];
+                    i = i + 1;
+                }
+                if (prev >= 0.0) {
+                    float64 ch = prev - stress;
+                    if (ch < 0.0) {
+                        ch = 0.0 - ch;
+                    }
+                    if (ch < this.eps * (1.0 + stress)) {
+                        go = false;
+                    }
+                }
+                prev = stress;
+                it = it + 1;
+            }
+            // Non-metric: report sklearn's stress-1.
+            float64 finalStress = stress;
+            if (this.nonMetric) {
+                float64 ss = 0.0;
+                t = 0;
+                while (t < m) {
+                    ss = ss + disp[t] * disp[t];
+                    t = t + 1;
+                }
+                if (ss < 1.0E-300) {
+                    ss = 1.0E-300;
+                }
+                finalStress = Math.sqrt(stress / ss);
+            }
+            if (!haveBest || finalStress < bestStress) {
+                bestStress = finalStress;
+                i = 0;
+                while (i < n * k) {
+                    best[i] = xE[i];
+                    i = i + 1;
+                }
+                haveBest = true;
+            }
+            run = run + 1;
+        }
+
+        this.stressV = bestStress;
+        this.fitted = true;
+        float64[] out = heap float64[n * k];
+        i = 0;
+        while (i < n * k) {
+            out[i] = best[i];
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** Final stress of the best restart — raw `Σ(δ−d)²` for metric,
+     *  normalized stress-1 for non-metric (§9.8). */
+    public float64 stress() {
+        if (!this.fitted) {
+            throw heap MlException("MDS.stress: fitTransform first");
+        }
+        return this.stressV;
+    }
+}

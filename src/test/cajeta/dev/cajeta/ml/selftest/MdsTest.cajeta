@@ -1,0 +1,239 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.math.distance.Distance;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+import dev.cajeta.ml.MDS;
+
+/**
+ * ml-unsupervised plan 10.1 — MDS (spec §9.8–§9.10, §12.9, §12.10).
+ * SMACOF with seeded nInit restarts keeping the best; the NON-METRIC
+ * variant is NAMED ("nonmetric"), never a silent flag; a precomputed
+ * dissimilarity matrix embeds directly; comparisons are structural
+ * (stress + distance correlations), never raw coordinates. Oracle:
+ * sklearn 1.9.0 on the 10-point 3-D helix (metric stress 0.17732,
+ * distance corr 0.9976; non-metric stress-1 9.8e-5) — SMACOF restarts
+ * land in slightly different local optima across RNGs, so stress pins
+ * carry tolerance, not equality.
+ */
+public class MdsTest {
+
+    public MdsTest() { return; }
+
+    /** 10 points on a 3-D helix: (cos 0.6t, sin 0.6t, 0.3t). */
+    static #Tensor<float64> helix() {
+        float64[] d = heap float64[30];
+        int64 i = 0;
+        while (i < 10) {
+            float64 t = (float64) i;
+            d[i * 3] = Math.cos(0.6 * t);
+            d[i * 3 + 1] = Math.sin(0.6 * t);
+            d[i * 3 + 2] = 0.3 * t;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 10;
+        sh[1] = 3;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** Pearson correlation between the strict upper triangles of two
+     *  square distance matrices. */
+    static float64 distCorr(Tensor<float64> a, Tensor<float64> b,
+                            int64 n) {
+        float64 ma = 0.0;
+        float64 mb = 0.0;
+        float64 cnt = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            int64 j = i + 1;
+            while (j < n) {
+                ma = ma + a.get2(i, j);
+                mb = mb + b.get2(i, j);
+                cnt = cnt + 1.0;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        ma = ma / cnt;
+        mb = mb / cnt;
+        float64 sab = 0.0;
+        float64 saa = 0.0;
+        float64 sbb = 0.0;
+        i = 0;
+        while (i < n) {
+            int64 j = i + 1;
+            while (j < n) {
+                float64 da = a.get2(i, j) - ma;
+                float64 db = b.get2(i, j) - mb;
+                sab = sab + da * db;
+                saa = saa + da * da;
+                sbb = sbb + db * db;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return sab / Math.sqrt(saa * sbb);
+    }
+
+    /** Spearman rank correlation between the strict upper triangles of
+     *  two square distance matrices (no ties on generic float data). */
+    static float64 spearman(Tensor<float64> a, Tensor<float64> b,
+                            int64 n) {
+        int64 m = n * (n - (int64) 1) / (int64) 2;
+        float64[] va = heap float64[m];
+        float64[] vb = heap float64[m];
+        int64 t = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 j = i + 1;
+            while (j < n) {
+                va[t] = a.get2(i, j);
+                vb[t] = b.get2(i, j);
+                t = t + 1;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        float64[] ra = heap float64[m];
+        float64[] rb = heap float64[m];
+        t = 0;
+        while (t < m) {
+            int64 ca = 0;
+            int64 cb = 0;
+            int64 u = 0;
+            while (u < m) {
+                if (va[u] < va[t]) {
+                    ca = ca + 1;
+                }
+                if (vb[u] < vb[t]) {
+                    cb = cb + 1;
+                }
+                u = u + 1;
+            }
+            ra[t] = (float64) ca;
+            rb[t] = (float64) cb;
+            t = t + 1;
+        }
+        float64 ma = 0.0;
+        float64 mb = 0.0;
+        t = 0;
+        while (t < m) {
+            ma = ma + ra[t];
+            mb = mb + rb[t];
+            t = t + 1;
+        }
+        ma = ma / (float64) m;
+        mb = mb / (float64) m;
+        float64 sab = 0.0;
+        float64 saa = 0.0;
+        float64 sbb = 0.0;
+        t = 0;
+        while (t < m) {
+            float64 da = ra[t] - ma;
+            float64 db = rb[t] - mb;
+            sab = sab + da * db;
+            saa = saa + da * da;
+            sbb = sbb + db * db;
+            t = t + 1;
+        }
+        return sab / Math.sqrt(saa * sbb);
+    }
+
+    // 10.1.1 / §9.8 — metric SMACOF: stress in sklearn's neighbourhood,
+    // embedded-distance structure tracking the input dissimilarities,
+    // seeded restarts reproducing exactly.
+    @Test
+    public void metricSmacofMatchesSklearnStructure() {
+        Tensor<float64> x = MdsTest.helix();
+        MDS m = heap MDS((int64) 2, (uint64) 3);
+        Tensor<float64> e = m.fitTransform(x);
+        Assert.equals((int64) 10, e.shapeAt(0));
+        Assert.equals((int64) 2, e.shapeAt(1));
+        // Stress within tolerance of sklearn's 0.17731828785073134.
+        Assert.isTrue(Fixtures.close(m.stress(), 0.17731828785073134,
+            0.02));
+        // Structure, not coordinates: distances correlate > 0.99.
+        Metric eu = heap Euclidean();
+        Tensor<float64> din = Distance.pdist(x, eu);
+        Tensor<float64> dem = Distance.pdist(e, eu);
+        Assert.isTrue(MdsTest.distCorr(din, dem, (int64) 10) > 0.99);
+        // Seeded reproduction, exact.
+        MDS m2 = heap MDS((int64) 2, (uint64) 3);
+        Tensor<float64> e2 = m2.fitTransform(x);
+        int64 i = 0;
+        while (i < e.size()) {
+            Assert.isTrue(e.flatGet(i) == e2.flatGet(i));
+            i = i + 1;
+        }
+        Assert.isTrue(m.stress() == m2.stress());
+    }
+
+    // 10.1.2 / §9.9 — the non-metric variant is NAMED and preserves rank
+    // order via isotonic regression: normalized stress-1 near zero,
+    // Spearman-like rank structure held.
+    @Test
+    public void nonMetricVariantIsNamedAndPins() {
+        Tensor<float64> x = MdsTest.helix();
+        MDS nm = heap MDS((int64) 2, (uint64) 3, "nonmetric", (int64) 8,
+            (int64) 500, 0.000000001);
+        Tensor<float64> e = nm.fitTransform(x);
+        // sklearn stress-1 on this fixture: 9.8e-5; ours lands under a
+        // loose ceiling (different restarts, same near-perfect fit —
+        // this seed: 8.6e-4).
+        Assert.isTrue(nm.stress() < 0.005);
+        // Rank structure is what non-metric MDS promises (§9.9): the
+        // SPEARMAN correlation of embedded vs input distances, not
+        // Pearson (the isotonic transform is monotone, not linear —
+        // Pearson legitimately dips to 0.943 here while Spearman holds;
+        // sklearn's own Spearman on this fixture: 0.975).
+        Metric eu = heap Euclidean();
+        Tensor<float64> din = Distance.pdist(x, eu);
+        Tensor<float64> dem = Distance.pdist(e, eu);
+        Assert.isTrue(MdsTest.spearman(din, dem, (int64) 10) > 0.95);
+        // An unknown variant name is rejected — no silent default.
+        Assert.assertThrows(() -> {
+            MDS bad = heap MDS((int64) 2, (uint64) 3, "fancy", (int64) 4,
+                (int64) 100, 0.001);
+            bad.stress();
+        });
+    }
+
+    // 10.1.3 / §9.10 / §9.14 — a precomputed §2 pdist matrix embeds
+    // directly and equals the from-points fit; the API is
+    // fitTransform-only (stress before any fit throws — there is no
+    // transform for unseen points on the class, §12.10).
+    @Test
+    public void precomputedDissimilaritiesEmbedDirectly() {
+        Tensor<float64> x = MdsTest.helix();
+        Metric eu = heap Euclidean();
+        Tensor<float64> d = Distance.pdist(x, eu);
+        MDS m = heap MDS((int64) 2, (uint64) 3);
+        Tensor<float64> e = m.fitTransformDissimilarity(d);
+        Assert.equals((int64) 10, e.shapeAt(0));
+        // Identical to the from-points path (same seed, same D).
+        MDS m2 = heap MDS((int64) 2, (uint64) 3);
+        Tensor<float64> e2 = m2.fitTransform(x);
+        int64 i = 0;
+        while (i < e.size()) {
+            Assert.isTrue(e.flatGet(i) == e2.flatGet(i));
+            i = i + 1;
+        }
+        // Non-square precomputed input is rejected.
+        Assert.assertThrows(() -> {
+            int64[] sh = heap int64[2];
+            sh[0] = 3;
+            sh[1] = 4;
+            Tensor<float64> bad = Tensor.zeros<float64>(sh);
+            MDS mb = heap MDS((int64) 2, (uint64) 3);
+            mb.fitTransformDissimilarity(bad);
+        });
+        // fitTransform-only shape: reading stress before a fit throws.
+        Assert.assertThrows(() -> {
+            MDS un = heap MDS((int64) 2, (uint64) 3);
+            un.stress();
+        });
+    }
+}
