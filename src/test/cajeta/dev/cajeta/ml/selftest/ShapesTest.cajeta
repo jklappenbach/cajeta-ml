@@ -1,0 +1,199 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+
+/**
+ * ml-unsupervised plan 1.1 — the shape-separating fixtures (spec §12.6).
+ * Every generator is SEEDED and reproduces exactly; each shape exists to
+ * make a specific algorithm win and another lose, so the suite can never
+ * be graded on blobs alone.
+ */
+public class ShapesTest {
+
+    public ShapesTest() { return; }
+
+    static boolean identical(Tensor<float64> a, Tensor<float64> b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        int64 i = 0;
+        while (i < a.size()) {
+            if (a.flatGet(i) != b.flatGet(i)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    // 1.1.1 — spherical blobs: k well-separated centers, labels known.
+    @Test
+    public void blobsAreSeededAndSeparated() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        int64[] y = Shapes.blobLabels();
+        Assert.equals((int64) 60, x.shapeAt(0));
+        Assert.equals((int64) 2, x.shapeAt(1));
+        Assert.equals((int64) 60, (int64) y.count());
+        // Any two points with the same label are closer than any two
+        // points with different labels (well-separated by construction).
+        float64 maxIntra = 0.0;
+        float64 minInter = 1000000.0;
+        int64 i = 0;
+        while (i < 60) {
+            int64 j = i + 1;
+            while (j < 60) {
+                float64 dx = x.get2(i, 0) - x.get2(j, 0);
+                float64 dy = x.get2(i, 1) - x.get2(j, 1);
+                float64 d = dx * dx + dy * dy;
+                if (y[i] == y[j]) {
+                    if (d > maxIntra) {
+                        maxIntra = d;
+                    }
+                } else {
+                    if (d < minInter) {
+                        minInter = d;
+                    }
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(maxIntra < minInter);
+        // 1.1.6 — seeded: exact reproduction.
+        Assert.isTrue(ShapesTest.identical(x, Shapes.blobs((uint64) 7)));
+    }
+
+    // 1.1.2 — nested non-convex: concentric circles. K-means provably
+    // fails here; DBSCAN succeeds. Points lie in two disjoint radius bands.
+    @Test
+    public void circlesAreNestedAndNonConvex() {
+        Tensor<float64> x = Shapes.circles((uint64) 11);
+        int64[] y = Shapes.circleLabels();
+        Assert.equals((int64) 80, x.shapeAt(0));
+        int64 i = 0;
+        while (i < 80) {
+            float64 r = Math.sqrt(x.get2(i, 0) * x.get2(i, 0)
+                                + x.get2(i, 1) * x.get2(i, 1));
+            if (y[i] == 0) {
+                Assert.isTrue(r < 0.7);       // inner band
+            } else {
+                Assert.isTrue(r > 0.8);       // outer band
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(ShapesTest.identical(x, Shapes.circles((uint64) 11)));
+    }
+
+    // 1.1.2 — elongated non-convex: two moons.
+    @Test
+    public void moonsAreSeededAndInterleaved() {
+        Tensor<float64> x = Shapes.moons((uint64) 13);
+        int64[] y = Shapes.moonLabels();
+        Assert.equals((int64) 80, x.shapeAt(0));
+        Assert.equals((int64) 80, (int64) y.count());
+        // The two moons interleave horizontally: their x-ranges overlap,
+        // which is what defeats a convex partition.
+        float64 min1 = 1000.0;
+        float64 max0 = -1000.0;
+        int64 i = 0;
+        while (i < 80) {
+            if (y[i] == 0 && x.get2(i, 0) > max0) {
+                max0 = x.get2(i, 0);
+            }
+            if (y[i] == 1 && x.get2(i, 0) < min1) {
+                min1 = x.get2(i, 0);
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(min1 < max0);
+        Assert.isTrue(ShapesTest.identical(x, Shapes.moons((uint64) 13)));
+    }
+
+    // 1.1.3 — overlapping Gaussians with KNOWN parameters: seeded samples
+    // whose empirical means recover the true means within tolerance.
+    @Test
+    public void overlappingGaussiansRecoverKnownParameters() {
+        Tensor<float64> x = Shapes.overlapGaussians((uint64) 17);
+        int64[] y = Shapes.overlapLabels();
+        Assert.equals((int64) 120, x.shapeAt(0));
+        // True means: (0,0) and (2.5,0) — overlapping at unit variance.
+        float64 mx0 = 0.0;
+        float64 mx1 = 0.0;
+        int64 n0 = 0;
+        int64 n1 = 0;
+        int64 i = 0;
+        while (i < 120) {
+            if (y[i] == 0) {
+                mx0 = mx0 + x.get2(i, 0);
+                n0 = n0 + 1;
+            } else {
+                mx1 = mx1 + x.get2(i, 0);
+                n1 = n1 + 1;
+            }
+            i = i + 1;
+        }
+        mx0 = mx0 / (float64) n0;
+        mx1 = mx1 / (float64) n1;
+        Assert.isTrue(Fixtures.close(mx0, 0.0, 0.35));
+        Assert.isTrue(Fixtures.close(mx1, 2.5, 0.35));
+        // Genuinely overlapping: some cross-class pair is closer than some
+        // same-class pair (no clean margin exists).
+        Assert.isTrue(ShapesTest.identical(x,
+            Shapes.overlapGaussians((uint64) 17)));
+    }
+
+    // 1.1.4 — known noise points for DBSCAN §7.2: exactly 5 isolated
+    // points appended far from both blobs.
+    @Test
+    public void noisyBlobsHaveKnownNoise() {
+        Tensor<float64> x = Shapes.noisyBlobs((uint64) 19);
+        int64[] y = Shapes.noisyBlobLabels();
+        Assert.equals((int64) 45, x.shapeAt(0));
+        int64 noise = 0;
+        int64 i = 0;
+        while (i < 45) {
+            if (y[i] == (int64) -1) {
+                noise = noise + 1;
+                // Isolated: far from both blob centers (0,0) and (8,8).
+                float64 d0 = x.get2(i, 0) * x.get2(i, 0)
+                           + x.get2(i, 1) * x.get2(i, 1);
+                Assert.isTrue(d0 > 9.0);
+            }
+            i = i + 1;
+        }
+        Assert.equals((int64) 5, noise);
+        Assert.isTrue(ShapesTest.identical(x, Shapes.noisyBlobs((uint64) 19)));
+    }
+
+    // 1.1.5 — mixed units: kilometres (~unit scale) against kilograms
+    // (~1e4 scale), for §3.4's scale-sensitivity documentation.
+    @Test
+    public void mixedUnitsDifferByOrdersOfMagnitude() {
+        Tensor<float64> x = Shapes.mixedUnits((uint64) 23);
+        Assert.equals((int64) 40, x.shapeAt(0));
+        float64 span0 = Shapes.columnSpan(x, (int64) 0);
+        float64 span1 = Shapes.columnSpan(x, (int64) 1);
+        Assert.isTrue(span1 / span0 > 1000.0);
+        Assert.isTrue(ShapesTest.identical(x, Shapes.mixedUnits((uint64) 23)));
+    }
+
+    // 1.2.2 — the scoring harness: pair-counting Rand index, so every
+    // clustering unit scores label agreement without depending on U7's
+    // Metrics. Perfect agreement = 1, label-permutation invariant.
+    @Test
+    public void harnessRandIndexScoresAgreement() {
+        int64[] a = heap int64[6];
+        a[0] = 0; a[1] = 0; a[2] = 1; a[3] = 1; a[4] = 2; a[5] = 2;
+        // Same partition, permuted labels: rand = 1.
+        int64[] b = heap int64[6];
+        b[0] = 2; b[1] = 2; b[2] = 0; b[3] = 0; b[4] = 1; b[5] = 1;
+        Assert.isTrue(Harness.randIndex(a, b) == 1.0);
+        // One point moved: less than 1, more than 0.5.
+        int64[] c = heap int64[6];
+        c[0] = 2; c[1] = 2; c[2] = 0; c[3] = 0; c[4] = 1; c[5] = 0;
+        float64 r = Harness.randIndex(a, c);
+        Assert.isTrue(r < 1.0);
+        Assert.isTrue(r > 0.5);
+    }
+}

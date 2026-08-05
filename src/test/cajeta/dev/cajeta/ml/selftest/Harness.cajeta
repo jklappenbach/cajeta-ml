@@ -1,0 +1,39 @@
+package dev.cajeta.ml.selftest;
+
+/**
+ * ml-unsupervised plan 1.2.2 — the shared scoring harness. Every clustering
+ * unit scores its labels against the §12.6 shape fixtures through this, so
+ * "tested on the shapes that separate them" is structural, not a habit.
+ *
+ * The score is the PAIR-COUNTING RAND INDEX — label-permutation invariant,
+ * 1.0 = identical partitions — implemented here so U1 does not depend on
+ * U7's `Metrics` (which adds the adjusted form later).
+ */
+public final class Harness {
+
+    /** Rand index between two label arrays (noise labels compare like any
+     *  other label, so DBSCAN's -1 participates naturally). */
+    public static float64 randIndex(int64[] a, int64[] b) {
+        int64 n = (int64) a.count();
+        if ((int64) b.count() != n || n < 2) {
+            return 0.0;
+        }
+        int64 agree = 0;
+        int64 total = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 j = i + 1;
+            while (j < n) {
+                boolean sa = a[i] == a[j];
+                boolean sb = b[i] == b[j];
+                if (sa == sb) {
+                    agree = agree + 1;
+                }
+                total = total + 1;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return (float64) agree / (float64) total;
+    }
+}

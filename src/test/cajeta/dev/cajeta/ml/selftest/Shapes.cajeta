@@ -1,0 +1,239 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * ml-unsupervised plan 1.2.1 — the shape-separating fixture generators
+ * (spec §12.6), sklearn's `make_blobs`/`make_moons`/`make_circles` shapes
+ * built on the seeded Philox `Generator` so every draw reproduces exactly.
+ *
+ * Each shape exists to separate algorithms: blobs (K-means wins), nested
+ * circles + interleaved moons (DBSCAN wins, convex partitions fail),
+ * overlapping Gaussians (GMM's soft assignment wins), noisy blobs (DBSCAN's
+ * noise labelling, §7.2), mixed units (§3.4 scale sensitivity).
+ */
+public final class Shapes {
+
+    /** 3 well-separated blobs, 20 points each, centers (0,0)/(8,8)/(-8,8). */
+    public static #Tensor<float64> blobs(uint64 seed) {
+        Generator gen = heap Generator(seed);
+        Tensor<float32> j = gen.normal((int64) 120);
+        int64[] sh = heap int64[2];
+        sh[0] = 60;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        float64[] cx = heap float64[3];
+        cx[0] = 0.0; cx[1] = 8.0; cx[2] = -8.0;
+        float64[] cy = heap float64[3];
+        cy[0] = 0.0; cy[1] = 8.0; cy[2] = 8.0;
+        int64 i = 0;
+        while (i < 60) {
+            int64 c = i / (int64) 20;
+            x.flatSet(i * 2, cx[c] + 0.7 * (float64) j.get1(i * 2));
+            x.flatSet(i * 2 + 1, cy[c] + 0.7 * (float64) j.get1(i * 2 + 1));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** Labels for `blobs`: 20 of each of 0,1,2 in order. */
+    public static #int64[] blobLabels() {
+        int64[] y = heap int64[60];
+        int64 i = 0;
+        while (i < 60) {
+            y[i] = i / (int64) 20;
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** Two concentric circles: 40 inner (r≈0.4–0.5), 40 outer (r≈1.0–1.1). */
+    public static #Tensor<float64> circles(uint64 seed) {
+        Generator gen = heap Generator(seed);
+        Tensor<float32> u = gen.uniform((int64) 160);
+        int64[] sh = heap int64[2];
+        sh[0] = 80;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 80) {
+            float64 theta = 2.0 * 3.14159265358979 * (float64) u.get1(i * 2);
+            float64 rj = (float64) u.get1(i * 2 + 1) * 0.1;
+            float64 r = 0.4 + rj;
+            if (i >= (int64) 40) {
+                r = 1.0 + rj;
+            }
+            x.flatSet(i * 2, r * Math.cos(theta));
+            x.flatSet(i * 2 + 1, r * Math.sin(theta));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** Labels for `circles`: 40 inner 0, 40 outer 1. */
+    public static #int64[] circleLabels() {
+        int64[] y = heap int64[80];
+        int64 i = 40;
+        while (i < 80) {
+            y[i] = 1;
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** Two interleaved moons, 40 points each, jitter 0.05. */
+    public static #Tensor<float64> moons(uint64 seed) {
+        Generator gen = heap Generator(seed);
+        Tensor<float32> u = gen.uniform((int64) 80);
+        Tensor<float32> j = gen.normal((int64) 160);
+        int64[] sh = heap int64[2];
+        sh[0] = 80;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 80) {
+            float64 t = 3.14159265358979 * (float64) u.get1(i);
+            float64 px = Math.cos(t);
+            float64 py = Math.sin(t);
+            if (i >= (int64) 40) {
+                px = 1.0 - Math.cos(t);
+                py = 0.5 - Math.sin(t);
+            }
+            x.flatSet(i * 2, px + 0.05 * (float64) j.get1(i * 2));
+            x.flatSet(i * 2 + 1, py + 0.05 * (float64) j.get1(i * 2 + 1));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** Labels for `moons`: 40 of 0 then 40 of 1. */
+    public static #int64[] moonLabels() {
+        int64[] y = heap int64[80];
+        int64 i = 40;
+        while (i < 80) {
+            y[i] = 1;
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** Two OVERLAPPING unit-variance Gaussians at (0,0) and (2.5,0), 60 each. */
+    public static #Tensor<float64> overlapGaussians(uint64 seed) {
+        Generator gen = heap Generator(seed);
+        Tensor<float32> j = gen.normal((int64) 240);
+        int64[] sh = heap int64[2];
+        sh[0] = 120;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 120) {
+            float64 mx = 0.0;
+            if (i >= (int64) 60) {
+                mx = 2.5;
+            }
+            x.flatSet(i * 2, mx + (float64) j.get1(i * 2));
+            x.flatSet(i * 2 + 1, (float64) j.get1(i * 2 + 1));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** Labels for `overlapGaussians`: 60 of 0 then 60 of 1. */
+    public static #int64[] overlapLabels() {
+        int64[] y = heap int64[120];
+        int64 i = 60;
+        while (i < 120) {
+            y[i] = 1;
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** Two tight blobs (20 each, σ 0.5, centers (0,0)/(8,8)) + 5 KNOWN
+     *  far-away noise points. Labels: 0/1, noise = -1 (§7.2's fixture). */
+    public static #Tensor<float64> noisyBlobs(uint64 seed) {
+        Generator gen = heap Generator(seed);
+        Tensor<float32> j = gen.normal((int64) 90);
+        int64[] sh = heap int64[2];
+        sh[0] = 45;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 40) {
+            float64 c = 0.0;
+            if (i >= (int64) 20) {
+                c = 8.0;
+            }
+            x.flatSet(i * 2, c + 0.5 * (float64) j.get1(i * 2));
+            x.flatSet(i * 2 + 1, c + 0.5 * (float64) j.get1(i * 2 + 1));
+            i = i + 1;
+        }
+        // Five isolated noise points, far from both centers.
+        float64[] nx = heap float64[5];
+        nx[0] = 20.0; nx[1] = -15.0; nx[2] = 25.0; nx[3] = -20.0; nx[4] = 0.0;
+        float64[] ny = heap float64[5];
+        ny[0] = -20.0; ny[1] = 25.0; ny[2] = 25.0; ny[3] = -15.0; ny[4] = 30.0;
+        int64 k = 0;
+        while (k < 5) {
+            x.flatSet((40 + k) * 2, nx[k]);
+            x.flatSet((40 + k) * 2 + 1, ny[k]);
+            k = k + 1;
+        }
+        return #x;
+    }
+
+    /** Labels for `noisyBlobs`: 20×0, 20×1, 5×(-1). */
+    public static #int64[] noisyBlobLabels() {
+        int64[] y = heap int64[45];
+        int64 i = 0;
+        while (i < 45) {
+            if (i < 20) {
+                y[i] = 0;
+            } else if (i < 40) {
+                y[i] = 1;
+            } else {
+                y[i] = (int64) -1;
+            }
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    /** Mixed units (§3.4): col 0 in kilometres (span ~1), col 1 in grams
+     *  (span ~50000) — the kilometre must not weigh the same as the gram. */
+    public static #Tensor<float64> mixedUnits(uint64 seed) {
+        Generator gen = heap Generator(seed);
+        Tensor<float32> u = gen.uniform((int64) 80);
+        int64[] sh = heap int64[2];
+        sh[0] = 40;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 40) {
+            x.flatSet(i * 2, (float64) u.get1(i * 2));
+            x.flatSet(i * 2 + 1, 50000.0 * (float64) u.get1(i * 2 + 1));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** max − min of column `c` — the span the mixed-unit test compares. */
+    public static float64 columnSpan(Tensor<float64> x, int64 c) {
+        int64 n = x.shapeAt(0);
+        float64 lo = x.get2(0, c);
+        float64 hi = lo;
+        int64 i = 1;
+        while (i < n) {
+            float64 v = x.get2(i, c);
+            if (v < lo) {
+                lo = v;
+            }
+            if (v > hi) {
+                hi = v;
+            }
+            i = i + 1;
+        }
+        return hi - lo;
+    }
+}
