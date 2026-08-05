@@ -235,6 +235,45 @@ public final class Shapes {
         return #y;
     }
 
+    /** Unequal-variance pair (U4's GMM-beats-K-means fixture): 60 TIGHT
+     *  points (σ 0.35) at (0,0) and 60 WIDE points (σ 2.0) at (3,0). The
+     *  Bayes boundary sits near the tight component; K-means' midpoint
+     *  boundary misassigns the wide component's near tail, and GMM's
+     *  per-component covariance recovers it (mechanism verified 20/20
+     *  against sklearn, margin 0.16–0.38 Rand). */
+    public static #Tensor<float64> unequalVariance(uint64 seed) {
+        Generator gen = heap Generator(seed);
+        Tensor<float32> j = gen.normal((int64) 240);
+        int64[] sh = heap int64[2];
+        sh[0] = 120;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 120) {
+            float64 mx = 0.0;
+            float64 s = 0.35;
+            if (i >= (int64) 60) {
+                mx = 3.0;
+                s = 2.0;
+            }
+            x.flatSet(i * 2, mx + s * (float64) j.get1(i * 2));
+            x.flatSet(i * 2 + 1, s * (float64) j.get1(i * 2 + 1));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** Labels for `unequalVariance`: 60 tight 0, 60 wide 1. */
+    public static #int64[] unequalVarianceLabels() {
+        int64[] y = heap int64[120];
+        int64 i = 60;
+        while (i < 120) {
+            y[i] = 1;
+            i = i + 1;
+        }
+        return #y;
+    }
+
     /** max − min of column `c` — the span the mixed-unit test compares. */
     public static float64 columnSpan(Tensor<float64> x, int64 c) {
         int64 n = x.shapeAt(0);

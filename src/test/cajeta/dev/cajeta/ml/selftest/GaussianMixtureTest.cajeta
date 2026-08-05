@@ -1,0 +1,320 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.KMeans;
+import dev.cajeta.ml.GaussianMixture;
+
+/**
+ * ml-unsupervised plan 4.1 — Gaussian mixtures (spec §5, §12.3).
+ * Log-likelihood monotonicity is asserted EVERY iteration (EM's defining
+ * property and the single best detector of an implementation error);
+ * parameters pin against sklearn 1.9.0 `GaussianMixture(reg_covar=1e-6,
+ * tol=1e-12, max_iter=1000, init_params='kmeans')` on a deterministic
+ * fixture (oracle numbers recorded 2026-08-05); and GMM beats K-means on
+ * the unequal-variance shape — the comparison that justifies having both.
+ */
+public class GaussianMixtureTest {
+
+    public GaussianMixtureTest() { return; }
+
+    /** The 8-point parity fixture: two identically-shaped tight clusters. */
+    static #Tensor<float64> parityFixture() {
+        float64[] d = heap float64[16];
+        d[0] = 0.0;  d[1] = 0.0;
+        d[2] = 1.0;  d[3] = 0.2;
+        d[4] = 0.2;  d[5] = 1.0;
+        d[6] = 1.2;  d[7] = 1.1;
+        d[8] = 5.0;  d[9] = 5.0;
+        d[10] = 6.0; d[11] = 5.2;
+        d[12] = 5.2; d[13] = 6.0;
+        d[14] = 6.2; d[15] = 6.1;
+        int64[] sh = heap int64[2];
+        sh[0] = 8;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** 5 distinct points + 4 identical copies: one component MUST collapse. */
+    static #Tensor<float64> degenerateFixture() {
+        float64[] d = heap float64[18];
+        d[0] = 0.0;  d[1] = 0.0;
+        d[2] = 0.5;  d[3] = 0.1;
+        d[4] = 0.1;  d[5] = 0.6;
+        d[6] = 0.7;  d[7] = 0.7;
+        d[8] = 0.3;  d[9] = 0.3;
+        d[10] = 5.0; d[11] = 5.0;
+        d[12] = 5.0; d[13] = 5.0;
+        d[14] = 5.0; d[15] = 5.0;
+        d[16] = 5.0; d[17] = 5.0;
+        int64[] sh = heap int64[2];
+        sh[0] = 9;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> ignoredY(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.zeros<float64>(sh);
+    }
+
+    static #int64[] hardLabels(Tensor<float64> lv, int64 n) {
+        int64[] out = heap int64[n];
+        int64 i = 0;
+        while (i < n) {
+            out[i] = (int64) lv.get1(i);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Component id with the smaller mean x — for order-free parity. */
+    static int64 loComponent(GaussianMixture gm) {
+        Tensor<float64> m = gm.means();
+        if (m.get2(0, 0) <= m.get2(1, 0)) {
+            return 0;
+        }
+        return 1;
+    }
+
+    // 4.1.1 / §12.3 — log-likelihood is non-decreasing across EM
+    // iterations, asserted every iteration, and convergence is reported.
+    @Test
+    public void logLikelihoodIsMonotoneNonDecreasing() {
+        Tensor<float64> x = Shapes.overlapGaussians((uint64) 17);
+        GaussianMixture gm = heap GaussianMixture((int64) 2, (uint64) 5);
+        gm.fit(x, GaussianMixtureTest.ignoredY((int64) 120));
+        float64[] h = gm.logLikelihoodHistory();
+        int64 n = (int64) h.count();
+        Assert.isTrue(n >= 2);
+        int64 i = 1;
+        while (i < n) {
+            Assert.isTrue(h[i] >= h[i - 1] - 0.000000001);
+            i = i + 1;
+        }
+        Assert.isTrue(gm.converged());
+    }
+
+    // 4.1.2 — fitted parameters recover U1's known overlapping-Gaussian
+    // truth: means (0,0)/(2.5,0), unit variances, equal weights.
+    @Test
+    public void recoversKnownOverlappingParameters() {
+        Tensor<float64> x = Shapes.overlapGaussians((uint64) 17);
+        GaussianMixture gm = heap GaussianMixture((int64) 2, (uint64) 5);
+        gm.fit(x, GaussianMixtureTest.ignoredY((int64) 120));
+        int64 lo = GaussianMixtureTest.loComponent(gm);
+        int64 hi = 1 - lo;
+        Tensor<float64> m = gm.means();
+        Assert.isTrue(Fixtures.close(m.get2(lo, 0), 0.0, 0.4));
+        Assert.isTrue(Fixtures.close(m.get2(lo, 1), 0.0, 0.4));
+        Assert.isTrue(Fixtures.close(m.get2(hi, 0), 2.5, 0.4));
+        Assert.isTrue(Fixtures.close(m.get2(hi, 1), 0.0, 0.4));
+        Tensor<float64> w = gm.weights();
+        Assert.isTrue(Fixtures.close(w.get1(lo), 0.5, 0.15));
+        Assert.isTrue(w.get1(lo) + w.get1(hi) > 0.999999);
+        // Unit variances within tolerance (full covariance diagonal).
+        Tensor<float64> c = gm.covariances();
+        Assert.isTrue(Fixtures.close(c.flatGet(lo * 4), 1.0, 0.45));
+        Assert.isTrue(Fixtures.close(c.flatGet(lo * 4 + 3), 1.0, 0.45));
+    }
+
+    // 4.1.3 / 4.3.2 / 4.1.7 — all four covariance types match the pinned
+    // sklearn oracle: weights, means, covariances, mean log-likelihood,
+    // AIC, and BIC, to 1e-5.
+    @Test
+    public void covarianceTypesMatchSklearn() {
+        Tensor<float64> x = GaussianMixtureTest.parityFixture();
+        Tensor<float64> y = GaussianMixtureTest.ignoredY((int64) 8);
+        float64 tol = 0.00001;
+
+        // full
+        GaussianMixture gf = heap GaussianMixture((int64) 2, (uint64) 0,
+            "full", "kmeans", (int64) 1000, 0.000000000001, 0.000001);
+        gf.fit(x, y);
+        int64 lo = GaussianMixtureTest.loComponent(gf);
+        int64 hi = 1 - lo;
+        Assert.isTrue(Fixtures.close(gf.weights().get1(lo), 0.5, tol));
+        Tensor<float64> mf = gf.means();
+        Assert.isTrue(Fixtures.close(mf.get2(lo, 0), 0.6, tol));
+        Assert.isTrue(Fixtures.close(mf.get2(lo, 1), 0.575, tol));
+        Assert.isTrue(Fixtures.close(mf.get2(hi, 0), 5.6, tol));
+        Assert.isTrue(Fixtures.close(mf.get2(hi, 1), 5.575, tol));
+        Tensor<float64> cf = gf.covariances();     // (k, p, p)
+        Assert.isTrue(Fixtures.close(cf.flatGet(lo * 4), 0.260001, tol));
+        Assert.isTrue(Fixtures.close(cf.flatGet(lo * 4 + 1), 0.085, tol));
+        Assert.isTrue(Fixtures.close(cf.flatGet(lo * 4 + 3), 0.231876, tol));
+        Assert.isTrue(Fixtures.close(gf.score(x, y),
+            0.0 - 2.0628818395260646, tol));
+        Assert.isTrue(Fixtures.close(gf.aic(x), 55.006109432417034, 0.0001));
+        Assert.isTrue(Fixtures.close(gf.bic(x), 55.87996639089523, 0.0001));
+
+        // tied — one shared (p, p) covariance.
+        GaussianMixture gt = heap GaussianMixture((int64) 2, (uint64) 0,
+            "tied", "kmeans", (int64) 1000, 0.000000000001, 0.000001);
+        gt.fit(x, y);
+        Tensor<float64> ct = gt.covariances();     // (p, p)
+        Assert.isTrue(Fixtures.close(ct.get2(0, 0), 0.260001, tol));
+        Assert.isTrue(Fixtures.close(ct.get2(0, 1), 0.085, tol));
+        Assert.isTrue(Fixtures.close(ct.get2(1, 1), 0.231876, tol));
+        Assert.isTrue(Fixtures.close(gt.aic(x), 49.00610943241702, 0.0001));
+        Assert.isTrue(Fixtures.close(gt.bic(x), 49.64164176585571, 0.0001));
+
+        // diag — per-component (p,) variances.
+        GaussianMixture gd = heap GaussianMixture((int64) 2, (uint64) 0,
+            "diag", "kmeans", (int64) 1000, 0.000000000001, 0.000001);
+        gd.fit(x, y);
+        int64 dlo = GaussianMixtureTest.loComponent(gd);
+        Tensor<float64> cd = gd.covariances();     // (k, p)
+        Assert.isTrue(Fixtures.close(cd.get2(dlo, 0), 0.260001, tol));
+        Assert.isTrue(Fixtures.close(cd.get2(dlo, 1), 0.231876, tol));
+        Assert.isTrue(Fixtures.close(gd.score(x, y),
+            0.0 - 2.1267090001841185, tol));
+
+        // spherical — per-component scalar variance.
+        GaussianMixture gs = heap GaussianMixture((int64) 2, (uint64) 0,
+            "spherical", "kmeans", (int64) 1000, 0.000000000001, 0.000001);
+        gs.fit(x, y);
+        int64 slo = GaussianMixtureTest.loComponent(gs);
+        Tensor<float64> cs = gs.covariances();     // (k,)
+        Assert.isTrue(Fixtures.close(cs.get1(slo), 0.2459385, tol));
+        Assert.isTrue(Fixtures.close(gs.bic(x), 48.60963329747313, 0.0001));
+    }
+
+    // 4.1.4 / §5.2 — posterior responsibilities sum to 1 per row; core
+    // points are confident, and the mixture is genuinely soft (not 0/1
+    // everywhere on overlapping data).
+    @Test
+    public void responsibilitiesAreSoftAndNormalized() {
+        Tensor<float64> x = Shapes.overlapGaussians((uint64) 17);
+        GaussianMixture gm = heap GaussianMixture((int64) 2, (uint64) 5);
+        gm.fit(x, GaussianMixtureTest.ignoredY((int64) 120));
+        Tensor<float64> pr = gm.predictProba(x);
+        Assert.equals((int64) 120, pr.shapeAt(0));
+        Assert.equals((int64) 2, pr.shapeAt(1));
+        boolean anySoft = false;
+        int64 i = 0;
+        while (i < 120) {
+            float64 s = pr.get2(i, 0) + pr.get2(i, 1);
+            Assert.isTrue(Fixtures.close(s, 1.0, 0.000000000001));
+            if (pr.get2(i, 0) > 0.2 && pr.get2(i, 0) < 0.8) {
+                anySoft = true;
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(anySoft);
+    }
+
+    // 4.1.5 — GMM beats K-means on the unequal-variance shape (margin
+    // > 0.05 Rand), and K-means stays competitive on blobs where both are
+    // exact. The comparison that justifies having both.
+    @Test
+    public void gmmBeatsKMeansWhereVariancesDiffer() {
+        Tensor<float64> x = Shapes.unequalVariance((uint64) 29);
+        Tensor<float64> y = GaussianMixtureTest.ignoredY((int64) 120);
+        int64[] truth = Shapes.unequalVarianceLabels();
+        KMeans km = heap KMeans((int64) 2, (uint64) 5);
+        km.fit(x, y);
+        int64[] lk = GaussianMixtureTest.hardLabels(km.labels(), (int64) 120);
+        GaussianMixture gm = heap GaussianMixture((int64) 2, (uint64) 5);
+        gm.fit(x, y);
+        int64[] lg = GaussianMixtureTest.hardLabels(gm.predict(x),
+            (int64) 120);
+        float64 rk = Harness.randIndex(lk, truth);
+        float64 rg = Harness.randIndex(lg, truth);
+        Assert.isTrue(rg > 0.8);
+        Assert.isTrue(rg - rk > 0.05);
+        // K-means competitive on blobs: both exact.
+        Tensor<float64> xb = Shapes.blobs((uint64) 7);
+        Tensor<float64> yb = GaussianMixtureTest.ignoredY((int64) 60);
+        KMeans kb = heap KMeans((int64) 3, (uint64) 1);
+        kb.fit(xb, yb);
+        GaussianMixture gb = heap GaussianMixture((int64) 3, (uint64) 1);
+        gb.fit(xb, yb);
+        int64[] t = Shapes.blobLabels();
+        Assert.isTrue(Harness.randIndex(
+            GaussianMixtureTest.hardLabels(kb.labels(), (int64) 60), t)
+            == 1.0);
+        Assert.isTrue(Harness.randIndex(
+            GaussianMixtureTest.hardLabels(gb.predict(xb), (int64) 60), t)
+            == 1.0);
+    }
+
+    // 4.1.6 / §5.4 — a component collapsing onto a single repeated point is
+    // survived via the exposed regularization floor, and REPORTED.
+    @Test
+    public void degenerateComponentIsRegularizedAndReported() {
+        Tensor<float64> x = GaussianMixtureTest.degenerateFixture();
+        Tensor<float64> y = GaussianMixtureTest.ignoredY((int64) 9);
+        GaussianMixture gm = heap GaussianMixture((int64) 2, (uint64) 5,
+            "full", "kmeans", (int64) 100, 0.001, 0.00001);
+        gm.fit(x, y);
+        Assert.isTrue(gm.isFitted());
+        Assert.isTrue(gm.collapsed());
+        // Finite everything despite the singular component.
+        float64 s = gm.score(x, y);
+        Assert.isTrue(s == s);
+        Tensor<float64> c = gm.covariances();
+        int64 i = 0;
+        while (i < c.size()) {
+            float64 v = c.flatGet(i);
+            Assert.isTrue(v == v);
+            i = i + 1;
+        }
+        // A healthy fit does NOT report collapse.
+        Tensor<float64> xb = Shapes.blobs((uint64) 7);
+        GaussianMixture gh = heap GaussianMixture((int64) 3, (uint64) 1);
+        gh.fit(xb, GaussianMixtureTest.ignoredY((int64) 60));
+        Assert.isFalse(gh.collapsed());
+    }
+
+    // 4.1.7 / §5.5 — BIC selects the true component count on blobs.
+    @Test
+    public void bicSelectsComponentCount() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        Tensor<float64> y = GaussianMixtureTest.ignoredY((int64) 60);
+        GaussianMixture g1 = heap GaussianMixture((int64) 1, (uint64) 5);
+        g1.fit(x, y);
+        GaussianMixture g2 = heap GaussianMixture((int64) 2, (uint64) 5);
+        g2.fit(x, y);
+        GaussianMixture g3 = heap GaussianMixture((int64) 3, (uint64) 5);
+        g3.fit(x, y);
+        Assert.isTrue(g3.bic(x) < g2.bic(x));
+        Assert.isTrue(g3.bic(x) < g1.bic(x));
+        Assert.isTrue(g3.aic(x) < g1.aic(x));
+    }
+
+    // 4.1.8 / §12.7 — seeded fits reproduce exactly, for both init methods;
+    // lifecycle conformance (fit-before-use throws).
+    @Test
+    public void seededFitsReproduceAndLifecycleHolds() {
+        Assert.assertThrows(() -> {
+            Tensor<float64> xa = GaussianMixtureTest.parityFixture();
+            GaussianMixture bad = heap GaussianMixture((int64) 2, (uint64) 0);
+            bad.predict(xa);
+        });
+        Tensor<float64> x = Shapes.overlapGaussians((uint64) 17);
+        Tensor<float64> y = GaussianMixtureTest.ignoredY((int64) 120);
+        GaussianMixture a = heap GaussianMixture((int64) 2, (uint64) 9);
+        a.fit(x, y);
+        GaussianMixture b = heap GaussianMixture((int64) 2, (uint64) 9);
+        b.fit(x, y);
+        Assert.isTrue(a.score(x, y) == b.score(x, y));
+        Tensor<float64> ma = a.means();
+        Tensor<float64> mb = b.means();
+        int64 i = 0;
+        while (i < ma.size()) {
+            Assert.isTrue(ma.flatGet(i) == mb.flatGet(i));
+            i = i + 1;
+        }
+        // Random init, same seed: also exact.
+        GaussianMixture c = heap GaussianMixture((int64) 2, (uint64) 9,
+            "full", "random", (int64) 100, 0.001, 0.000001);
+        c.fit(x, y);
+        GaussianMixture d = heap GaussianMixture((int64) 2, (uint64) 9,
+            "full", "random", (int64) 100, 0.001, 0.000001);
+        d.fit(x, y);
+        Assert.isTrue(c.score(x, y) == d.score(x, y));
+        Assert.isTrue(c.isFitted() && d.isFitted());
+    }
+}
