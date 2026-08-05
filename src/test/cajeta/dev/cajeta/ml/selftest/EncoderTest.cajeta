@@ -1,0 +1,229 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.OneHotEncoder;
+import dev.cajeta.ml.OrdinalEncoder;
+import dev.cajeta.ml.Pipeline;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.Transformer;
+
+/**
+ * ml-classification-gaps plan Unit 6 — categorical encoders (spec §8),
+ * verified against sklearn 1.9.0 outputs on a 6x2 fixture (categories
+ * col0 {0,1,2}, col1 {5,7}; sorted-order columns, column-major
+ * concatenation — sklearn's layout). Explicit ordinal orderings are an
+ * extension: sklearn REFUSES unsorted numeric categories
+ * (DifferencesFromSklearn).
+ */
+public class EncoderTest {
+
+    public EncoderTest() { return; }
+
+    static #Tensor<float64> catX() {
+        float64[] d = heap float64[12];
+        d[0] = 2.0;  d[1] = 5.0;
+        d[2] = 0.0;  d[3] = 7.0;
+        d[4] = 1.0;  d[5] = 5.0;
+        d[6] = 2.0;  d[7] = 7.0;
+        d[8] = 0.0;  d[9] = 5.0;
+        d[10] = 1.0; d[11] = 7.0;
+        int64[] sh = heap int64[2];
+        sh[0] = 6;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    // §8.1 — indicator column per observed category, sorted order,
+    // column-major — sklearn's exact matrix.
+    @Test
+    public void oneHotMatchesSklearn() {
+        OneHotEncoder oh = heap OneHotEncoder();
+        Tensor<float64> x = catX();
+        int64[] ys = heap int64[1];
+        ys[0] = 6;
+        Tensor<float64> yDummy = Tensor.zeros<float64>(ys);
+        Tensor<float64> t = oh.fitTransform(x, yDummy);
+        Assert.equals(t.shapeAt(0), (int64) 6);
+        Assert.equals(t.shapeAt(1), (int64) 5);
+        // Row 0: [2,5] -> [0,0,1, 1,0]; row 1: [0,7] -> [1,0,0, 0,1].
+        float64[] want = heap float64[30];
+        want[0] = 0.0;  want[1] = 0.0;  want[2] = 1.0;  want[3] = 1.0;  want[4] = 0.0;
+        want[5] = 1.0;  want[6] = 0.0;  want[7] = 0.0;  want[8] = 0.0;  want[9] = 1.0;
+        want[10] = 0.0; want[11] = 1.0; want[12] = 0.0; want[13] = 1.0; want[14] = 0.0;
+        want[15] = 0.0; want[16] = 0.0; want[17] = 1.0; want[18] = 0.0; want[19] = 1.0;
+        want[20] = 1.0; want[21] = 0.0; want[22] = 0.0; want[23] = 1.0; want[24] = 0.0;
+        want[25] = 0.0; want[26] = 1.0; want[27] = 0.0; want[28] = 0.0; want[29] = 1.0;
+        int64 f = 0;
+        while (f < 30) {
+            Assert.isTrue(t.flatGet(f) == want[f]);
+            f = f + 1;
+        }
+    }
+
+    // §8.2 — drop-first drops each column's first category.
+    @Test
+    public void dropFirstMatchesSklearn() {
+        OneHotEncoder oh = heap OneHotEncoder(true);
+        Tensor<float64> x = catX();
+        int64[] ys = heap int64[1];
+        ys[0] = 6;
+        Tensor<float64> t = oh.fitTransform(x, Tensor.zeros<float64>(ys));
+        Assert.equals(t.shapeAt(1), (int64) 3);
+        // sklearn drop='first': rows [[0,1,0],[0,0,1],[1,0,0],[0,1,1],
+        // [0,0,0],[1,0,1]].
+        float64[] want = heap float64[18];
+        want[0] = 0.0;  want[1] = 1.0;  want[2] = 0.0;
+        want[3] = 0.0;  want[4] = 0.0;  want[5] = 1.0;
+        want[6] = 1.0;  want[7] = 0.0;  want[8] = 0.0;
+        want[9] = 0.0;  want[10] = 1.0; want[11] = 1.0;
+        want[12] = 0.0; want[13] = 0.0; want[14] = 0.0;
+        want[15] = 1.0; want[16] = 0.0; want[17] = 1.0;
+        int64 f = 0;
+        while (f < 18) {
+            Assert.isTrue(t.flatGet(f) == want[f]);
+            f = f + 1;
+        }
+    }
+
+    // §8.3 — unseen category: raise by default; all-zero under the
+    // explicit ignore policy (sklearn handle_unknown='ignore').
+    @Test
+    public void unseenCategoryPolicy() {
+        Assert.assertThrows(() -> {
+            OneHotEncoder oh = heap OneHotEncoder();
+            int64[] ys = heap int64[1];
+            ys[0] = 6;
+            Tensor<float64> t0 = oh.fitTransform(catX(),
+                Tensor.zeros<float64>(ys));
+            float64[] q = heap float64[2];
+            q[0] = 3.0;
+            q[1] = 5.0;
+            int64[] qs = heap int64[2];
+            qs[0] = 1;
+            qs[1] = 2;
+            Tensor<float64> bad = oh.transform(Tensor.of<float64>(q, qs));
+        });
+
+        OneHotEncoder ig = heap OneHotEncoder(false, true);
+        int64[] ys = heap int64[1];
+        ys[0] = 6;
+        Tensor<float64> t0 = ig.fitTransform(catX(),
+            Tensor.zeros<float64>(ys));
+        float64[] q = heap float64[2];
+        q[0] = 3.0;
+        q[1] = 5.0;
+        int64[] qs = heap int64[2];
+        qs[0] = 1;
+        qs[1] = 2;
+        Tensor<float64> t = ig.transform(Tensor.of<float64>(q, qs));
+        Assert.isTrue(t.flatGet(0) == 0.0);
+        Assert.isTrue(t.flatGet(1) == 0.0);
+        Assert.isTrue(t.flatGet(2) == 0.0);
+        Assert.isTrue(t.flatGet(3) == 1.0);
+        Assert.isTrue(t.flatGet(4) == 0.0);
+    }
+
+    // §8.4 — ordinal codes: sorted default; an explicit supplied order.
+    @Test
+    public void ordinalSortedAndExplicit() {
+        OrdinalEncoder oe = heap OrdinalEncoder();
+        int64[] ys = heap int64[1];
+        ys[0] = 6;
+        Tensor<float64> t = oe.fitTransform(catX(),
+            Tensor.zeros<float64>(ys));
+        // sklearn: [[2,0],[0,1],[1,0],[2,1],[0,0],[1,1]].
+        float64[] want = heap float64[12];
+        want[0] = 2.0;  want[1] = 0.0;
+        want[2] = 0.0;  want[3] = 1.0;
+        want[4] = 1.0;  want[5] = 0.0;
+        want[6] = 2.0;  want[7] = 1.0;
+        want[8] = 0.0;  want[9] = 0.0;
+        want[10] = 1.0; want[11] = 1.0;
+        int64 f = 0;
+        while (f < 12) {
+            Assert.isTrue(t.flatGet(f) == want[f]);
+            f = f + 1;
+        }
+
+        // Explicit orderings col0 [2,1,0], col1 [7,5] (sklearn refuses
+        // unsorted numeric categories — this is our extension).
+        Tensor<float64>[] ords = heap Tensor<float64>[2];
+        float64[] o0 = heap float64[3];
+        o0[0] = 2.0;
+        o0[1] = 1.0;
+        o0[2] = 0.0;
+        int64[] s3 = heap int64[1];
+        s3[0] = 3;
+        ords[0] = Tensor.of<float64>(o0, s3);
+        float64[] o1 = heap float64[2];
+        o1[0] = 7.0;
+        o1[1] = 5.0;
+        int64[] s2 = heap int64[1];
+        s2[0] = 2;
+        ords[1] = Tensor.of<float64>(o1, s2);
+        OrdinalEncoder oe2 = heap OrdinalEncoder(#ords);
+        Tensor<float64> t2 = oe2.fitTransform(catX(),
+            Tensor.zeros<float64>(ys));
+        // [2,5]->[0,1]; [0,7]->[2,0]; [1,5]->[1,1]; [2,7]->[0,0];
+        // [0,5]->[2,1]; [1,7]->[1,0].
+        float64[] w2 = heap float64[12];
+        w2[0] = 0.0;  w2[1] = 1.0;
+        w2[2] = 2.0;  w2[3] = 0.0;
+        w2[4] = 1.0;  w2[5] = 1.0;
+        w2[6] = 0.0;  w2[7] = 0.0;
+        w2[8] = 2.0;  w2[9] = 1.0;
+        w2[10] = 1.0; w2[11] = 0.0;
+        f = 0;
+        while (f < 12) {
+            Assert.isTrue(t2.flatGet(f) == w2[f]);
+            f = f + 1;
+        }
+    }
+
+    // §8.5 — encoders satisfy Transformer and compose in a Pipeline; a
+    // fold's categories never leak (fit on train only -> unseen at
+    // transform is loud).
+    @Test
+    public void pipelineAndNoLeakage() {
+        // One-hot -> logistic on a target correlated with col0.
+        Tensor<float64> x = catX();
+        float64[] yd = heap float64[6];
+        yd[0] = 1.0;
+        yd[3] = 1.0;                       // category 2 -> positive
+        int64[] ys = heap int64[1];
+        ys[0] = 6;
+        Tensor<float64> y = Tensor.of<float64>(yd, ys);
+        Transformer oh = heap OneHotEncoder();
+        Predictor lr = heap LogisticRegression(1.0, 0.0000001, (int64) 500);
+        Pipeline pl = Pipeline.of(#oh, #lr);
+        pl.fit(x, y);
+        Assert.isTrue(pl.score(x, y) > 0.9);
+
+        // Leakage boundary: fit on rows 1..5 (no category-2 in col0 among
+        // rows 1,2,4,5... row 3 has 2) — use rows without col0==2.
+        Assert.assertThrows(() -> {
+            float64[] tr = heap float64[8];
+            tr[0] = 0.0; tr[1] = 7.0;
+            tr[2] = 1.0; tr[3] = 5.0;
+            tr[4] = 0.0; tr[5] = 5.0;
+            tr[6] = 1.0; tr[7] = 7.0;
+            int64[] trs = heap int64[2];
+            trs[0] = 4;
+            trs[1] = 2;
+            int64[] y4 = heap int64[1];
+            y4[0] = 4;
+            OneHotEncoder enc = heap OneHotEncoder();
+            Tensor<float64> t0 = enc.fitTransform(
+                Tensor.of<float64>(tr, trs), Tensor.zeros<float64>(y4));
+            float64[] te = heap float64[2];
+            te[0] = 2.0;                   // unseen in the training fold
+            te[1] = 5.0;
+            int64[] tes = heap int64[2];
+            tes[0] = 1;
+            tes[1] = 2;
+            Tensor<float64> bad = enc.transform(Tensor.of<float64>(te, tes));
+        });
+    }
+}
