@@ -1,0 +1,77 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * Learned positional encoding (spec §13.2): a trainable `(maxLen, dim)`
+ * table — torch's position-`nn.Embedding` idiom — whose row `p` is ADDED
+ * to every batch's position-`p` token (§13.2.1). The rows ride the tape's
+ * embedding gather, so gradient reaches exactly the used rows and a row
+ * used by every batch element accumulates (∂/∂row = B under a sum loss).
+ *
+ * A sequence longer than `maxLen` FAILS LOUDLY (§13.2.2) — the table has
+ * no rows to offer past its configured maximum, and silent truncation
+ * presents as a modelling problem.
+ */
+public class LearnedPositionalEncoding extends Module {
+    Parameter weight;        // (maxLen, dim)
+    int64 maxLen;
+    int64 dim;
+
+    /** Standard-normal init, torch's `nn.Embedding` default. */
+    public LearnedPositionalEncoding(int64 maxLen, int64 dim, uint64 seed) {
+        if (maxLen < 1 || dim < 1) {
+            throw heap MlException(
+                "LearnedPositionalEncoding: maxLen and dim must be >= 1");
+        }
+        this.maxLen = maxLen;
+        this.dim = dim;
+        int64[] sh = heap int64[2];
+        sh[0] = maxLen;
+        sh[1] = dim;
+        this.weight = heap Parameter(Init.normal(sh, 1.0f, seed));
+        return;
+    }
+
+    public Parameter weightParam() {
+        return this.weight;
+    }
+
+    /** `(B, T, E)` → the same plus the first `T` table rows per batch. */
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        Tensor<float32> xv = tape.valueOf(x);
+        if (xv.ndim() != 3 || xv.shapeAt(2) != this.dim) {
+            throw heap MlException(
+                "LearnedPositionalEncoding: expected (batch, seq, "
+                + this.dim + ")");
+        }
+        int64 b = xv.shapeAt(0);
+        int64 t = xv.shapeAt(1);
+        if (t > this.maxLen) {
+            throw heap MlException(
+                "LearnedPositionalEncoding: sequence length " + t
+                + " exceeds the configured maximum " + this.maxLen
+                + " — refusing to truncate silently; raise maxLen");
+        }
+        // Position ids 0..T-1 repeated per batch row; the gather gives
+        // (B·T, E) rows with gradient accumulating into the table.
+        int64[] ids = heap int64[1];
+        ids[0] = b * t;
+        Tensor<float32> pos = Tensor.zeros<float32>(ids);
+        int64 i = 0;
+        while (i < b * t) {
+            pos.set1(i, (float32) (i - (i / t) * t));
+            i = i + 1;
+        }
+        GradTensor rows = tape.embedding(this.weight.node(), pos);
+        int64[] s3 = heap int64[3];
+        s3[0] = b;
+        s3[1] = t;
+        s3[2] = this.dim;
+        GradTensor pe3 = tape.reshape(rows, s3);
+        return tape.add(x, pe3);
+    }
+}

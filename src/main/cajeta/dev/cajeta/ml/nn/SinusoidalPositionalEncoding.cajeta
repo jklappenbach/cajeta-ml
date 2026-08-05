@@ -1,0 +1,104 @@
+package dev.cajeta.ml.nn;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+
+/**
+ * Sinusoidal positional encoding (spec §13.2, the canonical transformer
+ * formulation): `pe[pos, 2i] = sin(pos·10000^(−2i/d))`,
+ * `pe[pos, 2i+1] = cos(pos·10000^(−2i/d))` — precomputed once to
+ * `maxLen` and held as a BUFFER (`pe`, enumerated by `Module.buffers()`,
+ * never optimized). Odd `d` is handled: the last column is the unpaired
+ * sine. Values pin against torch's reference elementwise (§13.2's
+ * warning: an off-by-one in the frequency term trains adequately while
+ * being wrong).
+ *
+ * `forward` ADDS the first `T` rows to a `(B, T, E)` input (§13.2.1 —
+ * added, not concatenated). A sequence longer than `maxLen` FAILS
+ * LOUDLY (§13.2.2): silent truncation loses the end of the input and
+ * presents as a modelling problem.
+ */
+public class SinusoidalPositionalEncoding extends Module {
+    Tensor<float32> pe;      // (maxLen, dim) — buffer, not a Parameter
+    int64 maxLen;
+    int64 dim;
+
+    public SinusoidalPositionalEncoding(int64 maxLen, int64 dim) {
+        if (maxLen < 1 || dim < 1) {
+            throw heap MlException(
+                "SinusoidalPositionalEncoding: maxLen and dim must be >= 1");
+        }
+        this.maxLen = maxLen;
+        this.dim = dim;
+        int64[] sh = heap int64[2];
+        sh[0] = maxLen;
+        sh[1] = dim;
+        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        float64 lnBase = Math.log(10000.0);
+        int64 pos = 0;
+        while (pos < maxLen) {
+            int64 c = 0;
+            while (c < dim) {
+                int64 i2 = c - (c - (c / (int64) 2) * (int64) 2);   // c even: c; c odd: c-1
+                float64 div = Math.exp(0.0 - (float64) i2 * lnBase
+                    / (float64) dim);
+                float64 ang = (float64) pos * div;
+                float64 v = Math.sin(ang);
+                if (c - (c / (int64) 2) * (int64) 2 == (int64) 1) {
+                    v = Math.cos(ang);
+                }
+                t.flatSet(pos * dim + c, (float32) v);
+                c = c + 1;
+            }
+            pos = pos + 1;
+        }
+        this.pe #= t;
+        return;
+    }
+
+    /** The precomputed `(maxLen, dim)` table — for inspection and pins. */
+    public Tensor<float32> table() {
+        return this.pe;
+    }
+
+    /** `(B, T, E)` → the same plus `pe[0:T]` per batch row. */
+    public GradTensor forward(GradTape<float32> tape, GradTensor x) {
+        Tensor<float32> xv = tape.valueOf(x);
+        if (xv.ndim() != 3 || xv.shapeAt(2) != this.dim) {
+            throw heap MlException(
+                "SinusoidalPositionalEncoding: expected (batch, seq, "
+                + this.dim + ")");
+        }
+        int64 b = xv.shapeAt(0);
+        int64 t = xv.shapeAt(1);
+        if (t > this.maxLen) {
+            throw heap MlException(
+                "SinusoidalPositionalEncoding: sequence length " + t
+                + " exceeds the configured maximum " + this.maxLen
+                + " — refusing to truncate silently; raise maxLen");
+        }
+        int64[] sh = heap int64[3];
+        sh[0] = b;
+        sh[1] = t;
+        sh[2] = this.dim;
+        Tensor<float32> tiled = Tensor.zeros<float32>(sh);
+        int64 bi = 0;
+        while (bi < b) {
+            int64 p = 0;
+            while (p < t) {
+                int64 c = 0;
+                while (c < this.dim) {
+                    tiled.flatSet((bi * t + p) * this.dim + c,
+                        this.pe.flatGet(p * this.dim + c));
+                    c = c + 1;
+                }
+                p = p + 1;
+            }
+            bi = bi + 1;
+        }
+        GradTensor peLeaf = tape.leaf(tiled, false);
+        return tape.add(x, peLeaf);
+    }
+}

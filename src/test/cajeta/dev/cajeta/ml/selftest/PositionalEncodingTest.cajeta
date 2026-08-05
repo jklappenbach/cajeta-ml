@@ -1,0 +1,227 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Embedding;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.nn.SinusoidalPositionalEncoding;
+import dev.cajeta.ml.nn.LearnedPositionalEncoding;
+
+/**
+ * cajeta-ml-v3 §13 plan 1.1 — positional encodings (spec §13.2). The
+ * sinusoidal table pins ELEMENTWISE against torch 2.13.0+cpu
+ * (tools/fixtures/gen_positional.py, recorded 2026-08-05) at even AND
+ * odd model dimensions — an off-by-one in the frequency term trains
+ * adequately while being wrong. Learned encodings receive gradient on
+ * exactly the used rows; both ADD to the input (never concatenate); a
+ * sequence past maxLen fails loudly.
+ */
+public class PositionalEncodingTest {
+
+    public PositionalEncodingTest() { return; }
+
+    static boolean near(float32 a, float64 b) {
+        float64 d = (float64) a - b;
+        if (d < 0.0) { d = 0.0 - d; }
+        return d < 0.000001;
+    }
+
+    /** torch reference, d=6 maxLen=4, row-major. */
+    static #float64[] torchD6() {
+        float64[] v = heap float64[24];
+        v[0] = 0.0;  v[1] = 1.0;  v[2] = 0.0;
+        v[3] = 1.0;  v[4] = 0.0;  v[5] = 1.0;
+        v[6] = 0.8414709568023682;   v[7] = 0.5403023362159729;
+        v[8] = 0.046399228274822235; v[9] = 0.9989229440689087;
+        v[10] = 0.0021544331684708595; v[11] = 0.9999976754188538;
+        v[12] = 0.9092974066734314;  v[13] = 0.0 - 0.416146844625473;
+        v[14] = 0.09269850701093674; v[15] = 0.9956942200660706;
+        v[16] = 0.004308856092393398; v[17] = 0.999990701675415;
+        v[18] = 0.14112000167369843; v[19] = 0.0 - 0.9899924993515015;
+        v[20] = 0.13879810273647308; v[21] = 0.9903206825256348;
+        v[22] = 0.006463258992880583; v[23] = 0.9999791383743286;
+        return #v;
+    }
+
+    /** torch reference, d=7 (ODD) maxLen=4, row-major. */
+    static #float64[] torchD7() {
+        float64[] v = heap float64[28];
+        v[0] = 0.0; v[1] = 1.0; v[2] = 0.0; v[3] = 1.0;
+        v[4] = 0.0; v[5] = 1.0; v[6] = 0.0;
+        v[7] = 0.8414709568023682;  v[8] = 0.5403023362159729;
+        v[9] = 0.07190646231174469; v[10] = 0.9974113702774048;
+        v[11] = 0.005179452244192362; v[12] = 0.9999865889549255;
+        v[13] = 0.00037275953218340874;
+        v[14] = 0.9092974066734314; v[15] = 0.0 - 0.416146844625473;
+        v[16] = 0.14344064891338348; v[17] = 0.9896588921546936;
+        v[18] = 0.010358765721321106; v[19] = 0.9999463558197021;
+        v[20] = 0.0007455190061591566;
+        v[21] = 0.14112000167369843; v[22] = 0.0 - 0.9899924993515015;
+        v[23] = 0.2142322063446045;  v[24] = 0.9767827391624451;
+        v[25] = 0.015537801198661327; v[26] = 0.9998793005943298;
+        v[27] = 0.0011182783637195826;
+        return #v;
+    }
+
+    // 1.1.1 — the sinusoidal table matches torch ELEMENTWISE.
+    @Test
+    public void sinusoidalMatchesTorchElementwise() {
+        SinusoidalPositionalEncoding pe =
+            heap SinusoidalPositionalEncoding((int64) 4, (int64) 6);
+        Tensor<float32> t = pe.table();
+        Assert.equals((int64) 4, t.shapeAt(0));
+        Assert.equals((int64) 6, t.shapeAt(1));
+        float64[] ref = PositionalEncodingTest.torchD6();
+        int64 i = 0;
+        while (i < 24) {
+            Assert.isTrue(PositionalEncodingTest.near(t.flatGet(i), ref[i]));
+            i = i + 1;
+        }
+    }
+
+    // 1.1.5 — correct at an ODD model dimension: the last column is the
+    // unpaired sine.
+    @Test
+    public void sinusoidalCorrectAtOddDimension() {
+        SinusoidalPositionalEncoding pe =
+            heap SinusoidalPositionalEncoding((int64) 4, (int64) 7);
+        Tensor<float32> t = pe.table();
+        float64[] ref = PositionalEncodingTest.torchD7();
+        int64 i = 0;
+        while (i < 28) {
+            Assert.isTrue(PositionalEncodingTest.near(t.flatGet(i), ref[i]));
+            i = i + 1;
+        }
+    }
+
+    // 1.1.3 — composes with Embedding by ADDITION: emb[ids] + pe[0:T]
+    // matches the torch-computed composition elementwise.
+    @Test
+    public void composesWithEmbeddingByAddition() {
+        // Deterministic vocab=5, d=6 table: (f % 7) * 0.25 - 0.75.
+        Embedding emb = heap Embedding((int64) 5, (int64) 6, (uint64) 1);
+        Parameter w = emb.weightParam();
+        int64 f = 0;
+        while (f < 30) {
+            w.get().flatSet(f,
+                (float32) ((float64) (f - (f / (int64) 7) * (int64) 7)
+                    * 0.25 - 0.75));
+            f = f + 1;
+        }
+        SinusoidalPositionalEncoding pe =
+            heap SinusoidalPositionalEncoding((int64) 4, (int64) 6);
+        GradTape<float32> tape = heap GradTape<float32>();
+        emb.bindParameters(tape);
+        pe.bindParameters(tape);
+        int64[] is = heap int64[1];
+        is[0] = 3;
+        Tensor<float32> ids = Tensor.zeros<float32>(is);
+        ids.set1(0, 3.0f);
+        ids.set1(1, 1.0f);
+        ids.set1(2, 4.0f);
+        GradTensor rows = emb.lookup(tape, ids);       // (3, 6)
+        int64[] s3 = heap int64[3];
+        s3[0] = 1;
+        s3[1] = 3;
+        s3[2] = 6;
+        GradTensor x3 = tape.reshape(rows, s3);
+        GradTensor y = pe.forward(tape, x3);
+        Tensor<float32> yv = tape.valueOf(y);
+        // torch: table[ids] + sinusoidal(4,6)[:3], row-major.
+        float64[] ref = heap float64[18];
+        ref[0] = 0.25; ref[1] = 1.5; ref[2] = 0.75;
+        ref[3] = 0.25; ref[4] = 0.0 - 0.5; ref[5] = 0.75;
+        ref[6] = 1.5914709568023682;  ref[7] = 0.0 - 0.2096976637840271;
+        ref[8] = 0.0 - 0.45360076427459717; ref[9] = 0.7489229440689087;
+        ref[10] = 0.0021544331684708595; ref[11] = 1.249997615814209;
+        ref[12] = 0.9092974066734314; ref[13] = 0.0 - 0.16614684462547302;
+        ref[14] = 0.5926985144615173; ref[15] = 1.7456941604614258;
+        ref[16] = 0.0 - 0.7456911206245422; ref[17] = 0.49999070167541504;
+        int64 i = 0;
+        while (i < 18) {
+            Assert.isTrue(PositionalEncodingTest.near(yv.flatGet(i), ref[i]));
+            i = i + 1;
+        }
+        emb.unbindParameters();
+        pe.unbindParameters();
+    }
+
+    // 1.1.2 — the learned table is a trainable parameter and receives
+    // gradient on exactly the used rows: d(sum)/d(row p) = B for p < T,
+    // 0 past T (torch-confirmed).
+    @Test
+    public void learnedEncodingReceivesGradient() {
+        LearnedPositionalEncoding pe =
+            heap LearnedPositionalEncoding((int64) 4, (int64) 6, (uint64) 2);
+        // Deterministic table: (f % 5) * 0.5 - 1.0.
+        Parameter w = pe.weightParam();
+        int64 f = 0;
+        while (f < 24) {
+            w.get().flatSet(f,
+                (float32) ((float64) (f - (f / (int64) 5) * (int64) 5)
+                    * 0.5 - 1.0));
+            f = f + 1;
+        }
+        GradTape<float32> tape = heap GradTape<float32>();
+        pe.bindParameters(tape);
+        int64[] xs = heap int64[3];
+        xs[0] = 2;
+        xs[1] = 3;
+        xs[2] = 6;
+        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        int64 i = 0;
+        while (i < 36) {
+            xv.flatSet(i,
+                (float32) ((float64) (i - (i / (int64) 3) * (int64) 3)
+                    * 0.1));
+            i = i + 1;
+        }
+        GradTensor x = tape.leaf(xv, false);
+        GradTensor y = pe.forward(tape, x);
+        GradTensor loss = tape.sum(y);
+        tape.backward(loss);
+        Tensor<float32> g = tape.gradOf(pe.weightParam().node());
+        // Rows 0..2 used by both batch elements → 2.0; row 3 unused → 0.
+        i = 0;
+        while (i < 18) {
+            Assert.isTrue(PositionalEncodingTest.near(g.flatGet(i), 2.0));
+            i = i + 1;
+        }
+        while (i < 24) {
+            Assert.isTrue(PositionalEncodingTest.near(g.flatGet(i), 0.0));
+            i = i + 1;
+        }
+        pe.unbindParameters();
+    }
+
+    // 1.1.4 — a sequence past maxLen FAILS LOUDLY, for both encodings.
+    @Test
+    public void sequencePastMaxLenFailsLoudly() {
+        Assert.assertThrows(() -> {
+            SinusoidalPositionalEncoding pe =
+                heap SinusoidalPositionalEncoding((int64) 4, (int64) 6);
+            GradTape<float32> tape = heap GradTape<float32>();
+            int64[] xs = heap int64[3];
+            xs[0] = 1;
+            xs[1] = 5;
+            xs[2] = 6;
+            GradTensor x = tape.leaf(Tensor.zeros<float32>(xs), false);
+            pe.forward(tape, x);
+        });
+        Assert.assertThrows(() -> {
+            LearnedPositionalEncoding pe =
+                heap LearnedPositionalEncoding((int64) 4, (int64) 6,
+                    (uint64) 3);
+            GradTape<float32> tape = heap GradTape<float32>();
+            pe.bindParameters(tape);
+            int64[] xs = heap int64[3];
+            xs[0] = 1;
+            xs[1] = 5;
+            xs[2] = 6;
+            GradTensor x = tape.leaf(Tensor.zeros<float32>(xs), false);
+            pe.forward(tape, x);
+        });
+    }
+}
