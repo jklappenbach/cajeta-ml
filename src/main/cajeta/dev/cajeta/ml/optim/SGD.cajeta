@@ -20,6 +20,7 @@ public final class SGD implements Optimizer {
     float32 lr;
     float32 momentum;
     Tensor<float32>[] velocity;
+    boolean[] active;          // trainable at the LAST momentum step
     boolean hasState;
 
     /** @EntryPoint */
@@ -56,17 +57,31 @@ public final class SGD implements Optimizer {
                 vel[j] = Tensor.zerosLike<float32>(this.params[j].get());
                 j = j + 1;
             }
+            boolean[] ac = heap boolean[n];
+            int32 j2 = 0;
+            while (j2 < n) {
+                ac[j2] = true;
+                j2 = j2 + 1;
+            }
             this.velocity #= vel;
+            this.active #= ac;
             this.hasState = true;
         }
         int32 i = 0;
         while (i < n) {
             // v = momentum*v + g (in place on the state), then p -= lr*v.
             if (this.params[i].isTrainable()) {
+                // Frozen->trainable: stale velocity is the bug — reset.
+                if (!this.active[i]) {
+                    Updates.zero(this.velocity[i]);
+                    this.active[i] = true;
+                }
                 Tensor<float32> v = this.velocity[i];
                 Updates.axpyInto(v, v, this.momentum - 1.0f);   // v *= momentum
                 Updates.axpyInto(v, grads[i], 1.0f);            // v += g
                 Updates.axpyInto(this.params[i].get(), v, -this.lr);
+            } else {
+                this.active[i] = false;
             }
             i = i + 1;
         }

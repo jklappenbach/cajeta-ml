@@ -1,6 +1,7 @@
 package dev.cajeta.ml.nn;
 
 import cajeta.collection.ArrayList;
+import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
 
@@ -37,6 +38,17 @@ public class Sequential extends Module {
     /** The container hook the Module walks use — children are named by
      *  index, so this list produces `0.weight`, `1.weight`, … under
      *  whatever prefix the parent contributes. */
+    /** Replace the module at `i` (spec §13.5.3 — head replacement): the
+     *  other modules keep their parameters BIT-IDENTICAL; only the new
+     *  module brings fresh initialization. Takes ownership. */
+    public void replace(int32 i, #Module m) {
+        if (i < 0 || i >= this.layers.count()) {
+            throw heap MlException("Sequential.replace: index out of range");
+        }
+        this.layers.set(i, #m);
+        return;
+    }
+
     public ArrayList<Module> children() {
         return this.layers;
     }

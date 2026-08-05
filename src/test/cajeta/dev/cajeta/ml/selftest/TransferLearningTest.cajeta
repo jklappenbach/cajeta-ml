@@ -1,0 +1,288 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Nets;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+import dev.cajeta.ml.optim.Adam;
+import dev.cajeta.ml.io.Checkpoints;
+import dev.cajeta.ml.io.StateDict;
+
+/**
+ * cajeta-ml-v3 §13 plan 4.1 — transfer learning (spec §13.5). Frozen
+ * parameters are PROVABLY unchanged after a step (values compared, not
+ * flags); the optimizer carries no stale state across freeze/unfreeze
+ * (fresh moments on the transition — closed-form first-step Adam update
+ * asserted); head replacement keeps the backbone BIT-IDENTICAL; and the
+ * full fine-tune loop (pretrain → freeze+replace → train → unfreeze →
+ * train) pins against torch 2.13.0+cpu on end-of-phase loss
+ * (tools/fixtures/gen_finetune.py, recorded 2026-08-05).
+ */
+public class TransferLearningTest {
+
+    public TransferLearningTest() { return; }
+
+    static float32 gv(int64 f, int64 off, float64 scale) {
+        int64 m = f + off - ((f + off) / (int64) 5) * (int64) 5;
+        return (float32) (((float64) m * 0.5 - 1.0) * scale);
+    }
+
+    /** Set our (in, out) Linear weight from torch's (out, in) grid. */
+    static void setLinear(Linear l, int64 nIn, int64 nOut, int64 offW,
+                          int64 offB) {
+        Tensor<float32> w = l.weightParam().get();
+        int64 i = 0;
+        while (i < nIn) {
+            int64 o = 0;
+            while (o < nOut) {
+                w.flatSet(i * nOut + o, TransferLearningTest.gv(
+                    o * nIn + i, offW, 0.2));
+                o = o + 1;
+            }
+            i = i + 1;
+        }
+        Tensor<float32> b = l.biasParam().get();
+        int64 o2 = 0;
+        while (o2 < nOut) {
+            b.set1(o2, TransferLearningTest.gv(o2, offB, 0.2));
+            o2 = o2 + 1;
+        }
+        return;
+    }
+
+    static #Tensor<float32> gridTensor(int64 r, int64 c, int64 off,
+                                       float64 scale) {
+        int64[] sh = heap int64[2];
+        sh[0] = r;
+        sh[1] = c;
+        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < r * c) {
+            t.flatSet(i, TransferLearningTest.gv(i, off, scale));
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    /** One full-batch MSE training phase with a FRESH Adam; returns the
+     *  loss of a final forward after `steps` updates (the fixture's
+     *  convention). */
+    static float64 phase(Module net, Tensor<float32> x, Tensor<float32> y,
+                         int64 steps) {
+        Adam opt = heap Adam(#net.parameters(), 0.05f);
+        int64 s = 0;
+        while (s < steps) {
+            GradTape<float32> tape = heap GradTape<float32>();
+            net.bindParameters(tape);
+            GradTensor xn = tape.leaf(x, false);
+            GradTensor out = net.forward(tape, xn);
+            GradTensor tgt = tape.leaf(y, false);
+            GradTensor loss = tape.mseLoss(out, tgt);
+            tape.backward(loss);
+            Parameter[] ps = net.parameters();
+            Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+            opt.step(gs);
+            net.unbindParameters();
+            s = s + 1;
+        }
+        GradTape<float32> ft = heap GradTape<float32>();
+        net.bindParameters(ft);
+        GradTensor xn2 = ft.leaf(x, false);
+        GradTensor out2 = net.forward(ft, xn2);
+        GradTensor tgt2 = ft.leaf(y, false);
+        GradTensor loss2 = ft.mseLoss(out2, tgt2);
+        float64 v = (float64) ft.valueOf(loss2).flatGet(0);
+        net.unbindParameters();
+        return v;
+    }
+
+    static #Sequential buildNet() {
+        Sequential net = heap Sequential();
+        Module l1 = heap Linear((int64) 3, (int64) 4, (uint64) 1);
+        TransferLearningTest.setLinear((Linear) l1, (int64) 3, (int64) 4,
+            (int64) 1, (int64) 4);
+        net.add(#l1);
+        Module r = heap ReLU();
+        net.add(#r);
+        Module l2 = heap Linear((int64) 4, (int64) 2, (uint64) 2);
+        TransferLearningTest.setLinear((Linear) l2, (int64) 4, (int64) 2,
+            (int64) 7, (int64) 10);
+        net.add(#l2);
+        return #net;
+    }
+
+    // 4.1.1 / 4.3.1 — freezing a subtree: those parameters are PROVABLY
+    // unchanged after a training step (values compared), the rest move.
+    @Test
+    public void frozenSubtreeIsProvablyUnchanged() {
+        Sequential net = TransferLearningTest.buildNet();
+        Module l1 = net.at((int32) 0);
+        l1.setTrainable(false);
+        Parameter[] l1ps = l1.parameters();
+        Tensor<float32> w0 = l1ps[0].get().copy();
+        Tensor<float32> b0 = l1ps[1].get().copy();
+        Tensor<float32> x = TransferLearningTest.gridTensor((int64) 8,
+            (int64) 3, (int64) 0, 0.25);
+        Tensor<float32> y = TransferLearningTest.gridTensor((int64) 8,
+            (int64) 2, (int64) 3, 0.3);
+        TransferLearningTest.phase(net, x, y, (int64) 2);
+        int64 i = 0;
+        while (i < w0.size()) {
+            Assert.isTrue(l1ps[0].get().flatGet(i) == w0.flatGet(i));
+            i = i + 1;
+        }
+        i = 0;
+        while (i < b0.size()) {
+            Assert.isTrue(l1ps[1].get().flatGet(i) == b0.flatGet(i));
+            i = i + 1;
+        }
+        // The head DID train.
+        Module l2 = net.at((int32) 2);
+        Parameter[] l2ps = l2.parameters();
+        boolean moved = false;
+        i = 0;
+        while (i < l2ps[0].get().size()) {
+            if (l2ps[0].get().flatGet(i) != TransferLearningTest.gv(
+                    TransferLearningTest.torchIdx(i, (int64) 4, (int64) 2),
+                    (int64) 7, 0.2)) {
+                moved = true;
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(moved);
+    }
+
+    /** Our flat (in,out) index i back to torch's (out,in) flat index. */
+    static int64 torchIdx(int64 flat, int64 nIn, int64 nOut) {
+        int64 r = flat / nOut;
+        int64 c = flat - r * nOut;
+        return c * nIn + r;
+    }
+
+    // 4.1.2 / 4.1.3 — the optimizer carries NO stale state across
+    // freeze/unfreeze: after the transition the first update is Adam's
+    // closed-form first step (-lr·sign(g)), not a stale-momentum step.
+    @Test
+    public void unfreezeGetsFreshOptimizerState() {
+        int64[] sh = heap int64[1];
+        sh[0] = 2;
+        Tensor<float32> pv = Tensor.zeros<float32>(sh);
+        pv.set1(0, 1.0f);
+        pv.set1(1, 0.0f - 1.0f);
+        Parameter p = heap Parameter(#pv);
+        Parameter[] ps = heap Parameter[1];
+        ps[0] = p;
+        Adam opt = heap Adam(#ps, 0.01f);
+        Tensor<float32> g = Tensor.zeros<float32>(sh);
+        g.set1(0, 1.0f);
+        g.set1(1, 1.0f);
+        Tensor<float32>[] gs = heap Tensor<float32>[1];
+        gs[0] = g;
+        // Three trainable steps accumulate real state.
+        opt.step(gs);
+        opt.step(gs);
+        opt.step(gs);
+        // Frozen: values must not move at all.
+        p.setTrainable(false);
+        float32 f0 = p.get().flatGet(0);
+        float32 f1 = p.get().flatGet(1);
+        opt.step(gs);
+        opt.step(gs);
+        Assert.isTrue(p.get().flatGet(0) == f0
+            && p.get().flatGet(1) == f1);
+        // Unfrozen: the next update is a FRESH first Adam step:
+        // Δ = -lr·g/(|g|+ε) = -0.01 per element (g = 1).
+        p.setTrainable(true);
+        opt.step(gs);
+        float64 d0 = (float64) (p.get().flatGet(0) - f0);
+        float64 d1 = (float64) (p.get().flatGet(1) - f1);
+        Assert.isTrue(d0 < 0.0 - 0.0099 && d0 > 0.0 - 0.0101);
+        Assert.isTrue(d1 < 0.0 - 0.0099 && d1 > 0.0 - 0.0101);
+    }
+
+    // 4.1.4 / 4.3.2 — head replacement: the backbone's parameters are
+    // BIT-IDENTICAL afterward; only the new head is fresh.
+    @Test
+    public void headReplacementPreservesBackboneBitIdentically() {
+        Sequential net = TransferLearningTest.buildNet();
+        Module l1 = net.at((int32) 0);
+        Parameter[] l1ps = l1.parameters();
+        Tensor<float32> w0 = l1ps[0].get().copy();
+        Tensor<float32> b0 = l1ps[1].get().copy();
+        Module newHead = heap Linear((int64) 4, (int64) 2, (uint64) 9);
+        TransferLearningTest.setLinear((Linear) newHead, (int64) 4,
+            (int64) 2, (int64) 50, (int64) 53);
+        net.replace((int32) 2, #newHead);
+        int64 i = 0;
+        while (i < w0.size()) {
+            Assert.isTrue(l1ps[0].get().flatGet(i) == w0.flatGet(i));
+            i = i + 1;
+        }
+        i = 0;
+        while (i < b0.size()) {
+            Assert.isTrue(l1ps[1].get().flatGet(i) == b0.flatGet(i));
+            i = i + 1;
+        }
+        // The replaced head reads back the fresh grid, not the old one.
+        Module l2 = net.at((int32) 2);
+        Parameter[] l2ps = l2.parameters();
+        Assert.isTrue(l2ps[0].get().flatGet(0)
+            == TransferLearningTest.gv((int64) 0, (int64) 50, 0.2));
+        Assert.equals((int64) 4, (int64) net.parameters().count());
+    }
+
+    // 4.1.5 — the full fine-tune loop matches torch end-of-phase losses:
+    // pretrain, freeze+replace-head, train, unfreeze, train.
+    @Test
+    public void fineTuneLoopMatchesTorchMetrics() {
+        Sequential net = TransferLearningTest.buildNet();
+        Tensor<float32> x = TransferLearningTest.gridTensor((int64) 8,
+            (int64) 3, (int64) 0, 0.25);
+        Tensor<float32> y = TransferLearningTest.gridTensor((int64) 8,
+            (int64) 2, (int64) 3, 0.3);
+        float64 la = TransferLearningTest.phase(net, x, y, (int64) 5);
+        Assert.isTrue(la > 0.04037976264953613 - 0.00001
+            && la < 0.04037976264953613 + 0.00001);
+        // Freeze the backbone; replace the head.
+        net.at((int32) 0).setTrainable(false);
+        Module newHead = heap Linear((int64) 4, (int64) 2, (uint64) 9);
+        TransferLearningTest.setLinear((Linear) newHead, (int64) 4,
+            (int64) 2, (int64) 50, (int64) 53);
+        net.replace((int32) 2, #newHead);
+        float64 lb = TransferLearningTest.phase(net, x, y, (int64) 5);
+        Assert.isTrue(lb > 0.043761949986219406 - 0.00001
+            && lb < 0.043761949986219406 + 0.00001);
+        // Unfreeze everything; fresh phase.
+        net.setTrainable(true);
+        float64 lc = TransferLearningTest.phase(net, x, y, (int64) 5);
+        Assert.isTrue(lc > 0.029685908928513527 - 0.00001
+            && lc < 0.029685908928513527 + 0.00001);
+    }
+
+    // 4.1.6 — freezing composes with checkpointing: a state-dict
+    // round-trip restores values and leaves the freeze flags intact
+    // (state_dict carries VALUES, torch's semantic — flags are model
+    // configuration, and loading must not reset them).
+    @Test
+    public void freezeSurvivesCheckpointRoundTrip() {
+        Sequential net = TransferLearningTest.buildNet();
+        net.at((int32) 0).setTrainable(false);
+        StateDict sd = Checkpoints.saveStateDict(net);
+        // Perturb a backbone value, then load back.
+        Parameter[] l1ps = net.at((int32) 0).parameters();
+        float32 orig = l1ps[0].get().flatGet(0);
+        l1ps[0].get().flatSet(0, 99.0f);
+        Checkpoints.loadStateDict(net, sd, true);
+        Assert.isTrue(l1ps[0].get().flatGet(0) == orig);
+        Assert.isFalse(l1ps[0].isTrainable());
+        Assert.isFalse(l1ps[1].isTrainable());
+        Parameter[] headPs = net.at((int32) 2).parameters();
+        Assert.isTrue(headPs[0].isTrainable());
+    }
+}

@@ -39,6 +39,16 @@ final class Updates {
     }
 
     /** `p[idx] += scale * g[idx]` for every element (odometer walk). */
+    /** Zero a state tensor in place — the frozen→trainable reset. */
+    static void zero(Tensor<float32> t) {
+        int64 i = 0;
+        while (i < t.size()) {
+            t.flatSet(i, 0.0f);
+            i = i + 1;
+        }
+        return;
+    }
+
     static void axpyInto(Tensor<float32> p, Tensor<float32> g, float32 scale) {
         int64[] shape = Tensor.shapeOf<float32>(p);
         int32 nd = (int32) shape.count();

@@ -16,8 +16,9 @@ public final class AdamW implements Optimizer {
     float32 weightDecay;
     Tensor<float32>[] m;
     Tensor<float32>[] v;
-    float32 beta1Power;
-    float32 beta2Power;
+    float32[] beta1Power;      // per-param: advances only on active steps
+    float32[] beta2Power;
+    boolean[] active;          // trainable at the LAST step
     boolean hasState;
 
     /** @EntryPoint */
@@ -26,8 +27,6 @@ public final class AdamW implements Optimizer {
         this.lr = lr;
         this.weightDecay = weightDecay;
         this.hasState = false;
-        this.beta1Power = 1.0f;
-        this.beta2Power = 1.0f;
     }
 
     public float32 getLr() { return this.lr; }
@@ -45,19 +44,42 @@ public final class AdamW implements Optimizer {
                 vs[j] = Tensor.zerosLike<float32>(this.params[j].get());
                 j = j + 1;
             }
+            float32[] b1 = heap float32[n];
+            float32[] b2 = heap float32[n];
+            boolean[] ac = heap boolean[n];
+            int32 j2 = 0;
+            while (j2 < n) {
+                b1[j2] = 1.0f;
+                b2[j2] = 1.0f;
+                ac[j2] = true;
+                j2 = j2 + 1;
+            }
             this.m #= ms;
             this.v #= vs;
+            this.beta1Power #= b1;
+            this.beta2Power #= b2;
+            this.active #= ac;
             this.hasState = true;
         }
-        this.beta1Power = this.beta1Power * 0.9f;
-        this.beta2Power = this.beta2Power * 0.999f;
-        float32 c1 = 1.0f - this.beta1Power;
-        float32 c2 = 1.0f - this.beta2Power;
         int32 i = 0;
         while (i < n) {
             if (this.params[i].isTrainable()) {
+                // Frozen->trainable gets FRESH state (spec 13.5.2).
+                if (!this.active[i]) {
+                    Updates.zero(this.m[i]);
+                    Updates.zero(this.v[i]);
+                    this.beta1Power[i] = 1.0f;
+                    this.beta2Power[i] = 1.0f;
+                    this.active[i] = true;
+                }
+                this.beta1Power[i] = this.beta1Power[i] * 0.9f;
+                this.beta2Power[i] = this.beta2Power[i] * 0.999f;
                 AdamW.updateOne(this.params[i].get(), grads[i], this.m[i],
-                                this.v[i], this.lr, this.weightDecay, c1, c2);
+                                this.v[i], this.lr, this.weightDecay,
+                                1.0f - this.beta1Power[i],
+                                1.0f - this.beta2Power[i]);
+            } else {
+                this.active[i] = false;
             }
             i = i + 1;
         }
