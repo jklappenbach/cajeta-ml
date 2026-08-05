@@ -1,0 +1,365 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.Math;
+import cajeta.math.linalg.LinAlg;
+
+/**
+ * Quadratic discriminant analysis (sklearn `QuadraticDiscriminantAnalysis`,
+ * spec §3): the same Gaussian generative model with one covariance PER
+ * class, so the log-determinant term no longer cancels and the boundary is
+ * quadratic (§3.2).
+ *
+ * Per-class covariances are factored ONCE at fit time — the SVD of the
+ * centered class block (§3.5) — and prediction reuses the factors; no
+ * per-prediction inversion. `regParam` regularizes each class's spectrum
+ * toward identity, sklearn's rule `s² -> (1-λ)s² + λ` (§3.4, Friedman
+ * 1989's blend as sklearn implements it). A class whose covariance is not
+ * full rank is loud, naming the class and the remedy (§3.3) — sklearn
+ * raises here too.
+ */
+public final class QuadraticDiscriminantAnalysis implements Predictor {
+
+    private float64 regP;
+    private boolean storeCov;
+    private float64 tolV;
+
+    private int64 nClasses;
+    private int64 nFeatures;
+    private Tensor<float64> meansM;     // (K, p)
+    private Tensor<float64> scalM;      // (K, p) — regularized s²/(n_k-1)
+    private Tensor<float64> rotM;       // (K, p, p) — Vt' per class
+    private Tensor<float64> priorsV;    // (K,)
+    private Tensor<float64> logDetV;    // (K,) — Σ log s
+    private Tensor<float64> covM;       // (K, p, p) when stored
+    private boolean fitted;
+
+    public QuadraticDiscriminantAnalysis() {
+        this.regP = 0.0;
+        this.storeCov = false;
+        this.tolV = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    /** Friedman regularization intensity in `[0,1]` (§3.4). */
+    public QuadraticDiscriminantAnalysis(float64 regParam) {
+        if (regParam < 0.0 || regParam > 1.0) {
+            throw heap MlException(
+                "QuadraticDiscriminantAnalysis: regParam must be in [0, 1]");
+        }
+        this.regP = regParam;
+        this.storeCov = false;
+        this.tolV = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    /** `storeCovariance` retains the fitted per-class covariances (§3.6). */
+    public QuadraticDiscriminantAnalysis(float64 regParam,
+                                         boolean storeCovariance) {
+        if (regParam < 0.0 || regParam > 1.0) {
+            throw heap MlException(
+                "QuadraticDiscriminantAnalysis: regParam must be in [0, 1]");
+        }
+        this.regP = regParam;
+        this.storeCov = storeCovariance;
+        this.tolV = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "QuadraticDiscriminantAnalysis.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 k = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 c = (int64) y.flatGet(i);
+            if (c + 1 > k) {
+                k = c + 1;
+            }
+            i = i + 1;
+        }
+        if (k < 2) {
+            throw heap MlException(
+                "QuadraticDiscriminantAnalysis.fit: need at least 2 classes");
+        }
+        this.nClasses = k;
+        this.nFeatures = p;
+        this.priorsV #= Gaussians.priors(y, k);
+        this.meansM #= Gaussians.classMeans(x, y, k);
+
+        int64[] ss = heap int64[2];
+        ss[0] = k;
+        ss[1] = p;
+        this.scalM #= Tensor.zeros<float64>(ss);
+        int64[] rs = heap int64[3];
+        rs[0] = k;
+        rs[1] = p;
+        rs[2] = p;
+        this.rotM #= Tensor.zeros<float64>(rs);
+        int64[] ls = heap int64[1];
+        ls[0] = k;
+        this.logDetV #= Tensor.zeros<float64>(ls);
+        if (this.storeCov) {
+            this.covM #= Tensor.zeros<float64>(rs);
+        }
+
+        int64 c2 = 0;
+        while (c2 < k) {
+            int64 nk = 0;
+            i = 0;
+            while (i < n) {
+                if ((int64) y.flatGet(i) == c2) {
+                    nk = nk + 1;
+                }
+                i = i + 1;
+            }
+            if (nk < 2) {
+                throw heap MlException("QuadraticDiscriminantAnalysis: "
+                    + "class " + Int64.of(c2).toString()
+                    + " has only " + Int64.of(nk).toString()
+                    + " sample(s); its covariance is ill defined");
+            }
+            // Centered class block.
+            int64[] bs = heap int64[2];
+            bs[0] = nk;
+            bs[1] = p;
+            Tensor<float64> blk = Tensor.zeros<float64>(bs);
+            int64 w = 0;
+            i = 0;
+            while (i < n) {
+                if ((int64) y.flatGet(i) == c2) {
+                    int64 j = 0;
+                    while (j < p) {
+                        blk.flatSet(w * p + j,
+                            x.get2(i, j) - this.meansM.get2(c2, j));
+                        j = j + 1;
+                    }
+                    w = w + 1;
+                }
+                i = i + 1;
+            }
+            Tensor<float64>[] usv = LinAlg.svd<float64>(blk);
+            Tensor<float64> s = usv[1];
+            Tensor<float64> vt = usv[2];
+            int64 r = s.size();
+
+            // Regularized spectrum; rank check per sklearn.
+            int64 rank = 0;
+            float64 logDet = 0.0;
+            int64 q = 0;
+            while (q < r) {
+                float64 sv = s.flatGet(q);
+                float64 sc = (1.0 - this.regP) * sv * sv / (float64) (nk - 1)
+                    + this.regP;
+                if (sc > this.tolV) {
+                    rank = rank + 1;
+                }
+                q = q + 1;
+            }
+            if (rank < p) {
+                throw heap MlException("QuadraticDiscriminantAnalysis: the "
+                    + "covariance matrix of class " + Int64.of(c2).toString()
+                    + " is not full rank — increase regParam, or use "
+                    + "LinearDiscriminantAnalysis");
+            }
+            q = 0;
+            while (q < p) {
+                float64 sv = s.flatGet(q);
+                float64 sc = (1.0 - this.regP) * sv * sv / (float64) (nk - 1)
+                    + this.regP;
+                this.scalM.flatSet(c2 * p + q, sc);
+                logDet = logDet + Math.log(sc);
+                int64 j = 0;
+                while (j < p) {
+                    // rotation = Vt' : rot[j, q] = Vt[q, j]
+                    this.rotM.flatSet(c2 * p * p + j * p + q, vt.get2(q, j));
+                    j = j + 1;
+                }
+                q = q + 1;
+            }
+            this.logDetV.flatSet(c2, logDet);
+
+            if (this.storeCov) {
+                int64 a = 0;
+                while (a < p) {
+                    int64 b = 0;
+                    while (b < p) {
+                        float64 cv = 0.0;
+                        q = 0;
+                        while (q < p) {
+                            cv = cv + this.scalM.get2(c2, q)
+                                * vt.get2(q, a) * vt.get2(q, b);
+                            q = q + 1;
+                        }
+                        this.covM.flatSet(c2 * p * p + a * p + b, cv);
+                        b = b + 1;
+                    }
+                    a = a + 1;
+                }
+            }
+            c2 = c2 + 1;
+        }
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** The stored `(p, p)` covariance of one class (§3.6). */
+    public #Tensor<float64> covariance(int64 label) {
+        this.requireFitted();
+        if (!this.storeCov) {
+            throw heap MlException("QuadraticDiscriminantAnalysis: "
+                + "covariances were not stored — construct with "
+                + "storeCovariance");
+        }
+        int64 p = this.nFeatures;
+        int64[] sh = heap int64[2];
+        sh[0] = p;
+        sh[1] = p;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 f = 0;
+        while (f < p * p) {
+            out.flatSet(f, this.covM.flatGet(label * p * p + f));
+            f = f + 1;
+        }
+        return #out;
+    }
+
+    void requireFitted() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "QuadraticDiscriminantAnalysis: not fitted");
+        }
+        return;
+    }
+
+    /** Raw per-class log posteriors `(n, K)` from the stored factors. */
+    #Tensor<float64> logPosteriors(Tensor<float64> x) {
+        this.requireFitted();
+        int64 n = x.shapeAt(0);
+        int64 p = this.nFeatures;
+        int64 k = this.nClasses;
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        float64[] xm = heap float64[p];
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                int64 a = 0;
+                while (a < p) {
+                    xm[a] = x.get2(i, a) - this.meansM.get2(c, a);
+                    a = a + 1;
+                }
+                float64 norm2 = 0.0;
+                int64 q = 0;
+                while (q < p) {
+                    float64 s = 0.0;
+                    a = 0;
+                    while (a < p) {
+                        s = s + xm[a] * this.rotM.flatGet(c * p * p + a * p + q);
+                        a = a + 1;
+                    }
+                    s = s / Math.sqrt(this.scalM.get2(c, q));
+                    norm2 = norm2 + s * s;
+                    q = q + 1;
+                }
+                out.flatSet(i * k + c,
+                    -0.5 * (norm2 + this.logDetV.flatGet(c))
+                    + Math.log(this.priorsV.flatGet(c)));
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Log-posterior scores (§3.2): `(n, K)` columns, or sklearn's single
+     * column `dec₁ - dec₀` `(n,)` for a binary fit.
+     */
+    public #Tensor<float64> decisionFunction(Tensor<float64> x) {
+        Tensor<float64> lp = this.logPosteriors(x);
+        if (this.nClasses != 2) {
+            return #lp;
+        }
+        int64 n = x.shapeAt(0);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            out.flatSet(i, lp.get2(i, 1) - lp.get2(i, 0));
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Argmax of the log posteriors; ties take the lowest label. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        Tensor<float64> lp = this.logPosteriors(x);
+        int64 n = x.shapeAt(0);
+        int64 k = this.nClasses;
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 best = 0;
+            float64 bv = lp.get2(i, 0);
+            int64 c = 1;
+            while (c < k) {
+                float64 v = lp.get2(i, c);
+                if (v > bv) {
+                    bv = v;
+                    best = c;
+                }
+                c = c + 1;
+            }
+            out.flatSet(i, (float64) best);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Softmax-normalized posteriors over the K log posteriors. */
+    public #Tensor<float64> predictProba(Tensor<float64> x) {
+        Tensor<float64> lp = this.logPosteriors(x);
+        int64 n = x.shapeAt(0);
+        int64 k = this.nClasses;
+        Tensor<float64> lse = Gaussians.logSumExp(lp);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                out.flatSet(i * k + c,
+                    Math.exp(lp.get2(i, c) - lse.flatGet(i)));
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Accuracy — the classifier `score` convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> pred = this.predict(x);
+        return Metrics.accuracy(y, pred);
+    }
+}

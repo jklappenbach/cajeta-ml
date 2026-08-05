@@ -1,0 +1,583 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.Gaussians;
+import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.KNeighborsClassifier;
+import dev.cajeta.ml.LinearDiscriminantAnalysis;
+import dev.cajeta.ml.PCA;
+import dev.cajeta.ml.Pipeline;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.QuadraticDiscriminantAnalysis;
+import dev.cajeta.ml.Split;
+import dev.cajeta.ml.Transformer;
+
+/**
+ * ml-classification-gaps plan Unit 2 — LDA and QDA (spec §2, §3), pinned
+ * against sklearn 1.9.0 (gen_discriminants.py) on GaussiansTest's 30x3
+ * 3-class fixture. Sign-indeterminate quantities (transform columns) are
+ * sign-aligned per column before comparison; decision values, labels, and
+ * probabilities are sign-free and compared directly at 1e-6.
+ */
+public class LdaQdaTest {
+
+    public LdaQdaTest() { return; }
+
+    static boolean near(float64 a, float64 b, float64 tol) {
+        float64 d = a - b;
+        if (d < 0.0) {
+            d = -d;
+        }
+        return d < tol;
+    }
+
+    /** Query points: Q[i,j] = ((i*3 + j*2) % 7) * 0.55, (4, 3). */
+    static #Tensor<float64> queryQ() {
+        float64[] d = heap float64[12];
+        int64 i = 0;
+        while (i < 4) {
+            int64 j = 0;
+            while (j < 3) {
+                d[i * 3 + j] = (float64) ((i * 3 + j * 2) % 7) * 0.55;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 4;
+        sh[1] = 3;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** Sign-align column j of `got` to `want` by row 0, then compare all. */
+    static void assertColumnsMatch(Tensor<float64> got, float64[] want,
+                                   int64 rows, int64 cols, float64 tol) {
+        int64 j = 0;
+        while (j < cols) {
+            float64 flip = 1.0;
+            float64 g0 = got.get2(0, j);
+            float64 w0 = want[j];
+            if ((g0 < 0.0 && w0 > 0.0) || (g0 > 0.0 && w0 < 0.0)) {
+                flip = -1.0;
+            }
+            int64 i = 0;
+            while (i < rows) {
+                Assert.isTrue(near(flip * got.get2(i, j), want[i * cols + j],
+                    tol));
+                i = i + 1;
+            }
+            j = j + 1;
+        }
+        return;
+    }
+
+    // 2.1.1 + 2.1.2 + 2.1.3 — the svd default matches sklearn: labels,
+    // decision values (the log-posterior rule), normalized posteriors,
+    // explained variance ratio.
+    @Test
+    public void ldaSvdMatchesSklearn() {
+        Tensor<float64> x = GaussiansTest.fixtureX();
+        Tensor<float64> y = GaussiansTest.fixtureY();
+        LinearDiscriminantAnalysis lda = heap LinearDiscriminantAnalysis();
+        lda.fit(x, y);
+        Assert.isTrue(lda.isFitted());
+
+        Tensor<float64> q = queryQ();
+        Tensor<float64> lab = lda.predict(q);
+        Assert.isTrue(near(lab.flatGet(0), 0.0, 0.0000001));
+        Assert.isTrue(near(lab.flatGet(1), 0.0, 0.0000001));
+        Assert.isTrue(near(lab.flatGet(2), 1.0, 0.0000001));
+        Assert.isTrue(near(lab.flatGet(3), 0.0, 0.0000001));
+
+        Tensor<float64> dec = lda.decisionFunction(q);
+        float64[] dw = heap float64[12];
+        dw[0] = 1.6075794608576763;  dw[1] = -0.9398599118267785;
+        dw[2] = -5.659282660323715;
+        dw[3] = -0.5141509491194887; dw[4] = -0.8134362738565767;
+        dw[5] = -3.6639758883167515;
+        dw[6] = -2.5886065027077616; dw[7] = -1.1235241151857234;
+        dw[8] = -1.279432493399331;
+        dw[9] = 0.48564114240916234; dw[10] = -1.0104876425363887;
+        dw[11] = -4.46671661116559;
+        int64 i = 0;
+        while (i < 12) {
+            Assert.isTrue(near(dec.flatGet(i), dw[i], 0.000001));
+            i = i + 1;
+        }
+
+        Tensor<float64> pr = lda.predictProba(q);
+        Assert.isTrue(near(pr.flatGet(0), 0.9268011007818169, 0.000001));
+        Assert.isTrue(near(pr.flatGet(1), 0.07255171425095176, 0.000001));
+        Assert.isTrue(near(pr.flatGet(2), 0.0006471849672311798, 0.000001));
+        Assert.isTrue(near(pr.flatGet(7), 0.47922636697757204, 0.000001));
+        Assert.isTrue(near(pr.flatGet(8), 0.4100440897867664, 0.000001));
+        // Rows normalize.
+        i = 0;
+        while (i < 4) {
+            float64 s = pr.get2(i, 0) + pr.get2(i, 1) + pr.get2(i, 2);
+            Assert.isTrue(near(s, 1.0, 0.000000001));
+            i = i + 1;
+        }
+
+        Tensor<float64> evr = lda.explainedVarianceRatio();
+        Assert.isTrue(near(evr.flatGet(0), 0.9971807457690229, 0.000001));
+        Assert.isTrue(near(evr.flatGet(1), 0.0028192542309771404, 0.000001));
+    }
+
+    // 2.1.6 + 2.1.7 — transform projects onto min(K-1, p) = 2 directions
+    // (sign-aligned against sklearn) and LDA drops into a Pipeline as a
+    // Transformer beside PCA.
+    @Test
+    public void ldaTransformAndPipeline() {
+        Tensor<float64> x = GaussiansTest.fixtureX();
+        Tensor<float64> y = GaussiansTest.fixtureY();
+        LinearDiscriminantAnalysis lda = heap LinearDiscriminantAnalysis();
+        lda.fit(x, y);
+
+        float64[] first3 = heap float64[9];
+        int64 i = 0;
+        while (i < 9) {
+            first3[i] = x.flatGet(i);
+            i = i + 1;
+        }
+        int64[] fs = heap int64[2];
+        fs[0] = 3;
+        fs[1] = 3;
+        Tensor<float64> t = lda.transform(Tensor.of<float64>(first3, fs));
+        Assert.equals(t.shapeAt(0), (int64) 3);
+        Assert.equals(t.shapeAt(1), (int64) 2);
+        float64[] tw = heap float64[6];
+        tw[0] = -2.828995453518218;   tw[1] = 2.1834143078584747;
+        tw[2] = -0.5926577734171714;  tw[3] = 0.4467599256454803;
+        tw[4] = -1.897756559953089;   tw[5] = -0.8941908110172591;
+        assertColumnsMatch(t, tw, (int64) 3, (int64) 2, 0.000001);
+
+        // LDA as the reducer in front of k-NN.
+        Transformer red = heap LinearDiscriminantAnalysis();
+        Predictor kn = heap KNeighborsClassifier((int64) 3);
+        Pipeline pl = Pipeline.of(#red, #kn);
+        pl.fit(x, y);
+        Assert.isTrue(pl.score(x, y) > 0.7);
+
+        // PCA in front of LDA as the final predictor: a pure rotation, so
+        // the composite reproduces sklearn's direct-LDA training accuracy
+        // on this overlapping fixture (17/30 — verified against sklearn).
+        Transformer pca = heap PCA((int64) 3);
+        Predictor fin = heap LinearDiscriminantAnalysis();
+        Pipeline pl2 = Pipeline.of(#pca, #fin);
+        pl2.fit(x, y);
+        Assert.isTrue(near(pl2.score(x, y), 0.5666666666666667, 0.000001));
+    }
+
+    // §2.2 — explicit priors are used; invalid priors are rejected loudly.
+    @Test
+    public void ldaExplicitPriors() {
+        Tensor<float64> x = GaussiansTest.fixtureX();
+        Tensor<float64> y = GaussiansTest.fixtureY();
+        float64[] pr = heap float64[3];
+        pr[0] = 0.5;
+        pr[1] = 0.25;
+        pr[2] = 0.25;
+        LinearDiscriminantAnalysis lda = heap LinearDiscriminantAnalysis(#pr);
+        lda.fit(x, y);
+        float64[] q0 = heap float64[3];
+        q0[0] = 0.0;
+        q0[1] = 1.1;
+        q0[2] = 2.2;
+        int64[] qs = heap int64[2];
+        qs[0] = 1;
+        qs[1] = 3;
+        Tensor<float64> dec = lda.decisionFunction(Tensor.of<float64>(q0, qs));
+        Assert.isTrue(near(dec.flatGet(0), 1.1918938223772064, 0.000001));
+        Assert.isTrue(near(dec.flatGet(1), -2.048692730867194, 0.000001));
+        Assert.isTrue(near(dec.flatGet(2), -6.76811547936413, 0.000001));
+
+        Assert.assertThrows(() -> {
+            float64[] bad = heap float64[3];
+            bad[0] = 0.5;
+            bad[1] = 0.6;
+            bad[2] = 0.2;
+            LinearDiscriminantAnalysis b = heap LinearDiscriminantAnalysis(#bad);
+            b.fit(GaussiansTest.fixtureX(), GaussiansTest.fixtureY());
+        });
+        Assert.assertThrows(() -> {
+            float64[] bad = heap float64[3];
+            bad[0] = 1.2;
+            bad[1] = -0.4;
+            bad[2] = 0.2;
+            LinearDiscriminantAnalysis b = heap LinearDiscriminantAnalysis(#bad);
+            b.fit(GaussiansTest.fixtureX(), GaussiansTest.fixtureY());
+        });
+    }
+
+    // §2.5 — the binary case yields sklearn's single decision column.
+    @Test
+    public void ldaBinarySingleColumn() {
+        Tensor<float64> x = GaussiansTest.fixtureX();
+        Tensor<float64> y = GaussiansTest.fixtureY();
+        float64[] xb = heap float64[60];
+        float64[] yb = heap float64[20];
+        int64 i = 0;
+        while (i < 60) {
+            xb[i] = x.flatGet(i);
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 20) {
+            yb[i] = y.flatGet(i);
+            i = i + 1;
+        }
+        int64[] xs = heap int64[2];
+        xs[0] = 20;
+        xs[1] = 3;
+        int64[] ys = heap int64[1];
+        ys[0] = 20;
+        LinearDiscriminantAnalysis lda = heap LinearDiscriminantAnalysis();
+        lda.fit(Tensor.of<float64>(xb, xs), Tensor.of<float64>(yb, ys));
+
+        Tensor<float64> dec = lda.decisionFunction(queryQ());
+        Assert.equals(dec.ndim(), (int64) 1);
+        Assert.isTrue(near(dec.flatGet(0), -2.509795115729054, 0.000001));
+        Assert.isTrue(near(dec.flatGet(1), -0.27039143259546683, 0.000001));
+        Assert.isTrue(near(dec.flatGet(2), 1.4666737530227745, 0.000001));
+        Assert.isTrue(near(dec.flatGet(3), -1.628123090005581, 0.000001));
+
+        Tensor<float64> lab = lda.predict(queryQ());
+        Assert.isTrue(near(lab.flatGet(2), 1.0, 0.0000001));
+        Assert.isTrue(near(lab.flatGet(3), 0.0, 0.0000001));
+
+        Tensor<float64> pr = lda.predictProba(queryQ());
+        Assert.isTrue(near(pr.get2(0, 1), 0.07517435244619927, 0.000001));
+        Assert.isTrue(near(pr.get2(1, 1), 0.4328110014278978, 0.000001));
+        Assert.isTrue(near(pr.get2(2, 1), 0.8125512863415483, 0.000001));
+        Assert.isTrue(near(pr.get2(3, 1), 0.1640876413325975, 0.000001));
+    }
+
+    // §2.7 — p > n fits under svd (the covariance is never formed).
+    @Test
+    public void ldaWideDataSvd() {
+        int64 n = 8;
+        int64 p = 12;
+        float64[] xd = heap float64[96];
+        float64[] yd = heap float64[8];
+        int64 i = 0;
+        while (i < n) {
+            float64 cls = 0.0;
+            if (i >= 4) {
+                cls = 1.0;
+            }
+            yd[i] = cls;
+            int64 j = 0;
+            while (j < p) {
+                float64 base = (float64) ((i * 5 + j * 3) % 13) * 0.21;
+                xd[i * p + j] = base + cls * 0.9 * (float64) ((j % 3) - 1);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] xs = heap int64[2];
+        xs[0] = n;
+        xs[1] = p;
+        int64[] ys = heap int64[1];
+        ys[0] = n;
+        LinearDiscriminantAnalysis lda = heap LinearDiscriminantAnalysis();
+        lda.fit(Tensor.of<float64>(xd, xs), Tensor.of<float64>(yd, ys));
+
+        float64[] qd = heap float64[24];
+        i = 0;
+        while (i < 2) {
+            int64 j = 0;
+            while (j < p) {
+                qd[i * p + j] = (float64) ((i * 4 + j * 5) % 9) * 0.33;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] qs = heap int64[2];
+        qs[0] = 2;
+        qs[1] = p;
+        Tensor<float64> q = Tensor.of<float64>(qd, qs);
+        Tensor<float64> dec = lda.decisionFunction(q);
+        Assert.isTrue(near(dec.flatGet(0), -4.626350422235184, 0.000001));
+        Assert.isTrue(near(dec.flatGet(1), 0.2321550000051138, 0.000001));
+        Tensor<float64> lab = lda.predict(q);
+        Assert.isTrue(near(lab.flatGet(0), 0.0, 0.0000001));
+        Assert.isTrue(near(lab.flatGet(1), 1.0, 0.0000001));
+    }
+
+    // §2.8 + §2.9 — lsqr/eigen with fixed shrinkage and Ledoit-Wolf auto.
+    @Test
+    public void ldaShrinkageSolvers() {
+        Tensor<float64> x = GaussiansTest.fixtureX();
+        Tensor<float64> y = GaussiansTest.fixtureY();
+
+        LinearDiscriminantAnalysis lsqr =
+            heap LinearDiscriminantAnalysis("lsqr", 0.3);
+        lsqr.fit(x, y);
+        Tensor<float64> c = lsqr.coefMatrix();
+        Assert.isTrue(near(c.flatGet(0), 2.0343862236266275, 0.000001));
+        Assert.isTrue(near(c.flatGet(1), 2.9331475736218207, 0.000001));
+        Assert.isTrue(near(c.flatGet(2), 2.1160965787283152, 0.000001));
+        Assert.isTrue(near(c.flatGet(4), 2.734017651082492, 0.000001));
+        Assert.isTrue(near(c.flatGet(8), 2.309513208363283, 0.000001));
+        Tensor<float64> ic = lsqr.interceptVector();
+        Assert.isTrue(near(ic.flatGet(0), -6.329344906949622, 0.000001));
+        Assert.isTrue(near(ic.flatGet(1), -8.571519452125662, 0.000001));
+        Assert.isTrue(near(ic.flatGet(2), -13.676698666787704, 0.000001));
+
+        LinearDiscriminantAnalysis eig =
+            heap LinearDiscriminantAnalysis("eigen", 0.3);
+        eig.fit(x, y);
+        Tensor<float64> ce = eig.coefMatrix();
+        Assert.isTrue(near(ce.flatGet(0), 2.0343862236266275, 0.00001));
+        Assert.isTrue(near(ce.flatGet(4), 2.7340176510824916, 0.00001));
+        Assert.isTrue(near(ce.flatGet(8), 2.3095132083632843, 0.00001));
+        Tensor<float64> ie = eig.interceptVector();
+        Assert.isTrue(near(ie.flatGet(2), -13.676698666787713, 0.0001));
+        Tensor<float64> ev = eig.explainedVarianceRatio();
+        Assert.isTrue(near(ev.flatGet(0), 0.6778107897142845, 0.00001));
+        Assert.isTrue(near(ev.flatGet(1), 0.17835897056810615, 0.00001));
+
+        float64[] first2 = heap float64[6];
+        int64 i = 0;
+        while (i < 6) {
+            first2[i] = x.flatGet(i);
+            i = i + 1;
+        }
+        int64[] fs = heap int64[2];
+        fs[0] = 2;
+        fs[1] = 3;
+        Tensor<float64> te = eig.transform(Tensor.of<float64>(first2, fs));
+        Assert.equals(te.shapeAt(1), (int64) 2);
+        float64[] tw = heap float64[4];
+        tw[0] = 0.22880766576842448;  tw[1] = 3.9224098798225033;
+        tw[2] = -2.022593866849978;   tw[3] = 2.1748720729876863;
+        assertColumnsMatch(te, tw, (int64) 2, (int64) 2, 0.0001);
+
+        LinearDiscriminantAnalysis auto =
+            heap LinearDiscriminantAnalysis("lsqr", "auto");
+        auto.fit(x, y);
+        Tensor<float64> ca = auto.coefMatrix();
+        Assert.isTrue(near(ca.flatGet(0), 1.90647158853239, 0.000001));
+        Assert.isTrue(near(ca.flatGet(4), 2.3545457778581333, 0.000001));
+        Assert.isTrue(near(ca.flatGet(8), 2.3484972200763465, 0.000001));
+        Tensor<float64> ia = auto.interceptVector();
+        Assert.isTrue(near(ia.flatGet(0), -5.921002926789289, 0.000001));
+        Assert.isTrue(near(ia.flatGet(2), -13.39606005154736, 0.000001));
+    }
+
+    // 2.1.5 + §2.10 — unsupported solver and shrinkage-with-svd are
+    // rejected naming the supported set, never silently ignored.
+    @Test
+    public void ldaSolverValidation() {
+        Assert.assertThrows(() -> {
+            LinearDiscriminantAnalysis b =
+                heap LinearDiscriminantAnalysis("cholesky");
+        });
+        Assert.assertThrows(() -> {
+            LinearDiscriminantAnalysis b =
+                heap LinearDiscriminantAnalysis("svd", 0.3);
+        });
+        Assert.assertThrows(() -> {
+            LinearDiscriminantAnalysis b =
+                heap LinearDiscriminantAnalysis("lsqr", 1.5);
+        });
+    }
+
+    // §3.1 + §3.2 + §3.4 — QDA matches sklearn: decision (with the
+    // log-determinant term LDA drops), labels, posteriors, reg_param.
+    @Test
+    public void qdaMatchesSklearn() {
+        Tensor<float64> x = GaussiansTest.fixtureX();
+        Tensor<float64> y = GaussiansTest.fixtureY();
+        QuadraticDiscriminantAnalysis qda =
+            heap QuadraticDiscriminantAnalysis();
+        qda.fit(x, y);
+
+        Tensor<float64> q = queryQ();
+        Tensor<float64> dec = qda.decisionFunction(q);
+        float64[] dw = heap float64[12];
+        dw[0] = -3.368707828933438;  dw[1] = -5.954434389777703;
+        dw[2] = -10.946337155204702;
+        dw[3] = -3.215677525903134;  dw[4] = -3.3044343897776987;
+        dw[5] = -6.504670488538037;
+        dw[6] = -2.642950253175859;  dw[7] = -1.281138935232244;
+        dw[8] = -1.4296704885380345;
+        dw[9] = -4.302041162266758;  dw[10] = -6.0294343897777045;
+        dw[11] = -9.079670488538035;
+        int64 i = 0;
+        while (i < 12) {
+            Assert.isTrue(near(dec.flatGet(i), dw[i], 0.000001));
+            i = i + 1;
+        }
+
+        Tensor<float64> lab = qda.predict(q);
+        Assert.isTrue(near(lab.flatGet(0), 0.0, 0.0000001));
+        Assert.isTrue(near(lab.flatGet(2), 1.0, 0.0000001));
+
+        Tensor<float64> pr = qda.predictProba(q);
+        Assert.isTrue(near(pr.flatGet(0), 0.9294949345725797, 0.000001));
+        Assert.isTrue(near(pr.flatGet(4), 0.4686985524731651, 0.000001));
+        Assert.isTrue(near(pr.flatGet(8), 0.4069423936549756, 0.000001));
+
+        QuadraticDiscriminantAnalysis reg =
+            heap QuadraticDiscriminantAnalysis(0.1);
+        reg.fit(x, y);
+        Tensor<float64> dr = reg.decisionFunction(q);
+        Assert.isTrue(near(dr.flatGet(0), -3.222871713230396, 0.000001));
+        Assert.isTrue(near(dr.flatGet(5), -6.820496143780962, 0.000001));
+        Assert.isTrue(near(dr.flatGet(11), -8.73196984397911, 0.000001));
+    }
+
+    // §3.6 — storeCovariance retains sklearn's per-class covariances.
+    @Test
+    public void qdaStoreCovariance() {
+        QuadraticDiscriminantAnalysis qda =
+            heap QuadraticDiscriminantAnalysis(0.0, true);
+        qda.fit(GaussiansTest.fixtureX(), GaussiansTest.fixtureY());
+        Tensor<float64> c0 = qda.covariance((int64) 0);
+        Assert.isTrue(near(c0.flatGet(0), 1.0889999999999997, 0.000001));
+        Assert.isTrue(near(c0.flatGet(1), -0.5060000000000004, 0.000001));
+        Assert.isTrue(near(c0.flatGet(4), 0.924000000000002, 0.000001));
+        Tensor<float64> c2 = qda.covariance((int64) 2);
+        Assert.isTrue(near(c2.flatGet(8), 0.8250000000000004, 0.000001));
+    }
+
+    // §3.3 — a class with fewer rows than features is loud, naming the
+    // class and the remedy (regularization, or LDA).
+    @Test
+    public void qdaSingularClassLoud() {
+        Assert.assertThrows(() -> {
+            float64[] xd = heap float64[15];
+            xd[0] = 0.0; xd[1] = 0.1; xd[2] = 0.2;
+            xd[3] = 1.0; xd[4] = 0.9; xd[5] = 1.1;
+            xd[6] = 2.0; xd[7] = 2.1; xd[8] = 1.9;
+            xd[9] = 5.0; xd[10] = 5.1; xd[11] = 5.2;
+            xd[12] = 5.3; xd[13] = 5.0; xd[14] = 4.9;
+            int64[] xs = heap int64[2];
+            xs[0] = 5;
+            xs[1] = 3;
+            float64[] yd = heap float64[5];
+            yd[0] = 0.0; yd[1] = 0.0; yd[2] = 0.0;
+            yd[3] = 1.0; yd[4] = 1.0;
+            int64[] ys = heap int64[1];
+            ys[0] = 5;
+            QuadraticDiscriminantAnalysis qda =
+                heap QuadraticDiscriminantAnalysis();
+            qda.fit(Tensor.of<float64>(xd, xs), Tensor.of<float64>(yd, ys));
+        });
+    }
+
+    // 2.1.4 — a fixture where the quadratic boundary must disagree with
+    // the linear one: identical means, very different spreads.
+    @Test
+    public void discriminantsDisagreeOnCurvedBoundary() {
+        // Class 0: tight around the origin. Class 1: wide, same centre.
+        float64[] xd = heap float64[32];
+        xd[0] = 0.1;   xd[1] = 0.0;
+        xd[2] = -0.1;  xd[3] = 0.0;
+        xd[4] = 0.0;   xd[5] = 0.1;
+        xd[6] = 0.0;   xd[7] = -0.1;
+        xd[8] = 0.1;   xd[9] = 0.1;
+        xd[10] = -0.1; xd[11] = -0.1;
+        xd[12] = 0.05; xd[13] = -0.05;
+        xd[14] = -0.05; xd[15] = 0.05;
+        xd[16] = 4.0;  xd[17] = 0.0;
+        xd[18] = -4.0; xd[19] = 0.0;
+        xd[20] = 0.0;  xd[21] = 4.0;
+        xd[22] = 0.0;  xd[23] = -4.0;
+        xd[24] = 3.0;  xd[25] = 3.0;
+        xd[26] = -3.0; xd[27] = -3.0;
+        xd[28] = 3.0;  xd[29] = -3.0;
+        xd[30] = -3.0; xd[31] = 3.0;
+        int64[] xs = heap int64[2];
+        xs[0] = 16;
+        xs[1] = 2;
+        float64[] yd = heap float64[16];
+        int64 i = 0;
+        while (i < 16) {
+            if (i < 8) {
+                yd[i] = 0.0;
+            } else {
+                yd[i] = 1.0;
+            }
+            i = i + 1;
+        }
+        int64[] ys = heap int64[1];
+        ys[0] = 16;
+        Tensor<float64> x = Tensor.of<float64>(xd, xs);
+        Tensor<float64> y = Tensor.of<float64>(yd, ys);
+
+        QuadraticDiscriminantAnalysis qda =
+            heap QuadraticDiscriminantAnalysis();
+        qda.fit(x, y);
+        LinearDiscriminantAnalysis lda = heap LinearDiscriminantAnalysis();
+        lda.fit(x, y);
+
+        float64[] qd = heap float64[4];
+        qd[0] = 0.0; qd[1] = 0.0;      // centre
+        qd[2] = 2.5; qd[3] = 2.5;      // far out
+        int64[] qs = heap int64[2];
+        qs[0] = 2;
+        qs[1] = 2;
+        Tensor<float64> q = Tensor.of<float64>(qd, qs);
+
+        Tensor<float64> ql = qda.predict(q);
+        Assert.isTrue(near(ql.flatGet(0), 0.0, 0.0000001));  // centre: tight class
+        Assert.isTrue(near(ql.flatGet(1), 1.0, 0.0000001));  // far: wide class
+        // The linear boundary cannot separate same-mean classes: both
+        // queries land on one side.
+        Tensor<float64> ll = lda.predict(q);
+        Assert.isTrue(near(ll.flatGet(0), ll.flatGet(1), 0.0000001));
+    }
+
+    // 2.1.8 + §3.7 — both estimators run under cross-validation through
+    // the same Predictor surface, no special-casing.
+    /** A fold-safe fixture: the i² cross term breaks the mod-lattice's
+     *  affine column relations, so every class subset a fold can produce
+     *  stays full rank (worst 6-row scaling 4.5e-3, verified in numpy). */
+    static #Tensor<float64> cvFixtureX() {
+        float64[] shift = heap float64[3];
+        shift[0] = 1.25;
+        shift[1] = -0.75;
+        shift[2] = 0.5;
+        float64[] d = heap float64[90];
+        int64 i = 0;
+        while (i < 30) {
+            int64 c = i / 10;
+            int64 j = 0;
+            while (j < 3) {
+                d[i * 3 + j] = (float64) ((i * 7 + j * 5) % 11) * 0.3
+                    + (float64) ((i * i * 3 + j * i * 5) % 13) * 0.07
+                    + (float64) c * shift[j];
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 30;
+        sh[1] = 3;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    @Test
+    public void discriminantsComposeInCv() {
+        Tensor<float64> x = cvFixtureX();
+        Tensor<float64> y = GaussiansTest.fixtureY();
+        KFold folds = heap KFold((int64) 5, true, (uint64) 7);
+
+        Predictor lda = heap LinearDiscriminantAnalysis();
+        Tensor<float64> sl = Split.crossValScore(lda, x, y, folds);
+        Predictor qda = heap QuadraticDiscriminantAnalysis();
+        Tensor<float64> sq = Split.crossValScore(qda, x, y, folds);
+        int64 f = 0;
+        while (f < 5) {
+            Assert.isTrue(sl.flatGet(f) >= 0.0);
+            Assert.isTrue(sl.flatGet(f) <= 1.0);
+            Assert.isTrue(sq.flatGet(f) >= 0.0);
+            Assert.isTrue(sq.flatGet(f) <= 1.0);
+            f = f + 1;
+        }
+    }
+}
