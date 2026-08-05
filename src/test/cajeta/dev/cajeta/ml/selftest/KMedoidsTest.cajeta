@@ -1,0 +1,335 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+import cajeta.math.distance.Manhattan;
+import cajeta.math.distance.Chebyshev;
+import dev.cajeta.ml.KMeans;
+import dev.cajeta.ml.KMedoids;
+
+/**
+ * ml-unsupervised plan 3.1 — K-medoids (spec §4). Centres are actual data
+ * rows (§4.2), the metric is the §2 seam (§4.3), and robustness to the
+ * outlier that drags a K-means centroid is demonstrated on a fixture built
+ * so the two families must disagree.
+ *
+ * Parity oracle (spec §12.2): scikit-learn-extra 0.3.0 with
+ * scikit-learn 1.5.2 / numpy 1.26.4 (its own venv,
+ * ~/code/ml/venv-sklearn-extra-ref — 0.3.0 predates numpy 2, so it cannot
+ * share the sklearn-1.9.0 oracle venv), `KMedoids(method='pam',
+ * init='build')`. Oracle numbers recorded 2026-08-05.
+ */
+public class KMedoidsTest {
+
+    public KMedoidsTest() { return; }
+
+    /** The 7-point parity fixture: two tight groups + one far outlier. */
+    static #Tensor<float64> fixtureA() {
+        float64[] d = heap float64[14];
+        d[0] = 0.0;  d[1] = 0.0;
+        d[2] = 0.1;  d[3] = 0.0;
+        d[4] = 0.2;  d[5] = 0.1;
+        d[6] = 8.0;  d[7] = 8.0;
+        d[8] = 8.1;  d[9] = 8.2;
+        d[10] = 7.9; d[11] = 8.0;
+        d[12] = 30.0; d[13] = 30.0;
+        int64[] sh = heap int64[2];
+        sh[0] = 7;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** The 12-point 3-cluster parity fixture. */
+    static #Tensor<float64> fixtureB() {
+        float64[] d = heap float64[24];
+        d[0] = 0.0;  d[1] = 0.0;
+        d[2] = 0.3;  d[3] = 0.1;
+        d[4] = 0.1;  d[5] = 0.4;
+        d[6] = 0.2;  d[7] = 0.2;
+        d[8] = 5.0;  d[9] = 5.0;
+        d[10] = 5.2; d[11] = 5.1;
+        d[12] = 4.9; d[13] = 5.3;
+        d[14] = 5.1; d[15] = 4.8;
+        d[16] = 10.0; d[17] = 0.0;
+        d[18] = 10.2; d[19] = 0.2;
+        d[20] = 9.8;  d[21] = 0.1;
+        d[22] = 10.1; d[23] = 0.3;
+        int64[] sh = heap int64[2];
+        sh[0] = 12;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** 3 points where Chebyshev's 1-medoid differs from Euclidean's. */
+    static #Tensor<float64> fixtureC() {
+        float64[] d = heap float64[6];
+        d[0] = 0.0; d[1] = 0.0;
+        d[2] = 5.0; d[3] = 5.0;
+        d[4] = 6.0; d[5] = 0.0;
+        int64[] sh = heap int64[2];
+        sh[0] = 3;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** The robustness fixture (3.1.3): a moderate outlier at (9, 0.1) that
+     *  K-means MERGES into the x≈6 group (isolating it would cost 72 in
+     *  inertia vs 7.2 merged), dragging that centroid to x≈6.68 — while the
+     *  K-medoids centre stays an actual x≈6 row. */
+    static #Tensor<float64> outlierFixture() {
+        float64[] d = heap float64[18];
+        d[0] = 0.0;  d[1] = 0.0;
+        d[2] = 0.2;  d[3] = 0.0;
+        d[4] = 0.0;  d[5] = 0.2;
+        d[6] = 0.2;  d[7] = 0.2;
+        d[8] = 6.0;  d[9] = 0.0;
+        d[10] = 6.2; d[11] = 0.0;
+        d[12] = 6.0; d[13] = 0.2;
+        d[14] = 6.2; d[15] = 0.2;
+        d[16] = 9.0; d[17] = 0.1;
+        int64[] sh = heap int64[2];
+        sh[0] = 9;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> ignoredY(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.zeros<float64>(sh);
+    }
+
+    static #int64[] labelsOf(Tensor<float64> lv, int64 n) {
+        int64[] out = heap int64[n];
+        int64 i = 0;
+        while (i < n) {
+            out[i] = (int64) lv.get1(i);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Row `r` of `m` is bit-identical to row `i` of `x`. */
+    static boolean rowIdentical(Tensor<float64> x, int64 i,
+                                Tensor<float64> m, int64 r, int64 p) {
+        int64 j = 0;
+        while (j < p) {
+            if (x.get2(i, j) != m.get2(r, j)) {
+                return false;
+            }
+            j = j + 1;
+        }
+        return true;
+    }
+
+    // 3.1.1 — KMeans still works unchanged: the partitional family's
+    // baseline holds while its sibling lands.
+    @Test
+    public void kMeansStillWorksUnchanged() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        KMeans km = heap KMeans((int64) 3, (uint64) 1);
+        km.fit(x, KMedoidsTest.ignoredY((int64) 60));
+        int64[] a = KMedoidsTest.labelsOf(km.labels(), (int64) 60);
+        int64[] truth = Shapes.blobLabels();
+        Assert.isTrue(Harness.randIndex(a, truth) == 1.0);
+    }
+
+    // 3.1.2 — cluster centres are ACTUAL data points, asserted by identity
+    // against the input rows (not proximity), with the indices agreeing.
+    @Test
+    public void medoidsAreActualDataRows() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        KMedoids km = heap KMedoids((int64) 3);
+        km.fit(x, KMedoidsTest.ignoredY((int64) 60));
+        Tensor<float64> m = km.medoids();
+        int64[] idx = km.medoidIndices();
+        Assert.equals((int64) 3, (int64) idx.count());
+        int64 c = 0;
+        while (c < 3) {
+            Assert.isTrue(idx[c] >= 0 && idx[c] < (int64) 60);
+            Assert.isTrue(KMedoidsTest.rowIdentical(x, idx[c], m, c,
+                (int64) 2));
+            c = c + 1;
+        }
+        // Indices are sorted ascending (documented determinism) — distinct.
+        Assert.isTrue(idx[0] < idx[1] && idx[1] < idx[2]);
+        int64[] a = KMedoidsTest.labelsOf(km.labels(), (int64) 60);
+        Assert.isTrue(Harness.randIndex(a, Shapes.blobLabels()) == 1.0);
+    }
+
+    // 3.1.3 — the outlier drags a K-means centroid off the data (x≈6.68,
+    // no data row within 0.4) while every K-medoids centre IS a data row
+    // still inside its group. The robustness that justifies the algorithm.
+    @Test
+    public void outlierDragsKMeansCentroidButNotMedoid() {
+        Tensor<float64> x = KMedoidsTest.outlierFixture();
+        Tensor<float64> y = KMedoidsTest.ignoredY((int64) 9);
+        KMeans kme = heap KMeans((int64) 2, (uint64) 3);
+        kme.fit(x, y);
+        Tensor<float64> cen = kme.centers();
+        // One K-means centre is dragged past every x≈6 row toward the
+        // outlier.
+        float64 maxCx = cen.get2(0, 0);
+        if (cen.get2(1, 0) > maxCx) {
+            maxCx = cen.get2(1, 0);
+        }
+        Assert.isTrue(maxCx > 6.4);
+        KMedoids kmd = heap KMedoids((int64) 2);
+        kmd.fit(x, y);
+        Tensor<float64> med = kmd.medoids();
+        int64[] idx = kmd.medoidIndices();
+        int64 c = 0;
+        while (c < 2) {
+            Assert.isTrue(KMedoidsTest.rowIdentical(x, idx[c], med, c,
+                (int64) 2));
+            // No medoid is the outlier or beyond the true groups.
+            Assert.isTrue(med.get2(c, 0) < 6.3);
+            c = c + 1;
+        }
+    }
+
+    // 3.1.4 — any §2 metric flows into the objective through the one seam:
+    // on fixture C the 1-medoid under Chebyshev is a DIFFERENT row than
+    // under Euclidean/Manhattan (oracle-confirmed), and the default
+    // constructor is Euclidean.
+    @Test
+    public void metricFlowsIntoTheObjective() {
+        Tensor<float64> x = KMedoidsTest.fixtureC();
+        Tensor<float64> y = KMedoidsTest.ignoredY((int64) 3);
+        KMedoids ke = heap KMedoids((int64) 1, heap Euclidean());
+        ke.fit(x, y);
+        Assert.equals((int64) 2, ke.medoidIndices()[0]);
+        KMedoids km = heap KMedoids((int64) 1, heap Manhattan());
+        km.fit(x, y);
+        Assert.equals((int64) 2, km.medoidIndices()[0]);
+        KMedoids kc = heap KMedoids((int64) 1, heap Chebyshev());
+        kc.fit(x, y);
+        Assert.equals((int64) 1, kc.medoidIndices()[0]);
+        // Default constructor = Euclidean.
+        KMedoids kd = heap KMedoids((int64) 1);
+        kd.fit(x, y);
+        Assert.equals((int64) 2, kd.medoidIndices()[0]);
+    }
+
+    // 3.1.5 — parity with the pinned scikit-learn-extra (§12.2): PAM with
+    // BUILD init on deterministic fixtures. Medoid index sets, inertias
+    // (sum of metric distances), and partitions match the recorded oracle.
+    @Test
+    public void parityWithPinnedSklearnExtra() {
+        Tensor<float64> a = KMedoidsTest.fixtureA();
+        Tensor<float64> ya = KMedoidsTest.ignoredY((int64) 7);
+        KMedoids k1 = heap KMedoids((int64) 2);
+        k1.fit(a, ya);
+        int64[] i1 = k1.medoidIndices();
+        Assert.equals((int64) 1, i1[0]);
+        Assert.equals((int64) 4, i1[1]);
+        Assert.isTrue(Fixtures.close(k1.inertia(),
+            31.648518108874224, 0.000000001));
+        // Oracle labels [1,1,1,0,0,0,0] — same partition.
+        int64[] oa = heap int64[7];
+        oa[0] = 1; oa[1] = 1; oa[2] = 1;
+        oa[3] = 0; oa[4] = 0; oa[5] = 0; oa[6] = 0;
+        int64[] la = KMedoidsTest.labelsOf(k1.labels(), (int64) 7);
+        Assert.isTrue(Harness.randIndex(la, oa) == 1.0);
+
+        Tensor<float64> b = KMedoidsTest.fixtureB();
+        KMedoids k2 = heap KMedoids((int64) 3);
+        k2.fit(b, KMedoidsTest.ignoredY((int64) 12));
+        int64[] i2 = k2.medoidIndices();
+        Assert.equals((int64) 3, i2[0]);
+        Assert.equals((int64) 4, i2[1]);
+        Assert.equals((int64) 11, i2[2]);
+        Assert.isTrue(Fixtures.close(k2.inertia(),
+            2.229516477779241, 0.000000001));
+
+        KMedoids k3 = heap KMedoids((int64) 2, heap Manhattan());
+        k3.fit(a, ya);
+        int64[] i3 = k3.medoidIndices();
+        Assert.equals((int64) 1, i3[0]);
+        Assert.equals((int64) 3, i3[1]);
+        Assert.isTrue(Fixtures.close(k3.inertia(),
+            44.7, 0.000000001));
+    }
+
+    // 3.1.6 — reproducible across runs (§12.7): BUILD + steepest-descent
+    // SWAP is fully deterministic, so two fits agree exactly — no seed to
+    // vary, which is stronger than seeded reproduction.
+    @Test
+    public void deterministicFitReproduces() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        Tensor<float64> y = KMedoidsTest.ignoredY((int64) 60);
+        KMedoids k1 = heap KMedoids((int64) 3);
+        k1.fit(x, y);
+        KMedoids k2 = heap KMedoids((int64) 3);
+        k2.fit(x, y);
+        int64[] i1 = k1.medoidIndices();
+        int64[] i2 = k2.medoidIndices();
+        int64 c = 0;
+        while (c < 3) {
+            Assert.equals(i1[c], i2[c]);
+            c = c + 1;
+        }
+        int64[] l1 = KMedoidsTest.labelsOf(k1.labels(), (int64) 60);
+        int64[] l2 = KMedoidsTest.labelsOf(k2.labels(), (int64) 60);
+        int64 i = 0;
+        while (i < 60) {
+            Assert.equals(l1[i], l2[i]);
+            i = i + 1;
+        }
+        Assert.isTrue(k1.inertia() == k2.inertia());
+    }
+
+    // 3.2.3 — Estimator/Predictor conformance: fit-before-use throws,
+    // predict maps new rows to nearest-medoid ids, score is negative
+    // inertia of `x` under the fitted medoids (the KMeans convention).
+    @Test
+    public void predictorLifecycleConformance() {
+        KMedoids km = heap KMedoids((int64) 2);
+        Assert.isFalse(km.isFitted());
+        Assert.assertThrows(() -> {
+            Tensor<float64> xa = KMedoidsTest.fixtureA();
+            KMedoids bad = heap KMedoids((int64) 2);
+            bad.predict(xa);
+        });
+        Tensor<float64> x = KMedoidsTest.fixtureA();
+        Tensor<float64> y = KMedoidsTest.ignoredY((int64) 7);
+        km.fit(x, y);
+        Assert.isTrue(km.isFitted());
+        // Training rows predict their own fitted labels.
+        Tensor<float64> pl = km.predict(x);
+        Tensor<float64> fl = km.labels();
+        int64 i = 0;
+        while (i < 7) {
+            Assert.isTrue(pl.get1(i) == fl.get1(i));
+            i = i + 1;
+        }
+        Assert.isTrue(Fixtures.close(km.score(x, y),
+            0.0 - km.inertia(), 0.000000001));
+    }
+
+    // 3.1.7 — scored against the separating shapes: blobs recovered
+    // exactly; nested circles defeat the convex partition (that failure is
+    // DBSCAN's reason to exist); moons partially confound it.
+    @Test
+    public void scoredAgainstSeparatingShapes() {
+        Tensor<float64> xb = Shapes.blobs((uint64) 7);
+        KMedoids kb = heap KMedoids((int64) 3);
+        kb.fit(xb, KMedoidsTest.ignoredY((int64) 60));
+        int64[] lb = KMedoidsTest.labelsOf(kb.labels(), (int64) 60);
+        Assert.isTrue(Harness.randIndex(lb, Shapes.blobLabels()) == 1.0);
+
+        Tensor<float64> xc = Shapes.circles((uint64) 11);
+        KMedoids kc = heap KMedoids((int64) 2);
+        kc.fit(xc, KMedoidsTest.ignoredY((int64) 80));
+        int64[] lc = KMedoidsTest.labelsOf(kc.labels(), (int64) 80);
+        Assert.isTrue(Harness.randIndex(lc, Shapes.circleLabels()) < 0.8);
+
+        Tensor<float64> xm = Shapes.moons((uint64) 13);
+        KMedoids kmn = heap KMedoids((int64) 2);
+        kmn.fit(xm, KMedoidsTest.ignoredY((int64) 80));
+        int64[] lm = KMedoidsTest.labelsOf(kmn.labels(), (int64) 80);
+        Assert.isTrue(Harness.randIndex(lm, Shapes.moonLabels()) < 0.95);
+    }
+}

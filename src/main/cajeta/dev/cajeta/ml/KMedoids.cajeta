@@ -1,0 +1,395 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.distance.Distance;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+
+/**
+ * K-medoids clustering (scikit-learn-extra `KMedoids`, `method='pam'`,
+ * `init='build'`): cluster centres are ACTUAL data rows, chosen to minimize
+ * the sum of metric distances — not squared Euclidean means — which is what
+ * makes the fit robust to outliers that drag a K-means centroid, and lets
+ * any {@link cajeta.math.distance.Metric} drive the objective.
+ *
+ * Algorithm: PAM — the greedy BUILD initialization (first medoid minimizes
+ * total distance, each next maximizes cost reduction) followed by
+ * steepest-descent SWAP (apply the single best improving medoid↔point swap
+ * until none improves). Chosen over the alternating variant for solution
+ * quality (alternate is k-means-shaped and inherits its local optima);
+ * BUILD makes the whole fit DETERMINISTIC — no seed, reproduction is exact
+ * by construction. All ties break to the lowest index; fitted medoid
+ * indices are reported sorted ascending and cluster ids follow that order.
+ *
+ * `fit(x, y)` ignores `y`; `inertia` is the sum of metric distances (NOT
+ * squared) to each row's nearest medoid, matching scikit-learn-extra;
+ * `score` is its negative (the family's KMeans convention).
+ */
+public final class KMedoids implements Predictor {
+
+    private int64 kClusters;
+    private Metric metricM;
+    private int64 maxIter;
+    private Tensor<float64> medoidsM;   // (k, p) copies of the medoid rows
+    private int64[] medIdx;             // (k,) row indices, ascending
+    private Tensor<float64> labelsV;    // (n,) of the fit
+    private float64 inertiaV;
+    private int64 iters;
+    private boolean fitted;
+
+    /** Takes ownership of `metric`. `maxIter` bounds SWAP steps. */
+    public KMedoids(int64 k, #Metric metric, int64 maxIter) {
+        if (k < 1) {
+            throw heap MlException("KMedoids: k must be >= 1");
+        }
+        this.kClusters = k;
+        this.metricM #= metric;
+        this.maxIter = maxIter;
+        this.fitted = false;
+        return;
+    }
+
+    /** Takes ownership of `metric`; maxIter 300 (sklearn-extra default). */
+    public KMedoids(int64 k, #Metric metric) {
+        if (k < 1) {
+            throw heap MlException("KMedoids: k must be >= 1");
+        }
+        this.kClusters = k;
+        this.metricM #= metric;
+        this.maxIter = 300;
+        this.fitted = false;
+        return;
+    }
+
+    /** Euclidean metric (§4.3 default), maxIter 300. */
+    public KMedoids(int64 k) {
+        if (k < 1) {
+            throw heap MlException("KMedoids: k must be >= 1");
+        }
+        this.kClusters = k;
+        this.metricM #= heap Euclidean();
+        this.maxIter = 300;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("KMedoids.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 k = this.kClusters;
+        if (n < k) {
+            throw heap MlException("KMedoids.fit: n < k");
+        }
+
+        Tensor<float64> dm = Distance.pdist(x, this.metricM);
+
+        int64[] med = heap int64[k];
+        boolean[] isMed = heap boolean[n];
+        float64[] dn = heap float64[n];    // distance to nearest medoid
+
+        // BUILD: first medoid minimizes total distance to all points.
+        int64 best0 = 0;
+        float64 bestTotal = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 tot = 0.0;
+            int64 j = 0;
+            while (j < n) {
+                tot = tot + dm.get2(i, j);
+                j = j + 1;
+            }
+            if (i == (int64) 0 || tot < bestTotal) {
+                bestTotal = tot;
+                best0 = i;
+            }
+            i = i + 1;
+        }
+        med[0] = best0;
+        isMed[best0] = true;
+        i = 0;
+        while (i < n) {
+            dn[i] = dm.get2(i, best0);
+            i = i + 1;
+        }
+        int64 chosen = 1;
+        while (chosen < k) {
+            int64 bestC = 0 - (int64) 1;
+            float64 bestGain = 0.0 - 1.0;
+            int64 c = 0;
+            while (c < n) {
+                if (!isMed[c]) {
+                    float64 gain = 0.0;
+                    int64 q = 0;
+                    while (q < n) {
+                        float64 red = dn[q] - dm.get2(q, c);
+                        if (red > 0.0) {
+                            gain = gain + red;
+                        }
+                        q = q + 1;
+                    }
+                    if (gain > bestGain) {
+                        bestGain = gain;
+                        bestC = c;
+                    }
+                }
+                c = c + 1;
+            }
+            med[chosen] = bestC;
+            isMed[bestC] = true;
+            i = 0;
+            while (i < n) {
+                float64 d = dm.get2(i, bestC);
+                if (d < dn[i]) {
+                    dn[i] = d;
+                }
+                i = i + 1;
+            }
+            chosen = chosen + 1;
+        }
+
+        // SWAP: steepest descent — nearest/second-nearest per point, then
+        // the single most-improving (medoid, non-medoid) swap, until none.
+        int64[] n1 = heap int64[n];       // nearest medoid SLOT per point
+        float64[] d1 = heap float64[n];
+        float64[] d2 = heap float64[n];
+        int64 it = 0;
+        boolean improved = true;
+        while (it < this.maxIter && improved) {
+            i = 0;
+            while (i < n) {
+                int64 bs = 0;
+                float64 bd = dm.get2(i, med[0]);
+                float64 sd = 1.7976931348623157E308;
+                int64 s = 1;
+                while (s < k) {
+                    float64 d = dm.get2(i, med[s]);
+                    if (d < bd) {
+                        sd = bd;
+                        bd = d;
+                        bs = s;
+                    } else if (d < sd) {
+                        sd = d;
+                    }
+                    s = s + 1;
+                }
+                n1[i] = bs;
+                d1[i] = bd;
+                d2[i] = sd;
+                i = i + 1;
+            }
+            float64 bestDelta = 0.0 - 0.000000000001;
+            int64 bestS = 0 - (int64) 1;
+            int64 bestH = 0 - (int64) 1;
+            int64 s = 0;
+            while (s < k) {
+                int64 h = 0;
+                while (h < n) {
+                    if (!isMed[h]) {
+                        float64 delta = 0.0;
+                        int64 q = 0;
+                        while (q < n) {
+                            float64 dqh = dm.get2(q, h);
+                            if (n1[q] == s) {
+                                float64 nd = d2[q];
+                                if (dqh < nd) {
+                                    nd = dqh;
+                                }
+                                delta = delta + nd - d1[q];
+                            } else if (dqh < d1[q]) {
+                                delta = delta + dqh - d1[q];
+                            }
+                            q = q + 1;
+                        }
+                        if (delta < bestDelta) {
+                            bestDelta = delta;
+                            bestS = s;
+                            bestH = h;
+                        }
+                    }
+                    h = h + 1;
+                }
+                s = s + 1;
+            }
+            if (bestS >= (int64) 0) {
+                isMed[med[bestS]] = false;
+                med[bestS] = bestH;
+                isMed[bestH] = true;
+                it = it + 1;
+            } else {
+                improved = false;
+            }
+        }
+
+        // Report medoids sorted ascending; cluster ids follow that order.
+        int64 a = 1;
+        while (a < k) {
+            int64 v = med[a];
+            int64 b = a - 1;
+            while (b >= (int64) 0 && med[b] > v) {
+                med[b + 1] = med[b];
+                b = b - 1;
+            }
+            med[b + 1] = v;
+            a = a + 1;
+        }
+
+        // Final assignment + inertia (sum of metric distances).
+        float64[] lab = heap float64[n];
+        float64 inert = 0.0;
+        i = 0;
+        while (i < n) {
+            int64 bs = 0;
+            float64 bd = dm.get2(i, med[0]);
+            int64 s = 1;
+            while (s < k) {
+                float64 d = dm.get2(i, med[s]);
+                if (d < bd) {
+                    bd = d;
+                    bs = s;
+                }
+                s = s + 1;
+            }
+            lab[i] = (float64) bs;
+            inert = inert + bd;
+            i = i + 1;
+        }
+
+        float64[] mrows = heap float64[k * p];
+        int64 c2 = 0;
+        while (c2 < k) {
+            int64 j = 0;
+            while (j < p) {
+                mrows[c2 * p + j] = x.get2(med[c2], j);
+                j = j + 1;
+            }
+            c2 = c2 + 1;
+        }
+        int64[] ms = heap int64[2];
+        ms[0] = k;
+        ms[1] = p;
+        Tensor<float64> mm = Tensor.of<float64>(mrows, ms);
+        int64[] ls = heap int64[1];
+        ls[0] = n;
+        Tensor<float64> lm = Tensor.of<float64>(lab, ls);
+        this.medoidsM #= mm;
+        this.medIdx #= med;
+        this.labelsV #= lm;
+        this.inertiaV = inert;
+        this.iters = it;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(k, p)` medoid rows (copies of input rows), by ascending index. */
+    public Tensor<float64> medoids() {
+        if (!this.fitted) {
+            throw heap MlException("KMedoids.medoids: fit first");
+        }
+        return this.medoidsM;
+    }
+
+    /** The `(k,)` input-row indices of the medoids, ascending. */
+    public #int64[] medoidIndices() {
+        if (!this.fitted) {
+            throw heap MlException("KMedoids.medoidIndices: fit first");
+        }
+        int64 k = (int64) this.medIdx.count();
+        int64[] out = heap int64[k];
+        int64 c = 0;
+        while (c < k) {
+            out[c] = this.medIdx[c];
+            c = c + 1;
+        }
+        return #out;
+    }
+
+    /** The fit's `(n,)` cluster ids. */
+    public Tensor<float64> labels() {
+        if (!this.fitted) {
+            throw heap MlException("KMedoids.labels: fit first");
+        }
+        return this.labelsV;
+    }
+
+    /** Sum of metric distances to nearest medoid (sklearn-extra inertia). */
+    public float64 inertia() {
+        if (!this.fitted) {
+            throw heap MlException("KMedoids.inertia: fit first");
+        }
+        return this.inertiaV;
+    }
+
+    /** SWAP steps applied. */
+    public int64 iterations() {
+        return this.iters;
+    }
+
+    /** Nearest-medoid id per row (lowest index on ties). */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("KMedoids.predict: fit first");
+        }
+        int64 p = this.medoidsM.shapeAt(1);
+        if (x.ndim() != 2 || x.shapeAt(1) != p) {
+            throw heap MlException(
+                "KMedoids.predict: x must be (n, p) with p matching the fit");
+        }
+        int64 n = x.shapeAt(0);
+        int64 k = this.medoidsM.shapeAt(0);
+        Tensor<float64> dm = Distance.cdist(x, this.medoidsM, this.metricM);
+        float64[] out = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            int64 bs = 0;
+            float64 bd = dm.get2(i, 0);
+            int64 s = 1;
+            while (s < k) {
+                float64 d = dm.get2(i, s);
+                if (d < bd) {
+                    bd = d;
+                    bs = s;
+                }
+                s = s + 1;
+            }
+            out[i] = (float64) bs;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** Negative sum of distances of `x` to nearest medoids (KMeans
+     *  convention with plain — not squared — metric distances). */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        if (!this.fitted) {
+            throw heap MlException("KMedoids.score: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        int64 k = this.medoidsM.shapeAt(0);
+        Tensor<float64> dm = Distance.cdist(x, this.medoidsM, this.metricM);
+        float64 tot = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 bd = dm.get2(i, 0);
+            int64 s = 1;
+            while (s < k) {
+                float64 d = dm.get2(i, s);
+                if (d < bd) {
+                    bd = d;
+                }
+                s = s + 1;
+            }
+            tot = tot + bd;
+            i = i + 1;
+        }
+        return 0.0 - tot;
+    }
+}

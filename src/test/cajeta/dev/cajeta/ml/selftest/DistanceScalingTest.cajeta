@@ -191,12 +191,6 @@ public class DistanceScalingTest {
             i = i + 1;
         }
         int64[] truth = Shapes.mixedUnitLabels();
-        // Unscaled clustering follows the gram NOISE (agreement with the
-        // true kilometre grouping near chance); scaling flips the outcome
-        // decisively toward the truth. The margin, not exactness, is the
-        // §3.4 claim — boundary points may wobble under unit-variance noise.
-        float64 rawScore = Harness.randIndex(a, truth);
-        float64 scaledScore = Harness.randIndex(b, truth);
         float64 rawScore = Harness.randIndex(a, truth);
         float64 scaledScore = Harness.randIndex(b, truth);
         // Same algorithm, same seed — only scaling changed. Scaled recovers
