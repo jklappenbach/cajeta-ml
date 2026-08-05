@@ -1,0 +1,192 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.distance.Distance;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+import cajeta.math.linalg.LinAlg;
+
+/**
+ * Laplacian eigenmaps (sklearn `SpectralEmbedding`): the embedding is
+ * the bottom NON-TRIVIAL eigenvectors of the normalized graph Laplacian
+ * `L = I − D^(−1/2)·A·D^(−1/2)` over a k-NN or RBF affinity (§9.13),
+ * rows rescaled by `D^(−1/2)` per sklearn. The DROPPED eigenvector is
+ * the trivial `λ≈0` one (`D^(1/2)·1`) — documented, not a surprise.
+ *
+ * `fitTransform` is the ENTIRE surface (§9.14): spectral embedding has
+ * no out-of-sample extension here, so no `transform` exists and the
+ * class does not implement `Transformer`. Exact and dense — `eigh` on
+ * `(n, n)` is O(n³) (§9.15); deterministic up to eigenvector sign
+ * (§9.16) — compare eigenvalues and |structure|.
+ */
+public final class SpectralEmbedding {
+
+    private int64 kComp;
+    private int64 affinity;      // 0 knn, 1 rbf
+    private int64 kNeighbors;
+    private float64 gamma;
+    private float64[] eigV;      // kept non-trivial eigenvalues (d)
+    private boolean fitted;
+
+    /** k-NN connectivity affinity, symmetrized `0.5(G+Gᵀ)`. */
+    public SpectralEmbedding(int64 nComponents, int64 nNeighbors) {
+        if (nComponents < 1 || nNeighbors < 1) {
+            throw heap MlException(
+                "SpectralEmbedding: nComponents and nNeighbors must be "
+                + ">= 1");
+        }
+        this.kComp = nComponents;
+        this.affinity = 0;
+        this.kNeighbors = nNeighbors;
+        this.fitted = false;
+        return;
+    }
+
+    /** RBF affinity `exp(−γ·d²)`. */
+    public SpectralEmbedding(int64 nComponents, float64 gamma) {
+        if (nComponents < 1 || gamma <= 0.0) {
+            throw heap MlException(
+                "SpectralEmbedding: nComponents >= 1 and gamma > 0");
+        }
+        this.kComp = nComponents;
+        this.affinity = 1;
+        this.gamma = gamma;
+        this.fitted = false;
+        return;
+    }
+
+    /** The `(n, d)` spectral embedding of `x` — the whole surface;
+     *  there is no `transform` for unseen points (§9.14). */
+    public #Tensor<float64> fitTransform(Tensor<float64> x) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "SpectralEmbedding.fitTransform: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 d = this.kComp;
+        Metric eu = heap Euclidean();
+        Tensor<float64> dm = Distance.pdist(x, eu);
+
+        float64[] aM = heap float64[n * n];
+        if (this.affinity == (int64) 0) {
+            int64 k = this.kNeighbors;
+            boolean[] used = heap boolean[n];
+            int64 i = 0;
+            while (i < n) {
+                int64 j0 = 0;
+                while (j0 < n) {
+                    used[j0] = false;
+                    j0 = j0 + 1;
+                }
+                used[i] = true;
+                int64 t = 0;
+                while (t < k) {
+                    int64 best = 0 - (int64) 1;
+                    float64 bd = 0.0;
+                    int64 j = 0;
+                    while (j < n) {
+                        if (!used[j]) {
+                            float64 dj = dm.get2(i, j);
+                            if (best < (int64) 0 || dj < bd) {
+                                bd = dj;
+                                best = j;
+                            }
+                        }
+                        j = j + 1;
+                    }
+                    used[best] = true;
+                    aM[i * n + best] = aM[i * n + best] + 0.5;
+                    aM[best * n + i] = aM[best * n + i] + 0.5;
+                    t = t + 1;
+                }
+                i = i + 1;
+            }
+        } else {
+            int64 i = 0;
+            while (i < n) {
+                int64 j = 0;
+                while (j < n) {
+                    float64 dv = dm.get2(i, j);
+                    aM[i * n + j] = Math.exp(0.0 - this.gamma * dv * dv);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+        }
+
+        // Normalized Laplacian.
+        float64[] deg = heap float64[n];
+        int64 i2 = 0;
+        while (i2 < n) {
+            float64 s = 0.0;
+            int64 j = 0;
+            while (j < n) {
+                s = s + aM[i2 * n + j];
+                j = j + 1;
+            }
+            if (s < 1.0E-300) {
+                s = 1.0E-300;
+            }
+            deg[i2] = Math.sqrt(s);
+            i2 = i2 + 1;
+        }
+        int64[] ls = heap int64[2];
+        ls[0] = n;
+        ls[1] = n;
+        Tensor<float64> lM = Tensor.zeros<float64>(ls);
+        i2 = 0;
+        while (i2 < n) {
+            int64 j = 0;
+            while (j < n) {
+                float64 v = 0.0 - aM[i2 * n + j] / (deg[i2] * deg[j]);
+                if (i2 == j) {
+                    v = v + 1.0;
+                }
+                lM.flatSet(i2 * n + j, v);
+                j = j + 1;
+            }
+            i2 = i2 + 1;
+        }
+        Tensor<float64>[] ev = LinAlg.eigh<float64>(lM);
+        Tensor<float64> w = ev[0];
+        Tensor<float64> v = ev[1];
+        // Ascending: index 0 is the trivial λ≈0 (D^(1/2)·1) — dropped by
+        // position (well separated from the Fiedler value on a connected
+        // graph). Rows rescaled by 1/deg = D^(-1/2), per sklearn.
+        float64[] out = heap float64[n * d];
+        float64[] keep = heap float64[d];
+        int64 c = 0;
+        while (c < d) {
+            keep[c] = w.get1(c + 1);
+            i2 = 0;
+            while (i2 < n) {
+                out[i2 * d + c] = v.get2(i2, c + 1) / deg[i2];
+                i2 = i2 + 1;
+            }
+            c = c + 1;
+        }
+        this.eigV #= keep;
+        this.fitted = true;
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = d;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** The kept non-trivial Laplacian eigenvalues, ascending — the
+     *  sign-free parity quantity (§9.16). */
+    public #float64[] eigenvalues() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "SpectralEmbedding.eigenvalues: fitTransform first");
+        }
+        int64 d = this.kComp;
+        float64[] out = heap float64[d];
+        int64 c = 0;
+        while (c < d) {
+            out[c] = this.eigV[c];
+            c = c + 1;
+        }
+        return #out;
+    }
+}

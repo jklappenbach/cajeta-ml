@@ -1,0 +1,356 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+
+/**
+ * Isomap (sklearn `Isomap`): geodesic distances approximated by shortest
+ * paths over the undirected k-NN graph (INTERNAL Dijkstra — no graph
+ * library dependency), embedded by classical MDS: double-center the
+ * squared geodesics, `LinAlg.eigh`, top eigenpairs, `e = v·√λ` (§9.11).
+ *
+ * A DISCONNECTED neighbour graph is reported loudly, naming `nNeighbors`
+ * as the dial — the classic silent-wrongness of manifold methods (§12.10).
+ * `transform` embeds UNSEEN points by the Nyström extension (geodesics
+ * through the new point's training neighbours), sklearn's out-of-sample
+ * path — for a training row it reproduces the fitted embedding exactly
+ * (§9.14). Exact and dense: O(n²) memory, O(n³) eigendecomposition —
+ * suitable to a few thousand points (§9.15). Deterministic up to
+ * EIGENVECTOR SIGN (§9.16): compare |structure|, not signed coordinates.
+ */
+public final class Isomap implements Transformer {
+
+    private int64 kNeighbors;
+    private int64 kComp;
+    private int64 nTrain;
+    private int64 pFeat;
+    private Tensor<float64> xTrain;
+    private float64[] dGeo;      // (n*n)
+    private float64[] rowMean2;  // (n) row means of squared geodesics
+    private float64 grand2;
+    private float64[] vC;        // (n*k) top eigenvectors
+    private float64[] lamC;      // (k)
+    private Tensor<float64> embV;    // (n, k)
+    private boolean fitted;
+
+    public Isomap(int64 nNeighbors, int64 nComponents) {
+        if (nNeighbors < 1 || nComponents < 1) {
+            throw heap MlException(
+                "Isomap: nNeighbors and nComponents must be >= 1");
+        }
+        this.kNeighbors = nNeighbors;
+        this.kComp = nComponents;
+        this.fitted = false;
+        return;
+    }
+
+    static float64 dist(Tensor<float64> x, int64 i, Tensor<float64> z,
+                        int64 zi, int64 p) {
+        float64 s = 0.0;
+        int64 j = 0;
+        while (j < p) {
+            float64 d = x.get2(i, j) - z.get2(zi, j);
+            s = s + d * d;
+            j = j + 1;
+        }
+        return Math.sqrt(s);
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("Isomap.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 k = this.kNeighbors;
+        int64 d = this.kComp;
+        if (k >= n) {
+            throw heap MlException("Isomap.fit: nNeighbors must be < n");
+        }
+        this.nTrain = n;
+        this.pFeat = p;
+
+        // Undirected k-NN graph, weight = Euclidean distance.
+        float64[] w = heap float64[n * n];
+        int64 i = 0;
+        while (i < n * n) {
+            w[i] = 0.0 - 1.0;
+            i = i + 1;
+        }
+        boolean[] used = heap boolean[n];
+        i = 0;
+        while (i < n) {
+            int64 j0 = 0;
+            while (j0 < n) {
+                used[j0] = false;
+                j0 = j0 + 1;
+            }
+            used[i] = true;
+            int64 t = 0;
+            while (t < k) {
+                int64 best = 0 - (int64) 1;
+                float64 bd = 0.0;
+                int64 j = 0;
+                while (j < n) {
+                    if (!used[j]) {
+                        float64 dj = Isomap.dist(x, i, x, j, p);
+                        if (best < (int64) 0 || dj < bd) {
+                            bd = dj;
+                            best = j;
+                        }
+                    }
+                    j = j + 1;
+                }
+                used[best] = true;
+                w[i * n + best] = bd;
+                w[best * n + i] = bd;
+                t = t + 1;
+            }
+            i = i + 1;
+        }
+
+        // Dijkstra from every source (simple O(n²) scan — n is small in
+        // the exact-dense regime).
+        float64[] geo = heap float64[n * n];
+        float64 inf = 1.0E308;
+        int64 s = 0;
+        while (s < n) {
+            float64[] dv = heap float64[n];
+            boolean[] done = heap boolean[n];
+            i = 0;
+            while (i < n) {
+                dv[i] = inf;
+                i = i + 1;
+            }
+            dv[s] = 0.0;
+            int64 round = 0;
+            while (round < n) {
+                int64 u = 0 - (int64) 1;
+                float64 bu = inf;
+                i = 0;
+                while (i < n) {
+                    if (!done[i] && dv[i] < bu) {
+                        bu = dv[i];
+                        u = i;
+                    }
+                    i = i + 1;
+                }
+                if (u < (int64) 0) {
+                    round = n;
+                } else {
+                    done[u] = true;
+                    int64 v = 0;
+                    while (v < n) {
+                        if (w[u * n + v] >= 0.0
+                            && dv[u] + w[u * n + v] < dv[v]) {
+                            dv[v] = dv[u] + w[u * n + v];
+                        }
+                        v = v + 1;
+                    }
+                    round = round + 1;
+                }
+            }
+            i = 0;
+            while (i < n) {
+                if (dv[i] >= inf) {
+                    throw heap MlException(
+                        "Isomap.fit: the k-NN graph is DISCONNECTED — "
+                        + "geodesics are undefined between components. "
+                        + "Raise nNeighbors (currently "
+                        + Int64.of(k).toString()
+                        + ") until the graph connects");
+                }
+                geo[s * n + i] = dv[i];
+                i = i + 1;
+            }
+            s = s + 1;
+        }
+
+        // Classical MDS on the squared geodesics.
+        float64[] rm = heap float64[n];
+        float64 gm = 0.0;
+        i = 0;
+        while (i < n) {
+            float64 acc = 0.0;
+            int64 j = 0;
+            while (j < n) {
+                acc = acc + geo[i * n + j] * geo[i * n + j];
+                j = j + 1;
+            }
+            rm[i] = acc / (float64) n;
+            gm = gm + acc;
+            i = i + 1;
+        }
+        gm = gm / (float64) (n * n);
+        int64[] ks = heap int64[2];
+        ks[0] = n;
+        ks[1] = n;
+        Tensor<float64> kM = Tensor.zeros<float64>(ks);
+        i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                float64 g2 = geo[i * n + j] * geo[i * n + j];
+                kM.flatSet(i * n + j,
+                    0.0 - 0.5 * (g2 - rm[i] - rm[j] + gm));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        Tensor<float64>[] ev = LinAlg.eigh<float64>(kM);
+        Tensor<float64> evw = ev[0];
+        Tensor<float64> evv = ev[1];
+        float64[] lam = heap float64[d];
+        float64[] vc = heap float64[n * d];
+        float64[] emb = heap float64[n * d];
+        int64 c = 0;
+        while (c < d) {
+            int64 src = n - (int64) 1 - c;       // descending
+            float64 lv = evw.get1(src);
+            if (lv < 0.0) {
+                lv = 0.0;
+            }
+            lam[c] = lv;
+            float64 sq = Math.sqrt(lv);
+            i = 0;
+            while (i < n) {
+                vc[i * d + c] = evv.get2(i, src);
+                emb[i * d + c] = evv.get2(i, src) * sq;
+                i = i + 1;
+            }
+            c = c + 1;
+        }
+        Tensor<float64> xc = x.copy();
+        this.xTrain #= xc;
+        this.dGeo #= geo;
+        this.rowMean2 #= rm;
+        this.grand2 = gm;
+        this.vC #= vc;
+        this.lamC #= lam;
+        int64[] es = heap int64[2];
+        es[0] = n;
+        es[1] = d;
+        Tensor<float64> et = Tensor.of<float64>(emb, es);
+        this.embV #= et;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** The fitted `(n, d)` embedding. */
+    public Tensor<float64> embedding() {
+        if (!this.fitted) {
+            throw heap MlException("Isomap.embedding: fit first");
+        }
+        return this.embV;
+    }
+
+    /** Top-`d` eigenvalues of the centered geodesic kernel — the
+     *  sign-free parity quantity (`‖e_c‖² = λ_c`). */
+    public #float64[] kernelEigenvalues() {
+        if (!this.fitted) {
+            throw heap MlException("Isomap.kernelEigenvalues: fit first");
+        }
+        int64 d = this.kComp;
+        float64[] out = heap float64[d];
+        int64 c = 0;
+        while (c < d) {
+            out[c] = this.lamC[c];
+            c = c + 1;
+        }
+        return #out;
+    }
+
+    /** Embed UNSEEN rows by the Nyström extension: geodesics through the
+     *  new point's k training neighbours; exact on training rows. */
+    public #Tensor<float64> transform(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("Isomap.transform: fit first");
+        }
+        int64 m = x.shapeAt(0);
+        int64 n = this.nTrain;
+        int64 p = this.pFeat;
+        int64 k = this.kNeighbors;
+        int64 d = this.kComp;
+        if (x.ndim() != 2 || x.shapeAt(1) != p) {
+            throw heap MlException(
+                "Isomap.transform: x must be (m, p) matching the fit");
+        }
+        float64[] out = heap float64[m * d];
+        float64[] dz = heap float64[n];
+        float64[] geoZ = heap float64[n];
+        boolean[] used = heap boolean[n];
+        int64 zi = 0;
+        while (zi < m) {
+            int64 i = 0;
+            while (i < n) {
+                dz[i] = Isomap.dist(this.xTrain, i, x, zi, p);
+                geoZ[i] = 1.0E308;
+                used[i] = false;
+                i = i + 1;
+            }
+            int64 t = 0;
+            while (t < k) {
+                int64 best = 0 - (int64) 1;
+                float64 bd = 0.0;
+                i = 0;
+                while (i < n) {
+                    if (!used[i] && (best < (int64) 0 || dz[i] < bd)) {
+                        bd = dz[i];
+                        best = i;
+                    }
+                    i = i + 1;
+                }
+                used[best] = true;
+                // Geodesic through this neighbour.
+                i = 0;
+                while (i < n) {
+                    float64 via = bd + this.dGeo[best * n + i];
+                    if (via < geoZ[i]) {
+                        geoZ[i] = via;
+                    }
+                    i = i + 1;
+                }
+                t = t + 1;
+            }
+            float64 mz = 0.0;
+            i = 0;
+            while (i < n) {
+                mz = mz + geoZ[i] * geoZ[i];
+                i = i + 1;
+            }
+            mz = mz / (float64) n;
+            int64 c = 0;
+            while (c < d) {
+                float64 acc = 0.0;
+                i = 0;
+                while (i < n) {
+                    float64 kz = 0.0 - 0.5 * (geoZ[i] * geoZ[i]
+                        - this.rowMean2[i] - mz + this.grand2);
+                    acc = acc + kz * this.vC[i * d + c];
+                    i = i + 1;
+                }
+                float64 lv = this.lamC[c];
+                if (lv < 1.0E-12) {
+                    lv = 1.0E-12;
+                }
+                out[zi * d + c] = acc / Math.sqrt(lv);
+                c = c + 1;
+            }
+            zi = zi + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = m;
+        sh[1] = d;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    public #Tensor<float64> fitTransform(Tensor<float64> x,
+                                         Tensor<float64> y) {
+        this.fit(x, y);
+        return this.transform(x);
+    }
+}
