@@ -1,0 +1,193 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.math.stats.Information;
+import dev.cajeta.ml.KMeans;
+import dev.cajeta.ml.TSNE;
+
+/**
+ * ml-unsupervised plan 8.1 — t-SNE and divergence (spec §9.1–§9.7).
+ * KL divergence is STDLIB's (`cajeta.math.stats.Information`) — this
+ * library carries no copy (verified by grep at acceptance); t-SNE is
+ * exact (O(n²)), seeded, `fitTransform`-only (§9.7 — no `transform` for
+ * unseen points exists, so none is offered), and structure preservation
+ * is MEASURED, not eyeballed.
+ */
+public class TsneTest {
+
+    public TsneTest() { return; }
+
+    static #Tensor<float64> vec2(float64 a, float64 b) {
+        float64[] d = heap float64[2];
+        d[0] = a;
+        d[1] = b;
+        int64[] sh = heap int64[1];
+        sh[0] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    // 8.1.1 / 8.3.2 / §9.1–§9.3 — the divergence t-SNE minimizes is
+    // stdlib's: correct value, documented asymmetry, infinite (not NaN)
+    // when q vanishes where p does not.
+    @Test
+    public void klDivergenceIsStdlibsAndAsymmetric() {
+        Tensor<float64> p = TsneTest.vec2(0.5, 0.5);
+        Tensor<float64> q = TsneTest.vec2(0.9, 0.1);
+        float64 pq = Information.klDivergence(p, q);
+        float64 qp = Information.klDivergence(q, p);
+        // 0.5·ln(0.5/0.9) + 0.5·ln(0.5/0.1)
+        Assert.isTrue(Fixtures.close(pq, 0.5108256237659907, 0.000000000001));
+        Assert.isTrue(Fixtures.close(qp, 0.3680642071684971, 0.000000000001));
+        Assert.isTrue(pq != qp);
+        Tensor<float64> q0 = TsneTest.vec2(1.0, 0.0);
+        float64 inf = Information.klDivergence(p, q0);
+        Assert.isTrue(inf > 1.0E300);
+        Assert.isTrue(inf == inf);      // +infinity, not NaN
+    }
+
+    // 8.1.2 / §9.4 / 8.3.1 — the 2-D embedding preserves the known
+    // 3-blob structure, MEASURED two ways (not eyeballed): the mean
+    // fraction of each point's 5 nearest embedding neighbours sharing its
+    // true label, and K-means agreement on the embedding. Thresholds, not
+    // exactness — t-SNE legitimately strays a point or two (this seed:
+    // Rand 0.977, KL 0.43).
+    @Test
+    public void embeddingPreservesClusterStructure() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        TSNE ts = heap TSNE((int64) 2, 10.0, (uint64) 3);
+        Tensor<float64> e = ts.fitTransform(x);
+        Assert.equals((int64) 60, e.shapeAt(0));
+        Assert.equals((int64) 2, e.shapeAt(1));
+        int64[] truth = Shapes.blobLabels();
+        // Neighbourhood preservation: 5-NN same-label fraction.
+        float64 agree = 0.0;
+        boolean[] used = heap boolean[60];
+        int64 i = 0;
+        while (i < 60) {
+            int64 j0 = 0;
+            while (j0 < 60) {
+                used[j0] = false;
+                j0 = j0 + 1;
+            }
+            used[i] = true;
+            int64 c = 0;
+            int64 t = 0;
+            while (t < 5) {
+                int64 best = 0 - (int64) 1;
+                float64 bd = 0.0;
+                int64 j = 0;
+                while (j < 60) {
+                    if (!used[j]) {
+                        float64 dx = e.get2(i, 0) - e.get2(j, 0);
+                        float64 dy = e.get2(i, 1) - e.get2(j, 1);
+                        float64 d = dx * dx + dy * dy;
+                        if (best < (int64) 0 || d < bd) {
+                            bd = d;
+                            best = j;
+                        }
+                    }
+                    j = j + 1;
+                }
+                used[best] = true;
+                if (truth[best] == truth[i]) {
+                    c = c + 1;
+                }
+                t = t + 1;
+            }
+            agree = agree + (float64) c / 5.0;
+            i = i + 1;
+        }
+        agree = agree / 60.0;
+        Assert.isTrue(agree > 0.95);
+        // Cluster agreement via K-means on the embedding.
+        int64[] ys = heap int64[1];
+        ys[0] = 60;
+        Tensor<float64> y = Tensor.zeros<float64>(ys);
+        KMeans km = heap KMeans((int64) 3, (uint64) 1);
+        km.fit(e, y);
+        int64[] lab = heap int64[60];
+        i = 0;
+        while (i < 60) {
+            lab[i] = (int64) km.labels().get1(i);
+            i = i + 1;
+        }
+        Assert.isTrue(Harness.randIndex(lab, truth) > 0.95);
+        float64 kl = ts.klDivergence();
+        Assert.isTrue(kl == kl && kl >= 0.0 && kl < 5.0);
+    }
+
+    // 8.1.3 — absurd perplexity relative to n is rejected with a clear
+    // message; a sane one fits.
+    @Test
+    public void absurdPerplexityIsRejected() {
+        Assert.assertThrows(() -> {
+            Tensor<float64> x = Shapes.blobs((uint64) 7);
+            TSNE bad = heap TSNE((int64) 2, 30.0, (uint64) 3);
+            bad.fitTransform(x);        // 3·30 >= 60
+        });
+        Assert.assertThrows(() -> {
+            TSNE neg = heap TSNE((int64) 2, 0.5, (uint64) 3);
+            neg.klDivergence();
+        });
+    }
+
+    // 8.1.4 / §9.5 / §12.7 — seeded runs reproduce exactly; a different
+    // seed lands elsewhere (t-SNE is randomly initialized).
+    @Test
+    public void seededRunsReproduceExactly() {
+        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        TSNE a = heap TSNE((int64) 2, 10.0, (uint64) 3);
+        Tensor<float64> ea = a.fitTransform(x);
+        TSNE b = heap TSNE((int64) 2, 10.0, (uint64) 3);
+        Tensor<float64> eb = b.fitTransform(x);
+        int64 i = 0;
+        while (i < ea.size()) {
+            Assert.isTrue(ea.flatGet(i) == eb.flatGet(i));
+            i = i + 1;
+        }
+        TSNE c = heap TSNE((int64) 2, 10.0, (uint64) 4);
+        Tensor<float64> ec = c.fitTransform(x);
+        boolean differs = false;
+        i = 0;
+        while (i < ea.size()) {
+            if (ea.flatGet(i) != ec.flatGet(i)) {
+                differs = true;
+                i = ea.size();
+            } else {
+                i = i + 1;
+            }
+        }
+        Assert.isTrue(differs);
+    }
+
+    // 8.1.5 / §12.3 — the O(n²) limit is ENFORCED: past the documented
+    // cap the caller hits a clear message, not a hang.
+    @Test
+    public void sizeGuardRejectsRatherThanHangs() {
+        Assert.assertThrows(() -> {
+            int64[] sh = heap int64[2];
+            sh[0] = 2001;
+            sh[1] = 2;
+            Tensor<float64> big = Tensor.zeros<float64>(sh);
+            TSNE ts = heap TSNE((int64) 2, 30.0, (uint64) 0);
+            ts.fitTransform(big);
+        });
+    }
+
+    // 8.1.6 / §9.7 — API shape: fitTransform IS the whole embedding
+    // surface (no transform for unseen points exists on the class), and
+    // reading the KL before fitting throws.
+    @Test
+    public void fitTransformOnlyApiShape() {
+        Assert.assertThrows(() -> {
+            TSNE ts = heap TSNE((int64) 2, 10.0, (uint64) 3);
+            ts.klDivergence();
+        });
+        // nComponents outside {2, 3} rejected.
+        Assert.assertThrows(() -> {
+            TSNE ts = heap TSNE((int64) 5, 10.0, (uint64) 3);
+            ts.klDivergence();
+        });
+    }
+}

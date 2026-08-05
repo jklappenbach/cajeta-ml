@@ -1,0 +1,358 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.distance.Distance;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+import cajeta.math.random.Generator;
+import cajeta.math.stats.Information;
+
+/**
+ * Exact t-SNE (sklearn `TSNE(method='exact')` structure): embed
+ * high-dimensional data in 2 or 3 dimensions by minimizing the KL
+ * divergence between the perplexity-calibrated high-dimensional neighbour
+ * distribution `P` and the Student-t low-dimensional distribution `Q` —
+ * the divergence itself is STDLIB's
+ * {@link cajeta.math.stats.Information#klDivergence} (spec §9.1), not a
+ * copy here.
+ *
+ * READ THIS BEFORE INTERPRETING A PLOT (§9.6): distances BETWEEN clusters
+ * in a t-SNE embedding are NOT meaningful — only local neighbourhood
+ * structure is preserved — and perplexity materially changes the picture;
+ * run several. t-SNE is randomly initialized: the seed is required, and
+ * unseeded runs would differ every time (§9.5).
+ *
+ * `fitTransform` is the ENTIRE embedding surface (§9.7): t-SNE cannot
+ * embed unseen points, so no `transform` exists and the class does not
+ * implement `Transformer` — offering one would be a lie.
+ *
+ * EXACT means O(n²) memory and time per iteration: inputs beyond
+ * 2 000 rows are rejected with instructions rather than left to hang
+ * (§12.3 — Barnes-Hut is a recorded deferral, not an omission).
+ * Standard schedule: perplexity by per-point binary search, early
+ * exaggeration 12× for the first 250 iterations, momentum 0.5 → 0.8.
+ */
+public final class TSNE {
+
+    private int64 kComp;
+    private float64 perplexity;
+    private uint64 seed;
+    private int64 maxIter;
+    private float64 learningRate;
+    private float64 klV;
+    private boolean fitted;
+
+    /** maxIter 750, learning rate 200 — the classic schedule. */
+    public TSNE(int64 nComponents, float64 perplexity, uint64 seed) {
+        if (nComponents != (int64) 2 && nComponents != (int64) 3) {
+            throw heap MlException(
+                "TSNE: nComponents must be 2 or 3 — t-SNE is a "
+                + "visualization embedding, not general reduction");
+        }
+        if (perplexity < 1.0) {
+            throw heap MlException("TSNE: perplexity must be >= 1");
+        }
+        this.kComp = nComponents;
+        this.perplexity = perplexity;
+        this.seed = seed;
+        this.maxIter = 750;
+        this.learningRate = 200.0;
+        this.fitted = false;
+        return;
+    }
+
+    public TSNE(int64 nComponents, float64 perplexity, uint64 seed,
+                int64 maxIter, float64 learningRate) {
+        if (nComponents != (int64) 2 && nComponents != (int64) 3) {
+            throw heap MlException(
+                "TSNE: nComponents must be 2 or 3 — t-SNE is a "
+                + "visualization embedding, not general reduction");
+        }
+        if (perplexity < 1.0) {
+            throw heap MlException("TSNE: perplexity must be >= 1");
+        }
+        this.kComp = nComponents;
+        this.perplexity = perplexity;
+        this.seed = seed;
+        this.maxIter = maxIter;
+        this.learningRate = learningRate;
+        this.fitted = false;
+        return;
+    }
+
+    /** The `(n, nComponents)` embedding of `x` — the whole surface;
+     *  there is no `transform` for unseen points (§9.7). */
+    public #Tensor<float64> fitTransform(Tensor<float64> x) {
+        if (x.ndim() != 2) {
+            throw heap MlException("TSNE.fitTransform: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (n > (int64) 2000) {
+            throw heap MlException(
+                "TSNE.fitTransform: exact t-SNE is O(n^2) and unusable "
+                + "past a few thousand points; n > 2000 is rejected — "
+                + "subsample the data (Barnes-Hut is a recorded deferral)");
+        }
+        if (3.0 * this.perplexity >= (float64) n) {
+            throw heap MlException(
+                "TSNE.fitTransform: perplexity too large for n — need "
+                + "3*perplexity < n; lower perplexity or add data");
+        }
+        int64 k = this.kComp;
+
+        // Squared Euclidean distances.
+        Metric eu = heap Euclidean();
+        Tensor<float64> dm = Distance.pdist(x, eu);
+        float64[] d2 = heap float64[n * n];
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                float64 d = dm.get2(i, j);
+                d2[i * n + j] = d * d;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        // Per-point precision by binary search to the target entropy
+        // log(perplexity) (nats), 50 bisection steps.
+        float64[] pCond = heap float64[n * n];
+        float64 logU = Math.log(this.perplexity);
+        i = 0;
+        while (i < n) {
+            float64 beta = 1.0;
+            float64 betaMin = 0.0 - 1.0E308;
+            float64 betaMax = 1.0E308;
+            int64 t = 0;
+            while (t < 50) {
+                float64 sum = 0.0;
+                float64 dSum = 0.0;
+                int64 j = 0;
+                while (j < n) {
+                    if (j != i) {
+                        float64 e = Math.exp(0.0 - beta * d2[i * n + j]);
+                        pCond[i * n + j] = e;
+                        sum = sum + e;
+                        dSum = dSum + d2[i * n + j] * e;
+                    }
+                    j = j + 1;
+                }
+                if (sum <= 0.0) {
+                    sum = 1.0E-300;
+                }
+                float64 h = Math.log(sum) + beta * dSum / sum;
+                if (h > logU) {
+                    betaMin = beta;
+                    if (betaMax > 1.0E307) {
+                        beta = beta * 2.0;
+                    } else {
+                        beta = (beta + betaMax) / 2.0;
+                    }
+                } else {
+                    betaMax = beta;
+                    if (betaMin < 0.0 - 1.0E307) {
+                        beta = beta / 2.0;
+                    } else {
+                        beta = (beta + betaMin) / 2.0;
+                    }
+                }
+                t = t + 1;
+            }
+            float64 sum2 = 0.0;
+            int64 j2 = 0;
+            while (j2 < n) {
+                if (j2 != i) {
+                    sum2 = sum2 + pCond[i * n + j2];
+                }
+                j2 = j2 + 1;
+            }
+            j2 = 0;
+            while (j2 < n) {
+                if (j2 != i) {
+                    pCond[i * n + j2] = pCond[i * n + j2] / sum2;
+                }
+                j2 = j2 + 1;
+            }
+            i = i + 1;
+        }
+
+        // Symmetrize; floor at 1e-12.
+        float64[] pJ = heap float64[n * n];
+        i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                if (j != i) {
+                    float64 v = (pCond[i * n + j] + pCond[j * n + i])
+                        / (2.0 * (float64) n);
+                    if (v < 1.0E-12) {
+                        v = 1.0E-12;
+                    }
+                    pJ[i * n + j] = v;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        // Seeded random init, sigma 1e-4 (the sklearn convention).
+        Generator gen = heap Generator(this.seed);
+        Tensor<float32> r = gen.normal(n * k);
+        float64[] y = heap float64[n * k];
+        i = 0;
+        while (i < n * k) {
+            y[i] = 0.0001 * (float64) r.get1(i);
+            i = i + 1;
+        }
+
+        float64[] vel = heap float64[n * k];
+        float64[] grad = heap float64[n * k];
+        float64[] qNum = heap float64[n * n];
+        int64 it = 0;
+        while (it < this.maxIter) {
+            float64 ex = 1.0;
+            if (it < (int64) 250) {
+                ex = 12.0;
+            }
+            float64 mom = 0.8;
+            if (it < (int64) 250) {
+                mom = 0.5;
+            }
+            // Student-t numerators and their sum.
+            float64 qSum = 0.0;
+            i = 0;
+            while (i < n) {
+                int64 j = i + 1;
+                while (j < n) {
+                    float64 dy2 = 0.0;
+                    int64 c = 0;
+                    while (c < k) {
+                        float64 d = y[i * k + c] - y[j * k + c];
+                        dy2 = dy2 + d * d;
+                        c = c + 1;
+                    }
+                    float64 t = 1.0 / (1.0 + dy2);
+                    qNum[i * n + j] = t;
+                    qNum[j * n + i] = t;
+                    qSum = qSum + 2.0 * t;
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            // Gradient: 4 Σ_j (ex·P − Q)·t·(y_i − y_j).
+            i = 0;
+            while (i < n) {
+                int64 c = 0;
+                while (c < k) {
+                    grad[i * k + c] = 0.0;
+                    c = c + 1;
+                }
+                int64 j = 0;
+                while (j < n) {
+                    if (j != i) {
+                        float64 t = qNum[i * n + j];
+                        float64 q = t / qSum;
+                        if (q < 1.0E-12) {
+                            q = 1.0E-12;
+                        }
+                        float64 m = 4.0 * (ex * pJ[i * n + j] - q) * t;
+                        c = 0;
+                        while (c < k) {
+                            grad[i * k + c] = grad[i * k + c]
+                                + m * (y[i * k + c] - y[j * k + c]);
+                            c = c + 1;
+                        }
+                    }
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            // Momentum update, then center.
+            float64[] mean = heap float64[k];
+            int64 c2 = 0;
+            while (c2 < k) {
+                mean[c2] = 0.0;
+                c2 = c2 + 1;
+            }
+            i = 0;
+            while (i < n * k) {
+                vel[i] = mom * vel[i] - this.learningRate * grad[i];
+                y[i] = y[i] + vel[i];
+                mean[i - (i / k) * k] = mean[i - (i / k) * k] + y[i];
+                i = i + 1;
+            }
+            c2 = 0;
+            while (c2 < k) {
+                mean[c2] = mean[c2] / (float64) n;
+                c2 = c2 + 1;
+            }
+            i = 0;
+            while (i < n * k) {
+                y[i] = y[i] - mean[i - (i / k) * k];
+                i = i + 1;
+            }
+            it = it + 1;
+        }
+
+        // Final KL through the stdlib divergence on the flattened
+        // distributions (diagonals are 0 in P and skipped by klDivergence;
+        // Q is floored strictly positive).
+        float64 qSumF = 0.0;
+        i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                if (j != i) {
+                    float64 dy2 = 0.0;
+                    int64 c = 0;
+                    while (c < k) {
+                        float64 d = y[i * k + c] - y[j * k + c];
+                        dy2 = dy2 + d * d;
+                        c = c + 1;
+                    }
+                    qNum[i * n + j] = 1.0 / (1.0 + dy2);
+                    qSumF = qSumF + qNum[i * n + j];
+                } else {
+                    qNum[i * n + j] = 0.0;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        float64[] pFlat = heap float64[n * n];
+        float64[] qFlat = heap float64[n * n];
+        i = 0;
+        while (i < n * n) {
+            pFlat[i] = pJ[i];
+            float64 q = qNum[i] / qSumF;
+            if (q < 1.0E-12) {
+                q = 1.0E-12;
+            }
+            qFlat[i] = q;
+            i = i + 1;
+        }
+        int64[] fs = heap int64[1];
+        fs[0] = n * n;
+        Tensor<float64> pt = Tensor.of<float64>(pFlat, fs);
+        int64[] fs2 = heap int64[1];
+        fs2[0] = n * n;
+        Tensor<float64> qt = Tensor.of<float64>(qFlat, fs2);
+        this.klV = Information.klDivergence(pt, qt);
+        this.fitted = true;
+
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        return Tensor.of<float64>(y, sh);
+    }
+
+    /** Final `KL(P‖Q)` of the fit — the minimized objective. Asymmetric
+     *  by definition (§9.3); computed by the stdlib divergence. */
+    public float64 klDivergence() {
+        if (!this.fitted) {
+            throw heap MlException("TSNE.klDivergence: fitTransform first");
+        }
+        return this.klV;
+    }
+}
