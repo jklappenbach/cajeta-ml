@@ -1,0 +1,442 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.distance.Distance;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+
+/**
+ * Agglomerative hierarchical clustering (sklearn `AgglomerativeClustering`
+ * for labels, scipy `linkage` for the merge history): every point starts
+ * as its own cluster and the two closest clusters merge greedily, with
+ * cluster distances maintained by the Lance–Williams update for the chosen
+ * linkage — ward (default), complete, average, or single.
+ *
+ * Ward's update is only valid for Euclidean distance, so the
+ * metric-accepting constructor REJECTS `"ward"` statically (§12.4) — the
+ * same rule sklearn enforces; other linkages take any
+ * {@link cajeta.math.distance.Metric}.
+ *
+ * The fit records the FULL merge history in scipy's linkage-matrix format
+ * — `(n-1, 4)` rows of `[idA, idB, height, newSize]` with new clusters
+ * numbered `n, n+1, …` — so one fit answers many `k`: `cutByCount` /
+ * `cutByHeight` produce flat labels without refitting, `leafOrder` gives
+ * the dendrogram's left-to-right leaf permutation as DATA (rendering is
+ * `cajeta-chart`'s job), and `copheneticCorrelation` reports how
+ * faithfully the tree preserves the original pairwise distances.
+ * All four linkages here are monotone, so heights are non-decreasing.
+ */
+public final class AgglomerativeClustering implements Estimator {
+
+    private int64 kClusters;
+    private int64 linkType;      // 0 ward, 1 complete, 2 average, 3 single
+    private Metric metricM;
+    private int64 nPoints;
+    private Tensor<float64> zM;        // (n-1, 4)
+    private Tensor<float64> labelsV;   // (n,) at kClusters
+    private float64 cophV;
+    private boolean fitted;
+
+    static int64 parseLinkage(String linkage) {
+        if (linkage.equals("ward")) {
+            return 0;
+        }
+        if (linkage.equals("complete")) {
+            return 1;
+        }
+        if (linkage.equals("average")) {
+            return 2;
+        }
+        if (linkage.equals("single")) {
+            return 3;
+        }
+        throw heap MlException(
+            "AgglomerativeClustering: linkage must be "
+            + "ward|complete|average|single");
+    }
+
+    /** Ward linkage, Euclidean distance — the sklearn default. */
+    public AgglomerativeClustering(int64 k) {
+        if (k < 1) {
+            throw heap MlException(
+                "AgglomerativeClustering: k must be >= 1");
+        }
+        this.kClusters = k;
+        this.linkType = 0;
+        this.metricM #= heap Euclidean();
+        this.fitted = false;
+        return;
+    }
+
+    /** Any linkage, Euclidean distance. */
+    public AgglomerativeClustering(int64 k, String linkage) {
+        if (k < 1) {
+            throw heap MlException(
+                "AgglomerativeClustering: k must be >= 1");
+        }
+        this.kClusters = k;
+        this.linkType = AgglomerativeClustering.parseLinkage(linkage);
+        this.metricM #= heap Euclidean();
+        this.fitted = false;
+        return;
+    }
+
+    /** Any linkage EXCEPT ward with a caller metric (takes ownership):
+     *  ward's update formula is Euclidean-only, so `"ward"` here is
+     *  rejected (§12.4). */
+    public AgglomerativeClustering(int64 k, String linkage, #Metric metric) {
+        if (k < 1) {
+            throw heap MlException(
+                "AgglomerativeClustering: k must be >= 1");
+        }
+        int64 lt = AgglomerativeClustering.parseLinkage(linkage);
+        if (lt == (int64) 0) {
+            throw heap MlException(
+                "AgglomerativeClustering: ward linkage requires Euclidean "
+                + "distance — its update formula is invalid for any other "
+                + "metric; use complete|average|single, or ward without a "
+                + "metric");
+        }
+        this.kClusters = k;
+        this.linkType = lt;
+        this.metricM #= metric;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "AgglomerativeClustering.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (n < this.kClusters) {
+            throw heap MlException("AgglomerativeClustering.fit: n < k");
+        }
+        this.nPoints = n;
+
+        Tensor<float64> dm = Distance.pdist(x, this.metricM);
+        float64[] d = heap float64[n * n];      // working cluster distances
+        float64[] orig = heap float64[n * n];   // original point distances
+        float64[] coph = heap float64[n * n];   // cophenetic distances
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < n) {
+                d[i * n + j] = dm.get2(i, j);
+                orig[i * n + j] = dm.get2(i, j);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        boolean[] active = heap boolean[n];
+        int64[] sz = heap int64[n];
+        int64[] cid = heap int64[n];            // scipy cluster id per slot
+        int64[] head = heap int64[n];           // member list head (point)
+        int64[] tail = heap int64[n];
+        int64[] next = heap int64[n];           // point -> next member
+        i = 0;
+        while (i < n) {
+            active[i] = true;
+            sz[i] = 1;
+            cid[i] = i;
+            head[i] = i;
+            tail[i] = i;
+            next[i] = 0 - (int64) 1;
+            i = i + 1;
+        }
+
+        float64[] z = heap float64[(n - (int64) 1) * 4];
+        int64 s = 0;
+        while (s < n - (int64) 1) {
+            // Closest active pair, lowest indices on ties.
+            int64 bi = 0 - (int64) 1;
+            int64 bj = 0 - (int64) 1;
+            float64 bd = 0.0;
+            int64 a = 0;
+            while (a < n) {
+                if (active[a]) {
+                    int64 b = a + 1;
+                    while (b < n) {
+                        if (active[b]) {
+                            if (bi < (int64) 0 || d[a * n + b] < bd) {
+                                bd = d[a * n + b];
+                                bi = a;
+                                bj = b;
+                            }
+                        }
+                        b = b + 1;
+                    }
+                }
+                a = a + 1;
+            }
+
+            float64 h = bd;
+            int64 ida = cid[bi];
+            int64 idb = cid[bj];
+            if (ida > idb) {
+                int64 t = ida;
+                ida = idb;
+                idb = t;
+            }
+            z[s * 4] = (float64) ida;
+            z[s * 4 + 1] = (float64) idb;
+            z[s * 4 + 2] = h;
+            z[s * 4 + 3] = (float64) (sz[bi] + sz[bj]);
+
+            // Cophenetic distance for every cross pair is this height.
+            int64 pa = head[bi];
+            while (pa >= (int64) 0) {
+                int64 pb = head[bj];
+                while (pb >= (int64) 0) {
+                    coph[pa * n + pb] = h;
+                    coph[pb * n + pa] = h;
+                    pb = next[pb];
+                }
+                pa = next[pa];
+            }
+
+            // Lance–Williams update of distances to every other cluster.
+            float64 ni = (float64) sz[bi];
+            float64 nj = (float64) sz[bj];
+            int64 k2 = 0;
+            while (k2 < n) {
+                if (active[k2] && k2 != bi && k2 != bj) {
+                    float64 dik = d[bi * n + k2];
+                    float64 djk = d[bj * n + k2];
+                    float64 nd = 0.0;
+                    if (this.linkType == (int64) 3) {
+                        nd = dik;
+                        if (djk < nd) {
+                            nd = djk;
+                        }
+                    } else if (this.linkType == (int64) 1) {
+                        nd = dik;
+                        if (djk > nd) {
+                            nd = djk;
+                        }
+                    } else if (this.linkType == (int64) 2) {
+                        nd = (ni * dik + nj * djk) / (ni + nj);
+                    } else {
+                        float64 nk = (float64) sz[k2];
+                        nd = Math.sqrt(((ni + nk) * dik * dik
+                            + (nj + nk) * djk * djk
+                            - nk * h * h) / (ni + nj + nk));
+                    }
+                    d[bi * n + k2] = nd;
+                    d[k2 * n + bi] = nd;
+                }
+                k2 = k2 + 1;
+            }
+
+            active[bj] = false;
+            sz[bi] = sz[bi] + sz[bj];
+            cid[bi] = n + s;
+            next[tail[bi]] = head[bj];
+            tail[bi] = tail[bj];
+            s = s + 1;
+        }
+
+        int64[] zs = heap int64[2];
+        zs[0] = n - (int64) 1;
+        zs[1] = 4;
+        Tensor<float64> zt = Tensor.of<float64>(z, zs);
+        this.zM #= zt;
+
+        // Cophenetic correlation: Pearson over the condensed pairs.
+        float64 ma = 0.0;
+        float64 mb = 0.0;
+        float64 cnt = 0.0;
+        i = 0;
+        while (i < n) {
+            int64 j = i + 1;
+            while (j < n) {
+                ma = ma + orig[i * n + j];
+                mb = mb + coph[i * n + j];
+                cnt = cnt + 1.0;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        ma = ma / cnt;
+        mb = mb / cnt;
+        float64 sab = 0.0;
+        float64 saa = 0.0;
+        float64 sbb = 0.0;
+        i = 0;
+        while (i < n) {
+            int64 j = i + 1;
+            while (j < n) {
+                float64 da = orig[i * n + j] - ma;
+                float64 db = coph[i * n + j] - mb;
+                sab = sab + da * db;
+                saa = saa + da * da;
+                sbb = sbb + db * db;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        this.cophV = sab / Math.sqrt(saa * sbb);
+
+        this.fitted = true;
+        Tensor<float64> lv = this.cutByCount(this.kClusters);
+        this.labelsV #= lv;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** The fit's `(n,)` flat labels at the constructor's cluster count. */
+    public Tensor<float64> labels() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "AgglomerativeClustering.labels: fit first");
+        }
+        return this.labelsV;
+    }
+
+    /** The `(n-1, 4)` merge history: `[idA, idB, height, size]` per row,
+     *  scipy `linkage` format (§6.4). */
+    public Tensor<float64> linkageMatrix() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "AgglomerativeClustering.linkageMatrix: fit first");
+        }
+        return this.zM;
+    }
+
+    /** Pearson correlation between original and cophenetic distances —
+     *  scipy `cophenet` (§6.6). */
+    public float64 copheneticCorrelation() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "AgglomerativeClustering.copheneticCorrelation: fit first");
+        }
+        return this.cophV;
+    }
+
+    /** Labels from the roots left after applying the first `n - k` merges;
+     *  ids renumbered in first-appearance order. */
+    private #Tensor<float64> cutRows(int64 rows) {
+        int64 n = this.nPoints;
+        int64[] parent = heap int64[2 * n - (int64) 1];
+        int64 i = 0;
+        while (i < 2 * n - (int64) 1) {
+            parent[i] = i;
+            i = i + 1;
+        }
+        int64 r = 0;
+        while (r < rows) {
+            int64 ida = (int64) this.zM.get2(r, 0);
+            int64 idb = (int64) this.zM.get2(r, 1);
+            int64 ra = ida;
+            while (parent[ra] != ra) {
+                ra = parent[ra];
+            }
+            int64 rb = idb;
+            while (parent[rb] != rb) {
+                rb = parent[rb];
+            }
+            parent[ra] = n + r;
+            parent[rb] = n + r;
+            r = r + 1;
+        }
+        float64[] lab = heap float64[n];
+        int64[] rootOf = heap int64[n];
+        i = 0;
+        while (i < n) {
+            int64 root = i;
+            while (parent[root] != root) {
+                root = parent[root];
+            }
+            rootOf[i] = root;
+            i = i + 1;
+        }
+        int64[] seenRoot = heap int64[n];
+        int64 nSeen = 0;
+        i = 0;
+        while (i < n) {
+            int64 id = 0 - (int64) 1;
+            int64 t = 0;
+            while (t < nSeen) {
+                if (seenRoot[t] == rootOf[i]) {
+                    id = t;
+                    t = nSeen;
+                } else {
+                    t = t + 1;
+                }
+            }
+            if (id < (int64) 0) {
+                seenRoot[nSeen] = rootOf[i];
+                id = nSeen;
+                nSeen = nSeen + 1;
+            }
+            lab[i] = (float64) id;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(lab, sh);
+    }
+
+    /** Flat labels at `k` clusters — one fit, many `k` (§6.7). */
+    public #Tensor<float64> cutByCount(int64 k) {
+        if (!this.fitted) {
+            throw heap MlException(
+                "AgglomerativeClustering.cutByCount: fit first");
+        }
+        if (k < 1 || k > this.nPoints) {
+            throw heap MlException(
+                "AgglomerativeClustering.cutByCount: k out of range");
+        }
+        return this.cutRows(this.nPoints - k);
+    }
+
+    /** Flat labels after applying every merge at height <= `h` (§6.7). */
+    public #Tensor<float64> cutByHeight(float64 h) {
+        if (!this.fitted) {
+            throw heap MlException(
+                "AgglomerativeClustering.cutByHeight: fit first");
+        }
+        int64 rows = 0;
+        while (rows < this.nPoints - (int64) 1
+               && this.zM.get2(rows, 2) <= h) {
+            rows = rows + 1;
+        }
+        return this.cutRows(rows);
+    }
+
+    /** Dendrogram leaf ordering (§6.5): left-to-right in-order traversal
+     *  of the merge tree — under it every flat cluster is contiguous. */
+    public #int64[] leafOrder() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "AgglomerativeClustering.leafOrder: fit first");
+        }
+        int64 n = this.nPoints;
+        int64[] out = heap int64[n];
+        int64 nOut = 0;
+        int64[] stk = heap int64[2 * n];
+        int64 top = 0;
+        stk[0] = 2 * n - (int64) 2;
+        top = 1;
+        while (top > (int64) 0) {
+            top = top - 1;
+            int64 id = stk[top];
+            if (id < n) {
+                out[nOut] = id;
+                nOut = nOut + 1;
+            } else {
+                int64 r = id - n;
+                stk[top] = (int64) this.zM.get2(r, 1);
+                top = top + 1;
+                stk[top] = (int64) this.zM.get2(r, 0);
+                top = top + 1;
+            }
+        }
+        return #out;
+    }
+}

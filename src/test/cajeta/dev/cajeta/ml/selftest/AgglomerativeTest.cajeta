@@ -1,0 +1,370 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.math.distance.Manhattan;
+import dev.cajeta.ml.AgglomerativeClustering;
+
+/**
+ * ml-unsupervised plan 5.1 — hierarchical clustering (spec §6, §12.4).
+ * Label parity against sklearn 1.9.0 `AgglomerativeClustering` and
+ * cophenetic/height parity against scipy 1.18.0 `linkage`/`cophenet`
+ * (oracle numbers recorded 2026-08-05); ward's Euclidean-only guard is
+ * STATIC — the metric-accepting constructor rejects `"ward"` outright.
+ */
+public class AgglomerativeTest {
+
+    public AgglomerativeTest() { return; }
+
+    /** The 10-point asymmetric parity fixture. */
+    static #Tensor<float64> fixtureP() {
+        float64[] d = heap float64[20];
+        d[0] = 0.0;  d[1] = 0.0;
+        d[2] = 0.4;  d[3] = 0.1;
+        d[4] = 1.1;  d[5] = 0.0;
+        d[6] = 2.5;  d[7] = 0.3;
+        d[8] = 3.0;  d[9] = 0.0;
+        d[10] = 3.2; d[11] = 1.0;
+        d[12] = 5.5; d[13] = 5.0;
+        d[14] = 5.6; d[15] = 5.2;
+        d[16] = 6.2; d[17] = 5.1;
+        d[18] = 8.0; d[19] = 0.5;
+        int64[] sh = heap int64[2];
+        sh[0] = 10;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** The 12-point 3-cluster parity fixture (KMedoids' fixture B). */
+    static #Tensor<float64> fixtureB() {
+        float64[] d = heap float64[24];
+        d[0] = 0.0;  d[1] = 0.0;
+        d[2] = 0.3;  d[3] = 0.1;
+        d[4] = 0.1;  d[5] = 0.4;
+        d[6] = 0.2;  d[7] = 0.2;
+        d[8] = 5.0;  d[9] = 5.0;
+        d[10] = 5.2; d[11] = 5.1;
+        d[12] = 4.9; d[13] = 5.3;
+        d[14] = 5.1; d[15] = 4.8;
+        d[16] = 10.0; d[17] = 0.0;
+        d[18] = 10.2; d[19] = 0.2;
+        d[20] = 9.8;  d[21] = 0.1;
+        d[22] = 10.1; d[23] = 0.3;
+        int64[] sh = heap int64[2];
+        sh[0] = 12;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> ignoredY(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.zeros<float64>(sh);
+    }
+
+    static #int64[] intLabels(Tensor<float64> lv, int64 n) {
+        int64[] out = heap int64[n];
+        int64 i = 0;
+        while (i < n) {
+            out[i] = (int64) lv.get1(i);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Oracle ward/complete/average k=3 partition on P: 6 + 3 + 1. */
+    static #int64[] oracleP3() {
+        int64[] y = heap int64[10];
+        int64 i = 6;
+        while (i < 9) {
+            y[i] = 1;
+            i = i + 1;
+        }
+        y[9] = 2;
+        return #y;
+    }
+
+    /** Oracle single-linkage k=2 on P: the far point splits off alone. */
+    static #int64[] oraclePSingle2() {
+        int64[] y = heap int64[10];
+        y[9] = 1;
+        return #y;
+    }
+
+    /** Oracle k=3 partition on B: 4 + 4 + 4 in block order. */
+    static #int64[] oracleB3() {
+        int64[] y = heap int64[12];
+        int64 i = 4;
+        while (i < 12) {
+            y[i] = 1;
+            if (i >= (int64) 8) {
+                y[i] = 2;
+            }
+            i = i + 1;
+        }
+        return #y;
+    }
+
+    static int64 distinctCount(int64[] a) {
+        int64 n = (int64) a.count();
+        int64 count = 0;
+        int64 i = 0;
+        while (i < n) {
+            boolean seen = false;
+            int64 j = 0;
+            while (j < i) {
+                if (a[j] == a[i]) {
+                    seen = true;
+                    j = i;
+                }
+                j = j + 1;
+            }
+            if (!seen) {
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        return count;
+    }
+
+    // 5.1.1 / 5.1.2 — ward is the default and reproduces sklearn's labels
+    // at the requested count on both parity fixtures.
+    @Test
+    public void wardDefaultMatchesSklearnLabels() {
+        Tensor<float64> p = AgglomerativeTest.fixtureP();
+        AgglomerativeClustering a2 = heap AgglomerativeClustering((int64) 2);
+        a2.fit(p, AgglomerativeTest.ignoredY((int64) 10));
+        int64[] l2 = AgglomerativeTest.intLabels(a2.labels(), (int64) 10);
+        // Oracle ward k2: {0..5} vs {6..9}.
+        int64[] o2 = heap int64[10];
+        int64 i = 6;
+        while (i < 10) {
+            o2[i] = 1;
+            i = i + 1;
+        }
+        Assert.isTrue(Harness.randIndex(l2, o2) == 1.0);
+        AgglomerativeClustering a3 = heap AgglomerativeClustering((int64) 3);
+        a3.fit(p, AgglomerativeTest.ignoredY((int64) 10));
+        int64[] l3 = AgglomerativeTest.intLabels(a3.labels(), (int64) 10);
+        Assert.isTrue(Harness.randIndex(l3,
+            AgglomerativeTest.oracleP3()) == 1.0);
+        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        AgglomerativeClustering b3 = heap AgglomerativeClustering((int64) 3);
+        b3.fit(b, AgglomerativeTest.ignoredY((int64) 12));
+        Assert.isTrue(Harness.randIndex(
+            AgglomerativeTest.intLabels(b3.labels(), (int64) 12),
+            AgglomerativeTest.oracleB3()) == 1.0);
+    }
+
+    // 5.1.2 — complete, average, and single all match sklearn.
+    @Test
+    public void allFourLinkagesMatchSklearn() {
+        Tensor<float64> p = AgglomerativeTest.fixtureP();
+        Tensor<float64> y = AgglomerativeTest.ignoredY((int64) 10);
+        AgglomerativeClustering co = heap AgglomerativeClustering((int64) 3,
+            "complete");
+        co.fit(p, y);
+        Assert.isTrue(Harness.randIndex(
+            AgglomerativeTest.intLabels(co.labels(), (int64) 10),
+            AgglomerativeTest.oracleP3()) == 1.0);
+        AgglomerativeClustering av = heap AgglomerativeClustering((int64) 3,
+            "average");
+        av.fit(p, y);
+        Assert.isTrue(Harness.randIndex(
+            AgglomerativeTest.intLabels(av.labels(), (int64) 10),
+            AgglomerativeTest.oracleP3()) == 1.0);
+        AgglomerativeClustering si = heap AgglomerativeClustering((int64) 2,
+            "single");
+        si.fit(p, y);
+        Assert.isTrue(Harness.randIndex(
+            AgglomerativeTest.intLabels(si.labels(), (int64) 10),
+            AgglomerativeTest.oraclePSingle2()) == 1.0);
+        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        AgglomerativeClustering sb = heap AgglomerativeClustering((int64) 3,
+            "single");
+        sb.fit(b, AgglomerativeTest.ignoredY((int64) 12));
+        Assert.isTrue(Harness.randIndex(
+            AgglomerativeTest.intLabels(sb.labels(), (int64) 12),
+            AgglomerativeTest.oracleB3()) == 1.0);
+    }
+
+    // 5.1.3 / §12.4 — ward + non-Euclidean is REJECTED (a library that
+    // permits it returns confident nonsense); other linkages accept any
+    // §2 metric.
+    @Test
+    public void wardWithNonEuclideanIsRejected() {
+        Assert.assertThrows(() -> {
+            AgglomerativeClustering bad = heap AgglomerativeClustering(
+                (int64) 2, "ward", heap Manhattan());
+            bad.isFitted();
+        });
+        // average + Manhattan is legitimate and fits.
+        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        AgglomerativeClustering ok = heap AgglomerativeClustering((int64) 2,
+            "average", heap Manhattan());
+        ok.fit(b, AgglomerativeTest.ignoredY((int64) 12));
+        Assert.isTrue(ok.isFitted());
+        int64[] l = AgglomerativeTest.intLabels(ok.labels(), (int64) 12);
+        Assert.equals((int64) 2, AgglomerativeTest.distinctCount(l));
+    }
+
+    // 5.1.4 — the FULL merge history in scipy's linkage-matrix format:
+    // (n-1, 4) rows of [idA, idB, height, size], heights matching scipy's
+    // ward tail on fixture B to 1e-9, monotone, ending in one cluster.
+    @Test
+    public void linkageMatrixIsFullMergeHistory() {
+        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        AgglomerativeClustering a = heap AgglomerativeClustering((int64) 2);
+        a.fit(b, AgglomerativeTest.ignoredY((int64) 12));
+        Tensor<float64> z = a.linkageMatrix();
+        Assert.equals((int64) 11, z.shapeAt(0));
+        Assert.equals((int64) 4, z.shapeAt(1));
+        int64 r = 0;
+        while (r < 11) {
+            int64 ia = (int64) z.get2(r, 0);
+            int64 ib = (int64) z.get2(r, 1);
+            Assert.isTrue(ia >= 0 && ia < 12 + r);
+            Assert.isTrue(ib >= 0 && ib < 12 + r);
+            Assert.isTrue(ia < ib);
+            if (r > (int64) 0) {
+                Assert.isTrue(z.get2(r, 2) >= z.get2(r - 1, 2));
+            }
+            r = r + 1;
+        }
+        Assert.isTrue(z.get2(10, 3) == 12.0);
+        // scipy ward heights, last three merges.
+        Assert.isTrue(Fixtures.close(z.get2(8, 2),
+            0.4760952285695231, 0.000000001));
+        Assert.isTrue(Fixtures.close(z.get2(9, 2),
+            13.823982783554094, 0.000000001));
+        Assert.isTrue(Fixtures.close(z.get2(10, 2),
+            18.065736445916986, 0.000000001));
+    }
+
+    // 5.1.5 / §6.5 — dendrogram DATA: leaf ordering is a permutation under
+    // which every flat cluster is contiguous — exactly what a renderer
+    // needs, with nothing drawn here (5.3.2).
+    @Test
+    public void dendrogramDataIsDerivable() {
+        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        AgglomerativeClustering a = heap AgglomerativeClustering((int64) 3);
+        a.fit(b, AgglomerativeTest.ignoredY((int64) 12));
+        int64[] order = a.leafOrder();
+        Assert.equals((int64) 12, (int64) order.count());
+        boolean[] seen = heap boolean[12];
+        int64 i = 0;
+        while (i < 12) {
+            Assert.isTrue(order[i] >= 0 && order[i] < 12);
+            Assert.isFalse(seen[order[i]]);
+            seen[order[i]] = true;
+            i = i + 1;
+        }
+        // Positions of each cluster's members are contiguous.
+        int64[] lab = AgglomerativeTest.intLabels(a.labels(), (int64) 12);
+        int64[] pos = heap int64[12];
+        i = 0;
+        while (i < 12) {
+            pos[order[i]] = i;
+            i = i + 1;
+        }
+        int64 c = 0;
+        while (c < 3) {
+            int64 lo = 100;
+            int64 hi = 0 - (int64) 1;
+            int64 cnt = 0;
+            i = 0;
+            while (i < 12) {
+                if (lab[i] == c) {
+                    if (pos[i] < lo) {
+                        lo = pos[i];
+                    }
+                    if (pos[i] > hi) {
+                        hi = pos[i];
+                    }
+                    cnt = cnt + 1;
+                }
+                i = i + 1;
+            }
+            Assert.isTrue(hi - lo + (int64) 1 == cnt);
+            c = c + 1;
+        }
+    }
+
+    // 5.1.6 / §6.6 — cophenetic correlation matches scipy's `cophenet`.
+    @Test
+    public void copheneticCorrelationMatchesScipy() {
+        Tensor<float64> p = AgglomerativeTest.fixtureP();
+        Tensor<float64> y = AgglomerativeTest.ignoredY((int64) 10);
+        AgglomerativeClustering w = heap AgglomerativeClustering((int64) 2);
+        w.fit(p, y);
+        Assert.isTrue(Fixtures.close(w.copheneticCorrelation(),
+            0.925640505432704, 0.000000001));
+        AgglomerativeClustering av = heap AgglomerativeClustering((int64) 2,
+            "average");
+        av.fit(p, y);
+        Assert.isTrue(Fixtures.close(av.copheneticCorrelation(),
+            0.9434872407652746, 0.000000001));
+        AgglomerativeClustering si = heap AgglomerativeClustering((int64) 2,
+            "single");
+        si.fit(p, y);
+        Assert.isTrue(Fixtures.close(si.copheneticCorrelation(),
+            0.9267689740568886, 0.000000001));
+        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        AgglomerativeClustering wb = heap AgglomerativeClustering((int64) 2);
+        wb.fit(b, AgglomerativeTest.ignoredY((int64) 12));
+        Assert.isTrue(Fixtures.close(wb.copheneticCorrelation(),
+            0.9576169414096835, 0.000000001));
+    }
+
+    // 5.1.7 / §6.7 — one fit answers many k: cutting by count or height
+    // yields flat labels without refitting.
+    @Test
+    public void treeCuttingAnswersManyK() {
+        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        AgglomerativeClustering a = heap AgglomerativeClustering((int64) 2);
+        a.fit(b, AgglomerativeTest.ignoredY((int64) 12));
+        Tensor<float64> c3 = a.cutByCount((int64) 3);
+        Assert.isTrue(Harness.randIndex(
+            AgglomerativeTest.intLabels(c3, (int64) 12),
+            AgglomerativeTest.oracleB3()) == 1.0);
+        // Cut by count 2 equals the fitted labels.
+        Tensor<float64> c2 = a.cutByCount((int64) 2);
+        Tensor<float64> fl = a.labels();
+        int64 i = 0;
+        while (i < 12) {
+            Assert.isTrue(c2.get1(i) == fl.get1(i));
+            i = i + 1;
+        }
+        // Cut by height: between B's ward merge heights 0.476 / 13.82 /
+        // 18.07, heights 5, 15, and 20 give 3, 2, and 1 clusters.
+        int64[] h5 = AgglomerativeTest.intLabels(
+            a.cutByHeight(5.0), (int64) 12);
+        Assert.equals((int64) 3, AgglomerativeTest.distinctCount(h5));
+        int64[] h15 = AgglomerativeTest.intLabels(
+            a.cutByHeight(15.0), (int64) 12);
+        Assert.equals((int64) 2, AgglomerativeTest.distinctCount(h15));
+        int64[] h20 = AgglomerativeTest.intLabels(
+            a.cutByHeight(20.0), (int64) 12);
+        Assert.equals((int64) 1, AgglomerativeTest.distinctCount(h20));
+    }
+
+    // 5.1.8 — single linkage separates the dense rings exactly where ward
+    // fails: the chaining behaviour that makes linkage choice matter.
+    @Test
+    public void singleSucceedsWhereWardFailsOnRings() {
+        Tensor<float64> x = Shapes.denseCircles((uint64) 31);
+        Tensor<float64> y = AgglomerativeTest.ignoredY((int64) 160);
+        int64[] truth = Shapes.denseCircleLabels();
+        AgglomerativeClustering si = heap AgglomerativeClustering((int64) 2,
+            "single");
+        si.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            AgglomerativeTest.intLabels(si.labels(), (int64) 160),
+            truth) == 1.0);
+        AgglomerativeClustering w = heap AgglomerativeClustering((int64) 2);
+        w.fit(x, y);
+        Assert.isTrue(Harness.randIndex(
+            AgglomerativeTest.intLabels(w.labels(), (int64) 160),
+            truth) < 0.8);
+    }
+}

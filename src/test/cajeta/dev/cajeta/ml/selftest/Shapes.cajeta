@@ -235,6 +235,43 @@ public final class Shapes {
         return #y;
     }
 
+    /** Dense concentric circles (U5's single-vs-ward fixture): 80 per ring
+     *  — at 40/ring, random-angle gaps let single linkage bridge the rings
+     *  (13/30 in the sklearn mechanism check); at 80/ring the chain closes
+     *  first (single perfect 30/30, ward < 0.8 in 30/30). */
+    public static #Tensor<float64> denseCircles(uint64 seed) {
+        Generator gen = heap Generator(seed);
+        Tensor<float32> u = gen.uniform((int64) 320);
+        int64[] sh = heap int64[2];
+        sh[0] = 160;
+        sh[1] = 2;
+        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < 160) {
+            float64 theta = 2.0 * 3.14159265358979 * (float64) u.get1(i * 2);
+            float64 rj = (float64) u.get1(i * 2 + 1) * 0.1;
+            float64 r = 0.4 + rj;
+            if (i >= (int64) 80) {
+                r = 1.0 + rj;
+            }
+            x.flatSet(i * 2, r * Math.cos(theta));
+            x.flatSet(i * 2 + 1, r * Math.sin(theta));
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    /** Labels for `denseCircles`: 80 inner 0, 80 outer 1. */
+    public static #int64[] denseCircleLabels() {
+        int64[] y = heap int64[160];
+        int64 i = 80;
+        while (i < 160) {
+            y[i] = 1;
+            i = i + 1;
+        }
+        return #y;
+    }
+
     /** Unequal-variance pair (U4's GMM-beats-K-means fixture): 60 TIGHT
      *  points (σ 0.35) at (0,0) and 60 WIDE points (σ 2.0) at (3,0). The
      *  Bayes boundary sits near the tight component; K-means' midpoint
