@@ -1,0 +1,224 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.math.distance.Manhattan;
+import dev.cajeta.ml.KMeans;
+import dev.cajeta.ml.DBSCAN;
+
+/**
+ * ml-unsupervised plan 6.1 — DBSCAN (spec §7, §12.5). Noise is labelled
+ * noise (-1) and the cluster count is DISCOVERED — the two properties that
+ * make it categorically different from §4/§6. Label parity is EXACT
+ * against sklearn 1.9.0, including the order-dependent border assignment
+ * (oracle recorded 2026-08-05): a border point reachable from two clusters
+ * takes the cluster whose depth-first expansion pops it first — sklearn's
+ * loop is replicated, not approximated (6.1.7).
+ */
+public class DbscanTest {
+
+    public DbscanTest() { return; }
+
+    /** Two 4-point chains, an EQUIDISTANT border point at x=2.1 (0.9 from
+     *  both), and one far noise point. eps 0.95, minSamples 4 (self
+     *  included, the sklearn convention). */
+    static #Tensor<float64> parityFixture() {
+        float64[] d = heap float64[20];
+        d[0] = 0.0;  d[1] = 0.0;
+        d[2] = 0.4;  d[3] = 0.0;
+        d[4] = 0.8;  d[5] = 0.0;
+        d[6] = 1.2;  d[7] = 0.0;
+        d[8] = 2.1;  d[9] = 0.0;
+        d[10] = 3.0; d[11] = 0.0;
+        d[12] = 3.4; d[13] = 0.0;
+        d[14] = 3.8; d[15] = 0.0;
+        d[16] = 4.2; d[17] = 0.0;
+        d[18] = 10.0; d[19] = 10.0;
+        int64[] sh = heap int64[2];
+        sh[0] = 10;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    /** Diagonal chain: consecutive Euclidean distance 0.99, Manhattan 1.4
+     *  — the same eps separates the metrics. */
+    static #Tensor<float64> diagonalFixture() {
+        float64[] d = heap float64[8];
+        d[0] = 0.0; d[1] = 0.0;
+        d[2] = 0.7; d[3] = 0.7;
+        d[4] = 1.4; d[5] = 1.4;
+        d[6] = 2.1; d[7] = 2.1;
+        int64[] sh = heap int64[2];
+        sh[0] = 4;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> ignoredY(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.zeros<float64>(sh);
+    }
+
+    static #int64[] intLabels(Tensor<float64> lv, int64 n) {
+        int64[] out = heap int64[n];
+        int64 i = 0;
+        while (i < n) {
+            out[i] = (int64) lv.get1(i);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    // 6.1.1 / §7.2 / §7.3 / §12.5 — the KNOWN noise points come back as
+    // -1, the cluster count is discovered (never passed in), and the
+    // partition matches the fixture's truth exactly.
+    @Test
+    public void noiseIsLabelledAndCountIsDiscovered() {
+        Tensor<float64> x = Shapes.noisyBlobs((uint64) 19);
+        DBSCAN db = heap DBSCAN(1.5, (int64) 4);
+        db.fit(x, DbscanTest.ignoredY((int64) 45));
+        Assert.equals((int64) 2, db.nClusters());
+        int64[] l = DbscanTest.intLabels(db.labels(), (int64) 45);
+        int64 i = 40;
+        while (i < 45) {
+            Assert.equals((int64) (0 - (int64) 1), l[i]);
+            i = i + 1;
+        }
+        Assert.isTrue(Harness.randIndex(l,
+            Shapes.noisyBlobLabels()) == 1.0);
+    }
+
+    // 6.1.2 / 6.3.2 — DBSCAN recovers the nested rings exactly where
+    // K-means cannot. This is the fixture that justifies the algorithm.
+    @Test
+    public void recoversNestedRingsWhereKMeansFails() {
+        Tensor<float64> x = Shapes.denseCircles((uint64) 31);
+        Tensor<float64> y = DbscanTest.ignoredY((int64) 160);
+        int64[] truth = Shapes.denseCircleLabels();
+        DBSCAN db = heap DBSCAN(0.45, (int64) 3);
+        db.fit(x, y);
+        Assert.equals((int64) 2, db.nClusters());
+        Assert.isTrue(Harness.randIndex(
+            DbscanTest.intLabels(db.labels(), (int64) 160), truth) == 1.0);
+        KMeans km = heap KMeans((int64) 2, (uint64) 3);
+        km.fit(x, y);
+        int64[] lk = heap int64[160];
+        int64 i = 0;
+        while (i < 160) {
+            lk[i] = (int64) km.labels().get1(i);
+            i = i + 1;
+        }
+        Assert.isTrue(Harness.randIndex(lk, truth) < 0.8);
+    }
+
+    // 6.1.3 / §7.5 — core, border, and noise are distinguishable: on the
+    // parity fixture the chain interiors are core, the chain ends and the
+    // equidistant point are border (labelled, not core), the far point is
+    // noise (unlabelled, not core).
+    @Test
+    public void coreBorderNoiseAreDistinguishable() {
+        Tensor<float64> x = DbscanTest.parityFixture();
+        DBSCAN db = heap DBSCAN(0.95, (int64) 4);
+        db.fit(x, DbscanTest.ignoredY((int64) 10));
+        boolean[] core = db.coreMask();
+        int64[] l = DbscanTest.intLabels(db.labels(), (int64) 10);
+        // sklearn core set: {1, 2, 3, 5, 6, 7}.
+        Assert.isFalse(core[0]);
+        Assert.isTrue(core[1] && core[2] && core[3]);
+        Assert.isFalse(core[4]);
+        Assert.isTrue(core[5] && core[6] && core[7]);
+        Assert.isFalse(core[8]);
+        Assert.isFalse(core[9]);
+        // Border = labelled but not core; noise = -1 and not core.
+        Assert.isTrue(l[0] >= 0 && !core[0]);
+        Assert.isTrue(l[4] >= 0 && !core[4]);
+        Assert.isTrue(l[8] >= 0 && !core[8]);
+        Assert.isTrue(l[9] == 0 - (int64) 1);
+    }
+
+    // 6.1.4 — eps sweeps behave: everything merges at eps 2.0 (the border
+    // point becomes a core bridge), everything is noise at eps 0.3; the
+    // k-distance curve separates the noise tail for choosing eps.
+    @Test
+    public void epsMinSamplesAndKDistanceBehave() {
+        Tensor<float64> x = DbscanTest.parityFixture();
+        Tensor<float64> y = DbscanTest.ignoredY((int64) 10);
+        DBSCAN wide = heap DBSCAN(2.0, (int64) 2);
+        wide.fit(x, y);
+        Assert.equals((int64) 1, wide.nClusters());
+        int64[] lw = DbscanTest.intLabels(wide.labels(), (int64) 10);
+        Assert.equals((int64) (0 - (int64) 1), lw[9]);
+        DBSCAN tight = heap DBSCAN(0.3, (int64) 2);
+        tight.fit(x, y);
+        Assert.equals((int64) 0, tight.nClusters());
+        int64[] lt = DbscanTest.intLabels(tight.labels(), (int64) 10);
+        int64 i = 0;
+        while (i < 10) {
+            Assert.equals((int64) (0 - (int64) 1), lt[i]);
+            i = i + 1;
+        }
+        // k-distance plot data (sorted ascending): dense points sit low,
+        // the 5 noise points form the high tail — the elbow that picks eps.
+        Tensor<float64> nb = Shapes.noisyBlobs((uint64) 19);
+        float64[] kd = DBSCAN.kDistances(nb, (int64) 4);
+        Assert.equals((int64) 45, (int64) kd.count());
+        i = 1;
+        while (i < 45) {
+            Assert.isTrue(kd[i] >= kd[i - 1]);
+            i = i + 1;
+        }
+        Assert.isTrue(kd[39] < 1.5);
+        Assert.isTrue(kd[40] > 3.0);
+    }
+
+    // 6.1.5 / §7.4 — the metric flows through the §2 seam: the same eps
+    // clusters the diagonal chain under Euclidean (spacing 0.99) and
+    // rejects everything under Manhattan (spacing 1.4). Oracle-confirmed.
+    @Test
+    public void anyMetricWorksThroughTheSeam() {
+        Tensor<float64> x = DbscanTest.diagonalFixture();
+        Tensor<float64> y = DbscanTest.ignoredY((int64) 4);
+        DBSCAN eu = heap DBSCAN(1.0, (int64) 2);
+        eu.fit(x, y);
+        Assert.equals((int64) 1, eu.nClusters());
+        DBSCAN ma = heap DBSCAN(1.0, (int64) 2, heap Manhattan());
+        ma.fit(x, y);
+        Assert.equals((int64) 0, ma.nClusters());
+        int64[] l = DbscanTest.intLabels(ma.labels(), (int64) 4);
+        int64 i = 0;
+        while (i < 4) {
+            Assert.equals((int64) (0 - (int64) 1), l[i]);
+            i = i + 1;
+        }
+    }
+
+    // 6.1.6 / 6.1.7 — EXACT sklearn label parity, element by element:
+    // cluster ids follow first-core-found order and the ambiguous border
+    // point at x=2.1 (0.9 from BOTH chains) joins cluster 0 because
+    // cluster 0's expansion reaches it first. Order-dependence is the
+    // documented sklearn behaviour, replicated rather than approximated.
+    @Test
+    public void matchesSklearnLabelsExactly() {
+        Tensor<float64> x = DbscanTest.parityFixture();
+        DBSCAN db = heap DBSCAN(0.95, (int64) 4);
+        db.fit(x, DbscanTest.ignoredY((int64) 10));
+        int64[] l = DbscanTest.intLabels(db.labels(), (int64) 10);
+        // sklearn: [0, 0, 0, 0, 0, 1, 1, 1, 1, -1]
+        int64 i = 0;
+        while (i < 5) {
+            Assert.equals((int64) 0, l[i]);
+            i = i + 1;
+        }
+        while (i < 9) {
+            Assert.equals((int64) 1, l[i]);
+            i = i + 1;
+        }
+        Assert.equals((int64) (0 - (int64) 1), l[9]);
+        // Lifecycle: fit-before-use throws.
+        Assert.assertThrows(() -> {
+            DBSCAN bad = heap DBSCAN(1.0, (int64) 2);
+            bad.labels();
+        });
+    }
+}

@@ -1,0 +1,244 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.distance.Distance;
+import cajeta.math.distance.Metric;
+import cajeta.math.distance.Euclidean;
+
+/**
+ * Density-based clustering (sklearn `DBSCAN`): clusters are the
+ * density-connected components of core points — points with at least
+ * `minSamples` neighbours within `eps`, THEMSELVES INCLUDED (the sklearn
+ * count) — border points join a neighbouring core's cluster, and points in
+ * no dense region are labelled NOISE (`-1`) rather than forced anywhere.
+ * The cluster count is discovered, never specified (§7.3).
+ *
+ * The expansion replicates sklearn's `dbscan_inner` loop exactly: scan
+ * points in index order, depth-first-expand each unassigned core point
+ * with a LIFO stack, pushing unlabelled neighbours in ascending index
+ * order; only core points spread. A border point reachable from two
+ * clusters therefore takes the cluster whose expansion POPS it first —
+ * the order-dependence is inherent to the original algorithm, and
+ * matching sklearn means matching its order, not approximating it
+ * (plan 6.1.7).
+ *
+ * `kDistances` derives the k-distance curve (sorted ascending, self
+ * excluded) — the standard elbow plot for choosing `eps`.
+ */
+public final class DBSCAN implements Estimator {
+
+    private float64 eps;
+    private int64 minSamples;
+    private Metric metricM;
+    private Tensor<float64> labelsV;   // (n,), -1 = noise
+    private boolean[] coreV;
+    private int64 nClustersV;
+    private boolean fitted;
+
+    /** Euclidean distance. `minSamples` counts the point itself. */
+    public DBSCAN(float64 eps, int64 minSamples) {
+        if (eps <= 0.0 || minSamples < 1) {
+            throw heap MlException(
+                "DBSCAN: eps must be > 0 and minSamples >= 1");
+        }
+        this.eps = eps;
+        this.minSamples = minSamples;
+        this.metricM #= heap Euclidean();
+        this.fitted = false;
+        return;
+    }
+
+    /** Any §2 metric (takes ownership). */
+    public DBSCAN(float64 eps, int64 minSamples, #Metric metric) {
+        if (eps <= 0.0 || minSamples < 1) {
+            throw heap MlException(
+                "DBSCAN: eps must be > 0 and minSamples >= 1");
+        }
+        this.eps = eps;
+        this.minSamples = minSamples;
+        this.metricM #= metric;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("DBSCAN.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        Tensor<float64> dm = Distance.pdist(x, this.metricM);
+
+        // Core points: >= minSamples within eps, self included
+        // (d(i,i) = 0 always qualifies).
+        boolean[] isCore = heap boolean[n];
+        int64 i = 0;
+        while (i < n) {
+            int64 cnt = 0;
+            int64 j = 0;
+            while (j < n) {
+                if (dm.get2(i, j) <= this.eps) {
+                    cnt = cnt + 1;
+                }
+                j = j + 1;
+            }
+            isCore[i] = cnt >= this.minSamples;
+            i = i + 1;
+        }
+
+        // sklearn's dbscan_inner: index-order scan, LIFO expansion, only
+        // cores spread, labels assigned when a point is (re)visited.
+        int64[] lab = heap int64[n];
+        i = 0;
+        while (i < n) {
+            lab[i] = 0 - (int64) 1;
+            i = i + 1;
+        }
+        int64[] stk = heap int64[n * n];
+        int64 labelNum = 0;
+        int64 seed = 0;
+        while (seed < n) {
+            if (lab[seed] < (int64) 0 && isCore[seed]) {
+                int64 top = 0;
+                int64 cur = seed;
+                boolean expanding = true;
+                while (expanding) {
+                    if (lab[cur] < (int64) 0) {
+                        lab[cur] = labelNum;
+                        if (isCore[cur]) {
+                            int64 v = 0;
+                            while (v < n) {
+                                if (dm.get2(cur, v) <= this.eps
+                                    && lab[v] < (int64) 0) {
+                                    stk[top] = v;
+                                    top = top + 1;
+                                }
+                                v = v + 1;
+                            }
+                        }
+                    }
+                    if (top == (int64) 0) {
+                        expanding = false;
+                    } else {
+                        top = top - 1;
+                        cur = stk[top];
+                    }
+                }
+                labelNum = labelNum + 1;
+            }
+            seed = seed + 1;
+        }
+
+        float64[] out = heap float64[n];
+        i = 0;
+        while (i < n) {
+            out[i] = (float64) lab[i];
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> lt = Tensor.of<float64>(out, sh);
+        this.labelsV #= lt;
+        this.coreV #= isCore;
+        this.nClustersV = labelNum;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** The fit's `(n,)` labels; `-1` is noise (§7.2). */
+    public Tensor<float64> labels() {
+        if (!this.fitted) {
+            throw heap MlException("DBSCAN.labels: fit first");
+        }
+        return this.labelsV;
+    }
+
+    /** Discovered cluster count — an output, never an input (§7.3). */
+    public int64 nClusters() {
+        if (!this.fitted) {
+            throw heap MlException("DBSCAN.nClusters: fit first");
+        }
+        return this.nClustersV;
+    }
+
+    /** Core flags per point (§7.5): border = labelled and not core;
+     *  noise = `-1` and not core. */
+    public #boolean[] coreMask() {
+        if (!this.fitted) {
+            throw heap MlException("DBSCAN.coreMask: fit first");
+        }
+        int64 n = (int64) this.coreV.count();
+        boolean[] out = heap boolean[n];
+        int64 i = 0;
+        while (i < n) {
+            out[i] = this.coreV[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Each point's distance to its k-th nearest OTHER point, sorted
+     *  ascending — the k-distance curve whose elbow picks `eps`. */
+    public static #float64[] kDistances(Tensor<float64> x, int64 k,
+                                        Metric metric) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "DBSCAN.kDistances: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (k < 1 || k >= n) {
+            throw heap MlException(
+                "DBSCAN.kDistances: need 1 <= k < n");
+        }
+        Tensor<float64> dm = Distance.pdist(x, metric);
+        float64[] out = heap float64[n];
+        float64[] row = heap float64[n - (int64) 1];
+        int64 i = 0;
+        while (i < n) {
+            int64 m = 0;
+            int64 j = 0;
+            while (j < n) {
+                if (j != i) {
+                    row[m] = dm.get2(i, j);
+                    m = m + 1;
+                }
+                j = j + 1;
+            }
+            // Insertion sort — n stays small here.
+            int64 a = 1;
+            while (a < m) {
+                float64 v = row[a];
+                int64 b = a - 1;
+                while (b >= (int64) 0 && row[b] > v) {
+                    row[b + 1] = row[b];
+                    b = b - 1;
+                }
+                row[b + 1] = v;
+                a = a + 1;
+            }
+            out[i] = row[k - 1];
+            i = i + 1;
+        }
+        int64 a2 = 1;
+        while (a2 < n) {
+            float64 v = out[a2];
+            int64 b = a2 - 1;
+            while (b >= (int64) 0 && out[b] > v) {
+                out[b + 1] = out[b];
+                b = b - 1;
+            }
+            out[b + 1] = v;
+            a2 = a2 + 1;
+        }
+        return #out;
+    }
+
+    /** `kDistances` with the Euclidean default. */
+    public static #float64[] kDistances(Tensor<float64> x, int64 k) {
+        Metric m = heap Euclidean();
+        return DBSCAN.kDistances(x, k, m);
+    }
+}
