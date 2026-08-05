@@ -1,0 +1,48 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * The result of a repeated random holdout (spec §7.4): the per-split
+ * scores — never just the mean — plus mean and population standard
+ * deviation over the splits.
+ */
+public final class HoldoutResult {
+
+    private Tensor<float64> scoresV;
+
+    public HoldoutResult(#Tensor<float64> scores) {
+        this.scoresV #= scores;
+        return;
+    }
+
+    /** `(splits,)` per-split scores. */
+    public Tensor<float64> scores() {
+        return this.scoresV;
+    }
+
+    public float64 mean() {
+        int64 n = this.scoresV.size();
+        float64 m = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            m = m + this.scoresV.flatGet(i);
+            i = i + 1;
+        }
+        return m / (float64) n;
+    }
+
+    /** Population standard deviation over the splits. */
+    public float64 std() {
+        int64 n = this.scoresV.size();
+        float64 m = this.mean();
+        float64 v = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = this.scoresV.flatGet(i) - m;
+            v = v + d * d;
+            i = i + 1;
+        }
+        return Math.sqrt(v / (float64) n);
+    }
+}

@@ -11,7 +11,7 @@ import cajeta.math.distance.Metric;
  * `predictProba` = (weighted) vote fractions, argmax ties to the LOWEST
  * label (§5.5, sklearn's argmax does the same). Integer labels `0..K-1`.
  */
-public final class KNeighborsClassifier implements Predictor {
+public final class KNeighborsClassifier implements ProbClassifier {
 
     private int64 kNeighbors;
     private boolean distanceWeights;

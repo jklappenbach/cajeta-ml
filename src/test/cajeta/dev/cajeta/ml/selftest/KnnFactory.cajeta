@@ -1,0 +1,17 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.KNeighborsClassifier;
+import dev.cajeta.ml.Predictor;
+
+/** k-NN factory for search tests: params[0] = k. */
+public final class KnnFactory implements EstimatorFactory {
+
+    public KnnFactory() { return; }
+
+    public #Predictor create(Tensor<float64> params) {
+        Predictor p = heap KNeighborsClassifier((int64) params.flatGet(0));
+        return #p;
+    }
+}

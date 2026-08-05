@@ -1,0 +1,76 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * Randomized search (spec §7.6, Bergstra 2012): `budget` combinations
+ * sampled uniformly (with replacement) from the grid under a seed — the
+ * same seed reproduces the exact sample and scores (§7.7). Shares
+ * {@link GridSearch}'s combination scorer and failure capture.
+ */
+public final class RandomizedSearch {
+
+    public static #SearchResult run(EstimatorFactory f,
+                                    Tensor<float64>[] dims, int64 budget,
+                                    uint64 seed, Tensor<float64> x,
+                                    Tensor<float64> y,
+                                    Tensor<int64> foldIds, String metric) {
+        int64 m = (int64) dims.count();
+        if (m < 1) {
+            throw heap MlException(
+                "RandomizedSearch: at least one dimension");
+        }
+        if (budget < 1) {
+            throw heap MlException("RandomizedSearch: budget must be >= 1");
+        }
+        int64 nFolds = 0;
+        int64 i = 0;
+        while (i < foldIds.size()) {
+            if (foldIds.get1(i) + 1 > nFolds) {
+                nFolds = foldIds.get1(i) + 1;
+            }
+            i = i + 1;
+        }
+        Generator gen = heap Generator(seed);
+        int64[] cs = heap int64[2];
+        cs[0] = budget;
+        cs[1] = m;
+        Tensor<float64> combos = Tensor.zeros<float64>(cs);
+        int64[] vs = heap int64[1];
+        vs[0] = budget;
+        Tensor<float64> scores = Tensor.zeros<float64>(vs);
+        Tensor<float64> okf = Tensor.zeros<float64>(vs);
+        int64[] ps = heap int64[1];
+        ps[0] = m;
+
+        int64 c = 0;
+        while (c < budget) {
+            Tensor<float64> params = Tensor.zeros<float64>(ps);
+            int64 d = 0;
+            while (d < m) {
+                Tensor<int64> pick = gen.integers((int64) 0,
+                    dims[d].size(), (int64) 1);
+                int64 ix = pick.get1(0);
+                params.set1(d, dims[d].flatGet(ix));
+                combos.flatSet(c * m + d, dims[d].flatGet(ix));
+                d = d + 1;
+            }
+            boolean good = true;
+            float64 sc = 0.0;
+            try {
+                sc = GridSearch.scoreCombo(f, params, x, y, foldIds,
+                    nFolds, metric);
+            } catch (Exception ex) {
+                good = false;
+            }
+            if (good) {
+                scores.set1(c, sc);
+                okf.set1(c, 1.0);
+            }
+            c = c + 1;
+        }
+        SearchResult res = heap SearchResult(#combos, #scores, #okf);
+        return #res;
+    }
+}

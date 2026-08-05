@@ -18,7 +18,7 @@ import cajeta.math.linalg.LinAlg;
  * full rank is loud, naming the class and the remedy (§3.3) — sklearn
  * raises here too.
  */
-public final class QuadraticDiscriminantAnalysis implements Predictor {
+public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
 
     private float64 regP;
     private boolean storeCov;

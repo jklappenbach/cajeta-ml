@@ -1,0 +1,327 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.GridSearch;
+import dev.cajeta.ml.HoldoutResult;
+import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.KNeighborsRegressor;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.RandomizedSearch;
+import dev.cajeta.ml.RepeatedHoldout;
+import dev.cajeta.ml.Scorers;
+import dev.cajeta.ml.SearchResult;
+import dev.cajeta.ml.Split;
+import dev.cajeta.ml.StratifiedKFold;
+
+/**
+ * ml-classification-gaps plan Unit 5 — model selection (spec §7):
+ * stratification, repeated holdout, grid and random search, selectable
+ * metrics, per-combination failure capture. The imbalanced fixture is
+ * 3.33%-positive (5 of 150) — the case where unstratified splitting
+ * visibly fails.
+ */
+public class ModelSelectionTest {
+
+    public ModelSelectionTest() { return; }
+
+    static boolean near(float64 a, float64 b, float64 tol) {
+        float64 d = a - b;
+        if (d < 0.0) {
+            d = -d;
+        }
+        return d < tol;
+    }
+
+    /** 150 x 2, positives at i in {10,40,70,100,130}, separable-ish. */
+    static #Tensor<float64> imbX() {
+        float64[] d = heap float64[300];
+        int64 i = 0;
+        while (i < 150) {
+            float64 pos = 0.0;
+            if (i % 30 == 10) {
+                pos = 1.0;
+            }
+            d[i * 2] = (float64) ((i * 7) % 23) * 0.1 + pos * 2.5;
+            d[i * 2 + 1] = (float64) ((i * 11) % 19) * 0.1 - pos * 1.5;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 150;
+        sh[1] = 2;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> imbY() {
+        float64[] d = heap float64[150];
+        int64 i = 0;
+        while (i < 150) {
+            if (i % 30 == 10) {
+                d[i] = 1.0;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = 150;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    // §7.1 — stratified folds preserve the class proportions exactly.
+    @Test
+    public void stratifiedKFoldPreservesProportions() {
+        Tensor<float64> y = imbY();
+        StratifiedKFold sk = heap StratifiedKFold((int64) 5, true,
+            (uint64) 11);
+        Tensor<int64> fid = sk.assignments(y);
+        int64 f = 0;
+        while (f < 5) {
+            int64 pos = 0;
+            int64 tot = 0;
+            int64 i = 0;
+            while (i < 150) {
+                if (fid.get1(i) == f) {
+                    tot = tot + 1;
+                    if (y.flatGet(i) > 0.5) {
+                        pos = pos + 1;
+                    }
+                }
+                i = i + 1;
+            }
+            Assert.equals(tot, (int64) 30);
+            Assert.equals(pos, (int64) 1);     // 5 positives, 5 folds
+            f = f + 1;
+        }
+    }
+
+    // §7.2 — a class smaller than the fold count is loud, naming it.
+    @Test
+    public void undersizedClassIsLoud() {
+        Assert.assertThrows(() -> {
+            float64[] yd = heap float64[10];
+            yd[0] = 1.0;
+            yd[1] = 1.0;
+            yd[2] = 1.0;
+            int64[] ys = heap int64[1];
+            ys[0] = 10;
+            StratifiedKFold sk = heap StratifiedKFold((int64) 5, false,
+                (uint64) 1);
+            Tensor<int64> fid = sk.assignments(Tensor.of<float64>(yd, ys));
+        });
+    }
+
+    // §7.1 — the stratified split preserves proportions in both parts.
+    @Test
+    public void stratifiedSplitPreservesProportions() {
+        Tensor<float64>[] parts = Split.trainTestSplitStratified(imbX(),
+            imbY(), 0.2, (uint64) 5);
+        // parts: [xTrain, xTest, yTrain, yTest]
+        int64 posTr = 0;
+        int64 i = 0;
+        while (i < parts[2].size()) {
+            if (parts[2].flatGet(i) > 0.5) {
+                posTr = posTr + 1;
+            }
+            i = i + 1;
+        }
+        int64 posTe = 0;
+        i = 0;
+        while (i < parts[3].size()) {
+            if (parts[3].flatGet(i) > 0.5) {
+                posTe = posTe + 1;
+            }
+            i = i + 1;
+        }
+        Assert.equals(posTe, (int64) 1);       // ceil(5 * 0.2)
+        Assert.equals(posTr, (int64) 4);
+        Assert.equals(parts[3].size(), (int64) 30);
+        Assert.equals(parts[2].size(), (int64) 120);
+    }
+
+    // §7.3 + §7.4 — repeated holdout: n independent seeded splits,
+    // per-split scores plus mean and std, reproducible.
+    @Test
+    public void repeatedHoldoutScoresAndReproduces() {
+        Tensor<float64> x = imbX();
+        Tensor<float64> y = imbY();
+        RepeatedHoldout rh = heap RepeatedHoldout((int64) 8, 0.25,
+            (uint64) 21);
+        Predictor lr = heap LogisticRegression(1.0, 0.0000001, (int64) 500);
+        HoldoutResult res = rh.run(lr, x, y, "accuracy");
+        Assert.equals(res.scores().size(), (int64) 8);
+        float64 m = 0.0;
+        int64 s = 0;
+        while (s < 8) {
+            float64 v = res.scores().flatGet(s);
+            Assert.isTrue(v >= 0.0);
+            Assert.isTrue(v <= 1.0);
+            m = m + v;
+            s = s + 1;
+        }
+        m = m / 8.0;
+        Assert.isTrue(near(res.mean(), m, 0.000000001));
+        float64 var = 0.0;
+        s = 0;
+        while (s < 8) {
+            float64 dv = res.scores().flatGet(s) - m;
+            var = var + dv * dv;
+            s = s + 1;
+        }
+        Assert.isTrue(near(res.std() * res.std(), var / 8.0, 0.000000001));
+
+        RepeatedHoldout rh2 = heap RepeatedHoldout((int64) 8, 0.25,
+            (uint64) 21);
+        Predictor lr2 = heap LogisticRegression(1.0, 0.0000001, (int64) 500);
+        HoldoutResult res2 = rh2.run(lr2, x, y, "accuracy");
+        s = 0;
+        while (s < 8) {
+            Assert.isTrue(near(res.scores().flatGet(s),
+                res2.scores().flatGet(s), 0.000000000001));
+            s = s + 1;
+        }
+    }
+
+    // §7.5 + §7.7 + §7.9 — grid search returns best + full table,
+    // reproducibly; the k-sweep IS the table, readable directly.
+    @Test
+    public void gridSearchTableAndKSweep() {
+        Tensor<float64> x = imbX();
+        Tensor<float64> y = imbY();
+        KFold kf = heap KFold((int64) 5, true, (uint64) 3);
+        Tensor<int64> fid = kf.assignments((int64) 150);
+        EstimatorFactory f = heap KnnFactory();
+        Tensor<float64>[] dims = heap Tensor<float64>[1];
+        float64[] ks = heap float64[4];
+        ks[0] = 1.0;
+        ks[1] = 3.0;
+        ks[2] = 5.0;
+        ks[3] = 7.0;
+        int64[] ds = heap int64[1];
+        ds[0] = 4;
+        dims[0] = Tensor.of<float64>(ks, ds);
+        SearchResult res = GridSearch.run(f, dims, x, y, fid, "accuracy");
+        Assert.equals(res.count(), (int64) 4);
+        Assert.equals(res.failures(), (int64) 0);
+        int64 c = 0;
+        while (c < 4) {
+            Assert.isTrue(res.score(c) >= 0.0);
+            Assert.isTrue(res.score(c) <= 1.0);
+            Assert.isTrue(res.ok(c));
+            // The K-versus-score table is directly readable (§7.9).
+            Assert.isTrue(near(res.param(c, (int64) 0), ks[c], 0.0000001));
+            c = c + 1;
+        }
+        Assert.isTrue(res.bestScore() >= res.score(0));
+        Assert.isTrue(res.bestScore() >= res.score(3));
+
+        EstimatorFactory f2 = heap KnnFactory();
+        SearchResult res2 = GridSearch.run(f2, dims, x, y, fid, "accuracy");
+        Assert.isTrue(near(res.bestScore(), res2.bestScore(),
+            0.000000000001));
+        c = 0;
+        while (c < 4) {
+            Assert.isTrue(near(res.score(c), res2.score(c),
+                0.000000000001));
+            c = c + 1;
+        }
+    }
+
+    // §7.6 + §7.7 — randomized search samples exactly the budget under a
+    // seed, reproducibly.
+    @Test
+    public void randomizedSearchBudgetAndSeed() {
+        Tensor<float64> x = imbX();
+        Tensor<float64> y = imbY();
+        KFold kf = heap KFold((int64) 5, true, (uint64) 3);
+        Tensor<int64> fid = kf.assignments((int64) 150);
+        EstimatorFactory f = heap LogisticCFactory();
+        Tensor<float64>[] dims = heap Tensor<float64>[2];
+        float64[] cs = heap float64[4];
+        cs[0] = 0.1;
+        cs[1] = 0.5;
+        cs[2] = 1.0;
+        cs[3] = 2.0;
+        int64[] d4 = heap int64[1];
+        d4[0] = 4;
+        dims[0] = Tensor.of<float64>(cs, d4);
+        float64[] ts = heap float64[3];
+        ts[0] = 0.001;
+        ts[1] = 0.0001;
+        ts[2] = 0.00001;
+        int64[] d3 = heap int64[1];
+        d3[0] = 3;
+        dims[1] = Tensor.of<float64>(ts, d3);
+
+        SearchResult res = RandomizedSearch.run(f, dims, (int64) 5,
+            (uint64) 9, x, y, fid, "accuracy");
+        Assert.equals(res.count(), (int64) 5);
+        SearchResult res2 = RandomizedSearch.run(f, dims, (int64) 5,
+            (uint64) 9, x, y, fid, "accuracy");
+        int64 c = 0;
+        while (c < 5) {
+            Assert.isTrue(near(res.param(c, (int64) 0),
+                res2.param(c, (int64) 0), 0.0000001));
+            Assert.isTrue(near(res.param(c, (int64) 1),
+                res2.param(c, (int64) 1), 0.0000001));
+            Assert.isTrue(near(res.score(c), res2.score(c),
+                0.000000000001));
+            c = c + 1;
+        }
+    }
+
+    // §7.8 — accuracy, F1, and ROC-AUC are all selectable; ROC-AUC
+    // without probabilities is loud, as is an unknown metric name.
+    @Test
+    public void metricsSelectableByName() {
+        Tensor<float64> x = imbX();
+        Tensor<float64> y = imbY();
+        LogisticRegression lr = heap LogisticRegression(1.0, 0.0000001,
+            (int64) 500);
+        lr.fit(x, y);
+        float64 acc = Scorers.score("accuracy", lr, x, y);
+        float64 f1 = Scorers.score("f1", lr, x, y);
+        float64 auc = Scorers.score("rocAuc", lr, x, y);
+        Assert.isTrue(acc >= 0.0 && acc <= 1.0);
+        Assert.isTrue(f1 >= 0.0 && f1 <= 1.0);
+        Assert.isTrue(auc >= 0.0 && auc <= 1.0);
+
+        Assert.assertThrows(() -> {
+            KNeighborsRegressor kr = heap KNeighborsRegressor((int64) 3,
+                false);
+            kr.fit(imbX(), imbY());
+            float64 bad = Scorers.score("rocAuc", kr, imbX(), imbY());
+        });
+        Assert.assertThrows(() -> {
+            LogisticRegression b = heap LogisticRegression(1.0, 0.0001,
+                (int64) 100);
+            b.fit(imbX(), imbY());
+            float64 bad = Scorers.score("logloss", b, imbX(), imbY());
+        });
+    }
+
+    // §7.10 — a throwing combination is recorded; the sweep continues.
+    @Test
+    public void failingComboRecordedSweepContinues() {
+        Tensor<float64> x = imbX();
+        Tensor<float64> y = imbY();
+        KFold kf = heap KFold((int64) 5, true, (uint64) 3);
+        Tensor<int64> fid = kf.assignments((int64) 150);
+        EstimatorFactory f = heap FailingFactory();
+        Tensor<float64>[] dims = heap Tensor<float64>[1];
+        float64[] ks = heap float64[3];
+        ks[0] = 1.0;
+        ks[1] = 3.0;                       // FailingFactory's poison value
+        ks[2] = 5.0;
+        int64[] ds = heap int64[1];
+        ds[0] = 3;
+        dims[0] = Tensor.of<float64>(ks, ds);
+        SearchResult res = GridSearch.run(f, dims, x, y, fid, "accuracy");
+        Assert.equals(res.count(), (int64) 3);
+        Assert.equals(res.failures(), (int64) 1);
+        Assert.isTrue(res.ok((int64) 0));
+        Assert.isFalse(res.ok((int64) 1));
+        Assert.isTrue(res.ok((int64) 2));
+        Assert.isTrue(res.bestScore() >= res.score((int64) 0));
+    }
+}

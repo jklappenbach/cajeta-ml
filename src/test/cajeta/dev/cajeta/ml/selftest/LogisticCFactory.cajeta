@@ -1,0 +1,18 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.Predictor;
+
+/** Logistic factory for search tests: params[0] = C, params[1] = tol. */
+public final class LogisticCFactory implements EstimatorFactory {
+
+    public LogisticCFactory() { return; }
+
+    public #Predictor create(Tensor<float64> params) {
+        Predictor p = heap LogisticRegression(params.flatGet(0),
+            params.flatGet(1), (int64) 500);
+        return #p;
+    }
+}

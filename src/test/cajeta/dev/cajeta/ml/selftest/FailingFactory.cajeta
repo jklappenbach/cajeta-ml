@@ -1,0 +1,21 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.KNeighborsClassifier;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+
+/** Search-failure fixture (§7.10): k = 3 is poison, the rest fit fine. */
+public final class FailingFactory implements EstimatorFactory {
+
+    public FailingFactory() { return; }
+
+    public #Predictor create(Tensor<float64> params) {
+        if ((int64) params.flatGet(0) == 3) {
+            throw heap MlException("FailingFactory: poison combination");
+        }
+        Predictor p = heap KNeighborsClassifier((int64) params.flatGet(0));
+        return #p;
+    }
+}

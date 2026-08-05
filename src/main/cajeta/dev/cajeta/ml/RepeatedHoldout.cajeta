@@ -1,0 +1,48 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * Repeated random holdout (spec §7.3): `splits` independent seeded
+ * train/test splits (seed + split index, so runs reproduce and splits
+ * differ), the estimator refit on each; scores under a {@link Scorers}
+ * metric name.
+ */
+public final class RepeatedHoldout {
+
+    private int64 splitsV;
+    private float64 fracV;
+    private uint64 seedV;
+
+    public RepeatedHoldout(int64 splits, float64 testFraction, uint64 seed) {
+        if (splits < 1) {
+            throw heap MlException("RepeatedHoldout: splits must be >= 1");
+        }
+        if (testFraction <= 0.0 || testFraction >= 1.0) {
+            throw heap MlException(
+                "RepeatedHoldout: testFraction must be inside (0, 1)");
+        }
+        this.splitsV = splits;
+        this.fracV = testFraction;
+        this.seedV = seed;
+        return;
+    }
+
+    /** Refit `est` on each split; per-split scores in a HoldoutResult. */
+    public #HoldoutResult run(Predictor est, Tensor<float64> x,
+                              Tensor<float64> y, String metric) {
+        int64[] sh = heap int64[1];
+        sh[0] = this.splitsV;
+        Tensor<float64> scores = Tensor.zeros<float64>(sh);
+        int64 s = 0;
+        while (s < this.splitsV) {
+            Tensor<float64>[] parts = Split.trainTestSplit(x, y, this.fracV,
+                this.seedV + (uint64) s);
+            est.fit(parts[0], parts[2]);
+            scores.set1(s, Scorers.score(metric, est, parts[1], parts[3]));
+            s = s + 1;
+        }
+        HoldoutResult res = heap HoldoutResult(#scores);
+        return #res;
+    }
+}

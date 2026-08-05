@@ -1,0 +1,14 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * A classifier that exposes posterior probabilities. Score-based metrics
+ * (ROC-AUC, log loss) need continuous scores that `Predictor.predict`'s
+ * hard labels cannot provide; {@link Scorers} requires this surface for
+ * them and is loud when it is absent.
+ */
+public interface ProbClassifier extends Predictor {
+    /** `(n, K)` posterior probabilities, rows summing to 1. */
+    #Tensor<float64> predictProba(Tensor<float64> x);
+}

@@ -1,0 +1,150 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * Exhaustive grid search (spec §7.5): the Cartesian product of the value
+ * lists in `dims`, each combination cross-validated under the given fold
+ * assignments and a {@link Scorers} metric name. A fresh estimator is
+ * built per fold, so no state leaks between folds. A combination that
+ * throws is recorded as failed and the sweep continues (§7.10);
+ * determinism is the caller's fold seed — the sweep itself has no
+ * randomness (§7.7).
+ */
+public final class GridSearch {
+
+    /** Cross-validated mean score of one combination over the folds. */
+    static float64 scoreCombo(EstimatorFactory f, Tensor<float64> params,
+                              Tensor<float64> x, Tensor<float64> y,
+                              Tensor<int64> foldIds, int64 nFolds,
+                              String metric) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        float64 acc = 0.0;
+        int64 fold = 0;
+        while (fold < nFolds) {
+            int64 nTest = 0;
+            int64 i = 0;
+            while (i < n) {
+                if (foldIds.get1(i) == fold) {
+                    nTest = nTest + 1;
+                }
+                i = i + 1;
+            }
+            int64 nTrain = n - nTest;
+            int64[] trX = heap int64[2];
+            trX[0] = nTrain;
+            trX[1] = p;
+            int64[] teX = heap int64[2];
+            teX[0] = nTest;
+            teX[1] = p;
+            int64[] trY = heap int64[1];
+            trY[0] = nTrain;
+            int64[] teY = heap int64[1];
+            teY[0] = nTest;
+            Tensor<float64> xTr = Tensor.zeros<float64>(trX);
+            Tensor<float64> xTe = Tensor.zeros<float64>(teX);
+            Tensor<float64> yTr = Tensor.zeros<float64>(trY);
+            Tensor<float64> yTe = Tensor.zeros<float64>(teY);
+            int64 a = 0;
+            int64 b = 0;
+            i = 0;
+            while (i < n) {
+                if (foldIds.get1(i) == fold) {
+                    int64 j = 0;
+                    while (j < p) {
+                        xTe.flatSet(b * p + j, x.get2(i, j));
+                        j = j + 1;
+                    }
+                    yTe.set1(b, y.get1(i));
+                    b = b + 1;
+                } else {
+                    int64 j = 0;
+                    while (j < p) {
+                        xTr.flatSet(a * p + j, x.get2(i, j));
+                        j = j + 1;
+                    }
+                    yTr.set1(a, y.get1(i));
+                    a = a + 1;
+                }
+                i = i + 1;
+            }
+            Predictor est = f.create(params);
+            est.fit(xTr, yTr);
+            acc = acc + Scorers.score(metric, est, xTe, yTe);
+            fold = fold + 1;
+        }
+        return acc / (float64) nFolds;
+    }
+
+    /** Run the full product; every combination lands in the result. */
+    public static #SearchResult run(EstimatorFactory f,
+                                    Tensor<float64>[] dims,
+                                    Tensor<float64> x, Tensor<float64> y,
+                                    Tensor<int64> foldIds, String metric) {
+        int64 m = (int64) dims.count();
+        if (m < 1) {
+            throw heap MlException("GridSearch: at least one dimension");
+        }
+        int64 nFolds = 0;
+        int64 i = 0;
+        while (i < foldIds.size()) {
+            if (foldIds.get1(i) + 1 > nFolds) {
+                nFolds = foldIds.get1(i) + 1;
+            }
+            i = i + 1;
+        }
+        int64 total = 1;
+        int64 d = 0;
+        while (d < m) {
+            total = total * dims[d].size();
+            d = d + 1;
+        }
+        int64[] cs = heap int64[2];
+        cs[0] = total;
+        cs[1] = m;
+        Tensor<float64> combos = Tensor.zeros<float64>(cs);
+        int64[] vs = heap int64[1];
+        vs[0] = total;
+        Tensor<float64> scores = Tensor.zeros<float64>(vs);
+        Tensor<float64> okf = Tensor.zeros<float64>(vs);
+        int64[] ps = heap int64[1];
+        ps[0] = m;
+
+        int64 c = 0;
+        while (c < total) {
+            // Decode combination c into one value per dimension.
+            Tensor<float64> params = Tensor.zeros<float64>(ps);
+            int64 rem = c;
+            d = m - 1;
+            boolean run2 = true;
+            while (run2) {
+                int64 sz = dims[d].size();
+                int64 ix = rem % sz;
+                rem = rem / sz;
+                params.set1(d, dims[d].flatGet(ix));
+                combos.flatSet(c * m + d, dims[d].flatGet(ix));
+                if (d == 0) {
+                    run2 = false;
+                } else {
+                    d = d - 1;
+                }
+            }
+            boolean good = true;
+            float64 sc = 0.0;
+            try {
+                sc = GridSearch.scoreCombo(f, params, x, y, foldIds,
+                    nFolds, metric);
+            } catch (Exception ex) {
+                good = false;
+            }
+            if (good) {
+                scores.set1(c, sc);
+                okf.set1(c, 1.0);
+            }
+            c = c + 1;
+        }
+        SearchResult res = heap SearchResult(#combos, #scores, #okf);
+        return #res;
+    }
+}

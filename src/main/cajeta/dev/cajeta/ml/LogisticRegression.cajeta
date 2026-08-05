@@ -18,7 +18,7 @@ import cajeta.math.stats.Stats;
  * Non-convergence within `maxIter` prints a LOUD warning (sklearn's is
  * easy to miss) and keeps the last iterate; `converged()` reports it.
  */
-public final class LogisticRegression implements Predictor {
+public final class LogisticRegression implements ProbClassifier {
 
     private float64 cReg;
     private float64 tol;

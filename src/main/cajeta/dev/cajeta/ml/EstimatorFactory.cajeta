@@ -1,0 +1,13 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * Builds a fresh estimator from a parameter combination — the seam
+ * {@link GridSearch} and {@link RandomizedSearch} drive (spec §7.5).
+ * `params` is `(m,)`, one value per searched dimension, in the dimension
+ * order the search was given.
+ */
+public interface EstimatorFactory {
+    #Predictor create(Tensor<float64> params);
+}

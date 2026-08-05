@@ -10,6 +10,121 @@ import cajeta.math.random.Generator;
 public final class Split {
 
     /**
+     * Stratified train/test split (spec §7.1): each class is split with
+     * the per-class ceil test-size rule under its own slice of one seeded
+     * permutation, so both parts preserve the class proportions — the
+     * correct default when a 3%-positive sample would otherwise lose its
+     * positives to chance. Returns `[xTrain, xTest, yTrain, yTest]`.
+     */
+    public static #Tensor<float64>[] trainTestSplitStratified(
+            Tensor<float64> x, Tensor<float64> y, float64 testFraction,
+            uint64 seed) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        if (y.shapeAt(0) != n) {
+            throw heap MlException(
+                "trainTestSplitStratified: y rows must match x");
+        }
+        int64 kc = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 c = (int64) y.get1(i);
+            if (c + 1 > kc) {
+                kc = c + 1;
+            }
+            i = i + 1;
+        }
+        int64[] counts = heap int64[kc];
+        i = 0;
+        while (i < n) {
+            counts[(int64) y.get1(i)] = counts[(int64) y.get1(i)] + 1;
+            i = i + 1;
+        }
+        int64[] testK = heap int64[kc];
+        int64 nTest = 0;
+        int64 c2 = 0;
+        while (c2 < kc) {
+            if (counts[c2] > 0) {
+                float64 ft = (float64) counts[c2] * testFraction;
+                int64 tk = (int64) ft;
+                if ((float64) tk < ft) {
+                    tk = tk + 1;
+                }
+                if (tk < 1 || tk >= counts[c2]) {
+                    throw heap MlException("trainTestSplitStratified: "
+                        + "class " + Int64.of(c2).toString()
+                        + " cannot give both parts a member at this "
+                        + "fraction");
+                }
+                testK[c2] = tk;
+                nTest = nTest + tk;
+            }
+            c2 = c2 + 1;
+        }
+        int64 nTrain = n - nTest;
+        int64[] shTrX = heap int64[2];
+        shTrX[0] = nTrain;
+        shTrX[1] = p;
+        int64[] shTeX = heap int64[2];
+        shTeX[0] = nTest;
+        shTeX[1] = p;
+        int64[] shTrY = heap int64[1];
+        shTrY[0] = nTrain;
+        int64[] shTeY = heap int64[1];
+        shTeY[0] = nTest;
+        Tensor<float64>[] out = heap Tensor<float64>[4];
+        out[0] = Tensor.zeros<float64>(shTrX);
+        out[1] = Tensor.zeros<float64>(shTeX);
+        out[2] = Tensor.zeros<float64>(shTrY);
+        out[3] = Tensor.zeros<float64>(shTeY);
+        Generator gen = heap Generator(seed);
+        int64 wTr = 0;
+        int64 wTe = 0;
+        c2 = 0;
+        while (c2 < kc) {
+            int64 nk = counts[c2];
+            if (nk > 0) {
+                int64[] rows = heap int64[nk];
+                int64 w = 0;
+                i = 0;
+                while (i < n) {
+                    if ((int64) y.get1(i) == c2) {
+                        rows[w] = i;
+                        w = w + 1;
+                    }
+                    i = i + 1;
+                }
+                Tensor<int64> perm = gen.permutation(nk);
+                int64 s = 0;
+                while (s < nk) {
+                    int64 ps = perm.get1(s);
+                    int64 src = rows[ps];
+                    if (s < testK[c2]) {
+                        int64 j = 0;
+                        while (j < p) {
+                            out[1].flatSet(wTe * p + j, x.get2(src, j));
+                            j = j + 1;
+                        }
+                        out[3].set1(wTe, y.get1(src));
+                        wTe = wTe + 1;
+                    } else {
+                        int64 j = 0;
+                        while (j < p) {
+                            out[0].flatSet(wTr * p + j, x.get2(src, j));
+                            j = j + 1;
+                        }
+                        out[2].set1(wTr, y.get1(src));
+                        wTr = wTr + 1;
+                    }
+                    s = s + 1;
+                }
+            }
+            c2 = c2 + 1;
+        }
+        return #out;
+    }
+
+    /**
      * Shuffle rows with a seeded permutation and split off a test fraction
      * (sklearn `train_test_split`): returns `[xTrain, xTest, yTrain, yTest]`.
      * The test size is `⌈n·testFraction⌉` (sklearn's ceil rule); deterministic

@@ -22,7 +22,7 @@ import cajeta.math.linalg.LinAlg;
  * do not sum to 1 are rejected (§2.2) — see DifferencesFromSklearn.
  */
 public final class LinearDiscriminantAnalysis
-        implements Predictor, Transformer {
+        implements ProbClassifier, Transformer {
 
     private int32 solverC;      // 0 svd, 1 lsqr, 2 eigen
     private float64 shrinkV;            // < 0 = none
