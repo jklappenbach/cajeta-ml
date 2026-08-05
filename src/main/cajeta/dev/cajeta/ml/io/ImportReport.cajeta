@@ -1,0 +1,43 @@
+package dev.cajeta.ml.io;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * The FULL reconciliation of a weight import (spec §13.6.1): which model
+ * parameters the checkpoint lacked (`missing`) and which checkpoint keys
+ * matched no parameter (`unexpected`) — BOTH directions, because a
+ * silently dropped key on either side yields a model that runs and is
+ * wrong. `applied` counts the entries that landed.
+ */
+public class ImportReport {
+    ArrayList<String> missing;
+    ArrayList<String> unexpected;
+    int32 applied;
+
+    public ImportReport(#ArrayList<String> missing,
+                        #ArrayList<String> unexpected, int32 applied) {
+        this.missing #= missing;
+        this.unexpected #= unexpected;
+        this.applied = applied;
+        return;
+    }
+
+    /** Model parameter names the checkpoint had no entry for. */
+    public ArrayList<String> missing() {
+        return this.missing;
+    }
+
+    /** Checkpoint keys no model parameter matched. */
+    public ArrayList<String> unexpected() {
+        return this.unexpected;
+    }
+
+    public int32 applied() {
+        return this.applied;
+    }
+
+    /** True when every parameter was filled and every key consumed. */
+    public boolean clean() {
+        return this.missing.count() == 0 && this.unexpected.count() == 0;
+    }
+}

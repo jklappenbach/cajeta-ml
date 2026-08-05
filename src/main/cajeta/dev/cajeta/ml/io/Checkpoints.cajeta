@@ -123,6 +123,203 @@ public final class Checkpoints {
     }
 
     /**
+     * FOREIGN-WEIGHT IMPORT (spec §13.6): copy `sd` into `model` with
+     * full BIDIRECTIONAL key reconciliation — the returned report names
+     * every model parameter the checkpoint lacked AND every checkpoint
+     * key no parameter matched; nothing is ever silently dropped
+     * (§13.6.1). STRICT (the default of {@link #importTorch}) throws on
+     * any discrepancy; permissive applies what matches and reports the
+     * rest — the adapt-a-backbone mode. A shape disagreement ALWAYS
+     * throws, naming both shapes (§13.6.2).
+     */
+    public static #ImportReport importStateDict(Module model, StateDict sd,
+                                                boolean strict) {
+        Parameter[] ps = model.parameters();
+        ArrayList<String> names = model.parameterNames();
+        ArrayList<String> missing #= heap ArrayList<String>();
+        ArrayList<String> unexpected #= heap ArrayList<String>();
+        boolean[] used = heap boolean[(int64) sd.count()];
+        int32 applied = 0;
+        int32 i = 0;
+        while (i < names.count()) {
+            String name = names.get(i);
+            int32 at = sd.indexOf(name);
+            if (at < 0) {
+                if (strict) {
+                    throw heap MlException("importStateDict: the "
+                        + "checkpoint has no entry for '" + name
+                        + "' (strict; use permissive to skip and report)");
+                }
+                String own #= "" + name;
+                missing.add(#own);
+            } else {
+                Checkpoints.copyInto(name, sd.valueAt(at), ps[i].get());
+                used[at] = true;
+                applied = applied + 1;
+            }
+            i = i + 1;
+        }
+        int32 k = 0;
+        while (k < sd.count()) {
+            if (!used[k]) {
+                if (strict) {
+                    throw heap MlException("importStateDict: checkpoint "
+                        + "key '" + sd.nameAt(k) + "' matches no model "
+                        + "parameter (strict) — a silently dropped key is "
+                        + "a model that runs and is wrong");
+                }
+                String own2 #= "" + sd.nameAt(k);
+                unexpected.add(#own2);
+            }
+            k = k + 1;
+        }
+        return heap ImportReport(#missing, #unexpected, applied);
+    }
+
+    /** {@link #importStateDict} with STRICT as the default (§13.6). */
+    public static #ImportReport importTorch(Module model, StateDict sd) {
+        return Checkpoints.importStateDict(model, sd, true);
+    }
+
+    /** Rename every key beginning with `from` to begin with `to` — the
+     *  name-mapping step (e.g. `"layers."` → `""`, or `"encoder."` →
+     *  `"backbone."`). Entries not matching pass through unchanged. */
+    public static #StateDict renamePrefix(StateDict sd, String from,
+                                          String to) {
+        StateDict out = heap StateDict();
+        int32 i = 0;
+        while (i < sd.count()) {
+            String name = sd.nameAt(i);
+            Tensor<float32> copy = sd.valueAt(i).copy();
+            if (Checkpoints.startsWith(name, from)) {
+                String rest = name.substring(from.byteLength(),
+                    name.byteLength());
+                String renamed #= to + rest;
+                out.put(renamed, #copy);
+            } else {
+                out.put(name, #copy);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * A RAW TORCH `state_dict` to cajeta layout in one pass (§13.6):
+     * fused attention projections split — `X.in_proj_weight (3E, E)`
+     * becomes `X.wq/wk/wv.weight` transposed to `(E, E)` cajeta
+     * orientation, `X.in_proj_bias` splits likewise, `X.out_proj.*`
+     * becomes `X.wo.*` — and every OTHER rank-2 `.weight` transposes
+     * (torch stores Linear `[out, in]`). Conv weights are rank 4 and
+     * pass through untouched.
+     */
+    public static #StateDict torchToCajeta(StateDict sd) {
+        StateDict out = heap StateDict();
+        int32 i = 0;
+        while (i < sd.count()) {
+            String name = sd.nameAt(i);
+            Tensor<float32> t = sd.valueAt(i);
+            if (Checkpoints.endsWith(name, ".in_proj_weight")) {
+                int64 e = t.shapeAt(1);
+                String prefix = name.substring(0,
+                    name.byteLength() - (int32) 15);
+                int32 proj = 0;
+                while (proj < 3) {
+                    int64[] sh = heap int64[2];
+                    sh[0] = e;
+                    sh[1] = e;
+                    Tensor<float32> w = Tensor.zeros<float32>(sh);
+                    int64 r = 0;
+                    while (r < e) {
+                        int64 c = 0;
+                        while (c < e) {
+                            // torch row (proj·E + o), col i → ours [i][o].
+                            w.flatSet(c * e + r, t.flatGet(
+                                ((int64) proj * e + r) * e + c));
+                            c = c + 1;
+                        }
+                        r = r + 1;
+                    }
+                    String pn #= prefix + Checkpoints.projName(proj)
+                        + ".weight";
+                    out.put(pn, #w);
+                    proj = proj + 1;
+                }
+            } else if (Checkpoints.endsWith(name, ".in_proj_bias")) {
+                int64 e3 = t.shapeAt(0);
+                int64 e = e3 / (int64) 3;
+                String prefix = name.substring(0,
+                    name.byteLength() - (int32) 13);
+                int32 proj = 0;
+                while (proj < 3) {
+                    int64[] sh = heap int64[1];
+                    sh[0] = e;
+                    Tensor<float32> b = Tensor.zeros<float32>(sh);
+                    int64 o = 0;
+                    while (o < e) {
+                        b.set1(o, t.get1((int64) proj * e + o));
+                        o = o + 1;
+                    }
+                    String pn #= prefix + Checkpoints.projName(proj)
+                        + ".bias";
+                    out.put(pn, #b);
+                    proj = proj + 1;
+                }
+            } else if (Checkpoints.endsWith(name, ".out_proj.weight")) {
+                String prefix = name.substring(0,
+                    name.byteLength() - (int32) 16);
+                Tensor<float32> vw = t.transpose();
+                Tensor<float32> copy = vw.copy();
+                String pn #= prefix + ".wo.weight";
+                out.put(pn, #copy);
+            } else if (Checkpoints.endsWith(name, ".out_proj.bias")) {
+                String prefix = name.substring(0,
+                    name.byteLength() - (int32) 14);
+                Tensor<float32> copy = t.copy();
+                String pn #= prefix + ".wo.bias";
+                out.put(pn, #copy);
+            } else if (t.ndim() == 2
+                       && Checkpoints.endsWith(name, ".weight")) {
+                Tensor<float32> vw = t.transpose();
+                Tensor<float32> copy = vw.copy();
+                out.put(name, #copy);
+            } else {
+                Tensor<float32> copy = t.copy();
+                out.put(name, #copy);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    static #String projName(int32 proj) {
+        if (proj == 0) {
+            String q #= "" + ".wq";
+            return #q;
+        }
+        if (proj == 1) {
+            String k #= "" + ".wk";
+            return #k;
+        }
+        String v #= "" + ".wv";
+        return #v;
+    }
+
+    static boolean startsWith(String s, String prefix) {
+        int32 n = s.byteLength();
+        int32 m = prefix.byteLength();
+        if (m > n) { return false; }
+        int32 i = 0;
+        while (i < m) {
+            if (s.byteAt(i) != prefix.byteAt(i)) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /**
      * Transpose every rank-2 entry whose name ends in `.weight`.
      *
      * torch's `nn.Linear` stores its weight `[out, in]` because it
