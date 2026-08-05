@@ -108,3 +108,37 @@ convert at the boundary: the protocol is `float64`, the network is `float32`.
   other — build both from the same `Parameter[]`.
 - **`predict` is not free.** It builds and discards a tape per call. In a hot
   loop, drive one tape yourself.
+
+## Transformer completion (0.7.0, spec §13)
+
+```cajeta
+SinusoidalPositionalEncoding pe = heap SinusoidalPositionalEncoding(maxLen, d);
+LearnedPositionalEncoding lp = heap LearnedPositionalEncoding(maxLen, d, seed);
+// Both ADD to (B, T, E) — never concatenate; T > maxLen FAILS LOUDLY.
+
+Tensor<float32> causal = Masks.causal(b, t);                 // additive, NEG blocks
+Tensor<float32> pad = Masks.keyPadding(lengths, tq, tk);     // per-batch lengths
+Tensor<float32> both = Masks.combine(causal, pad);
+GradTensor y = attn.forwardMasked(tape, x, both);            // self + mask
+GradTensor c = attn.forwardCross(tape, x, memory, pad);      // q from x, k/v memory
+Tensor<float32> w = tape.valueOf(attn.lastAttentionNode());  // (B·H, Tq, Tk) weights
+
+TransformerDecoderLayer dl = heap TransformerDecoderLayer(e, h, ff, seed);
+GradTensor out = dl.decode(tape, x, memory, true, selfMask, true, memMask);
+TransformerDecoder dec = heap TransformerDecoder(nLayers, e, h, ff, seed);
+```
+
+- Masks are ADDITIVE `(B, Tq, Tk)` float32: 0 attends, `Masks.NEG` blocks
+  — `exp(NEG)` underflows to EXACTLY 0, so blocked weights and their
+  gradient paths are exactly zero (asserted in the suite, not assumed).
+- The decoder layer is post-norm with ReLU FFN and NO dropout (torch
+  parity fixtures run `dropout=0`; compose `Dropout` outside if wanted).
+- `lastAttentionNode()` is the structural-verification hook — check your
+  causal mask's triangle instead of trusting the loss curve.
+- Field names mirror torch (`self_attn`, `multihead_attn`, `linear1..2`,
+  `norm1..3`) so checkpoint keys line up; the wq/wk/wv split under each
+  block maps from torch's fused `in_proj` via
+  `Checkpoints.torchToCajeta` (see `ml-checkpoints-lora`).
+- NOT in scope: GRAPH NEURAL NETWORKS (dev.cajeta.graph is classical
+  graph analysis, not GNNs) and CONTRASTIVE LEARNING (deferred, no
+  consumer — spec §13.7).

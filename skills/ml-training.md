@@ -140,3 +140,23 @@ separately would change the update's direction, not just its length.
 - **SPELA has no single loss.** `TrainHistory` records the aggregate; per-layer
   truth is `lastLossAt(layer)`. Reading the aggregate as "the" loss will
   mislead you about which layer stopped learning.
+
+## Augmentation & the fine-tune loop (0.7.0, spec §13.4–§13.5)
+
+```cajeta
+AugmentPipeline pl = heap AugmentPipeline(seed);   // ONE seeded Philox stream
+pl.add(heap RandomHorizontalFlip(0.5));
+pl.add(heap RandomCrop((int64) 2));
+pl.add(heap RandomRotation(15.0));
+pl.add(heap Normalize(#mean, #std));               // EXPLICIT stats, never batch-inferred
+Tensor<float32> batch = pl.apply(imgs);            // NCHW in, NCHW out
+pl.eval();    // stochastic transforms go INERT; Normalize still applies
+```
+
+Fine-tune loop (§13.5): `backbone.setTrainable(false)` freezes a subtree
+(provably unchanged after steps — the suite compares values);
+`Sequential.replace(i, #newHead)` swaps the head with the backbone
+BIT-IDENTICAL; on unfreeze the optimizers (SGD/Adam/AdamW) give the
+parameter FRESH state — stale momentum applied on unfreeze is the bug
+this library refuses to have. Freeze flags survive checkpoint
+round-trips (state_dict carries values, not configuration).

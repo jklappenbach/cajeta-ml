@@ -86,3 +86,31 @@ Absent, and honestly so — not "coming soon":
 - **No DataLoader ecosystem** — `Batches` covers seeded minibatching over
   in-memory tensors and nothing more: no workers, no samplers, no collate_fn.
 - **Writing `.pt` is not supported** — read-only, by design. Save safetensors.
+
+## Transformer & transfer learning (0.7.0, spec §13)
+
+- **`TransformerDecoderLayer` has no dropout argument** — parity
+  fixtures run torch at `dropout=0`; compose `Dropout` explicitly.
+  Post-norm and ReLU only (torch's `norm_first`/activation knobs are
+  not carried).
+- **Masks are one additive form**, `(B, Tq, Tk)` float32 — torch's
+  boolean `key_padding_mask` + float `attn_mask` dualism collapses to
+  `Masks.keyPadding`/`causal`/`combine`. Blocking uses a finite `NEG`
+  whose `exp` underflows to exactly zero (torch's `-inf` NaN edge for
+  fully-masked rows cannot arise: query rows keep themselves).
+- **Attention weights are a first-class output**
+  (`lastAttentionNode()`), not a `need_weights` flag.
+- **Optimizers reset state on unfreeze.** torch keeps stale
+  moments/momentum for a parameter that was frozen and later unfrozen
+  in the same optimizer; here the frozen→trainable transition gets
+  FRESH state (per-parameter bias correction included). Rebuilding the
+  optimizer per phase matches torch practice and both stacks agree.
+- **Import reconciliation is bidirectional and default-strict** —
+  torch's `load_state_dict(strict=False)` returns missing/unexpected
+  but is easy to ignore; here the permissive mode RETURNS a report and
+  strict names the offending key in the error.
+- **Positional encodings are modules** (`Sinusoidal…`/`Learned…`) —
+  torch ships them only in tutorials; ours pin against the canonical
+  formulation elementwise, odd dimensions included.
+- **No contrastive learning (deferred, no consumer) and no GNNs**
+  (`dev.cajeta.graph` is classical graph analysis) — spec §13.7.

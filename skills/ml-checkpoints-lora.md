@@ -97,3 +97,26 @@ att.freezeBaseProjections();
 - **Buffers are not parameters.** BatchNorm running statistics travel in the
   state dict but are not trained; a load that matches parameters and misses
   buffers gives a model that is correct in `train()` and wrong in `eval()`.
+
+## Foreign-weight import (0.7.0, spec §13.6)
+
+```cajeta
+StateDict raw = PtReader.read(path);              // .pt rides the CONSTRAINED unpickler
+StateDict sd = Checkpoints.torchToCajeta(raw);    // fused in_proj -> wq/wk/wv, weights transposed
+ImportReport rep = Checkpoints.importTorch(model, sd);       // STRICT default
+ImportReport r2 = Checkpoints.importStateDict(model, sd, false);  // permissive
+// r2.missing()    — model params the checkpoint lacked
+// r2.unexpected() — checkpoint keys no param matched
+```
+
+- Reconciliation is BIDIRECTIONAL and nothing is silently dropped: a
+  dropped key is a model that runs and is wrong. Strict throws naming
+  the offending key; permissive reports both lists.
+- Shape disagreements ALWAYS throw, naming both shapes — even
+  permissive is permission to skip, not to reinterpret.
+- `renamePrefix(sd, "encoder.", "backbone.")` handles key retargeting;
+  `torchToCajeta` handles LAYOUT (torch `[out, in]` Linear weights,
+  fused attention projections) in one pass — run it on RAW torch dicts
+  only, never on an already-cajeta-layout dict.
+- v3 imports `state_dict` content only (safetensors/.pt readers from
+  §6); a HuggingFace-config reader is out of scope.

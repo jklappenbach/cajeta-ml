@@ -109,3 +109,11 @@ becomes `Digits` — a deterministic 4-class, 64-feature synthetic set.
     non-trivial; t-SNE reports its KL and the tour repeats the §9.6
     warning; NMF reaches near-zero error on an exactly-factorable
     matrix; FactorAnalysis' EM log-likelihood never decreases.
+21. **Transformer pieces.** The sinusoidal table is spot-checked against
+    torch's values, and the causal mask is verified STRUCTURALLY — the
+    attention matrix above the diagonal is exactly zero. A wrong mask
+    trains beautifully and leaks the future; the check is the point.
+22. **Transfer learning.** A frozen subtree's flag is shown (the suite
+    proves no-update by value), and a weight import reconciles in both
+    directions — the report is clean only when every parameter was
+    filled and every key consumed.

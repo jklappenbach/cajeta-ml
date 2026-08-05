@@ -326,3 +326,41 @@ zero-initialized, so the adapter is exactly a no-op before training. Freezing is
 **explicit** — call `freezeBase()` / `freezeBaseProjections()`; construction
 alone leaves the base trainable. `merge()` folds `A·B` into the base weight and
 refuses a second merge.
+
+## Transformer completion — §13 (0.7.0)
+
+- **Positional encodings** — `SinusoidalPositionalEncoding(maxLen, d)`
+  (precomputed buffer, torch-elementwise, odd `d` handled) and
+  `LearnedPositionalEncoding(maxLen, d, seed)` (trainable table via the
+  embedding gather). Both ADD to `(B, T, E)`; `T > maxLen` throws.
+- **Masks** — `Masks.causal(b, t)`, `Masks.keyPadding(lengths, tq, tk)`,
+  `Masks.combine`: additive `(B, Tq, Tk)` float32, `NEG` blocks with
+  exact-zero weights and exact-zero gradient paths.
+- **Attention** — `MultiheadAttention.forwardMasked` /
+  `forwardCross(x, memory, mask)` on one shared core;
+  `lastAttentionNode()` exposes the softmaxed weights for structural
+  verification.
+- **Decoder** — `TransformerDecoderLayer(e, h, ff, seed).decode(...)`
+  (post-norm, ReLU FFN, torch field names, dropout composed outside)
+  and the `TransformerDecoder` stack. End-to-end forward and TRAINED
+  loss pinned against torch.
+
+## Transfer learning & weight import — §13.5–§13.6 (0.7.0)
+
+- `module.setTrainable(false)` freezes a subtree; optimizers skip frozen
+  parameters AND reset their state on unfreeze (fresh moments — never
+  stale momentum). `Sequential.replace(i, #head)` swaps a head with the
+  backbone bit-identical.
+- `Checkpoints.importStateDict(model, sd, strict)` → `ImportReport`
+  with BOTH reconciliation directions; `importTorch` is the strict
+  default; `torchToCajeta` maps raw torch layout (fused `in_proj` split,
+  Linear weights transposed); `renamePrefix` retargets keys; `.pt` files
+  ride the constrained unpickler.
+- **Augmentation** (`ml.data`): `AugmentPipeline(seed)` over
+  `RandomHorizontalFlip`/`RandomCrop`/`RandomRotation`/`Normalize`
+  (explicit stats) — stochastic transforms are inert in eval.
+
+**Out of scope, recorded (spec §13.7):** CONTRASTIVE LEARNING is
+deferred with no consumer; GRAPH NEURAL NETWORKS are not in scope —
+`dev.cajeta.graph` is classical graph analysis and implies no GNN
+support.
