@@ -107,3 +107,54 @@ numerics themselves are pinned against sklearn 1.9.0 in the test suite.
   with no deterministic sign flip — the family is documented as
   deterministic up to eigenvector sign, and comparisons must use
   eigenvalues or |correlation|.
+
+## Classification surface (0.8.0)
+
+- **The confusion matrix is sklearn's orientation — and the literature's
+  transpose.** `Metrics.confusionMatrix` puts TRUE classes on rows and
+  PREDICTED on columns, exactly as sklearn does. Much of the statistics
+  literature draws it the other way (predicted on rows); a reader
+  comparing against a textbook should transpose first. Deliberately
+  documented rather than changed.
+- **LDA solvers are `svd`/`lsqr`/`eigen` with sklearn's constraint
+  surface** (shrinkage only under lsqr/eigen, rejected loudly under svd,
+  at CONSTRUCTION — sklearn raises at fit). Ledoit-Wolf `"auto"`
+  shrinkage matches `sklearn.covariance.ledoit_wolf`.
+- **The decision threshold is a `predict(x, threshold)` overload** on
+  binary logistic fits — sklearn needs a separate
+  `FixedThresholdClassifier` wrapper. Out-of-range thresholds and
+  multiclass fits are rejected with the reason; the no-argument
+  `predict` keeps the 0.5 cut.
+- **L1 logistic is glmnet-style coordinate descent** (the resolved §11.2
+  route) — coefficients agree with sklearn's `liblinear`/`saga` at suite
+  tolerance and zeros are EXACT (asserted as equality, and monotone in
+  the regularization strength).
+- **`precision_recall_curve` parity is the FULL curve** (every distinct
+  score a threshold, ascending, plus the terminal `(1, 0)` point with no
+  threshold) as a `PrCurve` object with bounds-checked accessors —
+  reading the terminal point's nonexistent threshold throws instead of
+  indexing off the end of a shorter array.
+- **`ClassificationReport` is a typed result, not a formatted string.**
+  Per-class precision/recall/F1/support plus macro and weighted rows —
+  sklearn's `output_dict=True` shape with accessors; render it yourself.
+- **ForwardSelector is not `SequentialFeatureSelector`.** Same greedy
+  forward direction and CV scoring, but: the inner CV is a seeded
+  SHUFFLED `KFold` (sklearn defaults to unshuffled), ties break to the
+  lowest feature index, and there is an unconditional early stop when no
+  candidate STRICTLY improves the score — sklearn only stops early under
+  its `tol` option. Selected supports agree on the pinned fixture; paths
+  on degenerate data may not.
+- **Nadaraya-Watson has no sklearn estimator at all** (closest relative:
+  `KernelReg` in statsmodels). `KernelRegressor` is pinned against the
+  closed formula by hand-computable fixtures; the far-query
+  zero-total-weight case falls back to the nearest training target, a
+  stated policy sklearn never had to state.
+- **Encoders run over tensors, not `Table`** (the §8.6 nucleo route is
+  deferred until nucleo's own encoding story settles). One-hot categories
+  are sorted per column like sklearn's; the unseen-category default is
+  ERROR with ignore-to-all-zeros as the explicit opt-in
+  (`handle_unknown="ignore"`).
+- **Search metrics are named `accuracy` / `f1` / `rocAuc` / `r2`** — a
+  deliberately small, loud registry (`Scorers`), not sklearn's ~50-string
+  scoring table. `rocAuc` demands an estimator that exposes
+  `predictProba` and says so.

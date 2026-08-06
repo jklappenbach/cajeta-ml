@@ -64,13 +64,17 @@ duck-typing.
 | Sparse design matrix fit | `Lasso/ElasticNet.fitSparse(CsrMatrix, y)` | requires `fitIntercept=false` — see hazards |
 | Binary / one-vs-rest classification | `LogisticRegression(c, tol, maxIter)` | newton-cholesky; L2 ON by default (`C=1`) |
 | True multiclass softmax | `LogisticRegression(c, tol, maxIter, /*multinomial=*/true)` | explicit knob, never a silent switch |
+| Cost-aware logistic (class/sample weights, threshold) | weight ctors, `"balanced"`, `predict(x, threshold)` | `ml-classification` |
+| Sparse logistic (exact zero coefficients) | `LogisticRegression(c, tol, maxIter, "l1")` | coordinate descent — `ml-classification` |
+| Gaussian discriminants (linear/curved boundary) | `LinearDiscriminantAnalysis` / `QuadraticDiscriminantAnalysis` | shrinkage, priors, LDA is a `Transformer` — `ml-classification` |
+| Nonparametric regression (local means) | `KernelRegressor(kernel, bandwidth[, metric])` | Nadaraya-Watson — `ml-classification` |
 | Clustering (compact clusters) | `KMeans(k, seed)` | seeded k-means++; `score` = −inertia |
 | Clustering with outliers / any metric | `KMedoids(k[, metric])` | PAM; centres are data rows — `ml-clustering` |
 | Soft/probabilistic clustering, model selection | `GaussianMixture(k, seed)` — `predictProba`, `aic`/`bic` | 4 covariance types; collapse reported — `ml-clustering` |
 | Hierarchy, many k from one fit | `AgglomerativeClustering(k[, linkage])` — `cutByCount`/`cutByHeight` | ward/complete/average/single; scipy linkage matrix — `ml-clustering` |
 | Non-convex shapes, noise, unknown k | `DBSCAN(eps, minSamples)` | noise = −1; count discovered; `kDistances` elbow — `ml-clustering` |
 | Judge a clustering | `Metrics.silhouetteScore/Samples`, `daviesBouldin`, `calinskiHarabasz`, `adjustedRand`, `nmi`, `kmeansElbow` | the judges DISAGREE by design — `ml-cluster-evaluation` |
-| Nearest-neighbor regression / classification | `KNeighborsRegressor(k, distanceWeights)` / `KNeighborsClassifier(k)` | brute-force euclidean |
+| Nearest-neighbor regression / classification | `KNeighborsRegressor` / `KNeighborsClassifier` `(k[, #metric][, distanceWeights])` | any `Metric`, symmetric weighting — `ml-classification` |
 | Dimensionality reduction | `PCA(nComponents)` | a `Transformer` — drops into Pipeline |
 | 2-D visualization embedding | `TSNE(2, perplexity, seed)` — `fitTransform`-only | exact O(n²), capped at 2000 — `ml-embeddings-decomposition` |
 | Embed dissimilarities (incl. precomputed) | `MDS(k, seed[, "nonmetric", …])` — stress exposed | `ml-embeddings-decomposition` |
@@ -78,6 +82,11 @@ duck-typing.
 | Source separation / parts / latent factors | `FastICA` / `NMF` / `FactorAnalysis` | indeterminacy-aware — `ml-embeddings-decomposition` |
 | Feature scaling | `StandardScaler()` / `MinMaxScaler()` | sklearn semantics, `inverseTransform` |
 | Train/test split, K folds, CV scores | `Split.trainTestSplit(x, y, frac, seed)` / `KFold(k, shuffle, seed)` / `Split.crossValScore(est, x, y, kf)` | deterministic per seed |
+| Stratified splits/folds, repeated holdout | `Split.trainTestSplitStratified` / `StratifiedKFold` / `RepeatedHoldout` | proportions preserved or LOUD — `ml-model-selection` |
+| Hyperparameter search | `GridSearch.run` / `RandomizedSearch.run` over `EstimatorFactory`, metric via `Scorers` | failure capture; 1-D grid = K-vs-error table — `ml-model-selection` |
+| Categorical encoding | `OneHotEncoder` / `OrdinalEncoder` | loud unseen policy; `Transformer`s — `ml-model-selection` |
+| Feature selection | `ForwardSelector(factory, params, nSelect, nFolds, metric, seed)` | greedy CV-scored; a `Transformer` — `ml-model-selection` |
+| PR curve, average precision, report | `Metrics.precisionRecallCurve/averagePrecision/classificationReport` | threshold choosing + sklearn-shape report — `ml-model-selection` |
 | Chain preprocessing + model, leakage-free CV | `Pipeline.of(#t1[, #t2[, #t3]], #final)` | a `Predictor`; refits whole chain per fold |
 | Table<R> → design matrix | `Frames.design<R>(t, target)` | `ml-frames-bridge` skill |
 | Error/score functions | `Metrics.mse/rmse/mae/r2/accuracy/precision/recall/f1(+Macro)/confusionMatrix/logLoss/rocAuc` | statics over `(n,)` tensors |
@@ -121,8 +130,9 @@ float64 s = m.score(x2, y2);                       // R² regressors / accuracy 
 
 - **No pandas-style duck-typing** — a `Table<R>` is not accepted by `fit`;
   bridge explicitly with `Frames.design<R>`.
-- **No `partial_fit` / warm starts / sample weights** on the classical
-  estimators. Online adaptation exists ONLY on the neural side, as
+- **No `partial_fit` / warm starts** on the classical estimators (sample
+  and class weights DO exist on `LogisticRegression` since 0.8.0). Online
+  adaptation exists ONLY on the neural side, as
   `SpelaTrainer.observeUnlabeled` / `flush`.
 - **No GPU execution yet.** `ml.grad.Ops` is the device seam and the CPU column
   is complete; the GPU column is empty. The seam exists so adding a backend

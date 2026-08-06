@@ -59,6 +59,19 @@ import dev.cajeta.ml.train.Loss;
 import dev.cajeta.ml.train.SpelaConfig;
 import dev.cajeta.ml.train.SpelaTrainer;
 import dev.cajeta.ml.train.TrainHistory;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.ForwardSelector;
+import dev.cajeta.ml.GridSearch;
+import dev.cajeta.ml.KernelRegressor;
+import dev.cajeta.ml.KNeighborsClassifier;
+import dev.cajeta.ml.LinearDiscriminantAnalysis;
+import dev.cajeta.ml.OneHotEncoder;
+import dev.cajeta.ml.PrCurve;
+import dev.cajeta.ml.QuadraticDiscriminantAnalysis;
+import dev.cajeta.ml.RandomizedSearch;
+import dev.cajeta.ml.SearchResult;
+import dev.cajeta.ml.StratifiedKFold;
+import cajeta.math.distance.Manhattan;
 
 /**
  * The cajeta-ml tour — a runnable walk through the full public surface:
@@ -79,6 +92,25 @@ record Reading {
     float64 temp;
     float64 humidity;
     float64 crop;
+}
+
+/** Sections 26/28's k-NN factory: params[0] = k. */
+final class TourKnnFactory implements EstimatorFactory {
+    public TourKnnFactory() { return; }
+    public #Predictor create(Tensor<float64> params) {
+        Predictor p = heap KNeighborsClassifier((int64) params.flatGet(0));
+        return #p;
+    }
+}
+
+/** Section 26's logistic factory: params[0] = C, params[1] = tol. */
+final class TourLogFactory implements EstimatorFactory {
+    public TourLogFactory() { return; }
+    public #Predictor create(Tensor<float64> params) {
+        Predictor p = heap LogisticRegression(params.flatGet(0),
+            params.flatGet(1), (int64) 500);
+        return #p;
+    }
 }
 
 public final class Tour {
@@ -734,6 +766,291 @@ public final class Tour {
             + "silently dropped, ever");
 
         // ------------------------------------------------------------------
+        Tour.section("23. Discriminants — LDA's plane, QDA's curve");
+        // The loan-default portfolio: income, debt ratio, credit history,
+        // utilization, and two irrelevant columns. Deterministic — the
+        // same numbers on every machine.
+        Tensor<float64> lx = Tour.loanX();
+        Tensor<float64> ly = Tour.loanY();
+        Tensor<float64>[] lparts =
+            Split.trainTestSplitStratified(lx, ly, 0.25, (uint64) 42);
+        LinearDiscriminantAnalysis ldaM = heap LinearDiscriminantAnalysis();
+        ldaM.fit(lparts[0], lparts[2]);
+        QuadraticDiscriminantAnalysis qdaM =
+            heap QuadraticDiscriminantAnalysis();
+        qdaM.fit(lparts[0], lparts[2]);
+        float64 ldaAcc = ldaM.score(lparts[1], lparts[3]);
+        float64 qdaAcc = qdaM.score(lparts[1], lparts[3]);
+        System.stdout.println("   held-out accuracy: LDA " + ldaAcc
+            + "  QDA " + qdaAcc);
+        Tour.check(ldaAcc > 0.7 && qdaAcc > 0.7,
+            "both discriminants beat the base rate on held-out loans");
+        Tensor<float64> ldaP = ldaM.predictProba(lparts[1]);
+        Tour.check(Tour.near(ldaP.get2(0, 0) + ldaP.get2(0, 1), 1.0,
+            0.000000001), "posteriors normalize per row (log-space with a "
+            + "max shift — no underflow)");
+        Tensor<float64> ldaProj = ldaM.transform(lparts[0]);
+        Tour.check(ldaProj.shapeAt(1) == 1,
+            "LDA.transform projects onto min(K-1, p) = 1 discriminant "
+            + "direction — a SUPERVISED reducer beside PCA");
+
+        // ------------------------------------------------------------------
+        Tour.section("24. k-NN — one metric seam, symmetric weighting");
+        KNeighborsClassifier knnE = heap KNeighborsClassifier((int64) 5);
+        knnE.fit(lparts[0], lparts[2]);
+        KNeighborsClassifier knnM = heap KNeighborsClassifier((int64) 5,
+            heap Manhattan());
+        knnM.fit(lparts[0], lparts[2]);
+        float64 knnAccE = knnE.score(lparts[1], lparts[3]);
+        float64 knnAccM = knnM.score(lparts[1], lparts[3]);
+        System.stdout.println("   euclidean " + knnAccE + "  manhattan "
+            + knnAccM);
+        Tour.check(knnAccE > 0.65 && knnAccM > 0.65,
+            "any cajeta.math.distance.Metric drops into the one neighbour "
+            + "seam — this library contains NO distance code (grep-verified "
+            + "in the suite)");
+        KNeighborsClassifier knnW = heap KNeighborsClassifier((int64) 5,
+            true);
+        knnW.fit(lparts[0], lparts[2]);
+        Tensor<float64> knnSelf = knnW.predict(lparts[0]);
+        Tour.check(knnSelf.get1(0) == lparts[2].get1(0),
+            "distance weighting's zero-distance rule: a training row "
+            + "predicts its own label (the classifier now mirrors the "
+            + "regressor's option)");
+        Predictor knnPipe = Pipeline.of(heap StandardScaler(),
+            heap KNeighborsClassifier((int64) 5, true));
+        Tour.check(Tour.cvMean(knnPipe, lx, ly) > 0.7,
+            "StandardScaler + k-NN compose in a Pipeline under CV — scale "
+            + "is settled before the metric sees the data");
+
+        // ------------------------------------------------------------------
+        Tour.section("25. Cost-aware logistic — the PR curve picks the "
+            + "threshold, L1 prunes");
+        LogisticRegression llog = heap LogisticRegression(1.0,
+            0.00000001, (int64) 500);
+        llog.fit(lparts[0], lparts[2]);
+        int64 lnTe = lparts[1].shapeAt(0);
+        Tensor<float64> llogP = llog.predictProba(lparts[1]);
+        Tensor<float64> llogPos = Tour.posColumn(llogP, lnTe);
+        PrCurve prc = Metrics.precisionRecallCurve(lparts[3], llogPos);
+        float64 bestF1 = -1.0;
+        float64 bestThr = 0.5;
+        int64 ci = 0;
+        while (ci < prc.thresholds()) {
+            float64 cp = prc.precisionAt(ci);
+            float64 cr = prc.recallAt(ci);
+            if (cp + cr > 0.0) {
+                float64 cf = 2.0 * cp * cr / (cp + cr);
+                if (cf > bestF1) {
+                    bestF1 = cf;
+                    bestThr = prc.thresholdAt(ci);
+                }
+            }
+            ci = ci + 1;
+        }
+        System.stdout.println("   PR-curve F1-optimal threshold "
+            + bestThr + " (curve F1 " + bestF1 + ", AP "
+            + Metrics.averagePrecision(lparts[3], llogPos) + ")");
+        // predict(x, t) cuts at P > t; the curve counted P >= t, so apply
+        // a hair below the chosen threshold to reproduce its cut.
+        Tensor<float64> lpredT = llog.predict(lparts[1],
+            bestThr - 0.000001);
+        Tour.check(Tour.near(Metrics.f1(lparts[3], lpredT), bestF1,
+            0.000001), "predicting at the curve-chosen cut reproduces the "
+            + "curve's F1 — the threshold knob (§6.4) and the curve "
+            + "(§10.1) are two ends of one decision");
+        LogisticRegression lbal = heap LogisticRegression(1.0,
+            0.00000001, (int64) 500, false, "balanced");
+        lbal.fit(lparts[0], lparts[2]);
+        Tour.check(lbal.isFitted(), "class_weight=\"balanced\" reweights "
+            + "the likelihood by n/(K·n_k) — the cost knob when errors "
+            + "are not symmetric");
+        LogisticRegression ll1 = heap LogisticRegression(0.1,
+            0.00000001, (int64) 2000, "l1");
+        ll1.fit(lparts[0], lparts[2]);
+        Tensor<float64> lcoef = ll1.coefMatrix();
+        int64 lzeros = 0;
+        int64 zi = 0;
+        while (zi < lcoef.shapeAt(0)) {
+            if (lcoef.get2(zi, 0) == 0.0) { lzeros = lzeros + 1; }
+            zi = zi + 1;
+        }
+        System.stdout.println("   L1 (C=0.1) zeroed " + lzeros + " of "
+            + lcoef.shapeAt(0) + " coefficients");
+        Tour.check(lzeros > 0, "the L1 penalty prunes irrelevant loan "
+            + "columns to EXACT zeros (coordinate descent, not a "
+            + "threshold on small values)");
+
+        // ------------------------------------------------------------------
+        Tour.section("26. Model selection — stratified folds, seeded "
+            + "searches, loud encoders");
+        StratifiedKFold lsk = heap StratifiedKFold((int64) 5, true,
+            (uint64) 11);
+        Tensor<int64> lsf = lsk.assignments(ly);
+        float64 basePos = 0.0;
+        int64 si = 0;
+        while (si < 200) {
+            basePos = basePos + ly.get1(si);
+            si = si + 1;
+        }
+        basePos = basePos / 200.0;
+        int64 f0n = 0;
+        int64 f0p = 0;
+        si = 0;
+        while (si < 200) {
+            if (lsf.get1(si) == 0) {
+                f0n = f0n + 1;
+                if (ly.get1(si) == 1.0) { f0p = f0p + 1; }
+            }
+            si = si + 1;
+        }
+        Tour.check(Tour.near((float64) f0p / (float64) f0n, basePos, 0.03),
+            "stratified folds preserve the default rate per fold — the "
+            + "guarantee unstratified splitting visibly lacks at 3% "
+            + "positives (pinned in the suite)");
+        float64[] lkd = heap float64[6];
+        lkd[0] = 1.0; lkd[1] = 3.0; lkd[2] = 5.0;
+        lkd[3] = 7.0; lkd[4] = 9.0; lkd[5] = 11.0;
+        int64[] lks = heap int64[1];
+        lks[0] = 6;
+        Tensor<float64>[] ldims = heap Tensor<float64>[1];
+        ldims[0] = Tensor.of<float64>(lkd, lks);
+        KFold lkf = heap KFold((int64) 5, true, (uint64) 7);
+        Tensor<int64> lfid = lkf.assignments(lparts[0].shapeAt(0));
+        SearchResult rsA = RandomizedSearch.run(heap TourKnnFactory(),
+            ldims, (int64) 4, (uint64) 9, lparts[0], lparts[2], lfid,
+            "accuracy");
+        SearchResult rsB = RandomizedSearch.run(heap TourKnnFactory(),
+            ldims, (int64) 4, (uint64) 9, lparts[0], lparts[2], lfid,
+            "accuracy");
+        Tour.check(rsA.param((int64) 0, (int64) 0)
+                == rsB.param((int64) 0, (int64) 0)
+            && Tour.near(rsA.score((int64) 0), rsB.score((int64) 0),
+                0.000000000001),
+            "the same seed reproduces the same random sweep, draw for "
+            + "draw (§7.7)");
+        float64[] fpd = heap float64[2];
+        fpd[0] = 1.0;
+        fpd[1] = 0.00000001;
+        int64[] fps = heap int64[1];
+        fps[0] = 2;
+        ForwardSelector fsel = heap ForwardSelector(heap TourLogFactory(),
+            Tensor.of<float64>(fpd, fps), (int64) 3, (int64) 3,
+            "accuracy", (uint64) 3);
+        fsel.fit(lx, ly);
+        boolean noNoise = true;
+        int64 fi = 0;
+        while (fi < fsel.selectedCount()) {
+            System.stdout.println("   forward selection kept column "
+                + fsel.selectedAt(fi));
+            if (fsel.selectedAt(fi) > 3) { noNoise = false; }
+            fi = fi + 1;
+        }
+        Tour.check(noNoise, "greedy CV-scored forward selection keeps "
+            + "informative loan features and never the noise columns — "
+            + "and it is a Transformer, so it pipelines");
+        // Encoders: employment status {0, 1, 2} one-hot encoded.
+        float64[] catd = heap float64[8];
+        catd[0] = 0.0; catd[1] = 1.0; catd[2] = 2.0; catd[3] = 1.0;
+        catd[4] = 0.0; catd[5] = 2.0; catd[6] = 1.0; catd[7] = 0.0;
+        int64[] cats = heap int64[2];
+        cats[0] = 8;
+        cats[1] = 1;
+        Tensor<float64> catX = Tensor.of<float64>(catd, cats);
+        OneHotEncoder ohe = heap OneHotEncoder();
+        Tensor<float64> wide = ohe.fitTransform(catX, Tour.zeroY(8));
+        Tour.check(wide.shapeAt(1) == 3,
+            "one-hot: one column per SORTED observed category");
+        boolean unseenLoud = false;
+        try {
+            float64[] und = heap float64[1];
+            und[0] = 3.0;
+            int64[] uns = heap int64[2];
+            uns[0] = 1;
+            uns[1] = 1;
+            Tensor<float64> unseen = Tensor.of<float64>(und, uns);
+            Tensor<float64> t = ohe.transform(unseen);
+        } catch (Exception ex) {
+            unseenLoud = true;
+        }
+        Tour.check(unseenLoud, "an unseen category at transform is an "
+            + "ERROR by default — ignore-to-all-zeros is the explicit "
+            + "opt-in, never a silent guess");
+
+        // ------------------------------------------------------------------
+        Tour.section("27. Kernel regression — Nadaraya-Watson, far "
+            + "queries answered honestly");
+        int64[] krs = heap int64[2];
+        krs[0] = n;
+        krs[1] = 1;
+        Tensor<float64> krX = Tensor.zeros<float64>(krs);
+        int64 ki = 0;
+        while (ki < n) {
+            krX.flatSet(ki, (float64) ki / 20.0);
+            ki = ki + 1;
+        }
+        KernelRegressor krNarrow = heap KernelRegressor("gaussian", 0.05);
+        krNarrow.fit(krX, y);
+        KernelRegressor krWide = heap KernelRegressor("gaussian", 50.0);
+        krWide.fit(krX, y);
+        float64 yMean = 0.0;
+        ki = 0;
+        while (ki < n) {
+            yMean = yMean + y.get1(ki);
+            ki = ki + 1;
+        }
+        yMean = yMean / (float64) n;
+        int64[] q1s = heap int64[2];
+        q1s[0] = 1;
+        q1s[1] = 1;
+        Tensor<float64> qNear = Tensor.zeros<float64>(q1s);
+        qNear.flatSet(0, 1.5);
+        Tensor<float64> pNarrow = krNarrow.predict(qNear);
+        Tensor<float64> pWide = krWide.predict(qNear);
+        float64 truth = 2.0 + 1.5 - 1.5 * 2.25;
+        System.stdout.println("   at t=1.5: narrow " + pNarrow.get1(0)
+            + "  wide " + pWide.get1(0) + "  (truth " + truth
+            + ", global mean " + yMean + ")");
+        Tour.check(Tour.near(pNarrow.get1(0), truth, 0.05),
+            "a narrow bandwidth follows the local curve");
+        Tour.check(Tour.near(pWide.get1(0), yMean, 0.05),
+            "a wide bandwidth is pulled toward the global mean — "
+            + "bandwidth IS the smoothness knob, monotonically");
+        Tensor<float64> qFar = Tensor.zeros<float64>(q1s);
+        qFar.flatSet(0, 1000.0);
+        Tensor<float64> pFar = krNarrow.predict(qFar);
+        Tour.check(Tour.near(pFar.get1(0), y.get1(n - 1), 0.000001),
+            "a query so far that every kernel weight underflows FALLS "
+            + "BACK TO THE NEAREST TRAINING TARGET — the documented §9.5 "
+            + "policy, never a silent NaN");
+
+        // ------------------------------------------------------------------
+        Tour.section("28. The loan-default example — end to end, library "
+            + "alone");
+        float64 e28lda = 1.0 - ldaAcc;
+        float64 e28qda = 1.0 - qdaAcc;
+        float64 e28l2 = 1.0 - llog.score(lparts[1], lparts[3]);
+        float64 e28l1 = 1.0 - ll1.score(lparts[1], lparts[3]);
+        System.stdout.println("   misclassification: LDA " + e28lda
+            + "  QDA " + e28qda + "  logistic " + e28l2
+            + "  L1 logistic " + e28l1);
+        SearchResult ksweep = GridSearch.run(heap TourKnnFactory(), ldims,
+            lparts[0], lparts[2], lfid, "accuracy");
+        int64 kwi = 0;
+        while (kwi < ksweep.count()) {
+            System.stdout.println("   K = " + ksweep.param(kwi, (int64) 0)
+                + "  CV error " + (1.0 - ksweep.score(kwi)));
+            kwi = kwi + 1;
+        }
+        Tour.check(ksweep.count() == 6 && ksweep.failures() == 0,
+            "the K-versus-error table IS the SearchResult — readable "
+            + "directly, no re-running");
+        Tour.check(e28lda < 0.3 && e28qda < 0.3 && e28l2 < 0.3
+            && e28l1 < 0.3 && ksweep.bestScore() > 0.7,
+            "every model beats chance decisively, reproducibly, from the "
+            + "library alone (spec §12.3)");
+
+        // ------------------------------------------------------------------
         System.stdout.println("");
         if (Tour.failures > 0) {
             System.stdout.println("TOUR FAILED: " + Tour.failures + " check(s)");
@@ -892,6 +1209,47 @@ public final class Tour {
             i = i + 1;
         }
         return #out;
+    }
+
+    /**
+     * Sections 23-28's loan portfolio, 200 x 6: income, debt ratio,
+     * credit history, utilization, two irrelevant columns — the same
+     * lattice the suite's ClassificationReleaseTest pins.
+     */
+    static #Tensor<float64> loanX() {
+        float64[] d = heap float64[1200];
+        int64 i = 0;
+        while (i < 200) {
+            d[i * 6] = (float64) ((i * 7) % 17) * 0.25 - 2.0;
+            d[i * 6 + 1] = (float64) ((i * 11 + 3) % 19) * 0.2 - 1.9;
+            d[i * 6 + 2] = (float64) ((i * 5 + 1) % 13) * 0.3 - 1.8;
+            d[i * 6 + 3] = (float64) ((i * 13 + 7) % 23) * 0.15 - 1.6;
+            d[i * 6 + 4] = (float64) ((i * 3 + 2) % 29) * 0.1 - 1.4;
+            d[i * 6 + 5] = (float64) ((i * 17 + 5) % 31) * 0.09 - 1.35;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 200;
+        sh[1] = 6;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> loanY() {
+        Tensor<float64> x = Tour.loanX();
+        float64[] d = heap float64[200];
+        int64 i = 0;
+        while (i < 200) {
+            float64 jitter = (float64) ((i * 29 + 11) % 31) * 0.04 - 0.6;
+            float64 score = 1.6 * x.get2(i, 1) + 1.1 * x.get2(i, 3)
+                - 1.2 * x.get2(i, 0) - 0.7 * x.get2(i, 2) + jitter;
+            if (score > 0.0) {
+                d[i] = 1.0;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = 200;
+        return Tensor.of<float64>(d, sh);
     }
 
     static float64 cvMean(Predictor est, Tensor<float64> x, Tensor<float64> y) {

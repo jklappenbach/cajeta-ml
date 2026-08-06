@@ -117,3 +117,39 @@ becomes `Digits` — a deterministic 4-class, 64-feature synthetic set.
     proves no-update by value), and a weight import reconciles in both
     directions — the report is clean only when every parameter was
     filled and every key consumed.
+
+---
+
+Sections 23–28 return to `float64` classical ML on a second deterministic
+fixture: a 200-borrower loan portfolio (income, debt ratio, credit
+history, utilization, plus two irrelevant columns) whose default rule is
+a fixed linear score with lattice jitter.
+
+23. **Discriminants.** LDA and QDA fit the portfolio; posteriors
+    normalize per row (log-space evaluation with a max shift), and
+    `LDA.transform` projects onto `min(K−1, p)` discriminant directions —
+    a *supervised* dimensionality reducer that sits beside PCA in any
+    pipeline.
+24. **k-NN, one seam.** The same classifier runs euclidean and Manhattan
+    through `cajeta.math.distance.Metric` — the library itself contains
+    no distance code (the suite greps to keep that true). Distance
+    weighting mirrors the regressor's option, with the zero-distance rule
+    checked; `StandardScaler + kNN` composes under CV.
+25. **Cost-aware logistic.** The PR curve chooses the decision threshold
+    (its F1-optimal cut, reproduced exactly by `predict(x, t)`), average
+    precision summarizes the imbalanced case, `"balanced"` reweights the
+    likelihood, and L1 coordinate descent prunes irrelevant columns to
+    *exact* zeros.
+26. **Model selection.** Stratified folds preserve the default rate per
+    fold; the same seed reproduces a random search draw for draw; greedy
+    CV-scored forward selection keeps only informative columns (and is a
+    `Transformer`); one-hot encoding is sorted-category, and an unseen
+    category at transform is an *error* by default.
+27. **Kernel regression.** Nadaraya-Watson: a narrow bandwidth follows
+    the local curve, a wide one is pulled toward the global mean, and a
+    query so far that every kernel weight underflows falls back to the
+    nearest training target — the documented policy, never a silent NaN.
+28. **The loan-default example.** End to end from the library alone
+    (spec §12.3): LDA, QDA, logistic, and L1-logistic misclassification
+    rates plus the K-versus-error sweep, which is just a 1-D
+    `SearchResult` read as a table.

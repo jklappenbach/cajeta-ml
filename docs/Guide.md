@@ -66,6 +66,41 @@ sets `converged()` false — separable data is the classic cause.
 Hessian with `penalized = true` — not classical inference (see
 [differences](DifferencesFromSklearn.md)).
 
+**Cost-aware fits (0.8.0).** Extra constructors take explicit per-class
+weights (`#float64[]`), sample weights (composing multiplicatively), or
+the `"balanced"` string (`n / (K·n_k)`, sklearn's rule) — each scales the
+per-observation log-likelihood and IRLS weights. On a binary fit,
+`predict(x, threshold)` cuts at a probability other than 0.5 (out-of-range
+or multiclass use is rejected with the reason); pick the cut from the PR
+curve (see Metrics & reporting). The L1 penalty is the
+`(c, tol, maxIter, "l1")` constructor — glmnet-style coordinate descent
+whose zeros are EXACT and monotone in strength; `"elasticnet"` adds the
+mixing ratio. The plain-constructor L2 path is byte-identical to 0.7.0.
+
+### LinearDiscriminantAnalysis / QuadraticDiscriminantAnalysis (0.8.0)
+Gaussian class-conditional classifiers sharing one estimation core
+(priors from frequencies or supplied explicitly and validated; pooled vs
+per-class covariance; Cholesky log-densities evaluated in log space with
+a max shift, so no row underflows). LDA solvers: `svd` (default), `lsqr`,
+`eigen`; shrinkage — a fixed intensity or Ledoit-Wolf `"auto"` — only
+under lsqr/eigen, rejected at construction under svd. QDA takes a
+Friedman regularization blend `regParam ∈ [0,1]`. Both give
+`predictProba` (normalized posteriors) and compose in `Pipeline` and CV;
+LDA is additionally a `Transformer`: `transform` projects onto at most
+`min(K−1, p)` discriminant directions — a supervised reducer beside
+`PCA`. A class with fewer samples than features is reported by name (QDA
+needs per-class covariances). Labels and probabilities are pinned against
+sklearn 1.9.0.
+
+### KernelRegressor(kernel, bandwidth[, metric]) (0.8.0)
+Nadaraya-Watson: predictions are kernel-weighted means of training
+targets, `K(d/h)` over the same metric seam as k-NN (euclidean default).
+Kernels `gaussian` / `epanechnikov` / `tricube` / `uniform`; bandwidth
+must be positive and is the smoothness knob, monotonically. When every
+weight is zero (compact kernel or total underflow — a far query), the
+prediction falls back to the NEAREST training target, a stated policy.
+sklearn has no Nadaraya-Watson estimator; fixtures are hand-computable.
+
 ### KMeans(k, seed[, maxIter, tol])
 Seeded k-means++ over the stdlib `Generator` (deterministic per seed — not
 numpy's stream; on separated data the converged partition/centers/inertia
@@ -73,12 +108,15 @@ are init-independent and pinned against sklearn), then Lloyd.
 `centers()/labels()/inertia()/predict`; `score` = −inertia (sklearn's
 convention). Nearest-center ties go to the lowest index.
 
-### KNeighborsRegressor(k, distanceWeights) / KNeighborsClassifier(k)
-Brute-force euclidean. Regressor: uniform or 1/d weights with sklearn's
-zero-distance rule (exact matches take all the weight). Classifier:
-vote fractions in `predictProba`, argmax ties to the lowest label.
-Neighbor ties at equal distance break to the lowest training index
-(documented where sklearn's is an implementation detail).
+### KNeighborsRegressor / KNeighborsClassifier (k[, metric][, distanceWeights])
+Brute-force neighbour search routed through `cajeta.math.distance.Metric`
+— euclidean by default, any stdlib or caller-defined metric by
+constructor, and NO distance code in this library (grep-asserted by the
+suite). Weighting is symmetric across the pair since 0.8.0: uniform or
+1/d on either, with sklearn's zero-distance rule (exact matches take all
+the weight). Classifier: vote fractions in `predictProba`, argmax ties to
+the lowest label. Neighbor ties at equal distance break to the lowest
+training index (documented where sklearn's is an implementation detail).
 
 ## Preprocessing & model selection
 
@@ -94,12 +132,40 @@ Neighbor ties at equal distance break to the lowest training index
   `transform`. Because the WHOLE chain refits inside `crossValScore`,
   per-fold preprocessing is leakage-free by construction. Stages transfer
   ownership (`#`); pipelines nest.
+- `OneHotEncoder([dropFirst[, ignoreUnknown]])` / `OrdinalEncoder([orderings])`
+  (0.8.0) — categorical encoding over tensors, both `Transformer`s.
+  One-hot categories are SORTED per column (sklearn's order); an unseen
+  category at transform is an ERROR unless `ignoreUnknown` opts into
+  all-zeros. Ordinal preserves a caller-supplied category order. Fitted
+  on training data only, so folds cannot leak categories.
 - `Split.trainTestSplit(x, y, testFraction, seed)` — seeded permutation,
-  ceil test-size rule; returns `[xTrain, xTest, yTrain, yTest]`.
+  ceil test-size rule; returns `[xTrain, xTest, yTrain, yTest]`;
+  `trainTestSplitStratified` (0.8.0) preserves class proportions in both
+  parts and fails LOUDLY naming any class too small to give each part a
+  member.
 - `KFold(k, shuffle, seed)` — sklearn fold sizes; `assignments(n)` gives a
-  fold id per row.
+  fold id per row. `StratifiedKFold` (0.8.0) preserves proportions per
+  fold (`assignments(y)`), failing loudly on a class smaller than `k`.
+- `RepeatedHoldout(n, testFraction, seed)` (0.8.0) — `n` independent
+  seeded splits; results carry per-split scores plus mean and standard
+  deviation, never the mean alone.
 - `Split.crossValScore(est, x, y, kfold)` — per-fold `score()` of any
   `Predictor` (refit per fold; the final state is the last fold's).
+- `GridSearch.run(factory, dims, x, y, foldIds, metric)` /
+  `RandomizedSearch.run(…, budget, seed, …)` (0.8.0) — hyperparameter
+  search over the `EstimatorFactory` seam (`create(params)` builds a
+  fresh estimator per fold — no state leaks). Metrics go by name through
+  `Scorers` (`accuracy`, `f1`, `rocAuc`, `r2` — unknown names throw). A
+  combination that throws is RECORDED and the sweep continues; the
+  `SearchResult` carries every combination, score, ok flag, `failures()`,
+  and `best*` over the completed ones. A 1-D grid over `k` IS the
+  K-versus-error table.
+- `ForwardSelector(factory, params, nSelect, nFolds, metric, seed)`
+  (0.8.0) — greedy forward feature selection by cross-validated score;
+  stops at the target count or when no candidate strictly improves
+  (ties to the lowest index; seeded shuffled folds, so runs reproduce).
+  A `Transformer`: `transform` keeps the selected columns in ascending
+  original order, `selectedCount()`/`selectedAt(i)` read the subset.
 
 ### Scaling and k-NN — a worked example
 
@@ -202,6 +268,25 @@ average-rank ties — matches sklearn exactly, ties included). Unsupervised:
 `silhouetteScore`/`silhouetteSamples` (throws on 1 or n clusters —
 undefined must say so), `daviesBouldin`, `calinskiHarabasz`,
 `adjustedRand`, `nmi`, and `kmeansElbow` for the k sweep.
+
+`confusionMatrix` puts TRUE classes on rows, PREDICTED on columns —
+sklearn's orientation, which much of the literature draws TRANSPOSED;
+transpose before comparing to a textbook.
+
+### Reporting & curves (0.8.0)
+
+- `Metrics.precisionRecallCurve(yTrue, scores)` → `PrCurve`: one point
+  per distinct score threshold (ascending) plus sklearn's terminal
+  `(precision 1, recall 0)` point — `points() == thresholds() + 1`, and
+  reading the terminal point's nonexistent threshold throws. This is how
+  a decision threshold gets CHOSEN; `predict(x, t)` is how it gets used.
+- `Metrics.averagePrecision(yTrue, scores)` — the step-function area
+  `Σ (Rᵢ−Rᵢ₊₁)·Pᵢ` (sklearn's `average_precision_score`); the one-number
+  summary accuracy cannot be on imbalanced problems.
+- `Metrics.classificationReport(yTrue, yPred, nClasses)` →
+  `ClassificationReport`: per-class precision/recall/F1/support plus
+  `macro*` (classes weighted equally) and `weighted*` (by support) —
+  sklearn's report shape as a typed result, matched numerically.
 
 ## Errors
 

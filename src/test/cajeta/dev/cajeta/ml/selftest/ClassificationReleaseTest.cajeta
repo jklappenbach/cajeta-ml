@@ -1,0 +1,275 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.ForwardSelector;
+import dev.cajeta.ml.GridSearch;
+import dev.cajeta.ml.KernelRegressor;
+import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.KNeighborsClassifier;
+import dev.cajeta.ml.LinearDiscriminantAnalysis;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.Pipeline;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.QuadraticDiscriminantAnalysis;
+import dev.cajeta.ml.Scorers;
+import dev.cajeta.ml.SearchResult;
+import dev.cajeta.ml.Split;
+import dev.cajeta.ml.StandardScaler;
+
+/**
+ * ml-classification-gaps plan Unit 9 — the spec-level acceptance sweep
+ * (§12). The loan-default worked example (§12.3) runs from the library
+ * alone: a deterministic synthetic portfolio — income, debt ratio, credit
+ * history, utilization, and two irrelevant columns — through LDA, QDA,
+ * logistic, and L1-logistic misclassification rates plus the K-versus-
+ * error k-NN sweep. Composition (§12.1) and loud-rejection (§12.4) are
+ * asserted estimator by estimator; §12.5 (pre-existing call sites
+ * unchanged) is the rest of this suite staying green.
+ */
+public class ClassificationReleaseTest {
+
+    public ClassificationReleaseTest() { return; }
+
+    /**
+     * 200 borrowers x 6 features: 0 income, 1 debt ratio, 2 credit
+     * history, 3 utilization, 4-5 irrelevant. Default when the debt-side
+     * pressure beats income/history plus deterministic jitter.
+     */
+    static #Tensor<float64> loanX() {
+        float64[] d = heap float64[1200];
+        int64 i = 0;
+        while (i < 200) {
+            d[i * 6] = (float64) ((i * 7) % 17) * 0.25 - 2.0;
+            d[i * 6 + 1] = (float64) ((i * 11 + 3) % 19) * 0.2 - 1.9;
+            d[i * 6 + 2] = (float64) ((i * 5 + 1) % 13) * 0.3 - 1.8;
+            d[i * 6 + 3] = (float64) ((i * 13 + 7) % 23) * 0.15 - 1.6;
+            d[i * 6 + 4] = (float64) ((i * 3 + 2) % 29) * 0.1 - 1.4;
+            d[i * 6 + 5] = (float64) ((i * 17 + 5) % 31) * 0.09 - 1.35;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = 200;
+        sh[1] = 6;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static #Tensor<float64> loanY() {
+        Tensor<float64> x = loanX();
+        float64[] d = heap float64[200];
+        int64 i = 0;
+        while (i < 200) {
+            float64 jitter = (float64) ((i * 29 + 11) % 31) * 0.04 - 0.6;
+            float64 score = 1.6 * x.get2(i, 1) + 1.1 * x.get2(i, 3)
+                - 1.2 * x.get2(i, 0) - 0.7 * x.get2(i, 2) + jitter;
+            if (score > 0.0) {
+                d[i] = 1.0;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = 200;
+        return Tensor.of<float64>(d, sh);
+    }
+
+    static float64 misclassification(Predictor est, Tensor<float64> x,
+                                     Tensor<float64> y) {
+        Tensor<float64> pred = est.predict(x);
+        return 1.0 - Metrics.accuracy(y, pred);
+    }
+
+    // §12.3 / 9.1.1 — the worked example, library alone: four
+    // misclassification rates plus the K-versus-error sweep.
+    @Test
+    public void loanDefaultWorkedExample() {
+        Tensor<float64> x = loanX();
+        Tensor<float64> y = loanY();
+        Tensor<float64>[] parts =
+            Split.trainTestSplitStratified(x, y, 0.25, (uint64) 42);
+
+        LinearDiscriminantAnalysis lda = heap LinearDiscriminantAnalysis();
+        lda.fit(parts[0], parts[2]);
+        float64 ldaErr = misclassification(lda, parts[1], parts[3]);
+
+        QuadraticDiscriminantAnalysis qda =
+            heap QuadraticDiscriminantAnalysis();
+        qda.fit(parts[0], parts[2]);
+        float64 qdaErr = misclassification(qda, parts[1], parts[3]);
+
+        LogisticRegression l2 = heap LogisticRegression(1.0, 0.00000001,
+            (int64) 500);
+        l2.fit(parts[0], parts[2]);
+        float64 l2Err = misclassification(l2, parts[1], parts[3]);
+
+        LogisticRegression l1 = heap LogisticRegression(1.0, 0.00000001,
+            (int64) 2000, "l1");
+        l1.fit(parts[0], parts[2]);
+        float64 l1Err = misclassification(l1, parts[1], parts[3]);
+
+        // Every model beats chance decisively on the held-out quarter.
+        Assert.isTrue(ldaErr < 0.3);
+        Assert.isTrue(qdaErr < 0.3);
+        Assert.isTrue(l2Err < 0.3);
+        Assert.isTrue(l1Err < 0.3);
+
+        // K-versus-error sweep (§7.9): a 1-D grid IS the table.
+        float64[] kd = heap float64[6];
+        kd[0] = 1.0; kd[1] = 3.0; kd[2] = 5.0;
+        kd[3] = 7.0; kd[4] = 9.0; kd[5] = 11.0;
+        int64[] ks = heap int64[1];
+        ks[0] = 6;
+        Tensor<float64>[] dims = heap Tensor<float64>[1];
+        dims[0] = Tensor.of<float64>(kd, ks);
+        KFold kf = heap KFold((int64) 5, true, (uint64) 7);
+        Tensor<int64> fid = kf.assignments(parts[0].shapeAt(0));
+        SearchResult sweep = GridSearch.run(heap KnnFactory(), dims,
+            parts[0], parts[2], fid, "accuracy");
+        Assert.equals(sweep.count(), (int64) 6);
+        int64 i = 0;
+        while (i < 6) {
+            Assert.isTrue(sweep.ok(i));
+            // readable directly: K and its CV error
+            float64 kv = sweep.param(i, (int64) 0);
+            float64 err = 1.0 - sweep.score(i);
+            Assert.isTrue(kv >= 1.0 && kv <= 11.0);
+            Assert.isTrue(err >= 0.0 && err <= 1.0);
+            i = i + 1;
+        }
+        Assert.isTrue(sweep.bestScore() > 0.7);
+    }
+
+    // §12.1 / 9.1.2 — every estimator this plan added composes in
+    // Pipeline and cross-validation with no special case.
+    @Test
+    public void everyNewEstimatorComposesInPipelineAndCv() {
+        Tensor<float64> x = loanX();
+        Tensor<float64> y = loanY();
+        KFold kf = heap KFold((int64) 3, true, (uint64) 13);
+
+        Predictor p1 = Pipeline.of(heap StandardScaler(),
+            heap LinearDiscriminantAnalysis());
+        Tensor<float64> s1 = Split.crossValScore(p1, x, y, kf);
+        Predictor p2 = Pipeline.of(heap StandardScaler(),
+            heap QuadraticDiscriminantAnalysis());
+        Tensor<float64> s2 = Split.crossValScore(p2, x, y, kf);
+        Predictor p3 = Pipeline.of(heap StandardScaler(),
+            heap KNeighborsClassifier((int64) 5, true));
+        Tensor<float64> s3 = Split.crossValScore(p3, x, y, kf);
+        Predictor p4 = Pipeline.of(heap StandardScaler(),
+            heap LogisticRegression(1.0, 0.00000001, (int64) 2000, "l1"));
+        Tensor<float64> s4 = Split.crossValScore(p4, x, y, kf);
+
+        int64 f = 0;
+        while (f < 3) {
+            Assert.isTrue(s1.get1(f) > 0.5);
+            Assert.isTrue(s2.get1(f) > 0.5);
+            Assert.isTrue(s3.get1(f) > 0.5);
+            Assert.isTrue(s4.get1(f) > 0.5);
+            f = f + 1;
+        }
+
+        // Selector -> scaler -> classifier: three stages, refit per fold.
+        float64[] pd = heap float64[2];
+        pd[0] = 1.0;
+        pd[1] = 0.00000001;
+        int64[] ps = heap int64[1];
+        ps[0] = 2;
+        Predictor p5 = Pipeline.of(
+            heap ForwardSelector(heap LogisticCFactory(),
+                Tensor.of<float64>(pd, ps), (int64) 3, (int64) 3,
+                "accuracy", (uint64) 3),
+            heap StandardScaler(),
+            heap LogisticRegression(1.0, 0.00000001, (int64) 500));
+        Tensor<float64> s5 = Split.crossValScore(p5, x, y, kf);
+        f = 0;
+        while (f < 3) {
+            Assert.isTrue(s5.get1(f) > 0.5);
+            f = f + 1;
+        }
+
+        // Kernel regression cross-validates on a smooth target (R2).
+        float64[] rx = heap float64[60];
+        float64[] ry = heap float64[60];
+        int64 i = 0;
+        while (i < 60) {
+            float64 v = (float64) i * 0.1;
+            rx[i] = v;
+            ry[i] = v * v * 0.2 + (float64) ((i * 7) % 5) * 0.01;
+            i = i + 1;
+        }
+        int64[] xs = heap int64[2];
+        xs[0] = 60;
+        xs[1] = 1;
+        int64[] ys = heap int64[1];
+        ys[0] = 60;
+        Tensor<float64> krx = Tensor.of<float64>(rx, xs);
+        Tensor<float64> kry = Tensor.of<float64>(ry, ys);
+        Predictor p6 = heap KernelRegressor("gaussian", 0.5);
+        Tensor<float64> s6 = Split.crossValScore(p6, krx, kry, kf);
+        f = 0;
+        while (f < 3) {
+            Assert.isTrue(s6.get1(f) > 0.8);
+            f = f + 1;
+        }
+    }
+
+    // §12.4 / 9.1.3 — nothing added by this plan ignores an unsupported
+    // parameter silently: one loud rejection per estimator.
+    @Test
+    public void noEstimatorSilentlyIgnoresUnsupportedParameters() {
+        // LDA: unknown solver, and shrinkage under svd.
+        Assert.assertThrows(() -> {
+            LinearDiscriminantAnalysis a =
+                heap LinearDiscriminantAnalysis("qr");
+        });
+        Assert.assertThrows(() -> {
+            LinearDiscriminantAnalysis a =
+                heap LinearDiscriminantAnalysis("svd", 0.5);
+        });
+        // QDA: regularization outside [0, 1].
+        Assert.assertThrows(() -> {
+            QuadraticDiscriminantAnalysis a =
+                heap QuadraticDiscriminantAnalysis(1.5);
+        });
+        // k-NN: k below 1.
+        Assert.assertThrows(() -> {
+            KNeighborsClassifier a = heap KNeighborsClassifier((int64) 0);
+        });
+        // Logistic: unknown penalty; threshold outside (0, 1).
+        Assert.assertThrows(() -> {
+            LogisticRegression a = heap LogisticRegression(1.0, 0.0001,
+                (int64) 100, "l0");
+        });
+        Assert.assertThrows(() -> {
+            Tensor<float64> x = loanX();
+            Tensor<float64> y = loanY();
+            LogisticRegression a = heap LogisticRegression(1.0, 0.0001,
+                (int64) 200);
+            a.fit(x, y);
+            Tensor<float64> p = a.predict(x, 1.5);
+        });
+        // Kernel regression: unknown kernel.
+        Assert.assertThrows(() -> {
+            KernelRegressor a = heap KernelRegressor("cosine", 1.0);
+        });
+        // Forward selection: unknown metric.
+        Assert.assertThrows(() -> {
+            float64[] pd = heap float64[1];
+            pd[0] = 1.0;
+            int64[] ps = heap int64[1];
+            ps[0] = 1;
+            ForwardSelector a = heap ForwardSelector(heap KnnFactory(),
+                Tensor.of<float64>(pd, ps), (int64) 1, (int64) 3,
+                "brierScore", (uint64) 1);
+        });
+        // Scorers: unknown metric name.
+        Assert.assertThrows(() -> {
+            Tensor<float64> x = loanX();
+            Tensor<float64> y = loanY();
+            KNeighborsClassifier a = heap KNeighborsClassifier((int64) 3);
+            a.fit(x, y);
+            float64 s = Scorers.score("mcc", a, x, y);
+        });
+    }
+}

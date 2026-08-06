@@ -8,8 +8,22 @@ over `Tensor<float64>` (and `Table<T>`) data:
   the contract every ecosystem model library (cajeta-xgboost included, via
   adapter) conforms to. Owned by this library.
 - **Linear models** — `LinearRegression` (QR lstsq), `Ridge` (Cholesky),
-  `LogisticRegression` (newton-cholesky IRLS) — with a statsmodels-grade
-  `summary()` (stderr, t, p-values, R², condition warning).
+  `Lasso`/`ElasticNet` (sklearn's exact coordinate descent, sparse-input
+  path), `LogisticRegression` (newton-cholesky IRLS; class/sample
+  weights, `"balanced"`, a decision-threshold `predict` overload, and an
+  L1 penalty by coordinate descent with EXACT zeros) — with a
+  statsmodels-grade `summary()` (stderr, t, p-values, R², condition
+  warning).
+- **Discriminants** — `LinearDiscriminantAnalysis` (svd/lsqr/eigen,
+  fixed or Ledoit-Wolf `"auto"` shrinkage, priors, `predictProba`, and
+  `transform` onto the discriminant directions — a supervised reducer
+  beside `PCA`) and `QuadraticDiscriminantAnalysis` (Friedman
+  regularization blend).
+- **Neighbors & kernels** — `KNeighborsClassifier` / `KNeighborsRegressor`
+  (any `cajeta.math.distance.Metric`, symmetric distance-weighting
+  options, documented tie-breaks) and `KernelRegressor` (Nadaraya-Watson;
+  gaussian/epanechnikov/tricube/uniform kernels, explicit far-query
+  policy).
 - **Clustering** — `KMeans`, `KMedoids` (PAM, any metric),
   `GaussianMixture` (EM, four covariance types, AIC/BIC),
   `AgglomerativeClustering` (four linkages, linkage matrix, tree cutting,
@@ -20,8 +34,23 @@ over `Tensor<float64>` (and `Table<T>`) data:
   `SpectralEmbedding`, `FastICA`, `NMF`, `FactorAnalysis`.
 - **Cluster evaluation** — silhouette (+ per-sample), Davies-Bouldin,
   Calinski-Harabasz, adjusted Rand, NMI, K-means elbow sweep.
-- **Preprocessing, model selection, metrics** — scalers, train/test split,
-  k-fold CV, and the regression/classification metric set.
+- **Preprocessing & encoders** — `StandardScaler`, `MinMaxScaler`,
+  `OneHotEncoder` / `OrdinalEncoder` (loud unseen-category policy,
+  leakage-safe inside CV), and `Pipeline` (refit-per-fold, so
+  preprocessing never leaks).
+- **Model selection** — seeded train/test split and k-fold (both with
+  stratified variants), `RepeatedHoldout`, `GridSearch` /
+  `RandomizedSearch` over the `EstimatorFactory` seam (per-combination
+  failure capture, metric by name via `Scorers`), `ForwardSelector`
+  (greedy CV-scored feature selection, a `Transformer`), and
+  `Split.crossValScore`.
+- **Metrics & reporting** — the regression/classification metric set,
+  ROC-AUC, precision-recall curves with average precision (`PrCurve`),
+  and the per-class `ClassificationReport` with macro/weighted rows.
+- **A neural half** — define-by-run autodiff (`GradTape`), `nn` modules
+  (Linear/ReLU/Sequential, attention pieces, LoRA), Adam, backprop and
+  SPELA trainers, safetensors checkpoints with torch-shaped names, and
+  transfer-learning freeze/import — toured in sections 13–22.
 
 ## Choosing a clustering algorithm
 

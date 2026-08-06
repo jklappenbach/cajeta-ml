@@ -10,6 +10,8 @@ from sklearn.metrics import (average_precision_score, classification_report,
                              precision_recall_curve)
 
 print("sklearn", sklearn.__version__)
+assert sklearn.__version__ == "1.9.0", (
+    f"fixtures are pinned to sklearn 1.9.0, not {sklearn.__version__}")
 
 # Binary scores fixture: 12 rows, deterministic scores with one tie pair.
 y = np.array([0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1])
