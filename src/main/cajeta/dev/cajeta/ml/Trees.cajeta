@@ -56,6 +56,9 @@ final class Trees {
     int64 minSamplesSplit;
     int64 minSamplesLeaf;
     int64 maxLeafNodes;   // 0 = unbounded; > 0 switches to best-first
+    int64 maxFeaturesNode; // features CONSIDERED PER NODE (0 = all) — the
+                           // random-forest lever (spec §7.1): drawn fresh at
+                           // every node from the tree's generator
     float64 minImpurityDecrease;
     float64 ccpAlpha;
     int64 realizedDepth;
@@ -78,13 +81,12 @@ final class Trees {
         this.maxDepth = maxDepth;
         this.splitter = splitter;
         this.kOut = this.crit.width();
-        if (splitter == 1) {
-            Generator g = heap Generator(seed);
-            this.rng #= g;
-        }
+        Generator g = heap Generator(seed);
+        this.rng #= g;
         this.minSamplesSplit = 2;
         this.minSamplesLeaf = 1;
         this.maxLeafNodes = 0;
+        this.maxFeaturesNode = 0;
         this.minImpurityDecrease = 0.0;
         this.ccpAlpha = 0.0;
         this.nodeCount = 0;
@@ -187,12 +189,30 @@ final class Trees {
         int64 m = end - start;
         this.fsF = -1;
         float64 bestProxy = 0.0;
+        // Per-node feature visit order: ascending when unrestricted, or a
+        // fresh seeded PERMUTATION when maxFeaturesNode is set (spec §7.1 —
+        // per NODE, not per tree). The budget counts only NON-CONSTANT
+        // features, sklearn's rule: a node whose drawn feature is constant
+        // keeps drawing rather than becoming a spurious leaf.
+        int64 nFeat = this.nf;
+        int64 budget = this.nf;
+        int64[] featOrder = heap int64[this.nf];
+        if (this.maxFeaturesNode > 0 && this.maxFeaturesNode < this.nf) {
+            budget = this.maxFeaturesNode;
+            Tensor<int64> perm = this.rng.choice(this.nf, this.nf, false);
+            int64 q = 0;
+            while (q < this.nf) { featOrder[q] = perm.flatGet(q); q = q + 1; }
+        } else {
+            int64 q = 0;
+            while (q < this.nf) { featOrder[q] = q; q = q + 1; }
+        }
         if (this.splitter == 0) {
             float64[] fv = heap float64[m];
             int64[] fi = heap int64[m];
             float64[] fy = heap float64[m];
-            int64 f = 0;
-            while (f < this.nf) {
+            int64 fo = 0;
+            while (fo < nFeat && budget > 0) {
+                int64 f = featOrder[fo];
                 int64 j = 0;
                 while (j < m) {
                     fi[j] = this.smp[start + j];
@@ -201,6 +221,7 @@ final class Trees {
                 }
                 Trees.sortPairs(fv, fi, m);
                 if (fv[m - 1] > fv[0] + 0.0000001) {           // non-constant
+                    budget = budget - 1;
                     j = 0;
                     while (j < m) { fy[j] = this.ys[fi[j]]; j = j + 1; }
                     int64 p = 1;
@@ -222,12 +243,13 @@ final class Trees {
                         p = p + 1;
                     }
                 }
-                f = f + 1;
+                fo = fo + 1;
             }
         } else {
             float64[] py = heap float64[m];
-            int64 f = 0;
-            while (f < this.nf) {
+            int64 fo2 = 0;
+            while (fo2 < nFeat && budget > 0) {
+                int64 f = featOrder[fo2];
                 float64 mn = this.xs[this.smp[start] * this.nf + f];
                 float64 mx = mn;
                 int64 i = start + 1;
@@ -238,6 +260,7 @@ final class Trees {
                     i = i + 1;
                 }
                 if (mx > mn + 0.0000001) {
+                    budget = budget - 1;
                     Tensor<float32> u = this.rng.uniform(1);
                     float64 thr = mn + (float64) u.flatGet(0) * (mx - mn);
                     int64 nl = 0;
@@ -272,7 +295,7 @@ final class Trees {
                         }
                     }
                 }
-                f = f + 1;
+                fo2 = fo2 + 1;
             }
         }
         return this.fsF >= 0;

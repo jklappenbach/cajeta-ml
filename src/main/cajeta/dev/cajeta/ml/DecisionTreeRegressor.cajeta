@@ -19,6 +19,7 @@ public final class DecisionTreeRegressor implements Predictor {
     int64 minSamplesSplit;
     int64 minSamplesLeaf;
     int64 maxLeafNodes;
+    int64 maxFeaturesNode;
     float64 minImpurityDecrease;
     float64 ccpAlpha;
     int64 nFeatures;
@@ -71,6 +72,7 @@ public final class DecisionTreeRegressor implements Predictor {
         this.minSamplesSplit = 2;
         this.minSamplesLeaf = 1;
         this.maxLeafNodes = 0;
+        this.maxFeaturesNode = 0;
         this.minImpurityDecrease = 0.0;
         this.ccpAlpha = 0.0;
         this.fitted = false;
@@ -101,6 +103,17 @@ public final class DecisionTreeRegressor implements Predictor {
             throw heap MlException("DecisionTreeRegressor: maxLeafNodes must be 0 (unbounded) or >= 2");
         }
         this.maxLeafNodes = v;
+        return;
+    }
+
+
+    /** Features CONSIDERED PER NODE (0 = all): the random-forest lever
+     *  (spec §7.1) — a fresh seeded draw at every node, not per tree. */
+    public void setMaxFeaturesNode(int64 v) {
+        if (v < 0) {
+            throw heap MlException("DecisionTreeRegressor: maxFeaturesNode must be >= 0");
+        }
+        this.maxFeaturesNode = v;
         return;
     }
 
@@ -159,6 +172,7 @@ public final class DecisionTreeRegressor implements Predictor {
         t.minSamplesSplit = this.minSamplesSplit;
         t.minSamplesLeaf = this.minSamplesLeaf;
         t.maxLeafNodes = this.maxLeafNodes;
+        t.maxFeaturesNode = this.maxFeaturesNode;
         t.minImpurityDecrease = this.minImpurityDecrease;
         t.ccpAlpha = this.ccpAlpha;
         t.fit(x, y, n, this.nFeatures);

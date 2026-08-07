@@ -22,6 +22,7 @@ public final class DecisionTreeClassifier implements ProbClassifier {
     int64 minSamplesSplit;
     int64 minSamplesLeaf;
     int64 maxLeafNodes;
+    int64 maxFeaturesNode;
     float64 minImpurityDecrease;
     float64 ccpAlpha;
     Tensor<float64> classWeight;   // (K,) per-class weights; null = unweighted
@@ -69,6 +70,7 @@ public final class DecisionTreeClassifier implements ProbClassifier {
         this.minSamplesSplit = 2;
         this.minSamplesLeaf = 1;
         this.maxLeafNodes = 0;
+        this.maxFeaturesNode = 0;
         this.minImpurityDecrease = 0.0;
         this.ccpAlpha = 0.0;
         this.fitted = false;
@@ -99,6 +101,17 @@ public final class DecisionTreeClassifier implements ProbClassifier {
             throw heap MlException("DecisionTreeClassifier: maxLeafNodes must be 0 (unbounded) or >= 2");
         }
         this.maxLeafNodes = v;
+        return;
+    }
+
+
+    /** Features CONSIDERED PER NODE (0 = all): the random-forest lever
+     *  (spec §7.1) — a fresh seeded draw at every node, not per tree. */
+    public void setMaxFeaturesNode(int64 v) {
+        if (v < 0) {
+            throw heap MlException("DecisionTreeClassifier: maxFeaturesNode must be >= 0");
+        }
+        this.maxFeaturesNode = v;
         return;
     }
 
@@ -175,6 +188,7 @@ public final class DecisionTreeClassifier implements ProbClassifier {
         t.minSamplesSplit = this.minSamplesSplit;
         t.minSamplesLeaf = this.minSamplesLeaf;
         t.maxLeafNodes = this.maxLeafNodes;
+        t.maxFeaturesNode = this.maxFeaturesNode;
         t.minImpurityDecrease = this.minImpurityDecrease;
         t.ccpAlpha = this.ccpAlpha;
         t.fit(x, y, n, this.nFeatures);
@@ -307,6 +321,7 @@ public final class DecisionTreeClassifier implements ProbClassifier {
         probe.minSamplesSplit = this.minSamplesSplit;
         probe.minSamplesLeaf = this.minSamplesLeaf;
         probe.maxLeafNodes = this.maxLeafNodes;
+        probe.maxFeaturesNode = this.maxFeaturesNode;
         probe.minImpurityDecrease = this.minImpurityDecrease;
         if (this.classWeight != null) { probe.setClassWeight(this.classWeight); }
         probe.fit(x, y);

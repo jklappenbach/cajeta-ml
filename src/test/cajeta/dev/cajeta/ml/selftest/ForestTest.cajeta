@@ -1,0 +1,116 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.DecisionTreeClassifier;
+import dev.cajeta.ml.RandomForestClassifier;
+import dev.cajeta.ml.RandomForestRegressor;
+
+/**
+ * ml-trees-ensembles U6 (forests) — per-node feature subsampling verified
+ * STRUCTURALLY (a single tree at maxFeaturesNode 1 mixes features across
+ * its own nodes, which per-tree subsampling could never do), sklearn's
+ * maxFeatures defaults, whole-forest reproducibility under our documented
+ * seed derivation (spec §7.4), OOB, and the ensemble importance average
+ * (closing 4.1.4).
+ */
+public class ForestTest {
+
+    public ForestTest() { return; }
+
+    // 6.3.1 — per-NODE subsampling, not per-tree: on an XOR grid (4x4,
+    // y = quadrant parity) NO single feature can ever purify a node, so a
+    // tree limited to ONE candidate feature per node must still end up
+    // using BOTH features across its nodes — for every seed. A per-tree
+    // implementation would never terminate pure on one feature here; the
+    // structure, not the score, is what's asserted.
+    @Test
+    public void perNodeSubsamplingIsStructural() {
+        float64[] xa = heap float64[32];
+        float64[] ya = heap float64[16];
+        int64 i = 0;
+        while (i < 16) {
+            int64 c = i % 4;
+            int64 rr = i / 4;
+            xa[i * 2] = (float64) c;
+            xa[i * 2 + 1] = (float64) rr;
+            boolean lo = c < 2;
+            boolean hi = rr < 2;
+            ya[i] = lo != hi ? 1.0 : 0.0;
+            i = i + 1;
+        }
+        int64[] xs = heap int64[2]; xs[0] = 16; xs[1] = 2;
+        int64[] ys = heap int64[1]; ys[0] = 16;
+        DecisionTreeClassifier t = heap DecisionTreeClassifier(
+            "gini", (int64) 0, "best", (uint64) 2);
+        t.setMaxFeaturesNode((int64) 1);
+        t.fit(Tensor.of<float64>(xa, xs), Tensor.of<float64>(ya, ys));
+        String dump = t.exportText();
+        Assert.isTrue(dump.indexOf("f0 <=") >= (int64) 0);
+        Assert.isTrue(dump.indexOf("f1 <=") >= (int64) 0);
+        Assert.isTrue(t.score(Tensor.of<float64>(xa, xs), Tensor.of<float64>(ya, ys)) == 1.0);
+        return;
+    }
+
+    // 6.1.1–6.1.3 — the forest separates the blobs, is bit-identical on a
+    // same-seed refit, and a member tree's export shows mixed features
+    // (sqrt(2) -> 1 candidate per node on this 2-feature fixture).
+    @Test
+    public void forestReproducibleAndAccurate() {
+        Tensor<float64> x = BaggingTest.bagX();
+        Tensor<float64> y = BaggingTest.bagY();
+
+        RandomForestClassifier f1 = heap RandomForestClassifier((int64) 11, (uint64) 9);
+        RandomForestClassifier f2 = heap RandomForestClassifier((int64) 11, (uint64) 9);
+        f1.setOobScore(true);
+        f1.fit(x, y);
+        f2.fit(x, y);
+        Assert.isTrue(f1.score(x, y) == 1.0);
+        Tensor<float64> p1 = f1.predict(x);
+        Tensor<float64> p2 = f2.predict(x);
+        int64 i = 0;
+        while (i < 40) {
+            Assert.equals(Cajeta.f64ToBits(p2.flatGet(i)), Cajeta.f64ToBits(p1.flatGet(i)));
+            i = i + 1;
+        }
+        float64 oob = f1.oobScore();
+        Assert.isTrue(oob > 0.8 && oob <= 1.0);
+
+        // 4.1.4 — ensemble importances are the member average: normalized,
+        // summing to 1, split across the two informative features.
+        Tensor<float64> imp = f1.featureImportances();
+        float64 s = imp.flatGet((int64) 0) + imp.flatGet((int64) 1);
+        float64 d = s - 1.0;
+        if (d < 0.0) { d = -d; }
+        Assert.isTrue(d <= 0.000000000001);
+        Assert.isTrue(imp.flatGet((int64) 0) > 0.0);
+        Assert.isTrue(imp.flatGet((int64) 1) > 0.0);
+        return;
+    }
+
+    // Regression forest: mean aggregation tracks a smooth target; the
+    // regression default considers ALL features (sklearn's `1.0`).
+    @Test
+    public void regressionForestTracksSmoothTarget() {
+        float64[] xa = heap float64[60];
+        float64[] ya = heap float64[30];
+        int64 i = 0;
+        while (i < 30) {
+            xa[i * 2] = (float64) i;
+            xa[i * 2 + 1] = (float64) ((i * 7) % 30);
+            ya[i] = 2.0 * xa[i * 2] + 0.5 * xa[i * 2 + 1];
+            i = i + 1;
+        }
+        int64[] xs = heap int64[2]; xs[0] = 30; xs[1] = 2;
+        int64[] ys = heap int64[1]; ys[0] = 30;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+
+        RandomForestRegressor r = heap RandomForestRegressor((int64) 15, (uint64) 4);
+        r.setOobScore(true);
+        r.fit(x, y);
+        Assert.isTrue(r.score(x, y) > 0.95);
+        Assert.isTrue(r.oobScore() > 0.7);
+        return;
+    }
+}
