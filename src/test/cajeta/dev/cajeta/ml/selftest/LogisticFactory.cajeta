@@ -1,0 +1,16 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.Predictor;
+
+/** A non-tree base estimator for BaggingTest §11.5: nothing tree-shaped. */
+public final class LogisticFactory implements EstimatorFactory {
+
+    public LogisticFactory() { return; }
+
+    public #Predictor create(Tensor<float64> params) {
+        return heap LogisticRegression(1.0, 0.000001, (int64) 200);
+    }
+}

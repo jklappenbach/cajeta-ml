@@ -1,0 +1,20 @@
+package dev.cajeta.ml;
+
+/**
+ * Concrete holder for one bagging member. Exists because the ensemble's
+ * members ride in an `ArrayList` — and an interface-typed element fetched
+ * from a generic container currently trips the open
+ * `iface-downcast-generic-call` toolchain defect when a generic-returning
+ * method (`predict`) is called through it. A concrete element type with an
+ * interface FIELD is the proven shape ({@link Pipeline} stores its stages
+ * exactly so); collapse this back to `ArrayList<Predictor>` when the INDEX
+ * row closes.
+ */
+final class BagMember {
+    Predictor est;
+
+    BagMember(#Predictor est) {
+        this.est #= est;
+        return;
+    }
+}
