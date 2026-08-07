@@ -1,0 +1,51 @@
+package dev.cajeta.ml;
+
+/**
+ * Poisson-deviance impurity; leaves predict the mean (ml-trees-ensembles
+ * U2). `weighted` = `Σ y·ln(y / mean)` over positive `y` — sklearn's Poisson
+ * criterion with the `Σ(y - mean) = 0` within-node simplification. A split
+ * is admissible only when BOTH children have positive target sums (a
+ * zero-sum child has an undefined rate), sklearn's own gate.
+ */
+final class PoissonImpurity implements Impurity {
+
+    PoissonImpurity() { return; }
+
+    public float64 weighted(float64[] ys, int64 lo, int64 hi) {
+        float64 sum = 0.0;
+        int64 i = lo;
+        while (i < hi) { sum = sum + ys[i]; i = i + 1; }
+        float64 mean = sum / (float64) (hi - lo);
+        float64 acc = 0.0;
+        i = lo;
+        while (i < hi) {
+            if (ys[i] > 0.0) {
+                acc = acc + ys[i] * Math.log(ys[i] / mean);
+            }
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    public boolean validSplit(float64[] ys, int64 lo, int64 mid, int64 hi) {
+        float64 sl = 0.0;
+        int64 i = lo;
+        while (i < mid) { sl = sl + ys[i]; i = i + 1; }
+        float64 sr = 0.0;
+        i = mid;
+        while (i < hi) { sr = sr + ys[i]; i = i + 1; }
+        return sl > 0.0 && sr > 0.0;
+    }
+
+    public int64 width() {
+        return 1;
+    }
+
+    public void leafInto(float64[] ys, int64 lo, int64 hi, float64[] value, int64 off) {
+        float64 sum = 0.0;
+        int64 i = lo;
+        while (i < hi) { sum = sum + ys[i]; i = i + 1; }
+        value[off] = sum / (float64) (hi - lo);
+        return;
+    }
+}

@@ -1,0 +1,44 @@
+package dev.cajeta.ml;
+
+/**
+ * Base-2 Shannon entropy over integer class labels (ml-trees-ensembles U2,
+ * spec §3.1–§3.2). The entropy itself comes from `cajeta.math.stats`
+ * (via {@link Criteria#entropyOfCounts}), not a reimplementation.
+ */
+final class EntropyImpurity implements Impurity {
+    int64 k;
+
+    EntropyImpurity(int64 k) {
+        this.k = k;
+        return;
+    }
+
+    public float64 weighted(float64[] ys, int64 lo, int64 hi) {
+        int64 m = hi - lo;
+        int64[] cnt = heap int64[this.k];
+        int64 i = lo;
+        while (i < hi) { cnt[(int64) ys[i]] = cnt[(int64) ys[i]] + 1; i = i + 1; }
+        return (float64) m * Criteria.entropyOfCounts(cnt, this.k, m);
+    }
+
+    public boolean validSplit(float64[] ys, int64 lo, int64 mid, int64 hi) {
+        return true;
+    }
+
+    public int64 width() {
+        return this.k;
+    }
+
+    public void leafInto(float64[] ys, int64 lo, int64 hi, float64[] value, int64 off) {
+        int64 m = hi - lo;
+        int64[] cnt = heap int64[this.k];
+        int64 i = lo;
+        while (i < hi) { cnt[(int64) ys[i]] = cnt[(int64) ys[i]] + 1; i = i + 1; }
+        int64 c = 0;
+        while (c < this.k) {
+            value[off + c] = (float64) cnt[c] / (float64) m;
+            c = c + 1;
+        }
+        return;
+    }
+}

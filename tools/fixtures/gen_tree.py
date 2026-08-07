@@ -85,3 +85,20 @@ dump("cls-d1", c1)
 Q1 = np.array([[1.0, 3.0], [10.5, 2.0]])
 print("  labels:", c1.predict(Q1).tolist())
 print("  proba:", [[repr(v) for v in row] for row in c1.predict_proba(Q1)])
+
+# ---- U2: regression criteria (absolute_error -> median leaves, poisson) ----
+Xa = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0]])
+ya = np.array([1.0, 2.0, 2.0, 100.0, 40.0, 41.0, 43.0, 45.0])  # outlier at row 3
+for crit in ("squared_error", "absolute_error"):
+    m = DecisionTreeRegressor(criterion=crit, random_state=1, max_depth=1).fit(Xa, ya)
+    dump(f"reg-{crit}-d1", m)
+    print("  pred:", [repr(v) for v in m.predict(np.array([[1.5], [6.0]]))])
+
+yp2 = np.array([0.0, 1.0, 1.0, 2.0, 8.0, 9.0, 11.0, 14.0])     # counts
+mp = DecisionTreeRegressor(criterion="poisson", random_state=1, max_depth=1).fit(Xa, yp2)
+dump("reg-poisson-d1", mp)
+print("  pred:", [repr(v) for v in mp.predict(np.array([[1.5], [6.0]]))])
+# deeper AE tree: median leaves at depth 2
+m2 = DecisionTreeRegressor(criterion="absolute_error", random_state=1, max_depth=2).fit(Xa, ya)
+dump("reg-absolute_error-d2", m2)
+print("  pred:", [repr(v) for v in m2.predict(np.array([[0.5], [3.0], [4.5], [6.5]]))])

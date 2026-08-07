@@ -12,28 +12,57 @@ import cajeta.math.Tensor;
  */
 public final class DecisionTreeRegressor implements Predictor {
 
+    String criterion;
     int64 maxDepth;
+    int64 splitter;      // 0 = best, 1 = random
+    uint64 seed;
     int64 nFeatures;
     Trees tree;
     boolean fitted;
 
     public DecisionTreeRegressor() {
-        this.initR(0);
+        this.initR("squared_error", 0, "best", (uint64) 0);
         return;
     }
 
     /** `maxDepth` 0 = unbounded; negative is rejected (§12.6). */
     public DecisionTreeRegressor(int64 maxDepth) {
-        this.initR(maxDepth);
+        this.initR("squared_error", maxDepth, "best", (uint64) 0);
         return;
     }
 
-    void initR(int64 maxDepth) {
+    /** `criterion` squared_error | absolute_error | poisson (§3.4). */
+    public DecisionTreeRegressor(String criterion, int64 maxDepth) {
+        this.initR(criterion, maxDepth, "best", (uint64) 0);
+        return;
+    }
+
+    /** `splitter` "best" | "random" (the Extra-Trees seam, §3.6). */
+    public DecisionTreeRegressor(String criterion, int64 maxDepth,
+                                 String splitter, uint64 seed) {
+        this.initR(criterion, maxDepth, splitter, seed);
+        return;
+    }
+
+    void initR(String criterion, int64 maxDepth, String splitter, uint64 seed) {
+        if (!criterion.equals("squared_error") && !criterion.equals("absolute_error")
+            && !criterion.equals("poisson")) {
+            throw heap MlException("DecisionTreeRegressor: unsupported "
+                + "criterion '" + criterion
+                + "' (squared_error | absolute_error | poisson)");
+        }
         if (maxDepth < 0) {
             throw heap MlException("DecisionTreeRegressor: maxDepth must "
                 + "be >= 0 (0 = unbounded)");
         }
+        if (!splitter.equals("best") && !splitter.equals("random")) {
+            throw heap MlException("DecisionTreeRegressor: unsupported "
+                + "splitter '" + splitter + "' (best | random)");
+        }
+        this.criterion = criterion;
         this.maxDepth = maxDepth;
+        this.splitter = splitter.equals("best") ? (int64) 0 : (int64) 1;
+        this.seed = seed;
         this.fitted = false;
         return;
     }
@@ -47,7 +76,31 @@ public final class DecisionTreeRegressor implements Predictor {
             throw heap MlException("DecisionTreeRegressor.fit: y must be (n,) matching x rows");
         }
         this.nFeatures = x.shapeAt(1);
-        Trees t = heap Trees((int64) 2, this.maxDepth, (int64) 1);
+        if (this.criterion.equals("poisson")) {
+            float64 sum = 0.0;
+            int64 j = 0;
+            while (j < n) {
+                float64 v = y.get1(j);
+                if (v < 0.0) {
+                    throw heap MlException("DecisionTreeRegressor.fit: poisson "
+                        + "requires non-negative targets");
+                }
+                sum = sum + v;
+                j = j + 1;
+            }
+            if (sum <= 0.0) {
+                throw heap MlException("DecisionTreeRegressor.fit: poisson "
+                    + "requires a positive target sum");
+            }
+        }
+        Trees t;
+        if (this.criterion.equals("squared_error")) {
+            t = heap Trees(heap SquaredErrorImpurity(), this.maxDepth, this.splitter, this.seed);
+        } else if (this.criterion.equals("absolute_error")) {
+            t = heap Trees(heap AbsoluteErrorImpurity(), this.maxDepth, this.splitter, this.seed);
+        } else {
+            t = heap Trees(heap PoissonImpurity(), this.maxDepth, this.splitter, this.seed);
+        }
         t.fit(x, y, n, this.nFeatures);
         this.tree #= t;
         this.fitted = true;

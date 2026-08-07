@@ -1,0 +1,50 @@
+package dev.cajeta.ml;
+
+/**
+ * Absolute-error impurity; leaves predict the MEDIAN (even count: the
+ * middle-pair average) — sklearn's MAE criterion (ml-trees-ensembles U2).
+ * `weighted` = `Σ|y - median(slice)|`, the outlier-robust criterion: on the
+ * pinned fixture the AE leaf says 43 where the mean is dragged to 53.8.
+ */
+final class AbsoluteErrorImpurity implements Impurity {
+
+    AbsoluteErrorImpurity() { return; }
+
+    static float64 medianOf(float64[] ys, int64 lo, int64 hi) {
+        int64 m = hi - lo;
+        float64[] v = heap float64[m];
+        int64 i = 0;
+        while (i < m) { v[i] = ys[lo + i]; i = i + 1; }
+        Trees.sortVals(v, m);
+        if (m % 2 == 1) {
+            return v[m / 2];
+        }
+        return v[m / 2 - 1] / 2.0 + v[m / 2] / 2.0;
+    }
+
+    public float64 weighted(float64[] ys, int64 lo, int64 hi) {
+        float64 med = AbsoluteErrorImpurity.medianOf(ys, lo, hi);
+        float64 acc = 0.0;
+        int64 i = lo;
+        while (i < hi) {
+            float64 d = ys[i] - med;
+            if (d < 0.0) { d = -d; }
+            acc = acc + d;
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    public boolean validSplit(float64[] ys, int64 lo, int64 mid, int64 hi) {
+        return true;
+    }
+
+    public int64 width() {
+        return 1;
+    }
+
+    public void leafInto(float64[] ys, int64 lo, int64 hi, float64[] value, int64 off) {
+        value[off] = AbsoluteErrorImpurity.medianOf(ys, lo, hi);
+        return;
+    }
+}

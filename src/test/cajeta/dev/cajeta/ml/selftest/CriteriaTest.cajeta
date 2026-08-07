@@ -1,0 +1,176 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.Criteria;
+import dev.cajeta.ml.DecisionTreeClassifier;
+import dev.cajeta.ml.DecisionTreeRegressor;
+import dev.cajeta.ml.MlException;
+
+/**
+ * ml-trees-ensembles U2 — split criteria. The hand-computed boolean example
+ * (spec §3.5, to its printed precision), base-2 entropy consumed from
+ * `cajeta.math.stats`, the three regression criteria vs pinned sklearn 1.9.0
+ * (gen_tree.py: absolute_error predicts MEDIANS — 43 where the outlier drags
+ * the mean to 53.8 — and poisson roots differently than squared_error on
+ * count data), and the seeded `random` splitter (the Extra-Trees seam; OUR
+ * documented draw, deterministic under the seed — sklearn's RNG stream is
+ * not a rule worth reproducing).
+ */
+public class CriteriaTest {
+
+    public CriteriaTest() { return; }
+
+    static boolean near(float64 a, float64 b, float64 tol) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d <= tol;
+    }
+
+    static #Tensor<float64> vec(float64[] a, int64 n) {
+        int64[] sh = heap int64[1]; sh[0] = n;
+        return Tensor.of<float64>(a, sh);
+    }
+
+    // 2.1.1 / 2.3.1 — the hand-computed boolean example, to the spec's
+    // printed precision: H(Y) = 0.954, IG(X1) = 0.5485, IG(X2) = 0.0485,
+    // and the fitted tree chooses X1 at the root.
+    @Test
+    public void handComputedBooleanExample() {
+        // y = 1 1 1 0 0 0 0 0; X1 isolates {rows 0..3}, X2 = {0,1,4,5}.
+        float64[] xa = heap float64[16];
+        float64[] ya = heap float64[8];
+        int64 i = 0;
+        while (i < 8) {
+            xa[i * 2] = i < 4 ? 1.0 : 0.0;
+            boolean x2 = i == 0 || i == 1 || i == 4 || i == 5;
+            xa[i * 2 + 1] = x2 ? 1.0 : 0.0;
+            ya[i] = i < 3 ? 1.0 : 0.0;
+            i = i + 1;
+        }
+        int64[] xs = heap int64[2]; xs[0] = 8; xs[1] = 2;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        Tensor<float64> y = CriteriaTest.vec(ya, 8);
+
+        Assert.isTrue(CriteriaTest.near(Criteria.entropy(y), 0.954, 0.0005));
+        float64 ig1 = Criteria.informationGain(x, y, (int64) 0, 0.5);
+        float64 ig2 = Criteria.informationGain(x, y, (int64) 1, 0.5);
+        Assert.isTrue(CriteriaTest.near(ig1, 0.5485, 0.0005));
+        Assert.isTrue(CriteriaTest.near(ig2, 0.0485, 0.0005));
+        Assert.isTrue(ig1 > ig2);
+
+        DecisionTreeClassifier c = heap DecisionTreeClassifier("entropy");
+        c.fit(x, y);
+        String dump = c.exportText();
+        Assert.isTrue(dump.indexOf("f0 <= 0.5") >= (int64) 0);
+        return;
+    }
+
+    // 2.1.2 / 2.1.3 — entropy is base-2 (uniform 4-class = 2 bits) and a
+    // zero-probability class contributes zero, never NaN.
+    @Test
+    public void entropyIsBase2AndZeroSafe() {
+        float64[] u = heap float64[8];
+        int64 i = 0;
+        while (i < 8) { u[i] = (float64) (i % 4); i = i + 1; }
+        float64 h4 = Criteria.entropy(CriteriaTest.vec(u, 8));
+        Assert.isTrue(CriteriaTest.near(h4, 2.0, 0.000000000001));
+
+        float64[] pure = heap float64[4];
+        float64 h0 = Criteria.entropy(CriteriaTest.vec(pure, 4));
+        Assert.isTrue(h0 == 0.0);
+
+        // 2.1.4 — gini on a fifty-fifty node is 0.5 exactly.
+        float64[] half = heap float64[4];
+        half[2] = 1.0; half[3] = 1.0;
+        Assert.isTrue(Criteria.gini(CriteriaTest.vec(half, 4)) == 0.5);
+        return;
+    }
+
+    // 2.1.5 — squared_error / absolute_error / poisson all selectable, each
+    // matching sklearn: AE leaves are MEDIANS (even-count -> middle average),
+    // poisson roots at 3.5 where squared_error roots at 2.5.
+    @Test
+    public void regressionCriteriaMatchSklearn() {
+        float64[] xa = heap float64[8];
+        int64 i = 0;
+        while (i < 8) { xa[i] = (float64) i; i = i + 1; }
+        int64[] xs = heap int64[2]; xs[0] = 8; xs[1] = 1;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+
+        float64[] ya = heap float64[8];
+        ya[0] = 1.0; ya[1] = 2.0; ya[2] = 2.0; ya[3] = 100.0;
+        ya[4] = 40.0; ya[5] = 41.0; ya[6] = 43.0; ya[7] = 45.0;
+        Tensor<float64> yAbs = CriteriaTest.vec(ya, 8);
+
+        float64[] qa = heap float64[2];
+        qa[0] = 1.5; qa[1] = 6.0;
+        int64[] qs = heap int64[2]; qs[0] = 2; qs[1] = 1;
+        Tensor<float64> q = Tensor.of<float64>(qa, qs);
+
+        DecisionTreeRegressor se = heap DecisionTreeRegressor("squared_error", (int64) 1);
+        se.fit(x, yAbs);
+        Tensor<float64> pse = se.predict(q);
+        Assert.isTrue(pse.flatGet((int64) 0) == (1.0 + 2.0 + 2.0) / 3.0);
+        Assert.isTrue(pse.flatGet((int64) 1) == 53.8);
+
+        DecisionTreeRegressor ae = heap DecisionTreeRegressor("absolute_error", (int64) 1);
+        ae.fit(x, yAbs);
+        Tensor<float64> pae = ae.predict(q);
+        Assert.isTrue(pae.flatGet((int64) 0) == 2.0);
+        Assert.isTrue(pae.flatGet((int64) 1) == 43.0);
+
+        // Depth-2 AE: median leaves 1, 2, 100, 42 (= (41+43)/2).
+        DecisionTreeRegressor ae2 = heap DecisionTreeRegressor("absolute_error", (int64) 2);
+        ae2.fit(x, yAbs);
+        float64[] q2a = heap float64[4];
+        q2a[0] = 0.5; q2a[1] = 3.0; q2a[2] = 4.5; q2a[3] = 6.5;
+        int64[] q2s = heap int64[2]; q2s[0] = 4; q2s[1] = 1;
+        Tensor<float64> p2 = ae2.predict(Tensor.of<float64>(q2a, q2s));
+        Assert.isTrue(p2.flatGet((int64) 0) == 1.0);
+        Assert.isTrue(p2.flatGet((int64) 1) == 100.0);
+        Assert.isTrue(p2.flatGet((int64) 2) == 42.0);
+        Assert.isTrue(p2.flatGet((int64) 3) == 42.0);
+
+        float64[] yc = heap float64[8];
+        yc[0] = 0.0; yc[1] = 1.0; yc[2] = 1.0; yc[3] = 2.0;
+        yc[4] = 8.0; yc[5] = 9.0; yc[6] = 11.0; yc[7] = 14.0;
+        DecisionTreeRegressor po = heap DecisionTreeRegressor("poisson", (int64) 1);
+        po.fit(x, CriteriaTest.vec(yc, 8));
+        Tensor<float64> ppo = po.predict(q);
+        Assert.isTrue(ppo.flatGet((int64) 0) == 1.0);
+        Assert.isTrue(ppo.flatGet((int64) 1) == 10.5);
+
+        // An unsupported regression criterion is rejected (§12.6).
+        boolean threw = false;
+        try {
+            DecisionTreeRegressor bad = heap DecisionTreeRegressor("friedman_mse", (int64) 1);
+        } catch (MlException ex) { threw = true; }
+        Assert.isTrue(threw);
+        return;
+    }
+
+    // 2.1.6 — the `random` splitter draws thresholds per feature under the
+    // seed: a same-seed refit is bit-identical, and the tree still fits the
+    // training data (each leaf is grown to purity).
+    @Test
+    public void randomSplitterSeededDeterministic() {
+        Tensor<float64> x = TreeTest.clsX();
+        Tensor<float64> y = TreeTest.clsY();
+
+        DecisionTreeClassifier a = heap DecisionTreeClassifier("gini", (int64) 0, "random", (uint64) 7);
+        DecisionTreeClassifier b = heap DecisionTreeClassifier("gini", (int64) 0, "random", (uint64) 7);
+        a.fit(x, y);
+        b.fit(x, y);
+        Assert.isTrue(a.exportText().equals(b.exportText()));
+        Assert.isTrue(a.score(x, y) == 1.0);
+
+        // The `best` splitter remains the default; an unknown splitter is rejected.
+        boolean threw = false;
+        try {
+            DecisionTreeClassifier bad = heap DecisionTreeClassifier("gini", (int64) 0, "sorted", (uint64) 1);
+        } catch (MlException ex) { threw = true; }
+        Assert.isTrue(threw);
+        return;
+    }
+}
