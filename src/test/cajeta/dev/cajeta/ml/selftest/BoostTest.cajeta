@@ -1,0 +1,123 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.AdaBoostClassifier;
+import dev.cajeta.ml.GradientBoostingRegressor;
+
+/**
+ * ml-trees-ensembles U6 (boosting) vs PINNED sklearn 1.9.0 (gen_tree.py
+ * u6-*): AdaBoost SAMME estimator weights EXACTLY (deterministic stumps,
+ * no RNG; SAMME.R was removed in sklearn 1.9 with the `algorithm` param),
+ * and gradient boosting stage-by-stage through stagedPredict.
+ */
+public class BoostTest {
+
+    public BoostTest() { return; }
+
+    static boolean near(float64 a, float64 b) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d <= 0.000000000001;
+    }
+
+    // 6.1.4 + 6.1.5 — the 4-round SAMME run reproduces sklearn's estimator
+    // weights [ln 3, ln 2, 0.78845..., 0.76214...] and final predictions;
+    // the reweighting is visible in the stump sequence (4.5 -> 6.5 -> 1.5).
+    @Test
+    public void adaBoostMatchesSklearnSamme() {
+        float64[] xa = heap float64[8];
+        float64[] ya = heap float64[8];
+        int64 i = 0;
+        while (i < 8) { xa[i] = (float64) i; i = i + 1; }
+        ya[2] = 1.0; ya[5] = 1.0; ya[6] = 1.0;
+        int64[] xs = heap int64[2]; xs[0] = 8; xs[1] = 1;
+        int64[] ys = heap int64[1]; ys[0] = 8;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+
+        AdaBoostClassifier ab = heap AdaBoostClassifier((int64) 4, 1.0);
+        ab.fit(x, y);
+        Tensor<float64> al = ab.estimatorWeights();
+        Assert.equals(al.shapeAt(0), (int64) 4);
+        Assert.isTrue(BoostTest.near(al.flatGet((int64) 0), 1.0986122886681098));
+        Assert.isTrue(BoostTest.near(al.flatGet((int64) 1), 0.6931471805599455));
+        Assert.isTrue(BoostTest.near(al.flatGet((int64) 2), 0.7884573603642703));
+        Assert.isTrue(BoostTest.near(al.flatGet((int64) 3), 0.7621400520468969));
+
+        Tensor<float64> p = ab.predict(x);
+        float64[] expect = heap float64[8];
+        expect[5] = 1.0; expect[6] = 1.0; expect[7] = 1.0;
+        i = 0;
+        while (i < 8) {
+            Assert.isTrue(p.flatGet(i) == expect[i]);
+            i = i + 1;
+        }
+        return;
+    }
+
+    // 6.1.6 + 6.1.7 — gradient boosting matches sklearn stage by stage:
+    // staged predictions after rounds 1 and 2, and the final prediction,
+    // all exact; more stages fit the training data monotonically better.
+    @Test
+    public void gradientBoostingMatchesSklearnStaged() {
+        float64[] xa = heap float64[10];
+        float64[] ya = heap float64[10];
+        int64 i = 0;
+        while (i < 10) { xa[i] = (float64) i; i = i + 1; }
+        ya[0] = 1.0; ya[1] = 1.5; ya[2] = 2.0; ya[3] = 2.5; ya[4] = 3.0;
+        ya[5] = 8.0; ya[6] = 8.5; ya[7] = 9.0; ya[8] = 9.5; ya[9] = 10.0;
+        int64[] xs = heap int64[2]; xs[0] = 10; xs[1] = 1;
+        int64[] ys = heap int64[1]; ys[0] = 10;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+
+        GradientBoostingRegressor gb = heap GradientBoostingRegressor(
+            (int64) 3, 0.5, (int64) 2);
+        gb.fit(x, y);
+
+        Tensor<float64> st = gb.stagedPredict(x);
+        // Stage 0: 5.5 + 0.5 * t0 -> [3.375 x2, 4.0 x3, 6.875 x2, 7.5 x3].
+        Assert.isTrue(st.flatGet((int64) 0) == 3.375);
+        Assert.isTrue(st.flatGet((int64) 2) == 4.0);
+        Assert.isTrue(st.flatGet((int64) 5) == 6.875);
+        Assert.isTrue(st.flatGet((int64) 9) == 7.5);
+        // Stage 1 pins.
+        Assert.isTrue(BoostTest.near(st.flatGet((int64) 10), 2.333333333333333));
+        Assert.isTrue(BoostTest.near(st.flatGet((int64) 13), 3.375));
+        Assert.isTrue(BoostTest.near(st.flatGet((int64) 18), 8.625));
+        // Final prediction pins (stage 2 == predict()).
+        Tensor<float64> p = gb.predict(x);
+        Assert.isTrue(BoostTest.near(p.flatGet((int64) 0), 1.833333333333333));
+        Assert.isTrue(BoostTest.near(p.flatGet((int64) 4), 3.1875));
+        Assert.isTrue(BoostTest.near(p.flatGet((int64) 7), 8.583333333333334));
+        Assert.isTrue(BoostTest.near(p.flatGet((int64) 9), 9.3125));
+        int64 r = 0;
+        while (r < 10) {
+            Assert.isTrue(BoostTest.near(st.flatGet((int64) 20 + r), p.flatGet(r)));
+            r = r + 1;
+        }
+        // Learning-rate/stage trade-off: training R2 improves with stages.
+        float64[] s1a = heap float64[10];
+        float64[] s3a = heap float64[10];
+        r = 0;
+        while (r < 10) {
+            s1a[r] = st.flatGet(r);
+            s3a[r] = st.flatGet((int64) 20 + r);
+            r = r + 1;
+        }
+        int64[] sh = heap int64[1]; sh[0] = 10;
+        float64 e1 = 0.0;
+        float64 e3 = 0.0;
+        r = 0;
+        while (r < 10) {
+            float64 d1 = s1a[r] - ya[r];
+            float64 d3 = s3a[r] - ya[r];
+            e1 = e1 + d1 * d1;
+            e3 = e3 + d3 * d3;
+            r = r + 1;
+        }
+        Assert.isTrue(e3 < e1);
+        return;
+    }
+}

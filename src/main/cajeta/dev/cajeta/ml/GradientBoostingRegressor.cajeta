@@ -1,0 +1,147 @@
+package dev.cajeta.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+
+/**
+ * Gradient-boosted regression trees, squared-error loss (ml-trees-ensembles
+ * U6, spec §8.3, §8.6): `F0 = mean(y)`; each stage fits a
+ * {@link DecisionTreeRegressor} (squared_error, depth `maxDepth`) to the
+ * residuals `y − F` and accumulates `F += learningRate · tree(x)`.
+ * `stagedPredict` exposes the prediction after every stage so an
+ * early-stopping curve is constructible (§6.1.7). Deterministic — no RNG —
+ * and pinned against sklearn 1.9.0 stage by stage. NOTE (§8.6): this is a
+ * TEACHING implementation and a DIFFERENT algorithm from
+ * `dev.cajeta.xgboost` (no second-order terms, no regularized gain, no
+ * histogram binning); the two are not expected to agree numerically.
+ */
+public final class GradientBoostingRegressor implements Predictor {
+
+    int64 nEstimators;
+    float64 learningRate;
+    int64 maxDepth;
+    ArrayList<DecisionTreeRegressor> members;
+    float64 f0;
+    int64 nFeatures;
+    boolean fitted;
+
+    public GradientBoostingRegressor(int64 nEstimators, float64 learningRate,
+                                     int64 maxDepth) {
+        if (nEstimators < 1) {
+            throw heap MlException("GradientBoostingRegressor: nEstimators must be >= 1");
+        }
+        if (learningRate <= 0.0) {
+            throw heap MlException("GradientBoostingRegressor: learningRate must be > 0");
+        }
+        if (maxDepth < 1) {
+            throw heap MlException("GradientBoostingRegressor: maxDepth must be >= 1");
+        }
+        this.nEstimators = nEstimators;
+        this.learningRate = learningRate;
+        this.maxDepth = maxDepth;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("GradientBoostingRegressor.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException("GradientBoostingRegressor.fit: y must be (n,) matching x rows");
+        }
+        this.nFeatures = x.shapeAt(1);
+        float64 sum = 0.0;
+        int64 i = 0;
+        while (i < n) { sum = sum + y.get1(i); i = i + 1; }
+        this.f0 = sum / (float64) n;
+
+        float64[] fcur = heap float64[n];
+        i = 0;
+        while (i < n) { fcur[i] = this.f0; i = i + 1; }
+        int64[] rsh = heap int64[1]; rsh[0] = n;
+
+        ArrayList<DecisionTreeRegressor> ms = heap ArrayList<DecisionTreeRegressor>();
+        int64 e = 0;
+        while (e < this.nEstimators) {
+            float64[] res = heap float64[n];
+            i = 0;
+            while (i < n) { res[i] = y.get1(i) - fcur[i]; i = i + 1; }
+            DecisionTreeRegressor t = heap DecisionTreeRegressor(
+                "squared_error", this.maxDepth);
+            t.fit(x, Tensor.of<float64>(res, rsh));
+            Tensor<float64> p = t.predict(x);
+            i = 0;
+            while (i < n) {
+                fcur[i] = fcur[i] + this.learningRate * p.flatGet(i);
+                i = i + 1;
+            }
+            ms.add(#t);
+            e = e + 1;
+        }
+        this.members #= ms;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(n,)` predictions after all stages. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("GradientBoostingRegressor.predict: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        float64[] acc = heap float64[n];
+        int64 i = 0;
+        while (i < n) { acc[i] = this.f0; i = i + 1; }
+        int64 e = 0;
+        while (e < this.nEstimators) {
+            DecisionTreeRegressor t = this.members.get((int32) e);
+            Tensor<float64> p = t.predict(x);
+            i = 0;
+            while (i < n) { acc[i] = acc[i] + this.learningRate * p.flatGet(i); i = i + 1; }
+            e = e + 1;
+        }
+        int64[] sh = heap int64[1]; sh[0] = n;
+        return Tensor.of<float64>(acc, sh);
+    }
+
+    /**
+     * `(nEstimators, n)` — the prediction after EVERY stage (§6.1.7), so
+     * validation error over stages gives the early-stopping curve.
+     */
+    public #Tensor<float64> stagedPredict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("GradientBoostingRegressor.stagedPredict: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        float64[] acc = heap float64[n];
+        float64[] outp = heap float64[this.nEstimators * n];
+        int64 i = 0;
+        while (i < n) { acc[i] = this.f0; i = i + 1; }
+        int64 e = 0;
+        while (e < this.nEstimators) {
+            DecisionTreeRegressor t = this.members.get((int32) e);
+            Tensor<float64> p = t.predict(x);
+            i = 0;
+            while (i < n) {
+                acc[i] = acc[i] + this.learningRate * p.flatGet(i);
+                outp[e * n + i] = acc[i];
+                i = i + 1;
+            }
+            e = e + 1;
+        }
+        int64[] sh = heap int64[2]; sh[0] = this.nEstimators; sh[1] = n;
+        return Tensor.of<float64>(outp, sh);
+    }
+
+    /** R². */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        return Metrics.r2(y, p);
+    }
+}

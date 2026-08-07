@@ -167,3 +167,27 @@ for i in range(12):
 ti = DecisionTreeClassifier(criterion="gini", random_state=1).fit(Xi, yi)
 dump("u4-imp", ti)
 print("  importances:", [repr(v) for v in ti.feature_importances_])
+
+# ---- U6: AdaBoost (SAMME — SAMME.R removed in sklearn 1.9) ----
+from sklearn.ensemble import AdaBoostClassifier, GradientBoostingRegressor
+Xb = np.arange(8.0).reshape(-1, 1)
+yb = np.array([0, 0, 1, 0, 0, 1, 1, 0])
+ab = AdaBoostClassifier(n_estimators=4, random_state=1).fit(Xb, yb)
+print("u6-ada errs:", [repr(v) for v in ab.estimator_errors_])
+print("u6-ada alphas:", [repr(v) for v in ab.estimator_weights_])
+print("u6-ada pred:", ab.predict(Xb).tolist())
+for i, t in enumerate(ab.estimators_):
+    print(f"  u6-ada stump{i}: f={t.tree_.feature[0]} thr={t.tree_.threshold[0]!r}")
+
+# ---- U6: gradient boosting regressor (criterion pinned to squared_error;
+# sklearn's default friedman_mse is a different splitter and NOT reproduced) ----
+Xg = np.arange(10.0).reshape(-1, 1)
+yg = np.array([1.0, 1.5, 2.0, 2.5, 3.0, 8.0, 8.5, 9.0, 9.5, 10.0])
+gb = GradientBoostingRegressor(n_estimators=3, learning_rate=0.5, max_depth=2,
+                               criterion="squared_error", random_state=1).fit(Xg, yg)
+print("u6-gbr init (mean):", repr(float(np.mean(yg))))
+print("u6-gbr pred:", [repr(v) for v in gb.predict(Xg)])
+import numpy as _np
+staged = list(gb.staged_predict(Xg))
+print("u6-gbr staged0:", [repr(v) for v in staged[0]])
+print("u6-gbr staged1:", [repr(v) for v in staged[1]])

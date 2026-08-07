@@ -73,6 +73,7 @@ final class Trees {
     // fit-time state
     float64[] xs;         // row-major [n*nf] copy
     float64[] ys;
+    float64[] sws;        // per-sample weights (1s unless fitWeighted)
     int64[] smp;          // sample index permutation, partitioned in place
     int64 nf;
 
@@ -96,6 +97,15 @@ final class Trees {
     }
 
     void fit(Tensor<float64> x, Tensor<float64> y, int64 n, int64 nf) {
+        float64[] ones = heap float64[n];
+        int64 oi = 0;
+        while (oi < n) { ones[oi] = 1.0; oi = oi + 1; }
+        this.fitW(x, y, #ones, n, nf);
+        return;
+    }
+
+    void fitW(Tensor<float64> x, Tensor<float64> y, #float64[] w, int64 n, int64 nf) {
+        this.sws #= w;
         int64 cap = 2 * n;
         this.feature #= heap int64[cap];
         this.threshold #= heap float64[cap];
@@ -119,7 +129,7 @@ final class Trees {
         float64[] allY = heap float64[n];
         i = 0;
         while (i < n) { allY[i] = ysA[i]; i = i + 1; }
-        this.nTotalW = this.crit.weightedN(allY, 0, n);
+        this.nTotalW = this.crit.weightedN(allY, this.sws, 0, n);
         if (this.maxLeafNodes > 0) {
             this.buildBestFirst(n);
         } else {
@@ -171,12 +181,17 @@ final class Trees {
         return;
     }
 
-    /** Node targets over smp[start,end), in smp order. */
-    #float64[] nodeTargets(int64 start, int64 end) {
+    /** Node targets over smp[start,end), in smp order; fills `nw` with the
+     *  parallel sample weights. */
+    #float64[] nodeTargets(int64 start, int64 end, float64[] nw) {
         int64 m = end - start;
         float64[] ny = heap float64[m];
         int64 i = 0;
-        while (i < m) { ny[i] = this.ys[this.smp[start + i]]; i = i + 1; }
+        while (i < m) {
+            ny[i] = this.ys[this.smp[start + i]];
+            nw[i] = this.sws[this.smp[start + i]];
+            i = i + 1;
+        }
         return #ny;
     }
 
@@ -210,6 +225,7 @@ final class Trees {
             float64[] fv = heap float64[m];
             int64[] fi = heap int64[m];
             float64[] fy = heap float64[m];
+            float64[] fw = heap float64[m];
             int64 fo = 0;
             while (fo < nFeat && budget > 0) {
                 int64 f = featOrder[fo];
@@ -223,15 +239,19 @@ final class Trees {
                 if (fv[m - 1] > fv[0] + 0.0000001) {           // non-constant
                     budget = budget - 1;
                     j = 0;
-                    while (j < m) { fy[j] = this.ys[fi[j]]; j = j + 1; }
+                    while (j < m) {
+                        fy[j] = this.ys[fi[j]];
+                        fw[j] = this.sws[fi[j]];
+                        j = j + 1;
+                    }
                     int64 p = 1;
                     while (p < m) {
                         if (fv[p] > fv[p - 1] + 0.0000001      // candidate
                             && p >= this.minSamplesLeaf
                             && m - p >= this.minSamplesLeaf
-                            && this.crit.validSplit(fy, 0, p, m)) {
-                            float64 cw = this.crit.weighted(fy, 0, p)
-                                       + this.crit.weighted(fy, p, m);
+                            && this.crit.validSplit(fy, fw, 0, p, m)) {
+                            float64 cw = this.crit.weighted(fy, fw, 0, p)
+                                       + this.crit.weighted(fy, fw, p, m);
                             float64 proxy = -cw;
                             if (this.fsF < 0 || proxy > bestProxy) {
                                 this.fsF = f;
@@ -247,6 +267,7 @@ final class Trees {
             }
         } else {
             float64[] py = heap float64[m];
+            float64[] pw = heap float64[m];
             int64 fo2 = 0;
             while (fo2 < nFeat && budget > 0) {
                 int64 f = featOrder[fo2];
@@ -268,6 +289,7 @@ final class Trees {
                     while (i < end) {
                         if (this.xs[this.smp[i] * this.nf + f] <= thr) {
                             py[nl] = this.ys[this.smp[i]];
+                            pw[nl] = this.sws[this.smp[i]];
                             nl = nl + 1;
                         }
                         i = i + 1;
@@ -277,15 +299,16 @@ final class Trees {
                     while (i < end) {
                         if (!(this.xs[this.smp[i] * this.nf + f] <= thr)) {
                             py[nr] = this.ys[this.smp[i]];
+                            pw[nr] = this.sws[this.smp[i]];
                             nr = nr + 1;
                         }
                         i = i + 1;
                     }
                     if (nl >= this.minSamplesLeaf && m - nl >= this.minSamplesLeaf
                         && nl > 0 && nl < m
-                        && this.crit.validSplit(py, 0, nl, m)) {
-                        float64 cw = this.crit.weighted(py, 0, nl)
-                                   + this.crit.weighted(py, nl, m);
+                        && this.crit.validSplit(py, pw, 0, nl, m)) {
+                        float64 cw = this.crit.weighted(py, pw, 0, nl)
+                                   + this.crit.weighted(py, pw, nl, m);
                         float64 proxy = -cw;
                         if (this.fsF < 0 || proxy > bestProxy) {
                             this.fsF = f;
@@ -308,11 +331,12 @@ final class Trees {
         int64 m = end - start;
         this.size[nid] = m;
         if (depth > this.realizedDepth) { this.realizedDepth = depth; }
-        float64[] ny = this.nodeTargets(start, end);
-        float64 w = this.crit.weightedN(ny, 0, m);
+        float64[] nw = heap float64[m];
+        float64[] ny = this.nodeTargets(start, end, nw);
+        float64 w = this.crit.weightedN(ny, nw, 0, m);
         this.nodeW[nid] = w;
-        this.nodeImp[nid] = this.crit.weighted(ny, 0, m) / w;
-        this.crit.leafInto(ny, 0, m, this.value, nid * this.kOut);
+        this.nodeImp[nid] = this.crit.weighted(ny, nw, 0, m) / w;
+        this.crit.leafInto(ny, nw, 0, m, this.value, nid * this.kOut);
         this.feature[nid] = -1;
         this.left[nid] = -1;
         this.right[nid] = -1;

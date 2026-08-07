@@ -16,31 +16,28 @@ final class GiniImpurity implements Impurity {
         return;
     }
 
-    #float64[] wcounts(float64[] ys, int64 lo, int64 hi) {
+    #float64[] wcounts(float64[] ys, float64[] ws, int64 lo, int64 hi) {
         float64[] wc = heap float64[this.k];
         int64 i = lo;
         while (i < hi) {
             int64 c = (int64) ys[i];
             float64 w = this.cw != null ? this.cw[c] : 1.0;
-            wc[c] = wc[c] + w;
+            wc[c] = wc[c] + w * ws[i];
             i = i + 1;
         }
         return #wc;
     }
 
-    public float64 weightedN(float64[] ys, int64 lo, int64 hi) {
-        if (this.cw == null) {
-            return (float64) (hi - lo);
-        }
-        float64[] wc = this.wcounts(ys, lo, hi);
+    public float64 weightedN(float64[] ys, float64[] ws, int64 lo, int64 hi) {
+        float64[] wc = this.wcounts(ys, ws, lo, hi);
         float64 s = 0.0;
         int64 c = 0;
         while (c < this.k) { s = s + wc[c]; c = c + 1; }
         return s;
     }
 
-    public float64 weighted(float64[] ys, int64 lo, int64 hi) {
-        float64[] wc = this.wcounts(ys, lo, hi);
+    public float64 weighted(float64[] ys, float64[] ws, int64 lo, int64 hi) {
+        float64[] wc = this.wcounts(ys, ws, lo, hi);
         float64 wn = 0.0;
         int64 c = 0;
         while (c < this.k) { wn = wn + wc[c]; c = c + 1; }
@@ -54,7 +51,7 @@ final class GiniImpurity implements Impurity {
         return wn * (1.0 - s);
     }
 
-    public boolean validSplit(float64[] ys, int64 lo, int64 mid, int64 hi) {
+    public boolean validSplit(float64[] ys, float64[] ws, int64 lo, int64 mid, int64 hi) {
         return true;
     }
 
@@ -62,8 +59,8 @@ final class GiniImpurity implements Impurity {
         return this.k;
     }
 
-    public void leafInto(float64[] ys, int64 lo, int64 hi, float64[] value, int64 off) {
-        float64[] wc = this.wcounts(ys, lo, hi);
+    public void leafInto(float64[] ys, float64[] ws, int64 lo, int64 hi, float64[] value, int64 off) {
+        float64[] wc = this.wcounts(ys, ws, lo, hi);
         float64 wn = 0.0;
         int64 c = 0;
         while (c < this.k) { wn = wn + wc[c]; c = c + 1; }

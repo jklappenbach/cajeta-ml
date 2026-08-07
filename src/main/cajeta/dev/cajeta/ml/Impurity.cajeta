@@ -14,19 +14,20 @@ package dev.cajeta.ml;
  * incremental update. Correctness-first; the parity fixtures are tiny.
  */
 interface Impurity {
-    /** `w * impurity` of `ys[lo, hi)` (w = the slice's WEIGHTED count). */
-    float64 weighted(float64[] ys, int64 lo, int64 hi);
+    /** `w * impurity` of `ys[lo, hi)` under parallel sample weights `ws`
+     *  (w = the slice's weighted count: Σ ws·classWeight). */
+    float64 weighted(float64[] ys, float64[] ws, int64 lo, int64 hi);
 
-    /** The slice's weighted sample count (class-weight sum, or the length). */
-    float64 weightedN(float64[] ys, int64 lo, int64 hi);
+    /** The slice's weighted sample count. */
+    float64 weightedN(float64[] ys, float64[] ws, int64 lo, int64 hi);
 
     /** Is a split into `[lo,mid) / [mid,hi)` admissible? (poisson: both
      *  child sums must be positive; everything else: always). */
-    boolean validSplit(float64[] ys, int64 lo, int64 mid, int64 hi);
+    boolean validSplit(float64[] ys, float64[] ws, int64 lo, int64 mid, int64 hi);
 
     /** Leaf payload width: K class fractions, or 1. */
     int64 width();
 
     /** Write the leaf payload for `ys[lo, hi)` at `value[off..off+width)`. */
-    void leafInto(float64[] ys, int64 lo, int64 hi, float64[] value, int64 off);
+    void leafInto(float64[] ys, float64[] ws, int64 lo, int64 hi, float64[] value, int64 off);
 }

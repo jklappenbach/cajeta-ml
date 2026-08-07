@@ -147,6 +147,15 @@ public final class DecisionTreeClassifier implements ProbClassifier {
         if (x.ndim() != 2) {
             throw heap MlException("DecisionTreeClassifier.fit: x must be 2-D (n, p)");
         }
+        int64 nw = x.shapeAt(0);
+        float64[] ones = heap float64[nw];
+        int64 wi = 0;
+        while (wi < nw) { ones[wi] = 1.0; wi = wi + 1; }
+        this.fitCore(x, y, #ones);
+        return;
+    }
+
+    void fitCore(Tensor<float64> x, Tensor<float64> y, #float64[] w) {
         int64 n = x.shapeAt(0);
         if (y.ndim() != 1 || y.shapeAt(0) != n) {
             throw heap MlException("DecisionTreeClassifier.fit: y must be (n,) matching x rows");
@@ -191,9 +200,33 @@ public final class DecisionTreeClassifier implements ProbClassifier {
         t.maxFeaturesNode = this.maxFeaturesNode;
         t.minImpurityDecrease = this.minImpurityDecrease;
         t.ccpAlpha = this.ccpAlpha;
-        t.fit(x, y, n, this.nFeatures);
+        t.fitW(x, y, #w, n, this.nFeatures);
         this.tree #= t;
         this.fitted = true;
+        return;
+    }
+
+
+    /**
+     * Sample-weighted fit (sklearn `fit(X, y, sample_weight)`): each
+     * sample's impurity and leaf contribution scales by `w` — the AdaBoost
+     * lever. Weights must be positive.
+     */
+    public void fitWeighted(Tensor<float64> x, Tensor<float64> y, Tensor<float64> w) {
+        if (w.ndim() != 1 || w.shapeAt(0) != x.shapeAt(0)) {
+            throw heap MlException("DecisionTreeClassifier.fitWeighted: w must be (n,) matching x rows");
+        }
+        int64 n = x.shapeAt(0);
+        float64[] wa = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            wa[i] = w.get1(i);
+            if (wa[i] <= 0.0) {
+                throw heap MlException("DecisionTreeClassifier.fitWeighted: weights must be > 0");
+            }
+            i = i + 1;
+        }
+        this.fitCore(x, y, #wa);
         return;
     }
 
