@@ -557,6 +557,39 @@ final class Trees {
         return this.pruneWhile(0.0, alphas, imps, 1);
     }
 
+    /**
+     * Normalized impurity-based feature importances: each split contributes
+     * its weighted decrease `w(t)·imp(t) − w(l)·imp(l) − w(r)·imp(r)` to its
+     * feature, then the vector is scaled to sum to 1 (all-leaf tree: zeros).
+     * Computed by a post-growth walk over stored node stats, so pruning is
+     * reflected. sklearn's `feature_importances_`.
+     */
+    #float64[] importances() {
+        float64[] acc = heap float64[this.nf];
+        this.accImportance(0, acc);
+        float64 sum = 0.0;
+        int64 f = 0;
+        while (f < this.nf) { sum = sum + acc[f]; f = f + 1; }
+        if (sum > 0.0) {
+            f = 0;
+            while (f < this.nf) { acc[f] = acc[f] / sum; f = f + 1; }
+        }
+        return #acc;
+    }
+
+    void accImportance(int64 nid, float64[] acc) {
+        if (this.feature[nid] < 0) { return; }
+        int64 li = this.left[nid];
+        int64 ri = this.right[nid];
+        float64 dec = this.nodeW[nid] * this.nodeImp[nid]
+                    - this.nodeW[li] * this.nodeImp[li]
+                    - this.nodeW[ri] * this.nodeImp[ri];
+        acc[this.feature[nid]] = acc[this.feature[nid]] + dec;
+        this.accImportance(li, acc);
+        this.accImportance(ri, acc);
+        return;
+    }
+
     /** Route one row to its leaf id. */
     int64 leafOf(Tensor<float64> x, int64 row, int64 nf) {
         int64 nid = 0;

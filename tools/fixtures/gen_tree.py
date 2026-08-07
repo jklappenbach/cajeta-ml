@@ -149,3 +149,21 @@ cw = DecisionTreeClassifier(criterion="gini", random_state=1, max_depth=1,
                             class_weight={0: 1.0, 1: 4.0}).fit(Xw, yw)
 dump("u3-cw-1:4-d1", cw)
 print("  cw proba:", [[repr(v) for v in row] for row in cw.predict_proba(np.array([[0.0], [5.0]]))])
+
+# ---- U4: feature importances ----
+# f0 = i//4 (block id), f1 = i%4, f2 constant (must get importance 0).
+# y = block, except block 1 resolves by f1 — so BOTH features split, the
+# f1 split happens where f0 is constant (no cross-feature tie), and every
+# impure node has >= 4 samples.
+Xi = np.zeros((12, 3))
+yi = np.zeros(12, dtype=int)
+for i in range(12):
+    Xi[i, 0] = float(i // 4)
+    Xi[i, 1] = float(i % 4)
+    Xi[i, 2] = 0.5
+    yi[i] = i // 4
+    if i // 4 == 1:
+        yi[i] = 1 if (i % 4) < 2 else 0
+ti = DecisionTreeClassifier(criterion="gini", random_state=1).fit(Xi, yi)
+dump("u4-imp", ti)
+print("  importances:", [repr(v) for v in ti.feature_importances_])

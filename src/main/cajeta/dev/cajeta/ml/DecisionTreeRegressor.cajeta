@@ -213,6 +213,24 @@ public final class DecisionTreeRegressor implements Predictor {
         return this.tree.leaves;
     }
 
+
+    /**
+     * Normalized impurity-based feature importances (`(nf,)`, summing to 1;
+     * sklearn `feature_importances_`). CAVEAT (spec §4.1.5): impurity
+     * importance is biased TOWARD high-cardinality/continuous features —
+     * they offer more candidate splits, so comparing a continuous feature's
+     * importance against a binary one overstates the continuous one. Prefer
+     * permutation importance for cross-cardinality comparisons.
+     */
+    public #Tensor<float64> featureImportances() {
+        if (!this.fitted) {
+            throw heap MlException("DecisionTreeRegressor.featureImportances: fit first");
+        }
+        float64[] imp = this.tree.importances();
+        int64[] sh = heap int64[1]; sh[0] = this.nFeatures;
+        return Tensor.of<float64>(imp, sh);
+    }
+
     /** Readable root-to-leaf rule dump (§2.8). */
     public #String exportText() {
         if (!this.fitted) {
