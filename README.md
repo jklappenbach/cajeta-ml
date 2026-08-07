@@ -129,10 +129,15 @@ protocol — the one place `float32` meets `float64`.
 Numerics ride the stdlib: `cajeta.math.linalg` (Householder QR, bidiagonal
 SVD, Jacobi eigh, triangular/factor solvers), `cajeta.math.distance`, and
 `cajeta.math.stats`. The classical half is pinned against scikit-learn
-1.9.0 / scipy 1.18.0 / statsmodels-computed fixtures (K-medoids against
-scikit-learn-extra 0.3.0 in its own venv); the neural half against torch
-2.13.0+cpu — optimizer trajectories and training curves step by step, not
-merely at convergence. Deliberate departures are catalogued in the two
+1.9.0 / scipy 1.18.0 fixtures (K-medoids against scikit-learn-extra
+0.3.0 in its own venv); the neural half against torch 2.13.0+cpu —
+optimizer trajectories and training curves step by step, not merely at
+convergence. The inference summaries (`summary()`) use
+statsmodels-*equivalent* closed formulas verified against those same
+scipy pins — no fixture in this repo is statsmodels-computed; the
+ecosystem's statsmodels oracle is pinned at **0.14.6** and lives in
+`dev.cajeta.timeseries` (cajeta-timeseries), whose domain statsmodels
+actually owns. Deliberate departures are catalogued in the two
 [differences](docs/DifferencesFromSklearn.md)
 [pages](docs/DifferencesFromTorch.md).
 
