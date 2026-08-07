@@ -1,0 +1,329 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * The shared exact-split tree grower behind {@link DecisionTreeClassifier}
+ * and {@link DecisionTreeRegressor} (ml-trees-ensembles U1). Reproduces
+ * sklearn 1.9.0's `node_split_best` over raw values (`_splitter.pyx`):
+ *
+ * - Candidate positions scan each feature's node samples in ascending sorted
+ *   order; a position is a candidate only when `v[p] > v[p-1] + 1e-7`
+ *   (FEATURE_THRESHOLD), and a feature whose node range is within 1e-7 is
+ *   constant and skipped.
+ * - The best split wins by strict `>` on impurity improvement. WITHIN a
+ *   feature that keeps the FIRST (lowest-threshold) of equal candidates —
+ *   sklearn's own deterministic rule, pinned by the tie fixture. ACROSS
+ *   features we visit in ascending index; sklearn visits in RNG order
+ *   (Fisher-Yates from random_state), so cross-feature ties are the one
+ *   place the two can differ — parity fixtures are constructed tie-free
+ *   across features.
+ * - Threshold is `v[p-1]/2 + v[p]/2` (sum of halves), routing `<=` left.
+ * - A pure node (or one at maxDepth, or with < 2 samples) becomes a leaf.
+ *
+ * Growth is depth-first, left child first, nodes numbered in visit order —
+ * sklearn's DepthFirstTreeBuilder numbering. Everything is sequential and
+ * seed-free, so a refit is bit-identical by construction.
+ *
+ * Criteria: 0 = gini, 1 = entropy (base 2, spec §3.1), 2 = squared error.
+ * For classification `value[node*K + k]` holds class fractions; for
+ * regression K == 1 and the value is the leaf mean.
+ */
+final class Trees {
+
+    // --- flat SoA tree (capacity 2n, the binary-tree worst case) ---------
+    int64[] feature;      // split feature; -1 on leaves
+    float64[] threshold;  // split threshold (route <= left)
+    int64[] left;         // -1 on leaves
+    int64[] right;
+    float64[] value;      // [cap*K] leaf payload (fractions / mean)
+    int64[] size;         // node sample count (export + majority ties)
+    int64 nodeCount;
+    int64 kOut;           // K (classes) or 1 (regression)
+    int64 criterion;
+    int64 maxDepth;       // 0 = unbounded
+    int64 realizedDepth;
+    int64 leaves;
+
+    // fit-time state
+    float64[] xs;         // row-major [n*nf] copy
+    float64[] ys;
+    int64[] smp;          // sample index permutation, partitioned in place
+    int64 nf;
+
+    Trees(int64 criterion, int64 maxDepth, int64 kOut) {
+        this.criterion = criterion;
+        this.maxDepth = maxDepth;
+        this.kOut = kOut;
+        this.nodeCount = 0;
+        this.realizedDepth = 0;
+        this.leaves = 0;
+        return;
+    }
+
+    void fit(Tensor<float64> x, Tensor<float64> y, int64 n, int64 nf) {
+        int64 cap = 2 * n;
+        this.feature #= heap int64[cap];
+        this.threshold #= heap float64[cap];
+        this.left #= heap int64[cap];
+        this.right #= heap int64[cap];
+        this.value #= heap float64[cap * this.kOut];
+        this.size #= heap int64[cap];
+        float64[] xsA = heap float64[n * nf];
+        float64[] ysA = heap float64[n];
+        int64[] smpA = heap int64[n];
+        int64 i = 0;
+        while (i < n * nf) { xsA[i] = x.flatGet(i); i = i + 1; }
+        i = 0;
+        while (i < n) { ysA[i] = y.get1(i); smpA[i] = i; i = i + 1; }
+        this.xs #= xsA;
+        this.ys #= ysA;
+        this.smp #= smpA;
+        this.nf = nf;
+        int64 root = this.build(0, n, 0);
+        return;
+    }
+
+    /** Node impurity over smp[start,end) (gini or base-2 entropy). */
+    float64 impurity(int64[] cnt, int64 m) {
+        if (this.criterion == 0) {
+            float64 s = 0.0;
+            int64 k = 0;
+            while (k < this.kOut) {
+                float64 p = (float64) cnt[k] / (float64) m;
+                s = s + p * p;
+                k = k + 1;
+            }
+            return 1.0 - s;
+        }
+        float64 e = 0.0;
+        int64 k2 = 0;
+        while (k2 < this.kOut) {
+            if (cnt[k2] > 0) {
+                float64 p2 = (float64) cnt[k2] / (float64) m;
+                e = e - p2 * (Math.log(p2) / Math.log(2.0));
+            }
+            k2 = k2 + 1;
+        }
+        return e;
+    }
+
+    /** In-place heapsort of parallel (v, idx) by v ascending — the node's
+     *  per-feature sample ordering (any correct sort; candidates collapse
+     *  equal values right after). */
+    static void sortPairs(float64[] v, int64[] idx, int64 m) {
+        int64 start = m / 2;
+        while (start > 0) {
+            start = start - 1;
+            Trees.siftDown(v, idx, start, m);
+        }
+        int64 end = m;
+        while (end > 1) {
+            end = end - 1;
+            float64 tv = v[0]; v[0] = v[end]; v[end] = tv;
+            int64 ti = idx[0]; idx[0] = idx[end]; idx[end] = ti;
+            Trees.siftDown(v, idx, 0, end);
+        }
+        return;
+    }
+
+    static void siftDown(float64[] v, int64[] idx, int64 root, int64 end) {
+        int64 r = root;
+        while (r * 2 + 1 < end) {
+            int64 child = r * 2 + 1;
+            if (child + 1 < end && v[child + 1] > v[child]) { child = child + 1; }
+            if (v[r] >= v[child]) { return; }
+            float64 tv = v[r]; v[r] = v[child]; v[child] = tv;
+            int64 ti = idx[r]; idx[r] = idx[child]; idx[child] = ti;
+            r = child;
+        }
+        return;
+    }
+
+    /** Grow the subtree over smp[start,end) at `depth`; returns the node id. */
+    int64 build(int64 start, int64 end, int64 depth) {
+        int64 nid = this.nodeCount;
+        this.nodeCount = this.nodeCount + 1;
+        int64 m = end - start;
+        this.size[nid] = m;
+        if (depth > this.realizedDepth) { this.realizedDepth = depth; }
+
+        // Node statistics: class counts, or sum for regression.
+        int64[] cnt = heap int64[this.kOut];
+        float64 sum = 0.0;
+        int64 i = start;
+        while (i < end) {
+            float64 yv = this.ys[this.smp[i]];
+            if (this.kOut > 1) {
+                cnt[(int64) yv] = cnt[(int64) yv] + 1;
+            }
+            sum = sum + yv;
+            i = i + 1;
+        }
+        boolean pure;
+        if (this.kOut > 1) {
+            pure = false;
+            int64 k = 0;
+            while (k < this.kOut) {
+                if (cnt[k] == m) { pure = true; }
+                k = k + 1;
+            }
+        } else {
+            pure = true;
+            i = start;
+            while (i < end) {
+                if (this.ys[this.smp[i]] != this.ys[this.smp[start]]) { pure = false; }
+                i = i + 1;
+            }
+        }
+
+        boolean depthStop = this.maxDepth > 0 && depth >= this.maxDepth;
+        int64 bestF = -1;
+        float64 bestProxy = 0.0;
+        float64 bestThr = 0.0;
+        if (!pure && !depthStop && m >= 2) {
+            float64[] fv = heap float64[m];
+            int64[] fi = heap int64[m];
+            int64 f = 0;
+            while (f < this.nf) {
+                int64 j = 0;
+                while (j < m) {
+                    fi[j] = this.smp[start + j];
+                    fv[j] = this.xs[fi[j] * this.nf + f];
+                    j = j + 1;
+                }
+                Trees.sortPairs(fv, fi, m);
+                if (fv[m - 1] > fv[0] + 0.0000001) {           // non-constant
+                    // Ascending candidate scan with running left stats.
+                    int64[] cl = heap int64[this.kOut];
+                    float64 sl = 0.0;
+                    int64 p = 1;
+                    while (p < m) {
+                        float64 yl = this.ys[fi[p - 1]];
+                        if (this.kOut > 1) {
+                            cl[(int64) yl] = cl[(int64) yl] + 1;
+                        }
+                        sl = sl + yl;
+                        if (fv[p] > fv[p - 1] + 0.0000001) {   // candidate position
+                            float64 proxy;
+                            if (this.kOut > 1) {
+                                int64[] cr = heap int64[this.kOut];
+                                int64 k3 = 0;
+                                while (k3 < this.kOut) { cr[k3] = cnt[k3] - cl[k3]; k3 = k3 + 1; }
+                                float64 wl = (float64) p;
+                                float64 wr = (float64) (m - p);
+                                proxy = -(wl * this.impurity(cl, p) + wr * this.impurity(cr, m - p));
+                            } else {
+                                // sklearn's MSE proxy: sumL^2/wl + sumR^2/wr.
+                                float64 sr = sum - sl;
+                                proxy = sl * sl / (float64) p + sr * sr / (float64) (m - p);
+                            }
+                            if (bestF < 0 || proxy > bestProxy) {
+                                bestF = f;
+                                bestProxy = proxy;
+                                bestThr = fv[p - 1] / 2.0 + fv[p] / 2.0;
+                            }
+                        }
+                        p = p + 1;
+                    }
+                }
+                f = f + 1;
+            }
+        }
+
+        if (bestF < 0) {
+            // Leaf: fractions (classification) or the mean (regression).
+            this.feature[nid] = -1;
+            this.left[nid] = -1;
+            this.right[nid] = -1;
+            if (this.kOut > 1) {
+                int64 k4 = 0;
+                while (k4 < this.kOut) {
+                    this.value[nid * this.kOut + k4] = (float64) cnt[k4] / (float64) m;
+                    k4 = k4 + 1;
+                }
+            } else {
+                this.value[nid] = sum / (float64) m;
+            }
+            this.leaves = this.leaves + 1;
+            return nid;
+        }
+
+        // Stable two-pass partition of smp[start,end) by x[bestF] <= thr.
+        int64[] tmp = heap int64[m];
+        int64 nl = 0;
+        i = start;
+        while (i < end) {
+            if (this.xs[this.smp[i] * this.nf + bestF] <= bestThr) {
+                tmp[nl] = this.smp[i];
+                nl = nl + 1;
+            }
+            i = i + 1;
+        }
+        int64 nr = nl;
+        i = start;
+        while (i < end) {
+            if (!(this.xs[this.smp[i] * this.nf + bestF] <= bestThr)) {
+                tmp[nr] = this.smp[i];
+                nr = nr + 1;
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < m) { this.smp[start + i] = tmp[i]; i = i + 1; }
+
+        this.feature[nid] = bestF;
+        this.threshold[nid] = bestThr;
+        int64 li = this.build(start, start + nl, depth + 1);
+        int64 ri = this.build(start + nl, end, depth + 1);
+        this.left[nid] = li;
+        this.right[nid] = ri;
+        return nid;
+    }
+
+    /** Route one row to its leaf id. */
+    int64 leafOf(Tensor<float64> x, int64 row, int64 nf) {
+        int64 nid = 0;
+        while (this.feature[nid] >= 0) {
+            float64 v = x.flatGet(row * nf + this.feature[nid]);
+            if (v <= this.threshold[nid]) { nid = this.left[nid]; }
+            else { nid = this.right[nid]; }
+        }
+        return nid;
+    }
+
+    /** sklearn-style indented rule dump (leafLabel: "class: k" / "value: v"). */
+    #String exportText() {
+        String s = "";
+        s = this.dumpNode(0, "", s);
+        return #s;
+    }
+
+    #String dumpNode(int64 nid, String indent, String acc) {
+        if (this.feature[nid] < 0) {
+            String lab;
+            if (this.kOut > 1) {
+                int64 best = 0;
+                int64 k = 1;
+                while (k < this.kOut) {
+                    if (this.value[nid * this.kOut + k] > this.value[nid * this.kOut + best]) {
+                        best = k;
+                    }
+                    k = k + 1;
+                }
+                lab = "class: " + Int64.of(best).toString();
+            } else {
+                lab = "value: " + Float64.of(this.value[nid]).toString();
+            }
+            String r = acc + indent + "|--- " + lab + "\n";
+            return #r;
+        }
+        String cond = "f" + Int64.of(this.feature[nid]).toString();
+        String thr = Float64.of(this.threshold[nid]).toString();
+        String a1 = acc + indent + "|--- " + cond + " <= " + thr + "\n";
+        String a2 = this.dumpNode(this.left[nid], indent + "|   ", a1);
+        String a3 = a2 + indent + "|--- " + cond + " >  " + thr + "\n";
+        String a4 = this.dumpNode(this.right[nid], indent + "|   ", a3);
+        return #a4;
+    }
+}

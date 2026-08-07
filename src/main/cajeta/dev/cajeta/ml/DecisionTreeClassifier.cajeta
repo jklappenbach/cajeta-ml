@@ -1,0 +1,176 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * Exact-split decision tree classification (sklearn `DecisionTreeClassifier`,
+ * ml-trees-ensembles U1): recursively choose the split maximizing impurity
+ * decrease; leaves predict their majority class, `predictProba` the leaf's
+ * class distribution as fractions. Criteria: `"gini"` or `"entropy"`
+ * (base-2, spec §3.1). `maxDepth` 0 grows until purity.
+ *
+ * Deterministic by construction — no seed, sequential growth, and the
+ * documented tie rule (ascending scan, strict `>`, first kept; see
+ * {@link Trees}). A refit is bit-identical.
+ */
+public final class DecisionTreeClassifier implements ProbClassifier {
+
+    String criterion;
+    int64 maxDepth;
+    int64 nClasses;
+    int64 nFeatures;
+    Trees tree;
+    boolean fitted;
+
+    public DecisionTreeClassifier(String criterion) {
+        this.init(criterion, 0);
+        return;
+    }
+
+    /** `maxDepth` 0 = unbounded; negative is rejected (§12.6). */
+    public DecisionTreeClassifier(String criterion, int64 maxDepth) {
+        this.init(criterion, maxDepth);
+        return;
+    }
+
+    void init(String criterion, int64 maxDepth) {
+        if (!criterion.equals("gini") && !criterion.equals("entropy")) {
+            throw heap MlException("DecisionTreeClassifier: unsupported "
+                + "criterion '" + criterion + "' (gini | entropy)");
+        }
+        if (maxDepth < 0) {
+            throw heap MlException("DecisionTreeClassifier: maxDepth must "
+                + "be >= 0 (0 = unbounded)");
+        }
+        this.criterion = criterion;
+        this.maxDepth = maxDepth;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("DecisionTreeClassifier.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException("DecisionTreeClassifier.fit: y must be (n,) matching x rows");
+        }
+        int64 kmax = 0;
+        int64 i = 0;
+        while (i < n) {
+            float64 v = y.get1(i);
+            int64 li = (int64) v;
+            if (v != (float64) li || li < 0) {
+                throw heap MlException("DecisionTreeClassifier.fit: labels must be integers 0..K-1");
+            }
+            if (li > kmax) { kmax = li; }
+            i = i + 1;
+        }
+        int64 k = kmax + 1;
+        if (k < 2) { k = 2; }
+        this.nClasses = k;
+        this.nFeatures = x.shapeAt(1);
+        int64 crit = this.criterion.equals("gini") ? (int64) 0 : (int64) 1;
+        Trees t = heap Trees(crit, this.maxDepth, k);
+        t.fit(x, y, n, this.nFeatures);
+        this.tree #= t;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    void requireFitted(String who) {
+        if (!this.fitted) {
+            throw heap MlException(who + ": fit first");
+        }
+        return;
+    }
+
+    void requireShape(Tensor<float64> x, String who) {
+        if (x.ndim() != 2 || x.shapeAt(1) != this.nFeatures) {
+            throw heap MlException(who + ": x must be (n, p) with p matching the fit");
+        }
+        return;
+    }
+
+    /** `(n, K)` leaf class fractions. */
+    public #Tensor<float64> predictProba(Tensor<float64> x) {
+        this.requireFitted("DecisionTreeClassifier.predictProba");
+        this.requireShape(x, "DecisionTreeClassifier.predictProba");
+        int64 n = x.shapeAt(0);
+        int64 kc = this.nClasses;
+        float64[] out = heap float64[n * kc];
+        int64 r = 0;
+        while (r < n) {
+            int64 leaf = this.tree.leafOf(x, r, this.nFeatures);
+            int64 k = 0;
+            while (k < kc) {
+                out[r * kc + k] = this.tree.value[leaf * kc + k];
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        int64[] sh = heap int64[2]; sh[0] = n; sh[1] = kc;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** `(n,)` labels — the leaf's majority class, first max on ties. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        this.requireFitted("DecisionTreeClassifier.predict");
+        this.requireShape(x, "DecisionTreeClassifier.predict");
+        int64 n = x.shapeAt(0);
+        int64 kc = this.nClasses;
+        float64[] out = heap float64[n];
+        int64 r = 0;
+        while (r < n) {
+            int64 leaf = this.tree.leafOf(x, r, this.nFeatures);
+            int64 best = 0;
+            int64 k = 1;
+            while (k < kc) {
+                if (this.tree.value[leaf * kc + k] > this.tree.value[leaf * kc + best]) {
+                    best = k;
+                }
+                k = k + 1;
+            }
+            out[r] = (float64) best;
+            r = r + 1;
+        }
+        int64[] sh = heap int64[1]; sh[0] = n;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** Accuracy — the classifier `score` convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        int64 n = p.shapeAt(0);
+        int64 hits = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (p.get1(i) == y.get1(i)) { hits = hits + 1; }
+            i = i + 1;
+        }
+        return (float64) hits / (float64) n;
+    }
+
+    /** The realized tree depth (root = 0 for a stump-free tree of one leaf). */
+    public int64 depth() {
+        this.requireFitted("DecisionTreeClassifier.depth");
+        return this.tree.realizedDepth;
+    }
+
+    /** The realized leaf count. */
+    public int64 leafCount() {
+        this.requireFitted("DecisionTreeClassifier.leafCount");
+        return this.tree.leaves;
+    }
+
+    /** Readable root-to-leaf rule dump (§2.8). */
+    public #String exportText() {
+        this.requireFitted("DecisionTreeClassifier.exportText");
+        return this.tree.exportText();
+    }
+}

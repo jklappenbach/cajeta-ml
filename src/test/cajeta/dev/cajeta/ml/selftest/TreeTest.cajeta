@@ -1,0 +1,275 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.DecisionTreeClassifier;
+import dev.cajeta.ml.DecisionTreeRegressor;
+import dev.cajeta.ml.MlException;
+
+/**
+ * ml-trees-ensembles U1 — the exact-split decision tree vs PINNED sklearn
+ * 1.9.0 (tools/fixtures/gen_tree.py). Fixtures are tie-free ACROSS features
+ * (cross-feature ties in sklearn are broken by RNG feature visit order,
+ * which is not a rule worth reproducing); the WITHIN-feature rule is
+ * deterministic — ascending position scan, strict `>`, first (lowest
+ * threshold) kept — and the tie fixture pins exactly that. All pinned
+ * values are exactly representable, so comparisons are `==`, not near().
+ */
+public class TreeTest {
+
+    public TreeTest() { return; }
+
+    // The 12x2 three-class fixture (gen_tree.py): f0 = i, f1 = (i*5) % 12;
+    // y = 0 0 0 0 1 1 1 1 2 2 2 2. Contiguous class blocks on f0 keep every
+    // impure node >= 4 samples (a 2-sample impure node ties across every
+    // separating feature, which sklearn resolves by RNG visit order). The
+    // root DOES tie within f0 — 3.5 vs 7.5 by symmetry — so this fixture
+    // also pins the ascending-scan first-kept rule at real size.
+    static #Tensor<float64> clsX() {
+        float64[] a = heap float64[24];
+        int64 i = (int64) 0;
+        while (i < (int64) 12) {
+            a[i * (int64) 2] = (float64) i;
+            a[i * (int64) 2 + (int64) 1] = (float64) ((i * (int64) 5) % (int64) 12);
+            i = i + (int64) 1;
+        }
+        int64[] sh = heap int64[2]; sh[0] = (int64) 12; sh[1] = (int64) 2;
+        return Tensor.of<float64>(a, sh);
+    }
+
+    static #Tensor<float64> clsY() {
+        float64[] a = heap float64[12];
+        int64 i = (int64) 0;
+        while (i < (int64) 12) {
+            if (i < (int64) 4) { a[i] = (float64) 0.0; }
+            else if (i < (int64) 8) { a[i] = (float64) 1.0; }
+            else { a[i] = (float64) 2.0; }
+            i = i + (int64) 1;
+        }
+        int64[] sh = heap int64[1]; sh[0] = (int64) 12;
+        return Tensor.of<float64>(a, sh);
+    }
+
+    static #Tensor<float64> clsQ() {
+        float64[] a = heap float64[8];
+        a[0] = (float64) 1.0;  a[1] = (float64) 3.0;
+        a[2] = (float64) 5.1;  a[3] = (float64) 7.0;
+        a[4] = (float64) 10.5; a[5] = (float64) 2.0;
+        a[6] = (float64) 2.7;  a[7] = (float64) 11.0;
+        int64[] sh = heap int64[2]; sh[0] = (int64) 4; sh[1] = (int64) 2;
+        return Tensor.of<float64>(a, sh);
+    }
+
+    // 1.1.1 (classifier half) + 1.1.4 — labels match sklearn on both
+    // criteria; depth/leafCount report the realized structure (2, 3).
+    @Test
+    public void classifierMatchesSklearnLabels() {
+        Tensor<float64> x = TreeTest.clsX();
+        Tensor<float64> y = TreeTest.clsY();
+        Tensor<float64> q = TreeTest.clsQ();
+
+        DecisionTreeClassifier g = heap DecisionTreeClassifier("gini");
+        g.fit(x, y);
+        Assert.equals(g.depth(), (int64) 2);
+        Assert.equals(g.leafCount(), (int64) 3);
+        Tensor<float64> pg = g.predict(q);
+        Assert.isTrue(pg.flatGet((int64) 0) == (float64) 0.0);
+        Assert.isTrue(pg.flatGet((int64) 1) == (float64) 1.0);
+        Assert.isTrue(pg.flatGet((int64) 2) == (float64) 2.0);
+        Assert.isTrue(pg.flatGet((int64) 3) == (float64) 0.0);
+
+        DecisionTreeClassifier e = heap DecisionTreeClassifier("entropy");
+        e.fit(x, y);
+        Assert.equals(e.depth(), (int64) 2);
+        Assert.equals(e.leafCount(), (int64) 3);
+        Tensor<float64> pe = e.predict(q);
+        int64 i = (int64) 0;
+        while (i < (int64) 4) {
+            Assert.isTrue(pe.flatGet(i) == pg.flatGet(i));
+            i = i + (int64) 1;
+        }
+        return;
+    }
+
+    // 1.1.2 — depth-limited tree has an IMPURE leaf whose class distribution
+    // comes back as exact fractions summing to 1 (cls-d1: [0.0, 0.5, 0.5]);
+    // the tied argmax predicts the FIRST max (class 1), sklearn's rule.
+    @Test
+    public void predictProbaIsLeafDistribution() {
+        DecisionTreeClassifier c = heap DecisionTreeClassifier("gini", (int64) 1);
+        c.fit(TreeTest.clsX(), TreeTest.clsY());
+        Assert.equals(c.depth(), (int64) 1);
+        Assert.equals(c.leafCount(), (int64) 2);
+
+        float64[] qa = heap float64[4];
+        qa[0] = (float64) 1.0;  qa[1] = (float64) 3.0;
+        qa[2] = (float64) 10.5; qa[3] = (float64) 2.0;
+        int64[] sh = heap int64[2]; sh[0] = (int64) 2; sh[1] = (int64) 2;
+        Tensor<float64> q = Tensor.of<float64>(qa, sh);
+
+        Tensor<float64> p = c.predictProba(q);
+        Assert.isTrue(p.flatGet((int64) 0) == (float64) 1.0);
+        Assert.isTrue(p.flatGet((int64) 1) == (float64) 0.0);
+        Assert.isTrue(p.flatGet((int64) 2) == (float64) 0.0);
+        Assert.isTrue(p.flatGet((int64) 3) == (float64) 0.0);
+        Assert.isTrue(p.flatGet((int64) 4) == (float64) 0.5);
+        Assert.isTrue(p.flatGet((int64) 5) == (float64) 0.5);
+
+        Tensor<float64> lbl = c.predict(q);
+        Assert.isTrue(lbl.flatGet((int64) 0) == (float64) 0.0);
+        Assert.isTrue(lbl.flatGet((int64) 1) == (float64) 1.0);  // tied 0.5/0.5 -> first max
+        return;
+    }
+
+    // 1.1.3 — a perfectly separable feature yields one split and two pure
+    // leaves; pure nodes are never split further (cls-pure: depth 1).
+    @Test
+    public void pureNodesBecomeLeaves() {
+        float64[] xa = heap float64[8];
+        xa[0] = (float64) 0.0; xa[1] = (float64) 1.0; xa[2] = (float64) 2.0;
+        xa[3] = (float64) 3.0; xa[4] = (float64) 10.0; xa[5] = (float64) 11.0;
+        xa[6] = (float64) 12.0; xa[7] = (float64) 13.0;
+        int64[] xs = heap int64[2]; xs[0] = (int64) 8; xs[1] = (int64) 1;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        float64[] ya = heap float64[8];
+        int64 i = (int64) 4;
+        while (i < (int64) 8) { ya[i] = (float64) 1.0; i = i + (int64) 1; }
+        int64[] ys = heap int64[1]; ys[0] = (int64) 8;
+        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+
+        DecisionTreeClassifier c = heap DecisionTreeClassifier("gini");
+        c.fit(x, y);
+        Assert.equals(c.depth(), (int64) 1);
+        Assert.equals(c.leafCount(), (int64) 2);
+        Assert.equals(c.score(x, y) == (float64) 1.0 ? (int64) 1 : (int64) 0, (int64) 1);
+        return;
+    }
+
+    // 1.1.6 — two positions of exactly equal impurity decrease on ONE
+    // feature (y = 0 0 1 1 0 0): the ascending scan with strict `>` keeps
+    // the FIRST — root threshold 1.5, matching sklearn (cls-tie).
+    @Test
+    public void equalDecreaseTieBreaksToLowestThreshold() {
+        float64[] xa = heap float64[6];
+        int64 i = (int64) 0;
+        while (i < (int64) 6) { xa[i] = (float64) i; i = i + (int64) 1; }
+        int64[] xs = heap int64[2]; xs[0] = (int64) 6; xs[1] = (int64) 1;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        float64[] ya = heap float64[6];
+        ya[2] = (float64) 1.0; ya[3] = (float64) 1.0;
+        int64[] ys = heap int64[1]; ys[0] = (int64) 6;
+        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+
+        DecisionTreeClassifier c = heap DecisionTreeClassifier("gini");
+        c.fit(x, y);
+        Assert.equals(c.depth(), (int64) 2);
+        Assert.equals(c.leafCount(), (int64) 3);
+        // Root split at 1.5 (not 3.5): the export's first rule line pins it.
+        String dump = c.exportText();
+        Assert.isTrue(dump.indexOf("f0 <= 1.5") >= (int64) 0);
+        // And the routing agrees: 1.0 left (class 0), 2.5 middle (class 1).
+        float64[] qa = heap float64[3];
+        qa[0] = (float64) 1.0; qa[1] = (float64) 2.5; qa[2] = (float64) 4.9;
+        int64[] qs = heap int64[2]; qs[0] = (int64) 3; qs[1] = (int64) 1;
+        Tensor<float64> p = c.predict(Tensor.of<float64>(qa, qs));
+        Assert.isTrue(p.flatGet((int64) 0) == (float64) 0.0);
+        Assert.isTrue(p.flatGet((int64) 1) == (float64) 1.0);
+        Assert.isTrue(p.flatGet((int64) 2) == (float64) 0.0);
+        return;
+    }
+
+    // 1.1.1 (regressor half) — leaves predict the training mean; the
+    // depth-3 structure and all three query predictions match sklearn
+    // exactly (reg-d3: 4.75, 18.5, 33.25).
+    @Test
+    public void regressorPredictsLeafMeans() {
+        float64[] xa = heap float64[24];
+        float64[] ya = heap float64[12];
+        int64 i = (int64) 0;
+        while (i < (int64) 12) {
+            float64 f0 = (float64) i;
+            float64 f1 = (float64) ((i * (int64) 7) % (int64) 12);
+            xa[i * (int64) 2] = f0;
+            xa[i * (int64) 2 + (int64) 1] = f1;
+            ya[i] = (float64) 3.0 * f0 + (float64) 0.5 * f1 - (float64) 2.0;
+            i = i + (int64) 1;
+        }
+        int64[] xs = heap int64[2]; xs[0] = (int64) 12; xs[1] = (int64) 2;
+        int64[] ys = heap int64[1]; ys[0] = (int64) 12;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+
+        DecisionTreeRegressor r = heap DecisionTreeRegressor((int64) 3);
+        r.fit(x, y);
+        Assert.equals(r.depth(), (int64) 3);
+        Assert.equals(r.leafCount(), (int64) 8);
+
+        float64[] qa = heap float64[6];
+        qa[0] = (float64) 1.0;  qa[1] = (float64) 3.0;
+        qa[2] = (float64) 5.1;  qa[3] = (float64) 7.0;
+        qa[4] = (float64) 10.5; qa[5] = (float64) 2.0;
+        int64[] qs = heap int64[2]; qs[0] = (int64) 3; qs[1] = (int64) 2;
+        Tensor<float64> p = r.predict(Tensor.of<float64>(qa, qs));
+        Assert.isTrue(p.flatGet((int64) 0) == (float64) 4.75);
+        Assert.isTrue(p.flatGet((int64) 1) == (float64) 18.5);
+        Assert.isTrue(p.flatGet((int64) 2) == (float64) 33.25);
+        return;
+    }
+
+    // 1.1.5 — a fit is bit-identical across repeated runs (the grower is
+    // sequential and deterministic; nothing depends on iteration timing).
+    @Test
+    public void refitIsBitIdentical() {
+        Tensor<float64> x = TreeTest.clsX();
+        Tensor<float64> y = TreeTest.clsY();
+        Tensor<float64> q = TreeTest.clsQ();
+        DecisionTreeClassifier a = heap DecisionTreeClassifier("entropy");
+        DecisionTreeClassifier b = heap DecisionTreeClassifier("entropy");
+        a.fit(x, y);
+        b.fit(x, y);
+        Tensor<float64> pa = a.predictProba(q);
+        Tensor<float64> pb = b.predictProba(q);
+        int64 i = (int64) 0;
+        while (i < (int64) 12) {
+            Assert.equals(Cajeta.f64ToBits(pb.flatGet(i)), Cajeta.f64ToBits(pa.flatGet(i)));
+            i = i + (int64) 1;
+        }
+        Assert.isTrue(a.exportText().equals(b.exportText()));
+        return;
+    }
+
+    // 1.1.7 — the rule export walks root to leaf with one readable rule per
+    // line: feature comparisons on internal nodes, class/value on leaves.
+    @Test
+    public void exportTextIsReadableRules() {
+        DecisionTreeClassifier c = heap DecisionTreeClassifier("gini");
+        c.fit(TreeTest.clsX(), TreeTest.clsY());
+        String dump = c.exportText();
+        Assert.isTrue(dump.indexOf("f0 <= 3.5") >= (int64) 0);
+        Assert.isTrue(dump.indexOf("f0 <= 7.5") >= (int64) 0);
+        Assert.isTrue(dump.indexOf("class: 0") >= (int64) 0);
+        Assert.isTrue(dump.indexOf("class: 2") >= (int64) 0);
+        return;
+    }
+
+    // 1.1.8 — unsupported parameters are rejected, never silently ignored.
+    @Test
+    public void unsupportedParamsRejected() {
+        boolean threw = false;
+        try {
+            DecisionTreeClassifier c = heap DecisionTreeClassifier("log_loss_x");
+        } catch (MlException ex) {
+            threw = true;
+        }
+        Assert.isTrue(threw);
+
+        boolean threw2 = false;
+        try {
+            DecisionTreeClassifier c2 = heap DecisionTreeClassifier("gini", (int64) -1);
+        } catch (MlException ex) {
+            threw2 = true;
+        }
+        Assert.isTrue(threw2);
+        return;
+    }
+}

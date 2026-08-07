@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+# ml-trees-ensembles U1 — decision-tree pins against PINNED sklearn 1.9.0.
+# Run: /home/julian/code/ml/venv-sklearn-ref/bin/python gen_tree.py
+#
+# Fixtures are TIE-FREE ACROSS FEATURES by construction (integer-grid values
+# with distinct impurity decreases), because sklearn breaks cross-feature ties
+# by its RNG's feature visit order (_splitter.pyx node_split_best: Fisher-Yates
+# feature draw + strict `>`), which is not a rule worth reproducing. The
+# WITHIN-feature rule IS deterministic and pinned here: positions scan in
+# ascending sorted order and strict `>` keeps the FIRST (lowest threshold);
+# the `tie` fixture below is constructed to exercise exactly that.
+# Thresholds are `v[p_prev]/2 + v[p]/2` (sum of halves).
+import numpy as np
+import sklearn
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor, export_text
+
+print("sklearn", sklearn.__version__)
+
+def dump(name, t):
+    tr = t.tree_
+    print(f"--- {name}: depth={t.get_depth()} leaves={t.get_n_leaves()} nodes={tr.node_count}")
+    for i in range(tr.node_count):
+        if tr.children_left[i] == -1:
+            print(f"  node {i}: LEAF value={[repr(v) for v in tr.value[i].ravel()]}")
+        else:
+            print(f"  node {i}: f={tr.feature[i]} thr={tr.threshold[i]!r} "
+                  f"L={tr.children_left[i]} R={tr.children_right[i]}")
+
+# ---- cls: 12 rows, 2 features, 3 classes; tie-free integer-ish grid ----
+n = 12
+X = np.zeros((n, 2))
+y = np.zeros(n, dtype=int)
+for i in range(n):
+    X[i, 0] = float(i)                      # monotone feature
+    X[i, 1] = float((i * 5) % 12)           # scrambled feature
+y[:4] = 0; y[4:8] = 1; y[8:] = 2
+# NO perturbation: a 2-sample impure node ties across EVERY feature that
+# separates the pair, which sklearn resolves by RNG visit order — the exact
+# cross-feature-tie territory these fixtures must avoid. Contiguous class
+# blocks on f0 keep every impure node >= 4 samples with a strictly best
+# split. (The root DOES tie WITHIN f0 — 3.5 vs 7.5 by symmetry — pinning
+# the ascending-scan first-kept rule on a real fixture.)
+
+for crit in ("gini", "entropy"):
+    c = DecisionTreeClassifier(criterion=crit, random_state=1).fit(X, y)
+    dump(f"cls-{crit}", c)
+    Q = np.array([[1.0, 3.0], [5.1, 7.0], [10.5, 2.0], [2.7, 11.0]])
+    print("  labels:", c.predict(Q).tolist())
+    print("  proba:", [[repr(v) for v in row] for row in c.predict_proba(Q)])
+
+# ---- pure-node stop: one feature separates perfectly ----
+Xp = np.array([[0.0], [1.0], [2.0], [3.0], [10.0], [11.0], [12.0], [13.0]])
+yp = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+p = DecisionTreeClassifier(criterion="gini", random_state=1).fit(Xp, yp)
+dump("cls-pure", p)
+
+# ---- within-feature tie: symmetric labels -> two equal-decrease positions ----
+# One feature; y = 0 0 1 1 0 0. Splitting at 1.5 (pos 2) and at 3.5 (pos 4)
+# both isolate the middle pair partially with EQUAL impurity decrease;
+# sklearn keeps the FIRST in ascending scan (threshold 1.5).
+Xt = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
+yt = np.array([0, 0, 1, 1, 0, 0])
+t = DecisionTreeClassifier(criterion="gini", random_state=1).fit(Xt, yt)
+dump("cls-tie", t)
+
+# ---- reg: leaf means + squared-error splits ----
+Xr = np.zeros((n, 2))
+yr = np.zeros(n)
+for i in range(n):
+    Xr[i, 0] = float(i)
+    Xr[i, 1] = float((i * 7) % 12)
+    yr[i] = 3.0 * Xr[i, 0] + 0.5 * Xr[i, 1] - 2.0
+r = DecisionTreeRegressor(criterion="squared_error", random_state=1, max_depth=3).fit(Xr, yr)
+dump("reg-d3", r)
+Qr = np.array([[1.0, 3.0], [5.1, 7.0], [10.5, 2.0]])
+print("  pred:", [repr(v) for v in r.predict(Qr)])
+
+# ---- export_text as the rule-dump reference shape (not asserted verbatim) ----
+print("--- export (cls-pure):")
+print(export_text(p, feature_names=["f0"]))
+
+# ---- impure leaves: depth-1 on the 3-class data -> fractional proba ----
+c1 = DecisionTreeClassifier(criterion="gini", random_state=1, max_depth=1).fit(X, y)
+dump("cls-d1", c1)
+Q1 = np.array([[1.0, 3.0], [10.5, 2.0]])
+print("  labels:", c1.predict(Q1).tolist())
+print("  proba:", [[repr(v) for v in row] for row in c1.predict_proba(Q1)])
