@@ -14,8 +14,11 @@ package dev.cajeta.ml;
  * incremental update. Correctness-first; the parity fixtures are tiny.
  */
 interface Impurity {
-    /** `w * impurity` of `ys[lo, hi)`. */
+    /** `w * impurity` of `ys[lo, hi)` (w = the slice's WEIGHTED count). */
     float64 weighted(float64[] ys, int64 lo, int64 hi);
+
+    /** The slice's weighted sample count (class-weight sum, or the length). */
+    float64 weightedN(float64[] ys, int64 lo, int64 hi);
 
     /** Is a split into `[lo,mid) / [mid,hi)` admissible? (poisson: both
      *  child sums must be positive; everything else: always). */

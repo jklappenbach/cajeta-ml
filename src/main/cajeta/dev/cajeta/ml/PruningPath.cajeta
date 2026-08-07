@@ -1,0 +1,22 @@
+package dev.cajeta.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * The result of {@link DecisionTreeClassifier#costComplexityPruningPath} —
+ * sklearn's `cost_complexity_pruning_path`: the distinct effective alphas of
+ * minimal cost-complexity pruning, ascending (`alphas[0] == 0` is the full
+ * tree), and the total leaf impurity of the pruned tree after each
+ * (ml-trees-ensembles U3, spec §4.7). Choose `ccpAlpha` by cross-validating
+ * over these rather than guessing.
+ */
+public final class PruningPath {
+    public Tensor<float64> alphas;
+    public Tensor<float64> impurities;
+
+    PruningPath(#Tensor<float64> alphas, #Tensor<float64> impurities) {
+        this.alphas #= alphas;
+        this.impurities #= impurities;
+        return;
+    }
+}

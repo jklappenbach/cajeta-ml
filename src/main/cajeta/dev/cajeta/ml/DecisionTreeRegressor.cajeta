@@ -16,6 +16,11 @@ public final class DecisionTreeRegressor implements Predictor {
     int64 maxDepth;
     int64 splitter;      // 0 = best, 1 = random
     uint64 seed;
+    int64 minSamplesSplit;
+    int64 minSamplesLeaf;
+    int64 maxLeafNodes;
+    float64 minImpurityDecrease;
+    float64 ccpAlpha;
     int64 nFeatures;
     Trees tree;
     boolean fitted;
@@ -63,7 +68,57 @@ public final class DecisionTreeRegressor implements Predictor {
         this.maxDepth = maxDepth;
         this.splitter = splitter.equals("best") ? (int64) 0 : (int64) 1;
         this.seed = seed;
+        this.minSamplesSplit = 2;
+        this.minSamplesLeaf = 1;
+        this.maxLeafNodes = 0;
+        this.minImpurityDecrease = 0.0;
+        this.ccpAlpha = 0.0;
         this.fitted = false;
+        return;
+    }
+
+    /** Minimum samples a node needs to be split (sklearn `min_samples_split`). */
+    public void setMinSamplesSplit(int64 v) {
+        if (v < 2) {
+            throw heap MlException("DecisionTreeRegressor: minSamplesSplit must be >= 2");
+        }
+        this.minSamplesSplit = v;
+        return;
+    }
+
+    /** Minimum samples each child must keep (sklearn `min_samples_leaf`). */
+    public void setMinSamplesLeaf(int64 v) {
+        if (v < 1) {
+            throw heap MlException("DecisionTreeRegressor: minSamplesLeaf must be >= 1");
+        }
+        this.minSamplesLeaf = v;
+        return;
+    }
+
+    /** Leaf budget; > 0 switches growth to BEST-FIRST (sklearn `max_leaf_nodes`). */
+    public void setMaxLeafNodes(int64 v) {
+        if (v != 0 && v < 2) {
+            throw heap MlException("DecisionTreeRegressor: maxLeafNodes must be 0 (unbounded) or >= 2");
+        }
+        this.maxLeafNodes = v;
+        return;
+    }
+
+    /** Weighted-decrease floor for a split (sklearn `min_impurity_decrease`). */
+    public void setMinImpurityDecrease(float64 v) {
+        if (v < 0.0) {
+            throw heap MlException("DecisionTreeRegressor: minImpurityDecrease must be >= 0");
+        }
+        this.minImpurityDecrease = v;
+        return;
+    }
+
+    /** Minimal cost-complexity pruning strength (sklearn `ccp_alpha`). */
+    public void setCcpAlpha(float64 v) {
+        if (v < 0.0) {
+            throw heap MlException("DecisionTreeRegressor: ccpAlpha must be >= 0");
+        }
+        this.ccpAlpha = v;
         return;
     }
 
@@ -101,6 +156,11 @@ public final class DecisionTreeRegressor implements Predictor {
         } else {
             t = heap Trees(heap PoissonImpurity(), this.maxDepth, this.splitter, this.seed);
         }
+        t.minSamplesSplit = this.minSamplesSplit;
+        t.minSamplesLeaf = this.minSamplesLeaf;
+        t.maxLeafNodes = this.maxLeafNodes;
+        t.minImpurityDecrease = this.minImpurityDecrease;
+        t.ccpAlpha = this.ccpAlpha;
         t.fit(x, y, n, this.nFeatures);
         this.tree #= t;
         this.fitted = true;

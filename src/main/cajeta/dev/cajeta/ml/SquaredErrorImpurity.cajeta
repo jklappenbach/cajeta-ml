@@ -29,6 +29,10 @@ final class SquaredErrorImpurity implements Impurity {
         return true;
     }
 
+    public float64 weightedN(float64[] ys, int64 lo, int64 hi) {
+        return (float64) (hi - lo);
+    }
+
     public int64 width() {
         return 1;
     }

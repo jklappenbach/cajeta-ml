@@ -1,0 +1,228 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.DecisionTreeClassifier;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.PruningPath;
+
+/**
+ * ml-trees-ensembles U3 — pruning and regularization vs PINNED sklearn
+ * 1.9.0 (tools/fixtures/gen_tree.py, the u3-* pins over the 16-row noisy
+ * fixture). Size limits during growth, best-first maxLeafNodes, the
+ * minImpurityDecrease gate, minimal cost-complexity pruning with the full
+ * alpha path, and class weights that FLIP a split.
+ */
+public class PruneTest {
+
+    public PruneTest() { return; }
+
+    // The 16-row noisy 1-D fixture: y = 0010 1110 0001 1101.
+    static #Tensor<float64> u3X() {
+        float64[] a = heap float64[16];
+        int64 i = 0;
+        while (i < 16) { a[i] = (float64) i; i = i + 1; }
+        int64[] sh = heap int64[2]; sh[0] = 16; sh[1] = 1;
+        return Tensor.of<float64>(a, sh);
+    }
+
+    static #Tensor<float64> u3Y() {
+        float64[] a = heap float64[16];
+        a[2] = 1.0; a[4] = 1.0; a[5] = 1.0; a[6] = 1.0;
+        a[11] = 1.0; a[12] = 1.0; a[13] = 1.0; a[15] = 1.0;
+        int64[] sh = heap int64[1]; sh[0] = 16;
+        return Tensor.of<float64>(a, sh);
+    }
+
+    // 3.1.1 + 3.1.2 — the size limits: the full tree is (5, 8); maxDepth
+    // caps every path; minSamplesLeaf 2 -> (4, 6), 3 -> (3, 4);
+    // minSamplesSplit 6 -> (3, 4). All pinned against sklearn.
+    @Test
+    public void sizeLimitsMatchSklearn() {
+        Tensor<float64> x = PruneTest.u3X();
+        Tensor<float64> y = PruneTest.u3Y();
+
+        DecisionTreeClassifier full = heap DecisionTreeClassifier("gini");
+        full.fit(x, y);
+        Assert.equals(full.depth(), (int64) 5);
+        Assert.equals(full.leafCount(), (int64) 8);
+
+        DecisionTreeClassifier d2 = heap DecisionTreeClassifier("gini", (int64) 2);
+        d2.fit(x, y);
+        Assert.equals(d2.depth(), (int64) 2);
+
+        DecisionTreeClassifier msl2 = heap DecisionTreeClassifier("gini");
+        msl2.setMinSamplesLeaf((int64) 2);
+        msl2.fit(x, y);
+        Assert.equals(msl2.depth(), (int64) 4);
+        Assert.equals(msl2.leafCount(), (int64) 6);
+
+        DecisionTreeClassifier msl3 = heap DecisionTreeClassifier("gini");
+        msl3.setMinSamplesLeaf((int64) 3);
+        msl3.fit(x, y);
+        Assert.equals(msl3.depth(), (int64) 3);
+        Assert.equals(msl3.leafCount(), (int64) 4);
+
+        DecisionTreeClassifier mss6 = heap DecisionTreeClassifier("gini");
+        mss6.setMinSamplesSplit((int64) 6);
+        mss6.fit(x, y);
+        Assert.equals(mss6.depth(), (int64) 3);
+        Assert.equals(mss6.leafCount(), (int64) 4);
+
+        // Rejected values (§12.6).
+        boolean threw = false;
+        try { msl2.setMinSamplesLeaf((int64) 0); } catch (MlException ex) { threw = true; }
+        Assert.isTrue(threw);
+        return;
+    }
+
+    // 3.1.3 — maxLeafNodes grows BEST-FIRST and stops at the count: the
+    // 3-leaf tree keeps the two best splits (10.5, then 6.5) and its
+    // impure frontier leaves carry sklearn's exact fractions.
+    @Test
+    public void maxLeafNodesGrowsBestFirst() {
+        Tensor<float64> x = PruneTest.u3X();
+        Tensor<float64> y = PruneTest.u3Y();
+
+        DecisionTreeClassifier m3 = heap DecisionTreeClassifier("gini");
+        m3.setMaxLeafNodes((int64) 3);
+        m3.fit(x, y);
+        Assert.equals(m3.leafCount(), (int64) 3);
+        Assert.equals(m3.depth(), (int64) 2);
+        String dump = m3.exportText();
+        Assert.isTrue(dump.indexOf("f0 <= 10.5") >= (int64) 0);
+        Assert.isTrue(dump.indexOf("f0 <= 6.5") >= (int64) 0);
+
+        // The frontier leaf fractions match sklearn's u3-mln3 pins.
+        float64[] qa = heap float64[2];
+        qa[0] = 0.0; qa[1] = 12.0;
+        int64[] qs = heap int64[2]; qs[0] = 2; qs[1] = 1;
+        Tensor<float64> p = m3.predictProba(Tensor.of<float64>(qa, qs));
+        Assert.isTrue(p.flatGet((int64) 0) == 3.0 / 7.0);
+        Assert.isTrue(p.flatGet((int64) 1) == 4.0 / 7.0);
+        Assert.isTrue(p.flatGet((int64) 2) == 0.2);
+        Assert.isTrue(p.flatGet((int64) 3) == 0.8);
+
+        DecisionTreeClassifier m5 = heap DecisionTreeClassifier("gini");
+        m5.setMaxLeafNodes((int64) 5);
+        m5.fit(x, y);
+        Assert.equals(m5.leafCount(), (int64) 5);
+        Assert.equals(m5.depth(), (int64) 3);
+        return;
+    }
+
+    // 3.1.4 — minImpurityDecrease blocks splits below the threshold
+    // (u3-mid.05: the full (5, 8) tree stops at (3, 4)).
+    @Test
+    public void minImpurityDecreaseBlocksWeakSplits() {
+        DecisionTreeClassifier c = heap DecisionTreeClassifier("gini");
+        c.setMinImpurityDecrease(0.05);
+        c.fit(PruneTest.u3X(), PruneTest.u3Y());
+        Assert.equals(c.depth(), (int64) 3);
+        Assert.equals(c.leafCount(), (int64) 4);
+        return;
+    }
+
+    // 3.1.7 + 3.1.9 — the cost-complexity path matches sklearn exactly:
+    // alphas [0, 0.046875, 0.05, 0.10208333...], impurities [0, 0.09375,
+    // 0.19375, 0.5]; and fitting with ccpAlpha just past each interior
+    // alpha reproduces sklearn's pruned sizes. 3.1.5's monotonicity is
+    // implied and asserted: leaf count never increases along the path.
+    @Test
+    public void costComplexityPathMatchesSklearn() {
+        Tensor<float64> x = PruneTest.u3X();
+        Tensor<float64> y = PruneTest.u3Y();
+
+        DecisionTreeClassifier c = heap DecisionTreeClassifier("gini");
+        PruningPath path = c.costComplexityPruningPath(x, y);
+        Assert.equals(path.alphas.shapeAt(0), (int64) 4);
+        Assert.isTrue(PruneTest.near(path.alphas.flatGet((int64) 0), 0.0));
+        Assert.isTrue(PruneTest.near(path.alphas.flatGet((int64) 1), 0.046875));
+        Assert.isTrue(PruneTest.near(path.alphas.flatGet((int64) 2), 0.04999999999999999));
+        Assert.isTrue(PruneTest.near(path.alphas.flatGet((int64) 3), 0.10208333333333335));
+        Assert.isTrue(PruneTest.near(path.impurities.flatGet((int64) 0), 0.0));
+        Assert.isTrue(PruneTest.near(path.impurities.flatGet((int64) 1), 0.09375));
+        Assert.isTrue(PruneTest.near(path.impurities.flatGet((int64) 2), 0.19374999999999998));
+        Assert.isTrue(PruneTest.near(path.impurities.flatGet((int64) 3), 0.5));
+
+        // 3.1.5: raising alpha monotonically reduces the leaf count.
+        int64 prev = 8;
+        DecisionTreeClassifier a1 = heap DecisionTreeClassifier("gini");
+        a1.setCcpAlpha(0.046875 + 0.000000000001);
+        a1.fit(x, y);
+        Assert.equals(a1.leafCount(), (int64) 6);
+        Assert.equals(a1.depth(), (int64) 3);
+        Assert.isTrue(a1.leafCount() < prev);
+
+        DecisionTreeClassifier a2 = heap DecisionTreeClassifier("gini");
+        a2.setCcpAlpha(0.05 + 0.000000000001);
+        a2.fit(x, y);
+        Assert.equals(a2.leafCount(), (int64) 4);
+        Assert.equals(a2.depth(), (int64) 3);
+        Assert.isTrue(a2.leafCount() < a1.leafCount());
+
+        // Past the root's alpha the whole tree collapses to one leaf...
+        DecisionTreeClassifier a3 = heap DecisionTreeClassifier("gini");
+        a3.setCcpAlpha(0.2);
+        a3.fit(x, y);
+        Assert.equals(a3.leafCount(), (int64) 1);
+        Assert.equals(a3.depth(), (int64) 0);
+        // 3.1.6: ...and that collapsed leaf predicts the majority of ALL
+        // samples it now holds (8 vs 8 here -> tied -> first max, class 0),
+        // with the fractions of the whole node.
+        float64[] qa = heap float64[1];
+        qa[0] = 3.0;
+        int64[] qs = heap int64[2]; qs[0] = 1; qs[1] = 1;
+        Tensor<float64> p = a3.predictProba(Tensor.of<float64>(qa, qs));
+        Assert.isTrue(p.flatGet((int64) 0) == 0.5);
+        Assert.isTrue(p.flatGet((int64) 1) == 0.5);
+        return;
+    }
+
+    // 3.1.8 — classWeight scales each sample's impurity contribution: on
+    // the no-pure-split fixture the weighted {0:1, 1:4} tree flips its root
+    // from 4.5 to 1.5 and reports WEIGHTED leaf fractions — both pinned
+    // against sklearn.
+    @Test
+    public void classWeightFlipsTheSplitAndWeighsFractions() {
+        float64[] xa = heap float64[8];
+        int64 i = 0;
+        while (i < 8) { xa[i] = (float64) i; i = i + 1; }
+        int64[] xs = heap int64[2]; xs[0] = 8; xs[1] = 1;
+        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        float64[] ya = heap float64[8];
+        ya[2] = 1.0; ya[5] = 1.0; ya[6] = 1.0;
+        int64[] ys = heap int64[1]; ys[0] = 8;
+        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+
+        DecisionTreeClassifier u = heap DecisionTreeClassifier("gini", (int64) 1);
+        u.fit(x, y);
+        String du = u.exportText();
+        Assert.isTrue(du.indexOf("f0 <= 4.5") >= (int64) 0);
+
+        float64[] wa = heap float64[2];
+        wa[0] = 1.0; wa[1] = 4.0;
+        int64[] ws = heap int64[1]; ws[0] = 2;
+        DecisionTreeClassifier w = heap DecisionTreeClassifier("gini", (int64) 1);
+        w.setClassWeight(Tensor.of<float64>(wa, ws));
+        w.fit(x, y);
+        String dw = w.exportText();
+        Assert.isTrue(dw.indexOf("f0 <= 1.5") >= (int64) 0);
+
+        float64[] qa = heap float64[2];
+        qa[0] = 0.0; qa[1] = 5.0;
+        int64[] qs = heap int64[2]; qs[0] = 2; qs[1] = 1;
+        Tensor<float64> p = w.predictProba(Tensor.of<float64>(qa, qs));
+        Assert.isTrue(p.flatGet((int64) 0) == 1.0);
+        Assert.isTrue(p.flatGet((int64) 1) == 0.0);
+        Assert.isTrue(p.flatGet((int64) 2) == 0.2);
+        Assert.isTrue(p.flatGet((int64) 3) == 0.8);
+        return;
+    }
+
+    static boolean near(float64 a, float64 b) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d <= 0.000000000001;
+    }
+}

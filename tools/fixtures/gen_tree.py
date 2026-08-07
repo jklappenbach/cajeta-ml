@@ -102,3 +102,50 @@ print("  pred:", [repr(v) for v in mp.predict(np.array([[1.5], [6.0]]))])
 m2 = DecisionTreeRegressor(criterion="absolute_error", random_state=1, max_depth=2).fit(Xa, ya)
 dump("reg-absolute_error-d2", m2)
 print("  pred:", [repr(v) for v in m2.predict(np.array([[0.5], [3.0], [4.5], [6.5]]))])
+
+# ---- U3: pruning and regularization ----
+# One noisy 1-D dataset drives all the pruning pins.
+Xu = np.arange(16.0).reshape(-1, 1)
+yu = np.array([0,0,1,0, 1,1,1,0, 0,0,0,1, 1,1,0,1])
+
+full = DecisionTreeClassifier(criterion="gini", random_state=1).fit(Xu, yu)
+dump("u3-full", full)
+
+for msl in (2, 3):
+    t = DecisionTreeClassifier(criterion="gini", random_state=1,
+                               min_samples_leaf=msl).fit(Xu, yu)
+    print(f"u3-msl{msl}: depth={t.get_depth()} leaves={t.get_n_leaves()}")
+t = DecisionTreeClassifier(criterion="gini", random_state=1,
+                           min_samples_split=6).fit(Xu, yu)
+print(f"u3-mss6: depth={t.get_depth()} leaves={t.get_n_leaves()}")
+
+for mln in (3, 5):
+    t = DecisionTreeClassifier(criterion="gini", random_state=1,
+                               max_leaf_nodes=mln).fit(Xu, yu)
+    dump(f"u3-mln{mln}", t)
+
+t = DecisionTreeClassifier(criterion="gini", random_state=1,
+                           min_impurity_decrease=0.05).fit(Xu, yu)
+dump("u3-mid.05", t)
+
+# ccp path + pruned trees along it.
+path = full.cost_complexity_pruning_path(Xu, yu)
+print("u3-ccp alphas:", [repr(a) for a in path.ccp_alphas])
+print("u3-ccp impurities:", [repr(a) for a in path.impurities])
+for a in path.ccp_alphas[1:-1]:
+    t = DecisionTreeClassifier(criterion="gini", random_state=1,
+                               ccp_alpha=a + 1e-12).fit(Xu, yu)
+    print(f"u3-ccp@{a!r}: depth={t.get_depth()} leaves={t.get_n_leaves()}")
+
+# class_weight: weights that FLIP the chosen split (no pure split exists,
+# so weighting the minority class moves the best boundary): unweighted root
+# 4.5 -> weighted {0:1, 1:4} root 1.5, and leaf fractions are WEIGHTED
+# (right = 3x0 + 3x1 -> 3/15, 12/15).
+Xw = np.arange(8.0).reshape(-1, 1)
+yw = np.array([0, 0, 1, 0, 0, 1, 1, 0])
+uw = DecisionTreeClassifier(criterion="gini", random_state=1, max_depth=1).fit(Xw, yw)
+dump("u3-cw-none-d1", uw)
+cw = DecisionTreeClassifier(criterion="gini", random_state=1, max_depth=1,
+                            class_weight={0: 1.0, 1: 4.0}).fit(Xw, yw)
+dump("u3-cw-1:4-d1", cw)
+print("  cw proba:", [[repr(v) for v in row] for row in cw.predict_proba(np.array([[0.0], [5.0]]))])

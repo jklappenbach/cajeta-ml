@@ -27,6 +27,19 @@ public final class Criteria {
         return Information.entropy(pt, 2.0);
     }
 
+    /** Base-2 entropy of a WEIGHTED class-count vector. */
+    static float64 entropyOfWeights(float64[] wc, int64 k, float64 wn) {
+        float64[] p = heap float64[k];
+        int64 c = 0;
+        while (c < k) {
+            p[c] = wc[c] / wn;
+            c = c + 1;
+        }
+        int64[] sh = heap int64[1]; sh[0] = k;
+        Tensor<float64> pt = Tensor.of<float64>(p, sh);
+        return Information.entropy(pt, 2.0);
+    }
+
     static #int64[] countsOf(Tensor<float64> y, int64 n, int64 k) {
         int64[] cnt = heap int64[k];
         int64 i = 0;

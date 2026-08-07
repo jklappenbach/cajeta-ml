@@ -19,6 +19,12 @@ public final class DecisionTreeClassifier implements ProbClassifier {
     int64 maxDepth;
     int64 splitter;      // 0 = best, 1 = random
     uint64 seed;
+    int64 minSamplesSplit;
+    int64 minSamplesLeaf;
+    int64 maxLeafNodes;
+    float64 minImpurityDecrease;
+    float64 ccpAlpha;
+    Tensor<float64> classWeight;   // (K,) per-class weights; null = unweighted
     int64 nClasses;
     int64 nFeatures;
     Trees tree;
@@ -60,7 +66,67 @@ public final class DecisionTreeClassifier implements ProbClassifier {
         this.maxDepth = maxDepth;
         this.splitter = splitter.equals("best") ? (int64) 0 : (int64) 1;
         this.seed = seed;
+        this.minSamplesSplit = 2;
+        this.minSamplesLeaf = 1;
+        this.maxLeafNodes = 0;
+        this.minImpurityDecrease = 0.0;
+        this.ccpAlpha = 0.0;
         this.fitted = false;
+        return;
+    }
+
+    /** Minimum samples a node needs to be split (sklearn `min_samples_split`). */
+    public void setMinSamplesSplit(int64 v) {
+        if (v < 2) {
+            throw heap MlException("DecisionTreeClassifier: minSamplesSplit must be >= 2");
+        }
+        this.minSamplesSplit = v;
+        return;
+    }
+
+    /** Minimum samples each child must keep (sklearn `min_samples_leaf`). */
+    public void setMinSamplesLeaf(int64 v) {
+        if (v < 1) {
+            throw heap MlException("DecisionTreeClassifier: minSamplesLeaf must be >= 1");
+        }
+        this.minSamplesLeaf = v;
+        return;
+    }
+
+    /** Leaf budget; > 0 switches growth to BEST-FIRST (sklearn `max_leaf_nodes`). */
+    public void setMaxLeafNodes(int64 v) {
+        if (v != 0 && v < 2) {
+            throw heap MlException("DecisionTreeClassifier: maxLeafNodes must be 0 (unbounded) or >= 2");
+        }
+        this.maxLeafNodes = v;
+        return;
+    }
+
+    /** Weighted-decrease floor for a split (sklearn `min_impurity_decrease`). */
+    public void setMinImpurityDecrease(float64 v) {
+        if (v < 0.0) {
+            throw heap MlException("DecisionTreeClassifier: minImpurityDecrease must be >= 0");
+        }
+        this.minImpurityDecrease = v;
+        return;
+    }
+
+    /** Minimal cost-complexity pruning strength (sklearn `ccp_alpha`). */
+    public void setCcpAlpha(float64 v) {
+        if (v < 0.0) {
+            throw heap MlException("DecisionTreeClassifier: ccpAlpha must be >= 0");
+        }
+        this.ccpAlpha = v;
+        return;
+    }
+
+    /** `(K,)` per-class impurity weights (sklearn `class_weight`, §4.8). */
+    public void setClassWeight(Tensor<float64> w) {
+        if (w.ndim() != 1) {
+            throw heap MlException("DecisionTreeClassifier: classWeight must be (K,)");
+        }
+        Tensor<float64> cw = w.copy();
+        this.classWeight #= cw;
         return;
     }
 
@@ -87,12 +153,30 @@ public final class DecisionTreeClassifier implements ProbClassifier {
         if (k < 2) { k = 2; }
         this.nClasses = k;
         this.nFeatures = x.shapeAt(1);
+        // Class weights resolve to an explicit per-class vector; absent, unit
+        // weights (behaviorally identical to the unweighted ctor).
+        boolean hasCw = this.classWeight != null;
+        if (hasCw && this.classWeight.shapeAt(0) < k) {
+            throw heap MlException("DecisionTreeClassifier.fit: classWeight "
+                + "must cover all K classes");
+        }
+        float64[] cwA = heap float64[k];
+        int64 ci = 0;
+        while (ci < k) {
+            cwA[ci] = hasCw ? this.classWeight.get1(ci) : 1.0;
+            ci = ci + 1;
+        }
         Trees t;
         if (this.criterion.equals("gini")) {
-            t = heap Trees(heap GiniImpurity(k), this.maxDepth, this.splitter, this.seed);
+            t = heap Trees(heap GiniImpurity(k, #cwA), this.maxDepth, this.splitter, this.seed);
         } else {
-            t = heap Trees(heap EntropyImpurity(k), this.maxDepth, this.splitter, this.seed);
+            t = heap Trees(heap EntropyImpurity(k, #cwA), this.maxDepth, this.splitter, this.seed);
         }
+        t.minSamplesSplit = this.minSamplesSplit;
+        t.minSamplesLeaf = this.minSamplesLeaf;
+        t.maxLeafNodes = this.maxLeafNodes;
+        t.minImpurityDecrease = this.minImpurityDecrease;
+        t.ccpAlpha = this.ccpAlpha;
         t.fit(x, y, n, this.nFeatures);
         this.tree #= t;
         this.fitted = true;
@@ -192,5 +276,34 @@ public final class DecisionTreeClassifier implements ProbClassifier {
     public #String exportText() {
         this.requireFitted("DecisionTreeClassifier.exportText");
         return this.tree.exportText();
+    }
+
+    /**
+     * The minimal cost-complexity pruning path of the fully grown tree on
+     * `(x, y)` (sklearn `cost_complexity_pruning_path`, §4.7): distinct
+     * effective alphas ascending and the total leaf impurity after each.
+     * Fits a throwaway tree with this estimator's growth settings (ccpAlpha
+     * itself excluded); the estimator's own fitted state is untouched.
+     */
+    public #PruningPath costComplexityPruningPath(Tensor<float64> x, Tensor<float64> y) {
+        DecisionTreeClassifier probe = heap DecisionTreeClassifier(
+            this.criterion, this.maxDepth, this.splitter == 0 ? "best" : "random", this.seed);
+        probe.minSamplesSplit = this.minSamplesSplit;
+        probe.minSamplesLeaf = this.minSamplesLeaf;
+        probe.maxLeafNodes = this.maxLeafNodes;
+        probe.minImpurityDecrease = this.minImpurityDecrease;
+        if (this.classWeight != null) { probe.setClassWeight(this.classWeight); }
+        probe.fit(x, y);
+        int64 cap = probe.tree.nodeCount + 1;
+        float64[] alphas = heap float64[cap];
+        float64[] imps = heap float64[cap];
+        int64 kk = probe.tree.ccpPath(alphas, imps);
+        float64[] aOut = heap float64[kk];
+        float64[] iOut = heap float64[kk];
+        int64 j = 0;
+        while (j < kk) { aOut[j] = alphas[j]; iOut[j] = imps[j]; j = j + 1; }
+        int64[] sh = heap int64[1]; sh[0] = kk;
+        int64[] sh2 = heap int64[1]; sh2[0] = kk;
+        return heap PruningPath(Tensor.of<float64>(aOut, sh), Tensor.of<float64>(iOut, sh2));
     }
 }

@@ -5,36 +5,36 @@ import cajeta.math.random.Generator;
 
 /**
  * The shared tree grower behind {@link DecisionTreeClassifier} and
- * {@link DecisionTreeRegressor} (ml-trees-ensembles U1/U2). Impurity is
+ * {@link DecisionTreeRegressor} (ml-trees-ensembles U1–U3). Impurity is
  * pluggable through the {@link Impurity} seam — nothing here hardcodes a
- * criterion.
+ * criterion, and class weights live inside the criterion (spec §4.8).
  *
  * The `best` splitter reproduces sklearn 1.9.0's `node_split_best` over raw
- * values (`_splitter.pyx`):
+ * values (`_splitter.pyx`): ascending candidate scan per feature with the
+ * 1e-7 FEATURE_THRESHOLD, strict `>` keeping the first (lowest threshold) of
+ * within-feature ties, sum-of-halves thresholds, `<=` routing left. Across
+ * features we visit in ascending index; sklearn visits in RNG order, so
+ * cross-feature ties are the one divergence — parity fixtures are tie-free
+ * across features. The `random` splitter (spec §3.6) draws one threshold per
+ * non-constant feature from the seeded generator.
  *
- * - Candidate positions scan each feature's node samples in ascending sorted
- *   order; a position is a candidate only when `v[p] > v[p-1] + 1e-7`
- *   (FEATURE_THRESHOLD), and a feature whose node range is within 1e-7 is
- *   constant and skipped.
- * - The best split wins by strict `>` on impurity improvement. WITHIN a
- *   feature that keeps the FIRST (lowest-threshold) of equal candidates —
- *   sklearn's own deterministic rule, pinned by the tie fixture. ACROSS
- *   features we visit in ascending index; sklearn visits in RNG order
- *   (Fisher-Yates from random_state), so cross-feature ties are the one
- *   place the two can differ — parity fixtures are constructed tie-free
- *   across features.
- * - Threshold is `v[p-1]/2 + v[p]/2` (sum of halves), routing `<=` left.
- * - A pure node (or one at maxDepth, or with < 2 samples) becomes a leaf.
+ * Regularization (U3, sklearn semantics):
+ * - `minSamplesSplit` / `minSamplesLeaf` gate candidates during growth.
+ * - `minImpurityDecrease` rejects the CHOSEN split when its weighted
+ *   decrease `(w(t)·imp(t) − w(l)·imp(l) − w(r)·imp(r)) / N` falls below.
+ * - `maxLeafNodes > 0` switches to BEST-FIRST growth: the frontier node
+ *   with the largest weighted decrease splits next, until the leaf budget.
+ * - `ccpAlpha` runs minimal cost-complexity pruning after growth: collapse
+ *   the weakest link (min `g(t) = (r(t) − R(subtree)) / (leaves − 1)`,
+ *   ties → lowest node id) while `g ≤ alpha`. {@link #ccpPath} walks the
+ *   same collapses to the root, recording each distinct effective alpha and
+ *   the total leaf impurity after it — sklearn's
+ *   `cost_complexity_pruning_path`.
  *
- * The `random` splitter (the Extra-Trees seam, spec §3.6) draws ONE
- * threshold per non-constant feature, uniform in (min, max) from the seeded
- * `cajeta.math.random.Generator` — features in ascending order, one draw
- * each, so a same-seed refit is bit-identical. The best drawn candidate
- * still wins by strict `>`.
- *
- * Growth is depth-first, left child first, nodes numbered in visit order —
- * sklearn's DepthFirstTreeBuilder numbering. Everything is sequential, so a
- * refit is bit-identical by construction.
+ * Every node (not only leaves) stores its payload, impurity, and weighted
+ * count, so a collapsed subtree's new leaf predicts the majority of all the
+ * samples it held (§4.6). Growth is sequential and deterministic; a
+ * same-seed refit is bit-identical.
  */
 final class Trees {
 
@@ -43,16 +43,29 @@ final class Trees {
     float64[] threshold;  // split threshold (route <= left)
     int64[] left;         // -1 on leaves
     int64[] right;
-    float64[] value;      // [cap*width] leaf payload (fractions / mean / median)
+    float64[] value;      // [cap*width] payload for EVERY node
     int64[] size;         // node sample count
+    float64[] nodeImp;    // node impurity
+    float64[] nodeW;      // node weighted count
     int64 nodeCount;
     int64 kOut;
     Impurity crit;
     int64 splitter;       // 0 = best, 1 = random
     Generator rng;
     int64 maxDepth;       // 0 = unbounded
+    int64 minSamplesSplit;
+    int64 minSamplesLeaf;
+    int64 maxLeafNodes;   // 0 = unbounded; > 0 switches to best-first
+    float64 minImpurityDecrease;
+    float64 ccpAlpha;
     int64 realizedDepth;
     int64 leaves;
+    float64 nTotalW;      // root weighted count (the decrease normalizer)
+
+    // findSplit out-params (set per call, consumed immediately).
+    int64 fsF;
+    float64 fsThr;
+    float64 fsChildrenW;  // w(l)·imp(l) + w(r)·imp(r) at the best split
 
     // fit-time state
     float64[] xs;         // row-major [n*nf] copy
@@ -69,6 +82,11 @@ final class Trees {
             Generator g = heap Generator(seed);
             this.rng #= g;
         }
+        this.minSamplesSplit = 2;
+        this.minSamplesLeaf = 1;
+        this.maxLeafNodes = 0;
+        this.minImpurityDecrease = 0.0;
+        this.ccpAlpha = 0.0;
         this.nodeCount = 0;
         this.realizedDepth = 0;
         this.leaves = 0;
@@ -83,6 +101,8 @@ final class Trees {
         this.right #= heap int64[cap];
         this.value #= heap float64[cap * this.kOut];
         this.size #= heap int64[cap];
+        this.nodeImp #= heap float64[cap];
+        this.nodeW #= heap float64[cap];
         float64[] xsA = heap float64[n * nf];
         float64[] ysA = heap float64[n];
         int64[] smpA = heap int64[n];
@@ -94,7 +114,21 @@ final class Trees {
         this.ys #= ysA;
         this.smp #= smpA;
         this.nf = nf;
-        int64 root = this.build(0, n, 0);
+        float64[] allY = heap float64[n];
+        i = 0;
+        while (i < n) { allY[i] = ysA[i]; i = i + 1; }
+        this.nTotalW = this.crit.weightedN(allY, 0, n);
+        if (this.maxLeafNodes > 0) {
+            this.buildBestFirst(n);
+        } else {
+            int64 root = this.build(0, n, 0);
+        }
+        if (this.ccpAlpha > 0.0) {
+            float64[] da = heap float64[1];
+            float64[] di = heap float64[1];
+            int64 unused = this.pruneWhile(this.ccpAlpha, da, di, -1);
+            this.recount();
+        }
         return;
     }
 
@@ -135,152 +169,392 @@ final class Trees {
         return;
     }
 
-    /** Grow the subtree over smp[start,end) at `depth`; returns the node id. */
-    int64 build(int64 start, int64 end, int64 depth) {
+    /** Node targets over smp[start,end), in smp order. */
+    #float64[] nodeTargets(int64 start, int64 end) {
+        int64 m = end - start;
+        float64[] ny = heap float64[m];
+        int64 i = 0;
+        while (i < m) { ny[i] = this.ys[this.smp[start + i]]; i = i + 1; }
+        return #ny;
+    }
+
+    /**
+     * Find the best admissible split of smp[start,end) into fsF/fsThr/
+     * fsChildrenW. Returns false when no candidate passes the gates
+     * (constant features, minSamplesLeaf, poisson validity).
+     */
+    boolean findSplit(int64 start, int64 end) {
+        int64 m = end - start;
+        this.fsF = -1;
+        float64 bestProxy = 0.0;
+        if (this.splitter == 0) {
+            float64[] fv = heap float64[m];
+            int64[] fi = heap int64[m];
+            float64[] fy = heap float64[m];
+            int64 f = 0;
+            while (f < this.nf) {
+                int64 j = 0;
+                while (j < m) {
+                    fi[j] = this.smp[start + j];
+                    fv[j] = this.xs[fi[j] * this.nf + f];
+                    j = j + 1;
+                }
+                Trees.sortPairs(fv, fi, m);
+                if (fv[m - 1] > fv[0] + 0.0000001) {           // non-constant
+                    j = 0;
+                    while (j < m) { fy[j] = this.ys[fi[j]]; j = j + 1; }
+                    int64 p = 1;
+                    while (p < m) {
+                        if (fv[p] > fv[p - 1] + 0.0000001      // candidate
+                            && p >= this.minSamplesLeaf
+                            && m - p >= this.minSamplesLeaf
+                            && this.crit.validSplit(fy, 0, p, m)) {
+                            float64 cw = this.crit.weighted(fy, 0, p)
+                                       + this.crit.weighted(fy, p, m);
+                            float64 proxy = -cw;
+                            if (this.fsF < 0 || proxy > bestProxy) {
+                                this.fsF = f;
+                                bestProxy = proxy;
+                                this.fsThr = fv[p - 1] / 2.0 + fv[p] / 2.0;
+                                this.fsChildrenW = cw;
+                            }
+                        }
+                        p = p + 1;
+                    }
+                }
+                f = f + 1;
+            }
+        } else {
+            float64[] py = heap float64[m];
+            int64 f = 0;
+            while (f < this.nf) {
+                float64 mn = this.xs[this.smp[start] * this.nf + f];
+                float64 mx = mn;
+                int64 i = start + 1;
+                while (i < end) {
+                    float64 v = this.xs[this.smp[i] * this.nf + f];
+                    if (v < mn) { mn = v; }
+                    if (v > mx) { mx = v; }
+                    i = i + 1;
+                }
+                if (mx > mn + 0.0000001) {
+                    Tensor<float32> u = this.rng.uniform(1);
+                    float64 thr = mn + (float64) u.flatGet(0) * (mx - mn);
+                    int64 nl = 0;
+                    i = start;
+                    while (i < end) {
+                        if (this.xs[this.smp[i] * this.nf + f] <= thr) {
+                            py[nl] = this.ys[this.smp[i]];
+                            nl = nl + 1;
+                        }
+                        i = i + 1;
+                    }
+                    int64 nr = nl;
+                    i = start;
+                    while (i < end) {
+                        if (!(this.xs[this.smp[i] * this.nf + f] <= thr)) {
+                            py[nr] = this.ys[this.smp[i]];
+                            nr = nr + 1;
+                        }
+                        i = i + 1;
+                    }
+                    if (nl >= this.minSamplesLeaf && m - nl >= this.minSamplesLeaf
+                        && nl > 0 && nl < m
+                        && this.crit.validSplit(py, 0, nl, m)) {
+                        float64 cw = this.crit.weighted(py, 0, nl)
+                                   + this.crit.weighted(py, nl, m);
+                        float64 proxy = -cw;
+                        if (this.fsF < 0 || proxy > bestProxy) {
+                            this.fsF = f;
+                            bestProxy = proxy;
+                            this.fsThr = thr;
+                            this.fsChildrenW = cw;
+                        }
+                    }
+                }
+                f = f + 1;
+            }
+        }
+        return this.fsF >= 0;
+    }
+
+    /** Allocate node `nid` stats/payload over smp[start,end). */
+    int64 openNode(int64 start, int64 end, int64 depth) {
         int64 nid = this.nodeCount;
         this.nodeCount = this.nodeCount + 1;
         int64 m = end - start;
         this.size[nid] = m;
         if (depth > this.realizedDepth) { this.realizedDepth = depth; }
+        float64[] ny = this.nodeTargets(start, end);
+        float64 w = this.crit.weightedN(ny, 0, m);
+        this.nodeW[nid] = w;
+        this.nodeImp[nid] = this.crit.weighted(ny, 0, m) / w;
+        this.crit.leafInto(ny, 0, m, this.value, nid * this.kOut);
+        this.feature[nid] = -1;
+        this.left[nid] = -1;
+        this.right[nid] = -1;
+        return nid;
+    }
 
-        // Node targets in smp order (a stable, deterministic order).
-        float64[] nodeY = heap float64[m];
-        int64 i = 0;
-        boolean pure = true;
-        while (i < m) {
-            nodeY[i] = this.ys[this.smp[start + i]];
-            if (nodeY[i] != nodeY[0]) { pure = false; }
+    /** Is smp[start,end) pure (all targets equal)? */
+    boolean isPure(int64 start, int64 end) {
+        float64 first = this.ys[this.smp[start]];
+        int64 i = start + 1;
+        while (i < end) {
+            if (this.ys[this.smp[i]] != first) { return false; }
             i = i + 1;
         }
+        return true;
+    }
 
-        boolean depthStop = this.maxDepth > 0 && depth >= this.maxDepth;
-        int64 bestF = -1;
-        float64 bestProxy = 0.0;
-        float64 bestThr = 0.0;
-        if (!pure && !depthStop && m >= 2) {
-            if (this.splitter == 0) {
-                float64[] fv = heap float64[m];
-                int64[] fi = heap int64[m];
-                float64[] fy = heap float64[m];
-                int64 f = 0;
-                while (f < this.nf) {
-                    int64 j = 0;
-                    while (j < m) {
-                        fi[j] = this.smp[start + j];
-                        fv[j] = this.xs[fi[j] * this.nf + f];
-                        j = j + 1;
-                    }
-                    Trees.sortPairs(fv, fi, m);
-                    if (fv[m - 1] > fv[0] + 0.0000001) {           // non-constant
-                        j = 0;
-                        while (j < m) { fy[j] = this.ys[fi[j]]; j = j + 1; }
-                        int64 p = 1;
-                        while (p < m) {
-                            if (fv[p] > fv[p - 1] + 0.0000001      // candidate
-                                && this.crit.validSplit(fy, 0, p, m)) {
-                                float64 proxy = -(this.crit.weighted(fy, 0, p)
-                                                + this.crit.weighted(fy, p, m));
-                                if (bestF < 0 || proxy > bestProxy) {
-                                    bestF = f;
-                                    bestProxy = proxy;
-                                    bestThr = fv[p - 1] / 2.0 + fv[p] / 2.0;
-                                }
-                            }
-                            p = p + 1;
-                        }
-                    }
-                    f = f + 1;
-                }
-            } else {
-                // random: one uniform draw per non-constant feature.
-                float64[] py = heap float64[m];
-                int64 f = 0;
-                while (f < this.nf) {
-                    float64 mn = this.xs[this.smp[start] * this.nf + f];
-                    float64 mx = mn;
-                    i = start + 1;
-                    while (i < end) {
-                        float64 v = this.xs[this.smp[i] * this.nf + f];
-                        if (v < mn) { mn = v; }
-                        if (v > mx) { mx = v; }
-                        i = i + 1;
-                    }
-                    if (mx > mn + 0.0000001) {
-                        Tensor<float32> u = this.rng.uniform(1);
-                        float64 thr = mn + (float64) u.flatGet(0) * (mx - mn);
-                        // Partition targets: [left..., right...), mid = nl.
-                        int64 nl = 0;
-                        i = start;
-                        while (i < end) {
-                            if (this.xs[this.smp[i] * this.nf + f] <= thr) {
-                                py[nl] = this.ys[this.smp[i]];
-                                nl = nl + 1;
-                            }
-                            i = i + 1;
-                        }
-                        int64 nr = nl;
-                        i = start;
-                        while (i < end) {
-                            if (!(this.xs[this.smp[i] * this.nf + f] <= thr)) {
-                                py[nr] = this.ys[this.smp[i]];
-                                nr = nr + 1;
-                            }
-                            i = i + 1;
-                        }
-                        if (nl > 0 && nl < m && this.crit.validSplit(py, 0, nl, m)) {
-                            float64 proxy = -(this.crit.weighted(py, 0, nl)
-                                            + this.crit.weighted(py, nl, m));
-                            if (bestF < 0 || proxy > bestProxy) {
-                                bestF = f;
-                                bestProxy = proxy;
-                                bestThr = thr;
-                            }
-                        }
-                    }
-                    f = f + 1;
-                }
-            }
-        }
+    /** May this node try to split at all (pure/size/depth gates)? */
+    boolean splittable(int64 start, int64 end, int64 depth) {
+        int64 m = end - start;
+        if (m < 2 || m < this.minSamplesSplit) { return false; }
+        if (this.maxDepth > 0 && depth >= this.maxDepth) { return false; }
+        return !this.isPure(start, end);
+    }
 
-        if (bestF < 0) {
-            this.feature[nid] = -1;
-            this.left[nid] = -1;
-            this.right[nid] = -1;
-            this.crit.leafInto(nodeY, 0, m, this.value, nid * this.kOut);
-            this.leaves = this.leaves + 1;
-            return nid;
-        }
+    /** The chosen split's weighted impurity decrease (sklearn's formula). */
+    float64 decreaseOf(int64 nid) {
+        return (this.nodeW[nid] * this.nodeImp[nid] - this.fsChildrenW) / this.nTotalW;
+    }
 
-        // Stable two-pass partition of smp[start,end) by x[bestF] <= thr.
+    /** Partition smp[start,end) by x[f] <= thr (stable); returns nl. */
+    int64 partition(int64 start, int64 end, int64 f, float64 thr) {
+        int64 m = end - start;
         int64[] tmp = heap int64[m];
-        int64 nl2 = 0;
-        i = start;
+        int64 nl = 0;
+        int64 i = start;
         while (i < end) {
-            if (this.xs[this.smp[i] * this.nf + bestF] <= bestThr) {
-                tmp[nl2] = this.smp[i];
-                nl2 = nl2 + 1;
+            if (this.xs[this.smp[i] * this.nf + f] <= thr) {
+                tmp[nl] = this.smp[i];
+                nl = nl + 1;
             }
             i = i + 1;
         }
-        int64 nr2 = nl2;
+        int64 nr = nl;
         i = start;
         while (i < end) {
-            if (!(this.xs[this.smp[i] * this.nf + bestF] <= bestThr)) {
-                tmp[nr2] = this.smp[i];
-                nr2 = nr2 + 1;
+            if (!(this.xs[this.smp[i] * this.nf + f] <= thr)) {
+                tmp[nr] = this.smp[i];
+                nr = nr + 1;
             }
             i = i + 1;
         }
         i = 0;
         while (i < m) { this.smp[start + i] = tmp[i]; i = i + 1; }
+        return nl;
+    }
 
-        this.feature[nid] = bestF;
-        this.threshold[nid] = bestThr;
-        int64 li = this.build(start, start + nl2, depth + 1);
-        int64 ri = this.build(start + nl2, end, depth + 1);
+    /** Depth-first growth over smp[start,end); returns the node id. */
+    int64 build(int64 start, int64 end, int64 depth) {
+        int64 nid = this.openNode(start, end, depth);
+        boolean split = false;
+        if (this.splittable(start, end, depth) && this.findSplit(start, end)) {
+            if (this.decreaseOf(nid) >= this.minImpurityDecrease) {
+                split = true;
+            }
+        }
+        if (!split) {
+            this.leaves = this.leaves + 1;
+            return nid;
+        }
+        int64 f = this.fsF;
+        float64 thr = this.fsThr;
+        int64 nl = this.partition(start, end, f, thr);
+        this.feature[nid] = f;
+        this.threshold[nid] = thr;
+        int64 li = this.build(start, start + nl, depth + 1);
+        int64 ri = this.build(start + nl, end, depth + 1);
         this.left[nid] = li;
         this.right[nid] = ri;
         return nid;
+    }
+
+    /**
+     * Best-first growth (maxLeafNodes): the frontier node with the largest
+     * weighted impurity decrease splits next (ties → earliest opened),
+     * until the leaf budget is met or nothing is splittable — sklearn's
+     * BestFirstTreeBuilder.
+     */
+    void buildBestFirst(int64 n) {
+        int64 budget = this.maxLeafNodes;
+        // Frontier arrays, indexed by frontier slot.
+        int64 cap = 2 * n;
+        int64[] fNid = heap int64[cap];
+        int64[] fStart = heap int64[cap];
+        int64[] fEnd = heap int64[cap];
+        int64[] fDepth = heap int64[cap];
+        boolean[] fCan = heap boolean[cap];      // has an admissible split
+        int64[] fF = heap int64[cap];
+        float64[] fThr = heap float64[cap];
+        float64[] fDec = heap float64[cap];
+        int64 fCount = 0;
+
+        int64 root = this.openNode(0, n, 0);
+        fNid[0] = root; fStart[0] = 0; fEnd[0] = n; fDepth[0] = 0;
+        fCan[0] = false;
+        if (this.splittable(0, n, 0) && this.findSplit(0, n)) {
+            float64 d = this.decreaseOf(root);
+            if (d >= this.minImpurityDecrease) {
+                fCan[0] = true; fF[0] = this.fsF; fThr[0] = this.fsThr; fDec[0] = d;
+            }
+        }
+        fCount = 1;
+
+        while (fCount < budget) {
+            int64 pick = -1;
+            int64 s = 0;
+            while (s < fCount) {
+                if (fCan[s] && (pick < 0 || fDec[s] > fDec[pick])) { pick = s; }
+                s = s + 1;
+            }
+            if (pick < 0) { break; }
+
+            int64 nid = fNid[pick];
+            int64 st = fStart[pick];
+            int64 en = fEnd[pick];
+            int64 dep = fDepth[pick];
+            int64 f = fF[pick];
+            float64 thr = fThr[pick];
+            int64 nl = this.partition(st, en, f, thr);
+            this.feature[nid] = f;
+            this.threshold[nid] = thr;
+            int64 li = this.openNode(st, st + nl, dep + 1);
+            int64 ri = this.openNode(st + nl, en, dep + 1);
+            this.left[nid] = li;
+            this.right[nid] = ri;
+
+            // The picked slot becomes the left child; append the right.
+            fNid[pick] = li; fStart[pick] = st; fEnd[pick] = st + nl; fDepth[pick] = dep + 1;
+            fCan[pick] = false;
+            if (this.splittable(st, st + nl, dep + 1) && this.findSplit(st, st + nl)) {
+                float64 dl = this.decreaseOf(li);
+                if (dl >= this.minImpurityDecrease) {
+                    fCan[pick] = true; fF[pick] = this.fsF; fThr[pick] = this.fsThr; fDec[pick] = dl;
+                }
+            }
+            fNid[fCount] = ri; fStart[fCount] = st + nl; fEnd[fCount] = en; fDepth[fCount] = dep + 1;
+            fCan[fCount] = false;
+            if (this.splittable(st + nl, en, dep + 1) && this.findSplit(st + nl, en)) {
+                float64 dr = this.decreaseOf(ri);
+                if (dr >= this.minImpurityDecrease) {
+                    fCan[fCount] = true; fF[fCount] = this.fsF; fThr[fCount] = this.fsThr; fDec[fCount] = dr;
+                }
+            }
+            fCount = fCount + 1;
+        }
+        this.leaves = fCount;
+        return;
+    }
+
+    // ---- minimal cost-complexity pruning (U3) ---------------------------
+
+    // Subtree stats for g(t): out via scratch fields.
+    float64 ccR;      // Σ leaf r over the subtree
+    int64 ccLeaves;
+
+    void subtreeStats(int64 nid) {
+        if (this.feature[nid] < 0) {
+            this.ccR = this.nodeW[nid] * this.nodeImp[nid] / this.nTotalW;
+            this.ccLeaves = 1;
+            return;
+        }
+        this.subtreeStats(this.left[nid]);
+        float64 rl = this.ccR;
+        int64 ll = this.ccLeaves;
+        this.subtreeStats(this.right[nid]);
+        this.ccR = rl + this.ccR;
+        this.ccLeaves = ll + this.ccLeaves;
+        return;
+    }
+
+    // Weakest link: min g over internal nodes (ties → lowest node id);
+    // out via ccWeak/ccWeakG. -1 when the root is a leaf.
+    int64 ccWeak;
+    float64 ccWeakG;
+
+    void findWeakest(int64 nid) {
+        if (this.feature[nid] < 0) { return; }
+        this.subtreeStats(nid);
+        float64 rt = this.nodeW[nid] * this.nodeImp[nid] / this.nTotalW;
+        float64 g = (rt - this.ccR) / (float64) (this.ccLeaves - 1);
+        if (this.ccWeak < 0 || g < this.ccWeakG) {
+            this.ccWeak = nid;
+            this.ccWeakG = g;
+        }
+        this.findWeakest(this.left[nid]);
+        this.findWeakest(this.right[nid]);
+        return;
+    }
+
+    /**
+     * Collapse weakest links. With `k0 >= 0`, record the path: every
+     * collapse to the root, one entry per DISTINCT alpha (equal-alpha
+     * collapses merge, keeping the final impurity), starting at entry `k0`
+     * — the caller seeds `[0, R(full)]`; returns the entry count. With
+     * `k0 < 0`, prune while `g <= alpha` and record nothing (the arrays
+     * are unused scratch).
+     */
+    int64 pruneWhile(float64 alpha, float64[] alphas, float64[] imps, int64 k0) {
+        boolean rec = k0 >= 0;
+        int64 k = rec ? k0 : 0;
+        while (this.feature[0] >= 0) {
+            this.ccWeak = -1;
+            this.ccWeakG = 0.0;
+            this.findWeakest(0);
+            if (this.ccWeak < 0) { break; }
+            if (!rec && this.ccWeakG > alpha) { break; }
+            int64 t = this.ccWeak;
+            float64 g = this.ccWeakG;
+            this.feature[t] = -1;
+            this.left[t] = -1;
+            this.right[t] = -1;
+            if (rec) {
+                this.subtreeStats(0);
+                if (k > k0 && g <= alphas[k - 1] + 0.000000000000001) {
+                    imps[k - 1] = this.ccR;
+                } else {
+                    alphas[k] = g;
+                    imps[k] = this.ccR;
+                    k = k + 1;
+                }
+            }
+        }
+        return k;
+    }
+
+    /** Recompute realizedDepth and leaves after pruning. */
+    void recount() {
+        this.realizedDepth = 0;
+        this.leaves = 0;
+        this.walkCount(0, 0);
+        return;
+    }
+
+    void walkCount(int64 nid, int64 depth) {
+        if (depth > this.realizedDepth) { this.realizedDepth = depth; }
+        if (this.feature[nid] < 0) {
+            this.leaves = this.leaves + 1;
+            return;
+        }
+        this.walkCount(this.left[nid], depth + 1);
+        this.walkCount(this.right[nid], depth + 1);
+        return;
+    }
+
+    /**
+     * The cost-complexity path of THIS (fully grown) tree: distinct
+     * effective alphas ascending, with the total leaf impurity after each —
+     * sklearn's `cost_complexity_pruning_path`. Mutates the tree (callers
+     * fit a throwaway).
+     */
+    int64 ccpPath(float64[] alphas, float64[] imps) {
+        this.subtreeStats(0);
+        alphas[0] = 0.0;
+        imps[0] = this.ccR;
+        return this.pruneWhile(0.0, alphas, imps, 1);
     }
 
     /** Route one row to its leaf id. */
