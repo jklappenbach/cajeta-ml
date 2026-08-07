@@ -1,0 +1,56 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.AdaBoostClassifier;
+import dev.cajeta.ml.DecisionTreeClassifier;
+import dev.cajeta.ml.DecisionTreeRegressor;
+import dev.cajeta.ml.GradientBoostingRegressor;
+import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.RandomForestClassifier;
+import dev.cajeta.ml.RandomForestRegressor;
+import dev.cajeta.ml.Split;
+
+/**
+ * ml-trees-ensembles U8 (§12.1) — every new estimator composes in
+ * cross-validation through the Predictor protocol: one finite score per
+ * fold from Split.crossValScore, no estimator special-cased.
+ */
+public class EnsembleCompositionTest {
+
+    public EnsembleCompositionTest() { return; }
+
+    static void foldsFinite(Predictor est, Tensor<float64> x, Tensor<float64> y) {
+        KFold folds = heap KFold((int64) 3, true, (uint64) 7);
+        Tensor<float64> scores = Split.crossValScore(est, x, y, folds);
+        Assert.equals(scores.shapeAt(0), (int64) 3);
+        int64 i = 0;
+        while (i < 3) {
+            float64 s = scores.get1(i);
+            Assert.isTrue(s == s);
+            i = i + 1;
+        }
+        return;
+    }
+
+    @Test
+    public void everyEstimatorCrossValidates() {
+        Tensor<float64> x = BaggingTest.bagX();
+        Tensor<float64> y = BaggingTest.bagY();
+
+        EnsembleCompositionTest.foldsFinite(
+            heap DecisionTreeClassifier("gini"), x, y);
+        EnsembleCompositionTest.foldsFinite(
+            heap RandomForestClassifier((int64) 5, (uint64) 1), x, y);
+        EnsembleCompositionTest.foldsFinite(
+            heap AdaBoostClassifier((int64) 3, 1.0), x, y);
+        EnsembleCompositionTest.foldsFinite(
+            heap DecisionTreeRegressor((int64) 3), x, y);
+        EnsembleCompositionTest.foldsFinite(
+            heap RandomForestRegressor((int64) 5, (uint64) 1), x, y);
+        EnsembleCompositionTest.foldsFinite(
+            heap GradientBoostingRegressor((int64) 5, 0.3, (int64) 2), x, y);
+        return;
+    }
+}

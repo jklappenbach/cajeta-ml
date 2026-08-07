@@ -5,7 +5,14 @@ Machine learning for cajeta, in two halves:
 - **Classical** (the scikit-learn / statsmodels role) over `Tensor<float64>`,
   built on the stdlib's native linear algebra (`cajeta.math.linalg`:
   Householder QR, bidiagonal SVD, Cholesky factor application) and special
-  functions (`cajeta.math.stats`).
+  functions (`cajeta.math.stats`). Includes the tree/ensemble surface
+  (0.9.0): `DecisionTreeClassifier`/`Regressor` (gini, base-2 entropy,
+  squared/absolute error, poisson; pruning with the full ccp alpha path;
+  per-node feature subsampling; sample weights), `Criteria`, generic
+  `Bagging*` over any `Predictor`, `RandomForest*`, `AdaBoostClassifier`
+  (SAMME), and `GradientBoostingRegressor` with staged predictions — all
+  pinned against sklearn 1.9.0 (see Differences for the tie-breaking and
+  RNG boundaries).
 - **Neural** (the torch role) over `Tensor<float32>` — a runtime tensor tape,
   modules and layers, optimizers, two trainers, and torch-checkpoint interop.
 

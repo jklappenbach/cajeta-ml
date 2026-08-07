@@ -72,4 +72,11 @@ echo ">> building + running the test binary"
     -o "$out/mltests" \
     dev.cajeta.ml.selftest.TestMain.run "$here/src/test/cajeta" "$out" >/dev/null
 
+# The HR Attrition reference matrices (gen_attrition.py -> build/attrition,
+# gitignored): AttritionTest asserts against the regenerated sklearn 1.9.0
+# pins when present and self-skips otherwise (hosted CI has no dataset).
+if [[ -d "$here/build/attrition" ]]; then
+    export ML_ATTRITION_DIR="$here/build/attrition"
+fi
+
 "$out/mltests"

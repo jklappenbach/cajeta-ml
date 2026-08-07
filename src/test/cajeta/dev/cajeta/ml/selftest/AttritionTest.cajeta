@@ -1,0 +1,84 @@
+package dev.cajeta.ml.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.math.Tensor;
+import cajeta.math.npio.Npy;
+import dev.cajeta.ml.DecisionTreeClassifier;
+
+/**
+ * ml-trees-ensembles U8 — the HR Employee Attrition reference pipeline
+ * (spec §10): drop/one-hot/map preprocessing and the stratified 70/30 split
+ * happen in gen_attrition.py under PINNED sklearn 1.9.0 (regenerated
+ * numbers, §10.2 — the notebook's own outputs are older-sklearn and version
+ * drift is the first suspect on any disagreement; the notebook stays out of
+ * git, §10.4). This test loads the exact train/test matrices
+ * (ML_ATTRITION_DIR, self-skipping without) and fits the class-weighted
+ * ({0: 0.17, 1: 0.83}) tree.
+ *
+ * Train metrics are EXACT (an unbounded tree memorizes: 1.0 regardless of
+ * tie-breaking). Test metrics match the sklearn pins at 0.03 — real data
+ * has equal-gain ties, which sklearn breaks by RNG visit order and we break
+ * by ascending feature (the recorded U1 non-goal), so structural identity
+ * is not asserted, behavior is.
+ */
+public class AttritionTest {
+
+    public AttritionTest() { return; }
+
+    static boolean near(float64 a, float64 b, float64 tol) {
+        float64 d = a - b;
+        if (d < 0.0) { d = -d; }
+        return d <= tol;
+    }
+
+    @Test
+    public void attritionTreeMatchesRegeneratedNotebookMetrics() {
+        String dir = System.env.get("ML_ATTRITION_DIR");
+        if (dir == null) { return; }
+
+        Tensor<float64> xtr = Npy.loadF64(dir + "/x_train.npy");
+        Tensor<float64> ytr = Npy.loadF64(dir + "/y_train.npy");
+        Tensor<float64> xte = Npy.loadF64(dir + "/x_test.npy");
+        Tensor<float64> yte = Npy.loadF64(dir + "/y_test.npy");
+        Assert.equals(xtr.shapeAt(0), (int64) 2058);
+        Assert.equals(xtr.shapeAt(1), (int64) 44);
+        Assert.equals(xte.shapeAt(0), (int64) 882);
+
+        float64[] cw = heap float64[2];
+        cw[0] = 0.17; cw[1] = 0.83;
+        int64[] cs = heap int64[1]; cs[0] = 2;
+        DecisionTreeClassifier dt = heap DecisionTreeClassifier("gini");
+        dt.setClassWeight(Tensor.of<float64>(cw, cs));
+        dt.fit(xtr, ytr);
+
+        // Train: exact memorization (tie-robust), sklearn's depth, and the
+        // exact root split (OverTime <= 0.5 — column 12).
+        Assert.isTrue(dt.score(xtr, ytr) == 1.0);
+        Assert.equals(dt.depth(), (int64) 16);
+        String ex = dt.exportText();
+        Assert.isTrue(ex.indexOf("|--- f12 <= 0.5") == (int64) 0);
+
+        // Test: the regenerated sklearn 1.9.0 pins at 0.03.
+        float64 acc = dt.score(xte, yte);
+        Tensor<float64> p = dt.predict(xte);
+        int64 n = xte.shapeAt(0);
+        int64 tp = 0;
+        int64 fn = 0;
+        int64 fp = 0;
+        int64 i = 0;
+        while (i < n) {
+            boolean actual1 = yte.get1(i) == 1.0;
+            boolean pred1 = p.get1(i) == 1.0;
+            if (actual1 && pred1) { tp = tp + 1; }
+            if (actual1 && !pred1) { fn = fn + 1; }
+            if (!actual1 && pred1) { fp = fp + 1; }
+            i = i + 1;
+        }
+        float64 recall1 = (float64) tp / (float64) (tp + fn);
+        float64 prec1 = (float64) tp / (float64) (tp + fp);
+        Assert.isTrue(AttritionTest.near(acc, 0.9297052154195011, 0.03));
+        Assert.isTrue(AttritionTest.near(recall1, 0.8450704225352113, 0.03));
+        Assert.isTrue(AttritionTest.near(prec1, 0.75, 0.06));
+        return;
+    }
+}

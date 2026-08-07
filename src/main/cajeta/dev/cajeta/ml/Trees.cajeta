@@ -399,7 +399,11 @@ final class Trees {
         int64 nid = this.openNode(start, end, depth);
         boolean split = false;
         if (this.splittable(start, end, depth) && this.findSplit(start, end)) {
-            if (this.decreaseOf(nid) >= this.minImpurityDecrease) {
+            // sklearn's builder gives the gate an EPSILON of slack
+            // (improvement + eps < threshold -> leaf): an exactly-zero
+            // decrease that rounds to -1e-18 must still split, or a
+            // memorizing tree stops early on real data.
+            if (this.decreaseOf(nid) + 0.0000000000000002 >= this.minImpurityDecrease) {
                 split = true;
             }
         }
@@ -444,7 +448,7 @@ final class Trees {
         fCan[0] = false;
         if (this.splittable(0, n, 0) && this.findSplit(0, n)) {
             float64 d = this.decreaseOf(root);
-            if (d >= this.minImpurityDecrease) {
+            if (d + 0.0000000000000002 >= this.minImpurityDecrease) {
                 fCan[0] = true; fF[0] = this.fsF; fThr[0] = this.fsThr; fDec[0] = d;
             }
         }
@@ -478,7 +482,7 @@ final class Trees {
             fCan[pick] = false;
             if (this.splittable(st, st + nl, dep + 1) && this.findSplit(st, st + nl)) {
                 float64 dl = this.decreaseOf(li);
-                if (dl >= this.minImpurityDecrease) {
+                if (dl + 0.0000000000000002 >= this.minImpurityDecrease) {
                     fCan[pick] = true; fF[pick] = this.fsF; fThr[pick] = this.fsThr; fDec[pick] = dl;
                 }
             }
@@ -486,7 +490,7 @@ final class Trees {
             fCan[fCount] = false;
             if (this.splittable(st + nl, en, dep + 1) && this.findSplit(st + nl, en)) {
                 float64 dr = this.decreaseOf(ri);
-                if (dr >= this.minImpurityDecrease) {
+                if (dr + 0.0000000000000002 >= this.minImpurityDecrease) {
                     fCan[fCount] = true; fF[fCount] = this.fsF; fThr[fCount] = this.fsThr; fDec[fCount] = dr;
                 }
             }

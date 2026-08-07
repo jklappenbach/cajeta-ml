@@ -158,3 +158,35 @@ numerics themselves are pinned against sklearn 1.9.0 in the test suite.
   deliberately small, loud registry (`Scorers`), not sklearn's ~50-string
   scoring table. `rocAuc` demands an estimator that exposes
   `predictProba` and says so.
+
+## Trees and ensembles surface (0.9.0)
+
+- **Cross-feature ties are the one place a tree can differ from sklearn.**
+  sklearn's splitter visits features in RNG order (Fisher-Yates from
+  `random_state`) and strict `>` keeps the first visited; we visit in
+  ascending index. Within a feature the rule is identical and deterministic
+  (ascending scan, first/lowest threshold kept). Any 2-sample impure node
+  ties across every separating feature, so real-data trees can diverge
+  structurally while scoring equivalently — the Attrition fixture pins
+  behavior (metrics at 0.03), not structure, for exactly this reason.
+- **Forests are reproducible under OUR seed derivation, not sklearn's RNG
+  stream** (member `i` draws rows then per-node feature subsets from
+  `Generator(seed + i)`). Bootstrap and per-node draws will not match
+  sklearn's for any seed; scores and structure-level properties do.
+- **AdaBoost is SAMME only** — sklearn 1.9 removed SAMME.R along with the
+  `algorithm` parameter. Estimator weights match sklearn exactly (the
+  boosting loop is RNG-free).
+- **GradientBoosting ships as the REGRESSOR only** (staged predictions
+  included). sklearn's `criterion` parameter is deprecated/no-effect there;
+  our stages split by plain `squared_error`. The classifier was cut per the
+  plan's 6.2.4 escape hatch: `dev.cajeta.xgboost` covers classification
+  boosting bit-exactly, and a teaching duplicate priced out.
+- **`absolute_error` uses the weighted median** (cumulative-half walk,
+  boundary ties average the middle pair) — identical to sklearn's on unit
+  weights.
+- **Fixture regeneration protocol (§10.2):** every reference-notebook
+  number is regenerated under pinned sklearn 1.9.0 before use; on any
+  disagreement the FIRST suspect is the producing library's version, not
+  the tree. Reference matrices are exported C-order (`ascontiguousarray`)
+  — pandas emits Fortran-order and `Npy` currently misreads it (INDEX:
+  npy-fortran-order-silent-misread).
