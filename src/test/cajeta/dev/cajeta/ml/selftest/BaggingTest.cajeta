@@ -2,14 +2,14 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.BaggingClassifier;
-import dev.cajeta.ml.BaggingRegressor;
+import dev.cajeta.ml.ensemble.BaggingClassifier;
+import dev.cajeta.ml.ensemble.BaggingRegressor;
 import dev.cajeta.ml.EstimatorFactory;
-import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.linear.LogisticRegression;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.Predictor;
-import dev.cajeta.ml.TreeClassifierFactory;
-import dev.cajeta.ml.TreeRegressorFactory;
+import dev.cajeta.ml.tree.TreeClassifierFactory;
+import dev.cajeta.ml.tree.TreeRegressorFactory;
 
 /**
  * ml-trees-ensembles U5 — bootstrap + bagging. Sampling is seeded and

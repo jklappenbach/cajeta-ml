@@ -3,8 +3,8 @@ package dev.cajeta.ml.selftest;
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
 import cajeta.nucleo.sparse.CsrMatrix;
-import dev.cajeta.ml.ElasticNet;
-import dev.cajeta.ml.Lasso;
+import dev.cajeta.ml.linear.ElasticNet;
+import dev.cajeta.ml.linear.Lasso;
 import dev.cajeta.ml.MlException;
 
 /**

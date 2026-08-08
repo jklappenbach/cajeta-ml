@@ -190,3 +190,14 @@ numerics themselves are pinned against sklearn 1.9.0 in the test suite.
   the tree. Reference matrices are exported C-order (`ascontiguousarray`)
   — pandas emits Fortran-order and `Npy` currently misreads it (INDEX:
   npy-fortran-order-silent-misread).
+
+## Packaging (0.10.0)
+
+- **The root package now mirrors sklearn's module structure**: the
+  ecosystem contract (`Estimator`/`Predictor`/`Transformer`/
+  `ProbClassifier`/`EstimatorFactory`), `Metrics`, `Pipeline`, and the
+  `Design`/`Frames` bridge stay at `dev.cajeta.ml`; estimators live in
+  `.linear`, `.discriminant`, `.tree`, `.ensemble`, `.cluster`,
+  `.decompose`, `.manifold`, `.neighbors`, `.preprocess`, `.select`,
+  `.inspect`. Breaking for imports, identical in behaviour; 0.9.0
+  remains published for existing pins.

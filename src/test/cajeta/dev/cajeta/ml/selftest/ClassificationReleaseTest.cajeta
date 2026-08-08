@@ -2,21 +2,21 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.ForwardSelector;
-import dev.cajeta.ml.GridSearch;
-import dev.cajeta.ml.KernelRegressor;
-import dev.cajeta.ml.KFold;
-import dev.cajeta.ml.KNeighborsClassifier;
-import dev.cajeta.ml.LinearDiscriminantAnalysis;
-import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.select.ForwardSelector;
+import dev.cajeta.ml.select.GridSearch;
+import dev.cajeta.ml.neighbors.KernelRegressor;
+import dev.cajeta.ml.select.KFold;
+import dev.cajeta.ml.neighbors.KNeighborsClassifier;
+import dev.cajeta.ml.discriminant.LinearDiscriminantAnalysis;
+import dev.cajeta.ml.linear.LogisticRegression;
 import dev.cajeta.ml.Metrics;
 import dev.cajeta.ml.Pipeline;
 import dev.cajeta.ml.Predictor;
-import dev.cajeta.ml.QuadraticDiscriminantAnalysis;
-import dev.cajeta.ml.Scorers;
-import dev.cajeta.ml.SearchResult;
-import dev.cajeta.ml.Split;
-import dev.cajeta.ml.StandardScaler;
+import dev.cajeta.ml.discriminant.QuadraticDiscriminantAnalysis;
+import dev.cajeta.ml.select.Scorers;
+import dev.cajeta.ml.select.SearchResult;
+import dev.cajeta.ml.select.Split;
+import dev.cajeta.ml.preprocess.StandardScaler;
 
 /**
  * ml-classification-gaps plan Unit 9 — the spec-level acceptance sweep

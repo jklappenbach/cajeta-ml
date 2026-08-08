@@ -1,0 +1,1042 @@
+package dev.cajeta.ml.discriminant;
+
+import cajeta.math.Tensor;
+import cajeta.math.Math;
+import cajeta.math.linalg.LinAlg;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.ProbClassifier;
+import dev.cajeta.ml.Transformer;
+
+/**
+ * Linear discriminant analysis (sklearn `LinearDiscriminantAnalysis`,
+ * spec §2): one shared covariance per the Gaussian generative model, so the
+ * boundary is linear. Three solvers, replicated from sklearn 1.9.0:
+ *
+ *  - `svd` (default): never forms the covariance, works for `p > n`
+ *    (§2.7); no shrinkage (§2.10).
+ *  - `lsqr`: least-squares on the pooled covariance; shrinkage in `[0,1]`
+ *    or Ledoit-Wolf `auto` (§2.8, §2.9); no `transform`.
+ *  - `eigen`: generalized eigendecomposition of between/within scatter;
+ *    shrinkage as lsqr; supports `transform`.
+ *
+ * A {@link Predictor} and a {@link Transformer} (§11.3): `transform`
+ * projects onto at most `min(K-1, p)` discriminant directions (§2.11).
+ * Unlike sklearn (which renormalizes with a warning), explicit priors that
+ * do not sum to 1 are rejected (§2.2) — see DifferencesFromSklearn.
+ */
+public final class LinearDiscriminantAnalysis
+        implements ProbClassifier, Transformer {
+
+    private int32 solverC;      // 0 svd, 1 lsqr, 2 eigen
+    private float64 shrinkV;            // < 0 = none
+    private boolean autoShrink;
+    private boolean hasPriors;
+    private float64[] priorsA;
+    private float64 tolV;
+
+    private Tensor<float64> coefM;      // (K', p) — K'=1 binary
+    private Tensor<float64> iceptV;     // (K',)
+    private Tensor<float64> scalingsM;  // (p, m) svd/eigen projection
+    private Tensor<float64> xbarV;      // (p,) svd only
+    private Tensor<float64> evrV;       // (maxComp,)
+    private int64 nClasses;
+    private int64 maxComp;
+    private int64 scalCols;
+    private boolean fitted;
+
+    public LinearDiscriminantAnalysis() {
+        this.solverC = (int32) 0;
+        this.shrinkV = -1.0;
+        this.autoShrink = false;
+        this.hasPriors = false;
+        this.tolV = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    public LinearDiscriminantAnalysis(String solver) {
+        this.solverC = checkSolver(solver);
+        this.shrinkV = -1.0;
+        this.autoShrink = false;
+        this.hasPriors = false;
+        this.tolV = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    /** Fixed shrinkage intensity in `[0,1]` — lsqr/eigen only (§2.8, §2.10). */
+    public LinearDiscriminantAnalysis(String solver, float64 shrinkage) {
+        this.solverC = checkSolver(solver);
+        if (this.solverC == (int32) 0) {
+            throw heap MlException("LinearDiscriminantAnalysis: shrinkage "
+                + "is not supported with the svd solver — use lsqr or eigen");
+        }
+        if (shrinkage < 0.0 || shrinkage > 1.0) {
+            throw heap MlException("LinearDiscriminantAnalysis: shrinkage "
+                + "must be in [0, 1]");
+        }
+        this.shrinkV = shrinkage;
+        this.autoShrink = false;
+        this.hasPriors = false;
+        this.tolV = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    /** `shrinkage = "auto"`: the Ledoit-Wolf intensity from the data (§2.9). */
+    public LinearDiscriminantAnalysis(String solver, String shrinkage) {
+        this.solverC = checkSolver(solver);
+        if (this.solverC == (int32) 0) {
+            throw heap MlException("LinearDiscriminantAnalysis: shrinkage "
+                + "is not supported with the svd solver — use lsqr or eigen");
+        }
+        if (!shrinkage.equals("auto")) {
+            throw heap MlException("LinearDiscriminantAnalysis: shrinkage "
+                + "must be a float in [0, 1] or \"auto\"");
+        }
+        this.shrinkV = -1.0;
+        this.autoShrink = true;
+        this.hasPriors = false;
+        this.tolV = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    /** Explicit class priors (svd solver), validated at fit (§2.2). */
+    public LinearDiscriminantAnalysis(#float64[] priors) {
+        this.solverC = (int32) 0;
+        this.shrinkV = -1.0;
+        this.autoShrink = false;
+        this.hasPriors = true;
+        this.priorsA #= priors;
+        this.tolV = 0.0001;
+        this.fitted = false;
+        return;
+    }
+
+    static int32 checkSolver(String solver) {
+        if (solver.equals("svd")) {
+            return (int32) 0;
+        }
+        if (solver.equals("lsqr")) {
+            return (int32) 1;
+        }
+        if (solver.equals("eigen")) {
+            return (int32) 2;
+        }
+        throw heap MlException("LinearDiscriminantAnalysis: unknown "
+            + "solver \"" + solver + "\" — supported: svd, lsqr, eigen");
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "LinearDiscriminantAnalysis.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 k = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 c = (int64) y.flatGet(i);
+            if (c + 1 > k) {
+                k = c + 1;
+            }
+            i = i + 1;
+        }
+        if (k < 2) {
+            throw heap MlException(
+                "LinearDiscriminantAnalysis.fit: need at least 2 classes");
+        }
+        this.nClasses = k;
+        this.maxComp = k - 1;
+        if (p < this.maxComp) {
+            this.maxComp = p;
+        }
+
+        Tensor<float64> pri = this.resolvePriors(y, k);
+        Tensor<float64> means = Gaussians.classMeans(x, y, k);
+
+        if (this.solverC == (int32) 0) {
+            this.fitSvd(x, y, n, p, k, pri, means);
+        } else if (this.solverC == (int32) 1) {
+            this.fitLsqr(x, y, n, p, k, pri, means);
+        } else {
+            this.fitEigen(x, y, n, p, k, pri, means);
+        }
+
+        // Binary special case: one row, class1 - class0 (sklearn).
+        if (k == 2) {
+            int64[] cs = heap int64[2];
+            cs[0] = 1;
+            cs[1] = p;
+            Tensor<float64> c1 = Tensor.zeros<float64>(cs);
+            int64 j = 0;
+            while (j < p) {
+                c1.flatSet(j, this.coefM.get2(1, j) - this.coefM.get2(0, j));
+                j = j + 1;
+            }
+            int64[] is = heap int64[1];
+            is[0] = 1;
+            Tensor<float64> i1 = Tensor.zeros<float64>(is);
+            i1.flatSet(0, this.iceptV.flatGet(1) - this.iceptV.flatGet(0));
+            this.coefM #= c1;
+            this.iceptV #= i1;
+        }
+        this.fitted = true;
+        return;
+    }
+
+    #Tensor<float64> resolvePriors(Tensor<float64> y, int64 k) {
+        if (this.hasPriors) {
+            if ((int64) this.priorsA.count() != k) {
+                throw heap MlException("LinearDiscriminantAnalysis: priors "
+                    + "length must equal the class count");
+            }
+            int64[] sh = heap int64[1];
+            sh[0] = k;
+            Tensor<float64> pr = Tensor.zeros<float64>(sh);
+            int64 i = 0;
+            while (i < k) {
+                pr.flatSet(i, this.priorsA[i]);
+                i = i + 1;
+            }
+            Gaussians.validatePriors(pr);
+            return #pr;
+        }
+        Tensor<float64> pr = Gaussians.priors(y, k);
+        return #pr;
+    }
+
+    /** sklearn `_solve_svd`: within scaling by std, two SVDs, no covariance. */
+    void fitSvd(Tensor<float64> x, Tensor<float64> y, int64 n, int64 p,
+                int64 k, Tensor<float64> pri, Tensor<float64> means) {
+        // xbar = priors @ means.
+        int64[] ps = heap int64[1];
+        ps[0] = p;
+        Tensor<float64> xbar = Tensor.zeros<float64>(ps);
+        int64 j = 0;
+        while (j < p) {
+            float64 s = 0.0;
+            int64 c = 0;
+            while (c < k) {
+                s = s + pri.flatGet(c) * means.get2(c, j);
+                c = c + 1;
+            }
+            xbar.flatSet(j, s);
+            j = j + 1;
+        }
+
+        // Class-centered data.
+        int64[] xs = heap int64[2];
+        xs[0] = n;
+        xs[1] = p;
+        Tensor<float64> xc = Tensor.zeros<float64>(xs);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = (int64) y.flatGet(i);
+            j = 0;
+            while (j < p) {
+                xc.flatSet(i * p + j, x.get2(i, j) - means.get2(c, j));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        // Column std (numpy ddof=0), zeros -> 1.
+        float64[] std = heap float64[p];
+        j = 0;
+        while (j < p) {
+            float64 m = 0.0;
+            i = 0;
+            while (i < n) {
+                m = m + xc.get2(i, j);
+                i = i + 1;
+            }
+            m = m / (float64) n;
+            float64 v = 0.0;
+            i = 0;
+            while (i < n) {
+                float64 d = xc.get2(i, j) - m;
+                v = v + d * d;
+                i = i + 1;
+            }
+            std[j] = Math.sqrt(v / (float64) n);
+            if (std[j] == 0.0) {
+                std[j] = 1.0;
+            }
+            j = j + 1;
+        }
+
+        float64 fac = Math.sqrt(1.0 / (float64) (n - k));
+        Tensor<float64> xsc = Tensor.zeros<float64>(xs);
+        i = 0;
+        while (i < n) {
+            j = 0;
+            while (j < p) {
+                xsc.flatSet(i * p + j, fac * xc.get2(i, j) / std[j]);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        Tensor<float64>[] usv = LinAlg.svd<float64>(xsc);
+        Tensor<float64> s1 = usv[1];
+        Tensor<float64> vt1 = usv[2];
+        int64 r1 = s1.size();
+        int64 rank = 0;
+        i = 0;
+        while (i < r1) {
+            if (s1.flatGet(i) > this.tolV) {
+                rank = rank + 1;
+            }
+            i = i + 1;
+        }
+        if (rank < 1) {
+            throw heap MlException(
+                "LinearDiscriminantAnalysis: data has rank 0 after scaling");
+        }
+
+        // scalings0 (p, rank) = (Vt[:rank]/std).T / S[:rank].
+        int64[] s0s = heap int64[2];
+        s0s[0] = p;
+        s0s[1] = rank;
+        Tensor<float64> scal0 = Tensor.zeros<float64>(s0s);
+        j = 0;
+        while (j < p) {
+            i = 0;
+            while (i < rank) {
+                scal0.flatSet(j * rank + i,
+                    vt1.get2(i, j) / std[j] / s1.flatGet(i));
+                i = i + 1;
+            }
+            j = j + 1;
+        }
+
+        // Between-variance scaling and the second SVD.
+        float64 fac2 = 1.0;
+        if (k > 1) {
+            fac2 = 1.0 / (float64) (k - 1);
+        }
+        int64[] bs = heap int64[2];
+        bs[0] = k;
+        bs[1] = rank;
+        Tensor<float64> xb = Tensor.zeros<float64>(bs);
+        int64 c2 = 0;
+        while (c2 < k) {
+            float64 w = Math.sqrt((float64) n * pri.flatGet(c2) * fac2);
+            i = 0;
+            while (i < rank) {
+                float64 s = 0.0;
+                j = 0;
+                while (j < p) {
+                    s = s + (means.get2(c2, j) - xbar.flatGet(j))
+                        * scal0.get2(j, i);
+                    j = j + 1;
+                }
+                xb.flatSet(c2 * rank + i, w * s);
+                i = i + 1;
+            }
+            c2 = c2 + 1;
+        }
+
+        Tensor<float64>[] usv2 = LinAlg.svd<float64>(xb);
+        Tensor<float64> s2 = usv2[1];
+        Tensor<float64> vt2 = usv2[2];
+        int64 r2 = s2.size();
+
+        float64 sumSq = 0.0;
+        i = 0;
+        while (i < r2) {
+            sumSq = sumSq + s2.flatGet(i) * s2.flatGet(i);
+            i = i + 1;
+        }
+        int64[] es = heap int64[1];
+        es[0] = this.maxComp;
+        Tensor<float64> evr = Tensor.zeros<float64>(es);
+        i = 0;
+        while (i < this.maxComp && i < r2) {
+            evr.flatSet(i, s2.flatGet(i) * s2.flatGet(i) / sumSq);
+            i = i + 1;
+        }
+        this.evrV #= evr;
+
+        int64 rank2 = 0;
+        i = 0;
+        while (i < r2) {
+            if (s2.flatGet(i) > this.tolV * s2.flatGet(0)) {
+                rank2 = rank2 + 1;
+            }
+            i = i + 1;
+        }
+
+        // scalings (p, rank2) = scalings0 @ Vt2.T[:, :rank2].
+        int64[] ss = heap int64[2];
+        ss[0] = p;
+        ss[1] = rank2;
+        Tensor<float64> scal = Tensor.zeros<float64>(ss);
+        j = 0;
+        while (j < p) {
+            int64 c3 = 0;
+            while (c3 < rank2) {
+                float64 s = 0.0;
+                i = 0;
+                while (i < rank) {
+                    s = s + scal0.get2(j, i) * vt2.get2(c3, i);
+                    i = i + 1;
+                }
+                scal.flatSet(j * rank2 + c3, s);
+                c3 = c3 + 1;
+            }
+            j = j + 1;
+        }
+
+        // coef0 = (means - xbar) @ scalings; intercepts; coef back to p.
+        int64[] cs = heap int64[2];
+        cs[0] = k;
+        cs[1] = p;
+        Tensor<float64> coef = Tensor.zeros<float64>(cs);
+        int64[] is = heap int64[1];
+        is[0] = k;
+        Tensor<float64> icept = Tensor.zeros<float64>(is);
+        c2 = 0;
+        while (c2 < k) {
+            float64[] c0 = heap float64[rank2];
+            int64 c3 = 0;
+            while (c3 < rank2) {
+                float64 s = 0.0;
+                j = 0;
+                while (j < p) {
+                    s = s + (means.get2(c2, j) - xbar.flatGet(j))
+                        * scal.get2(j, c3);
+                    j = j + 1;
+                }
+                c0[c3] = s;
+                c3 = c3 + 1;
+            }
+            float64 sq = 0.0;
+            c3 = 0;
+            while (c3 < rank2) {
+                sq = sq + c0[c3] * c0[c3];
+                c3 = c3 + 1;
+            }
+            float64 ic = -0.5 * sq + Math.log(pri.flatGet(c2));
+            j = 0;
+            while (j < p) {
+                float64 s = 0.0;
+                c3 = 0;
+                while (c3 < rank2) {
+                    s = s + c0[c3] * scal.get2(j, c3);
+                    c3 = c3 + 1;
+                }
+                coef.flatSet(c2 * p + j, s);
+                j = j + 1;
+            }
+            j = 0;
+            while (j < p) {
+                ic = ic - xbar.flatGet(j) * coef.get2(c2, j);
+                j = j + 1;
+            }
+            icept.flatSet(c2, ic);
+            c2 = c2 + 1;
+        }
+        this.coefM #= coef;
+        this.iceptV #= icept;
+        this.scalingsM #= scal;
+        this.scalCols = rank2;
+        this.xbarV #= xbar;
+        return;
+    }
+
+    /** sklearn `_cov`: ML covariance of a row block, shrunk per config. */
+    #Tensor<float64> covOf(Tensor<float64> x, Tensor<float64> rows,
+                           int64 count) {
+        int64 p = x.shapeAt(1);
+        int64[] bs = heap int64[2];
+        bs[0] = count;
+        bs[1] = p;
+        Tensor<float64> blk = Tensor.zeros<float64>(bs);
+        int64 w = 0;
+        int64 i = 0;
+        while (i < rows.size()) {
+            int64 r = (int64) rows.flatGet(i);
+            int64 j = 0;
+            while (j < p) {
+                blk.flatSet(w * p + j, x.get2(r, j));
+                j = j + 1;
+            }
+            w = w + 1;
+            i = i + 1;
+        }
+        if (this.autoShrink) {
+            // sklearn `_cov('auto')`: standardize, Ledoit-Wolf, rescale.
+            float64[] cmean = heap float64[p];
+            float64[] cstd = heap float64[p];
+            int64 j0 = 0;
+            while (j0 < p) {
+                float64 m = 0.0;
+                int64 r0 = 0;
+                while (r0 < count) {
+                    m = m + blk.get2(r0, j0);
+                    r0 = r0 + 1;
+                }
+                m = m / (float64) count;
+                float64 v = 0.0;
+                r0 = 0;
+                while (r0 < count) {
+                    float64 d = blk.get2(r0, j0) - m;
+                    v = v + d * d;
+                    r0 = r0 + 1;
+                }
+                cmean[j0] = m;
+                cstd[j0] = Math.sqrt(v / (float64) count);
+                if (cstd[j0] == 0.0) {
+                    cstd[j0] = 1.0;
+                }
+                j0 = j0 + 1;
+            }
+            Tensor<float64> blkS = Tensor.zeros<float64>(bs);
+            int64 r1 = 0;
+            while (r1 < count) {
+                j0 = 0;
+                while (j0 < p) {
+                    blkS.flatSet(r1 * p + j0,
+                        (blk.get2(r1, j0) - cmean[j0]) / cstd[j0]);
+                    j0 = j0 + 1;
+                }
+                r1 = r1 + 1;
+            }
+            Tensor<float64>[] lw = Gaussians.ledoitWolf(blkS);
+            Tensor<float64> cov = lw[0].copy();
+            int64 a0 = 0;
+            while (a0 < p) {
+                int64 b0 = 0;
+                while (b0 < p) {
+                    cov.flatSet(a0 * p + b0,
+                        cov.get2(a0, b0) * cstd[a0] * cstd[b0]);
+                    b0 = b0 + 1;
+                }
+                a0 = a0 + 1;
+            }
+            return #cov;
+        }
+        // ML covariance (centered, divisor count).
+        float64[] mean = heap float64[p];
+        int64 j2 = 0;
+        while (j2 < p) {
+            float64 m = 0.0;
+            i = 0;
+            while (i < count) {
+                m = m + blk.get2(i, j2);
+                i = i + 1;
+            }
+            mean[j2] = m / (float64) count;
+            j2 = j2 + 1;
+        }
+        int64[] cs = heap int64[2];
+        cs[0] = p;
+        cs[1] = p;
+        Tensor<float64> cov = Tensor.zeros<float64>(cs);
+        int64 a = 0;
+        while (a < p) {
+            int64 b = 0;
+            while (b < p) {
+                float64 s = 0.0;
+                i = 0;
+                while (i < count) {
+                    s = s + (blk.get2(i, a) - mean[a])
+                        * (blk.get2(i, b) - mean[b]);
+                    i = i + 1;
+                }
+                cov.flatSet(a * p + b, s / (float64) count);
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        if (this.shrinkV >= 0.0) {
+            Tensor<float64> sh = Gaussians.shrinkToward(cov, this.shrinkV);
+            return #sh;
+        }
+        return #cov;
+    }
+
+    /** sklearn `_class_cov`: priors-weighted per-class (shrunk) covariance. */
+    #Tensor<float64> classCovShrunk(Tensor<float64> x, Tensor<float64> y,
+                                    int64 k, Tensor<float64> pri) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64[] cs = heap int64[2];
+        cs[0] = p;
+        cs[1] = p;
+        Tensor<float64> acc = Tensor.zeros<float64>(cs);
+        int64 c = 0;
+        while (c < k) {
+            int64 cnt = 0;
+            int64 i = 0;
+            while (i < n) {
+                if ((int64) y.flatGet(i) == c) {
+                    cnt = cnt + 1;
+                }
+                i = i + 1;
+            }
+            int64[] rs = heap int64[1];
+            rs[0] = cnt;
+            Tensor<float64> rows = Tensor.zeros<float64>(rs);
+            int64 w = 0;
+            i = 0;
+            while (i < n) {
+                if ((int64) y.flatGet(i) == c) {
+                    rows.flatSet(w, (float64) i);
+                    w = w + 1;
+                }
+                i = i + 1;
+            }
+            Tensor<float64> ck = this.covOf(x, rows, cnt);
+            float64 pw = pri.flatGet(c);
+            int64 f = 0;
+            while (f < p * p) {
+                acc.flatSet(f, acc.flatGet(f) + pw * ck.flatGet(f));
+                f = f + 1;
+            }
+            c = c + 1;
+        }
+        return #acc;
+    }
+
+    /** sklearn `_solve_lstsq`: coef from lstsq(Sw, means'), no transform. */
+    void fitLsqr(Tensor<float64> x, Tensor<float64> y, int64 n, int64 p,
+                 int64 k, Tensor<float64> pri, Tensor<float64> means) {
+        Tensor<float64> cov = this.classCovShrunk(x, y, k, pri);
+        int64[] ms = heap int64[2];
+        ms[0] = p;
+        ms[1] = k;
+        Tensor<float64> mt = Tensor.zeros<float64>(ms);
+        int64 j = 0;
+        while (j < p) {
+            int64 c = 0;
+            while (c < k) {
+                mt.flatSet(j * k + c, means.get2(c, j));
+                c = c + 1;
+            }
+            j = j + 1;
+        }
+        Tensor<float64> sol = LinAlg.lstsq<float64>(cov, mt);   // (p, k)
+        int64[] cs = heap int64[2];
+        cs[0] = k;
+        cs[1] = p;
+        Tensor<float64> coef = Tensor.zeros<float64>(cs);
+        int64 c2 = 0;
+        while (c2 < k) {
+            j = 0;
+            while (j < p) {
+                coef.flatSet(c2 * p + j, sol.get2(j, c2));
+                j = j + 1;
+            }
+            c2 = c2 + 1;
+        }
+        this.storeIntercepts(coef, means, pri, k, p);
+        this.coefM #= coef;
+        this.scalCols = 0;
+        return;
+    }
+
+    /** sklearn `_solve_eigen`: generalized eigh(Sb, Sw) via Cholesky. */
+    void fitEigen(Tensor<float64> x, Tensor<float64> y, int64 n, int64 p,
+                  int64 k, Tensor<float64> pri, Tensor<float64> means) {
+        Tensor<float64> sw = this.classCovShrunk(x, y, k, pri);
+        int64[] all = heap int64[1];
+        all[0] = n;
+        Tensor<float64> rows = Tensor.zeros<float64>(all);
+        int64 i = 0;
+        while (i < n) {
+            rows.flatSet(i, (float64) i);
+            i = i + 1;
+        }
+        Tensor<float64> st = this.covOf(x, rows, n);
+        int64[] bs = heap int64[2];
+        bs[0] = p;
+        bs[1] = p;
+        Tensor<float64> sb = Tensor.zeros<float64>(bs);
+        int64 f = 0;
+        while (f < p * p) {
+            sb.flatSet(f, st.flatGet(f) - sw.flatGet(f));
+            f = f + 1;
+        }
+
+        // A = L^-1 Sb L^-T via two forward substitutions.
+        Tensor<float64> l = Gaussians.choleskyFactor(sw);
+        Tensor<float64> y1 = forwardSolveMatrix(l, sb);        // L Y = Sb
+        Tensor<float64> yt = transposeSquare(y1, p);
+        Tensor<float64> w1 = forwardSolveMatrix(l, yt);        // L W = Y'
+        Tensor<float64> a = transposeSquare(w1, p);            // A = W'
+
+        Tensor<float64>[] ev = LinAlg.eigh<float64>(a);
+        Tensor<float64> evals = ev[0];                          // ascending
+        Tensor<float64> evecs = ev[1];                          // columns
+
+        // V = L^-T U, taken in DESCENDING eigenvalue order.
+        int64[] ss = heap int64[2];
+        ss[0] = p;
+        ss[1] = p;
+        Tensor<float64> scal = Tensor.zeros<float64>(ss);
+        float64 evSum = 0.0;
+        i = 0;
+        while (i < p) {
+            evSum = evSum + evals.flatGet(i);
+            i = i + 1;
+        }
+        int64[] es = heap int64[1];
+        es[0] = this.maxComp;
+        Tensor<float64> evr = Tensor.zeros<float64>(es);
+        float64[] u = heap float64[p];
+        float64[] v = heap float64[p];
+        int64 c = 0;
+        while (c < p) {
+            int64 src = p - 1 - c;                              // descending
+            if (c < this.maxComp) {
+                evr.flatSet(c, evals.flatGet(src) / evSum);
+            }
+            i = 0;
+            while (i < p) {
+                u[i] = evecs.get2(i, src);
+                i = i + 1;
+            }
+            // Backward-substitute L' v = u.
+            int64 r = p - 1;
+            boolean run = true;
+            while (run) {
+                float64 s = u[r];
+                int64 q = r + 1;
+                while (q < p) {
+                    s = s - l.get2(q, r) * v[q];
+                    q = q + 1;
+                }
+                v[r] = s / l.get2(r, r);
+                if (r == 0) {
+                    run = false;
+                } else {
+                    r = r - 1;
+                }
+            }
+            i = 0;
+            while (i < p) {
+                scal.flatSet(i * p + c, v[i]);
+                i = i + 1;
+            }
+            c = c + 1;
+        }
+        this.evrV #= evr;
+        this.scalingsM #= scal;
+        this.scalCols = p;
+
+        // coef = means @ V @ V'.
+        int64[] cs = heap int64[2];
+        cs[0] = k;
+        cs[1] = p;
+        Tensor<float64> coef = Tensor.zeros<float64>(cs);
+        int64 c2 = 0;
+        while (c2 < k) {
+            float64[] m2 = heap float64[p];
+            i = 0;
+            while (i < p) {
+                float64 s = 0.0;
+                int64 j = 0;
+                while (j < p) {
+                    s = s + means.get2(c2, j) * scal.get2(j, i);
+                    j = j + 1;
+                }
+                m2[i] = s;
+                i = i + 1;
+            }
+            int64 j2 = 0;
+            while (j2 < p) {
+                float64 s = 0.0;
+                i = 0;
+                while (i < p) {
+                    s = s + m2[i] * scal.get2(j2, i);
+                    i = i + 1;
+                }
+                coef.flatSet(c2 * p + j2, s);
+                j2 = j2 + 1;
+            }
+            c2 = c2 + 1;
+        }
+        this.storeIntercepts(coef, means, pri, k, p);
+        this.coefM #= coef;
+        return;
+    }
+
+    /** `-(means·coef')/2 + log priors` — shared by lsqr and eigen. */
+    void storeIntercepts(Tensor<float64> coef, Tensor<float64> means,
+                         Tensor<float64> pri, int64 k, int64 p) {
+        int64[] is = heap int64[1];
+        is[0] = k;
+        Tensor<float64> icept = Tensor.zeros<float64>(is);
+        int64 c = 0;
+        while (c < k) {
+            float64 s = 0.0;
+            int64 j = 0;
+            while (j < p) {
+                s = s + means.get2(c, j) * coef.get2(c, j);
+                j = j + 1;
+            }
+            icept.flatSet(c, -0.5 * s + Math.log(pri.flatGet(c)));
+            c = c + 1;
+        }
+        this.iceptV #= icept;
+        return;
+    }
+
+    static #Tensor<float64> forwardSolveMatrix(Tensor<float64> l,
+                                               Tensor<float64> b) {
+        int64 p = l.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = p;
+        sh[1] = p;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 col = 0;
+        while (col < p) {
+            int64 r = 0;
+            while (r < p) {
+                float64 s = b.get2(r, col);
+                int64 q = 0;
+                while (q < r) {
+                    s = s - l.get2(r, q) * out.get2(q, col);
+                    q = q + 1;
+                }
+                out.flatSet(r * p + col, s / l.get2(r, r));
+                r = r + 1;
+            }
+            col = col + 1;
+        }
+        return #out;
+    }
+
+    static #Tensor<float64> transposeSquare(Tensor<float64> a, int64 p) {
+        int64[] sh = heap int64[2];
+        sh[0] = p;
+        sh[1] = p;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < p) {
+            int64 j = 0;
+            while (j < p) {
+                out.flatSet(i * p + j, a.get2(j, i));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(K', p)` decision weights (single row for binary fits). */
+    public Tensor<float64> coefMatrix() {
+        this.requireFitted();
+        return this.coefM;
+    }
+
+    /** `(K',)` decision intercepts. */
+    public Tensor<float64> interceptVector() {
+        this.requireFitted();
+        return this.iceptV;
+    }
+
+    /** Between-class variance share per discriminant direction (§2.12). */
+    public Tensor<float64> explainedVarianceRatio() {
+        this.requireFitted();
+        if (this.solverC == (int32) 1) {
+            throw heap MlException("LinearDiscriminantAnalysis: the lsqr "
+                + "solver does not compute discriminant directions — use "
+                + "svd or eigen");
+        }
+        return this.evrV;
+    }
+
+    void requireFitted() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "LinearDiscriminantAnalysis: not fitted");
+        }
+        return;
+    }
+
+    /**
+     * Linear scores `x·coef' + intercept` (§2.5): `(n, K)` columns, or the
+     * single sklearn column `(n,)` for a binary fit.
+     */
+    public #Tensor<float64> decisionFunction(Tensor<float64> x) {
+        this.requireFitted();
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 kk = this.coefM.shapeAt(0);
+        if (kk == 1) {
+            int64[] sh = heap int64[1];
+            sh[0] = n;
+            Tensor<float64> out = Tensor.zeros<float64>(sh);
+            int64 i = 0;
+            while (i < n) {
+                float64 s = this.iceptV.flatGet(0);
+                int64 j = 0;
+                while (j < p) {
+                    s = s + x.get2(i, j) * this.coefM.get2(0, j);
+                    j = j + 1;
+                }
+                out.flatSet(i, s);
+                i = i + 1;
+            }
+            return #out;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = kk;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < kk) {
+                float64 s = this.iceptV.flatGet(c);
+                int64 j = 0;
+                while (j < p) {
+                    s = s + x.get2(i, j) * this.coefM.get2(c, j);
+                    j = j + 1;
+                }
+                out.flatSet(i * kk + c, s);
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Class labels by the log-posterior rule (§2.3); ties take the lowest. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        Tensor<float64> dec = this.decisionFunction(x);
+        int64 n = x.shapeAt(0);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        if (this.nClasses == 2) {
+            int64 i = 0;
+            while (i < n) {
+                if (dec.flatGet(i) > 0.0) {
+                    out.flatSet(i, 1.0);
+                }
+                i = i + 1;
+            }
+            return #out;
+        }
+        int64 kk = this.nClasses;
+        int64 i = 0;
+        while (i < n) {
+            int64 best = 0;
+            float64 bv = dec.get2(i, 0);
+            int64 c = 1;
+            while (c < kk) {
+                float64 v = dec.get2(i, c);
+                if (v > bv) {
+                    bv = v;
+                    best = c;
+                }
+                c = c + 1;
+            }
+            out.flatSet(i, (float64) best);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Normalized posteriors (§2.4): sigmoid (binary) / softmax (multi). */
+    public #Tensor<float64> predictProba(Tensor<float64> x) {
+        Tensor<float64> dec = this.decisionFunction(x);
+        int64 n = x.shapeAt(0);
+        if (this.nClasses == 2) {
+            int64[] sh = heap int64[2];
+            sh[0] = n;
+            sh[1] = 2;
+            Tensor<float64> out = Tensor.zeros<float64>(sh);
+            int64 i = 0;
+            while (i < n) {
+                float64 p1 = 1.0 / (1.0 + Math.exp(-dec.flatGet(i)));
+                out.flatSet(i * 2, 1.0 - p1);
+                out.flatSet(i * 2 + 1, p1);
+                i = i + 1;
+            }
+            return #out;
+        }
+        int64 kk = this.nClasses;
+        Tensor<float64> lse = Gaussians.logSumExp(dec);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = kk;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < kk) {
+                out.flatSet(i * kk + c,
+                    Math.exp(dec.get2(i, c) - lse.flatGet(i)));
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Projection onto the discriminant directions (§2.11); lsqr rejects. */
+    public #Tensor<float64> transform(Tensor<float64> x) {
+        this.requireFitted();
+        if (this.solverC == (int32) 1) {
+            throw heap MlException("LinearDiscriminantAnalysis: transform "
+                + "is not available with the lsqr solver — use svd or eigen");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 cols = this.maxComp;
+        if (this.scalCols < cols) {
+            cols = this.scalCols;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = cols;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        boolean center = this.solverC == (int32) 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < cols) {
+                float64 s = 0.0;
+                int64 j = 0;
+                while (j < p) {
+                    float64 v = x.get2(i, j);
+                    if (center) {
+                        v = v - this.xbarV.flatGet(j);
+                    }
+                    s = s + v * this.scalingsM.get2(j, c);
+                    j = j + 1;
+                }
+                out.flatSet(i * cols + c, s);
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    public #Tensor<float64> fitTransform(Tensor<float64> x,
+                                         Tensor<float64> y) {
+        this.fit(x, y);
+        Tensor<float64> out = this.transform(x);
+        return #out;
+    }
+
+    /** Accuracy — the classifier `score` convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> pred = this.predict(x);
+        return Metrics.accuracy(y, pred);
+    }
+}

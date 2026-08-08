@@ -1,0 +1,714 @@
+package dev.cajeta.ml.cluster;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+
+/**
+ * Gaussian mixture model fitted by expectation-maximization (sklearn
+ * `GaussianMixture`): each component is a Gaussian, membership is a
+ * posterior responsibility, and the log-likelihood is monotonically
+ * non-decreasing across iterations — EM's defining property, asserted by
+ * the suite every iteration (spec §12.3).
+ *
+ * Covariance types (§5.3): `"full"` (per-component `(p,p)`), `"tied"` (one
+ * shared `(p,p)`), `"diag"` (per-component variances), `"spherical"`
+ * (per-component scalar). Full/tied densities go through
+ * {@link cajeta.math.linalg.LinAlg#cholesky} (log-determinant from the
+ * factor, Mahalanobis by forward substitution); everything runs in log
+ * space with log-sum-exp normalization.
+ *
+ * A configurable `regCovar` floor is added to every variance diagonal
+ * (§5.4); a component whose UNREGULARIZED variance falls below the floor is
+ * a collapse, reported by {@link #collapsed} rather than hidden.
+ * Initialization (§5.6) is seeded K-means (default) or seeded random
+ * responsibilities. `converged()` reports whether the lower-bound change
+ * fell under `tol` within `maxIter` (§5.7). `score` is the mean per-sample
+ * log-likelihood; AIC/BIC (§5.5) derive from it.
+ */
+public final class GaussianMixture implements Predictor {
+
+    private int64 kComp;
+    private uint64 seed;
+    private int64 covType;       // 0 full, 1 tied, 2 diag, 3 spherical
+    private boolean initRandom;
+    private int64 maxIter;
+    private float64 tol;
+    private float64 regCovar;
+
+    private int64 pDims;
+    private float64[] weightsA;  // (k)
+    private float64[] meansA;    // (k*p)
+    private float64[] covA;      // full k*p*p | tied p*p | diag k*p | sph k
+    private float64[] llHist;
+    private int64 llCount;
+    private boolean convergedV;
+    private boolean collapsedV;
+    private int64 iters;
+    private boolean fitted;
+
+    static int64 parseCovType(String covType) {
+        if (covType.equals("full")) {
+            return 0;
+        }
+        if (covType.equals("tied")) {
+            return 1;
+        }
+        if (covType.equals("diag")) {
+            return 2;
+        }
+        if (covType.equals("spherical")) {
+            return 3;
+        }
+        throw heap MlException(
+            "GaussianMixture: covType must be full|tied|diag|spherical");
+    }
+
+    /** Full covariance, K-means init, maxIter 100, tol 1e-3, reg 1e-6 —
+     *  the sklearn defaults. */
+    public GaussianMixture(int64 k, uint64 seed) {
+        if (k < 1) {
+            throw heap MlException("GaussianMixture: k must be >= 1");
+        }
+        this.kComp = k;
+        this.seed = seed;
+        this.covType = 0;
+        this.initRandom = false;
+        this.maxIter = 100;
+        this.tol = 0.001;
+        this.regCovar = 0.000001;
+        this.fitted = false;
+        return;
+    }
+
+    /** Every dial: covType full|tied|diag|spherical, init kmeans|random. */
+    public GaussianMixture(int64 k, uint64 seed, String covType,
+                           String init, int64 maxIter, float64 tol,
+                           float64 regCovar) {
+        if (k < 1) {
+            throw heap MlException("GaussianMixture: k must be >= 1");
+        }
+        this.kComp = k;
+        this.seed = seed;
+        this.covType = GaussianMixture.parseCovType(covType);
+        if (init.equals("random")) {
+            this.initRandom = true;
+        } else if (init.equals("kmeans")) {
+            this.initRandom = false;
+        } else {
+            throw heap MlException(
+                "GaussianMixture: init must be kmeans|random");
+        }
+        this.maxIter = maxIter;
+        this.tol = tol;
+        this.regCovar = regCovar;
+        this.fitted = false;
+        return;
+    }
+
+    /** Per-component log-density parameters: fills `logdet` (k) and, for
+     *  full/tied, the Cholesky factors into `chol` (k*p*p; tied replicated
+     *  per component so the E-step reads one layout). */
+    private void prepare(float64[] chol, float64[] logdet) {
+        int64 k = this.kComp;
+        int64 p = this.pDims;
+        int64 c = 0;
+        while (c < k) {
+            if (this.covType == (int64) 0 || this.covType == (int64) 1) {
+                int64[] sh = heap int64[2];
+                sh[0] = p;
+                sh[1] = p;
+                Tensor<float64> sig = Tensor.zeros<float64>(sh);
+                int64 a = 0;
+                while (a < p) {
+                    int64 b = 0;
+                    while (b < p) {
+                        float64 v = 0.0;
+                        if (this.covType == (int64) 0) {
+                            v = this.covA[c * p * p + a * p + b];
+                        } else {
+                            v = this.covA[a * p + b];
+                        }
+                        sig.flatSet(a * p + b, v);
+                        b = b + 1;
+                    }
+                    a = a + 1;
+                }
+                Tensor<float64> l = LinAlg.cholesky<float64>(sig);
+                float64 ld = 0.0;
+                a = 0;
+                while (a < p) {
+                    int64 b = 0;
+                    while (b < p) {
+                        chol[c * p * p + a * p + b] = l.get2(a, b);
+                        b = b + 1;
+                    }
+                    ld = ld + Math.log(l.get2(a, a));
+                    a = a + 1;
+                }
+                logdet[c] = 2.0 * ld;
+            } else if (this.covType == (int64) 2) {
+                float64 ld = 0.0;
+                int64 j = 0;
+                while (j < p) {
+                    ld = ld + Math.log(this.covA[c * p + j]);
+                    j = j + 1;
+                }
+                logdet[c] = ld;
+            } else {
+                logdet[c] = (float64) p * Math.log(this.covA[c]);
+            }
+            c = c + 1;
+        }
+        return;
+    }
+
+    /** Mean per-sample log-likelihood of `x`; when `resp` is non-empty
+     *  (n*k), fills it with posterior responsibilities. */
+    private float64 eval(Tensor<float64> x, float64[] resp,
+                         boolean fillResp) {
+        int64 n = x.shapeAt(0);
+        int64 p = this.pDims;
+        int64 k = this.kComp;
+        float64[] chol = heap float64[k * p * p];
+        float64[] logdet = heap float64[k];
+        this.prepare(chol, logdet);
+        float64[] lp = heap float64[k];
+        float64[] d = heap float64[p];
+        float64[] z = heap float64[p];
+        float64 ln2pi = 1.8378770664093453;
+        float64 total = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                int64 j = 0;
+                while (j < p) {
+                    d[j] = x.get2(i, j) - this.meansA[c * p + j];
+                    j = j + 1;
+                }
+                float64 maha = 0.0;
+                if (this.covType == (int64) 0
+                    || this.covType == (int64) 1) {
+                    // Forward-solve L z = d; maha = ||z||^2.
+                    int64 a = 0;
+                    while (a < p) {
+                        float64 s = d[a];
+                        int64 b = 0;
+                        while (b < a) {
+                            s = s - chol[c * p * p + a * p + b] * z[b];
+                            b = b + 1;
+                        }
+                        z[a] = s / chol[c * p * p + a * p + a];
+                        maha = maha + z[a] * z[a];
+                        a = a + 1;
+                    }
+                } else if (this.covType == (int64) 2) {
+                    int64 j2 = 0;
+                    while (j2 < p) {
+                        maha = maha + d[j2] * d[j2] / this.covA[c * p + j2];
+                        j2 = j2 + 1;
+                    }
+                } else {
+                    int64 j3 = 0;
+                    while (j3 < p) {
+                        maha = maha + d[j3] * d[j3];
+                        j3 = j3 + 1;
+                    }
+                    maha = maha / this.covA[c];
+                }
+                lp[c] = Math.log(this.weightsA[c])
+                    - 0.5 * ((float64) p * ln2pi + logdet[c] + maha);
+                c = c + 1;
+            }
+            float64 m = lp[0];
+            c = 1;
+            while (c < k) {
+                if (lp[c] > m) {
+                    m = lp[c];
+                }
+                c = c + 1;
+            }
+            float64 se = 0.0;
+            c = 0;
+            while (c < k) {
+                se = se + Math.exp(lp[c] - m);
+                c = c + 1;
+            }
+            float64 lse = m + Math.log(se);
+            if (fillResp) {
+                c = 0;
+                while (c < k) {
+                    resp[i * k + c] = Math.exp(lp[c] - lse);
+                    c = c + 1;
+                }
+            }
+            total = total + lse;
+            i = i + 1;
+        }
+        return total / (float64) n;
+    }
+
+    /** M-step: weights, means, covariances (+ reg floor) from `resp`;
+     *  flags collapse when unregularized variance sits under the floor. */
+    private void mstep(Tensor<float64> x, float64[] resp) {
+        int64 n = x.shapeAt(0);
+        int64 p = this.pDims;
+        int64 k = this.kComp;
+        float64[] nk = heap float64[k];
+        int64 c = 0;
+        while (c < k) {
+            float64 s = 0.0;
+            int64 i = 0;
+            while (i < n) {
+                s = s + resp[i * k + c];
+                i = i + 1;
+            }
+            nk[c] = s + 0.00000000000000222;
+            this.weightsA[c] = nk[c] / (float64) n;
+            int64 j = 0;
+            while (j < p) {
+                float64 ms = 0.0;
+                i = 0;
+                while (i < n) {
+                    ms = ms + resp[i * k + c] * x.get2(i, j);
+                    i = i + 1;
+                }
+                this.meansA[c * p + j] = ms / nk[c];
+                j = j + 1;
+            }
+            c = c + 1;
+        }
+        // Renormalize weights (guard the nk floor's drift).
+        float64 wsum = 0.0;
+        c = 0;
+        while (c < k) {
+            wsum = wsum + this.weightsA[c];
+            c = c + 1;
+        }
+        c = 0;
+        while (c < k) {
+            this.weightsA[c] = this.weightsA[c] / wsum;
+            c = c + 1;
+        }
+        if (this.covType == (int64) 0) {
+            c = 0;
+            while (c < k) {
+                float64 maxDiag = 0.0;
+                int64 a = 0;
+                while (a < p) {
+                    int64 b = 0;
+                    while (b < p) {
+                        float64 s = 0.0;
+                        int64 i = 0;
+                        while (i < n) {
+                            float64 da = x.get2(i, a)
+                                - this.meansA[c * p + a];
+                            float64 db = x.get2(i, b)
+                                - this.meansA[c * p + b];
+                            s = s + resp[i * k + c] * da * db;
+                            i = i + 1;
+                        }
+                        float64 v = s / nk[c];
+                        if (a == b) {
+                            if (v > maxDiag) {
+                                maxDiag = v;
+                            }
+                            v = v + this.regCovar;
+                        }
+                        this.covA[c * p * p + a * p + b] = v;
+                        b = b + 1;
+                    }
+                    a = a + 1;
+                }
+                if (maxDiag < this.regCovar) {
+                    this.collapsedV = true;
+                }
+                c = c + 1;
+            }
+        } else if (this.covType == (int64) 1) {
+            float64 maxDiag = 0.0;
+            int64 a = 0;
+            while (a < p) {
+                int64 b = 0;
+                while (b < p) {
+                    float64 s = 0.0;
+                    int64 c2 = 0;
+                    while (c2 < k) {
+                        int64 i = 0;
+                        while (i < n) {
+                            float64 da = x.get2(i, a)
+                                - this.meansA[c2 * p + a];
+                            float64 db = x.get2(i, b)
+                                - this.meansA[c2 * p + b];
+                            s = s + resp[i * k + c2] * da * db;
+                            i = i + 1;
+                        }
+                        c2 = c2 + 1;
+                    }
+                    float64 v = s / (float64) n;
+                    if (a == b) {
+                        if (v > maxDiag) {
+                            maxDiag = v;
+                        }
+                        v = v + this.regCovar;
+                    }
+                    this.covA[a * p + b] = v;
+                    b = b + 1;
+                }
+                a = a + 1;
+            }
+            if (maxDiag < this.regCovar) {
+                this.collapsedV = true;
+            }
+        } else {
+            c = 0;
+            while (c < k) {
+                float64 maxVar = 0.0;
+                float64 sphSum = 0.0;
+                int64 j = 0;
+                while (j < p) {
+                    float64 s = 0.0;
+                    int64 i = 0;
+                    while (i < n) {
+                        float64 dj = x.get2(i, j) - this.meansA[c * p + j];
+                        s = s + resp[i * k + c] * dj * dj;
+                        i = i + 1;
+                    }
+                    float64 v = s / nk[c];
+                    if (v > maxVar) {
+                        maxVar = v;
+                    }
+                    if (this.covType == (int64) 2) {
+                        this.covA[c * p + j] = v + this.regCovar;
+                    } else {
+                        sphSum = sphSum + v + this.regCovar;
+                    }
+                    j = j + 1;
+                }
+                if (this.covType == (int64) 3) {
+                    this.covA[c] = sphSum / (float64) p;
+                }
+                if (maxVar < this.regCovar) {
+                    this.collapsedV = true;
+                }
+                c = c + 1;
+            }
+        }
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "GaussianMixture.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 k = this.kComp;
+        if (n < k) {
+            throw heap MlException("GaussianMixture.fit: n < k");
+        }
+        this.pDims = p;
+        int64 covLen = k;
+        if (this.covType == (int64) 0) {
+            covLen = k * p * p;
+        } else if (this.covType == (int64) 1) {
+            covLen = p * p;
+        } else if (this.covType == (int64) 2) {
+            covLen = k * p;
+        }
+        float64[] w = heap float64[k];
+        float64[] m = heap float64[k * p];
+        float64[] cv = heap float64[covLen];
+        this.weightsA #= w;
+        this.meansA #= m;
+        this.covA #= cv;
+        this.collapsedV = false;
+
+        // Initial responsibilities: seeded K-means one-hot, or seeded
+        // random rows normalized (§5.6).
+        float64[] resp = heap float64[n * k];
+        if (this.initRandom) {
+            Generator gen = heap Generator(this.seed);
+            Tensor<float32> u = gen.uniform(n * k);
+            int64 i = 0;
+            while (i < n) {
+                float64 s = 0.0;
+                int64 c = 0;
+                while (c < k) {
+                    float64 v = (float64) u.get1(i * k + c) + 0.000001;
+                    resp[i * k + c] = v;
+                    s = s + v;
+                    c = c + 1;
+                }
+                c = 0;
+                while (c < k) {
+                    resp[i * k + c] = resp[i * k + c] / s;
+                    c = c + 1;
+                }
+                i = i + 1;
+            }
+        } else {
+            KMeans km = heap KMeans(k, this.seed);
+            km.fit(x, y);
+            Tensor<float64> lab = km.labels();
+            int64 i = 0;
+            while (i < n) {
+                resp[i * k + (int64) lab.get1(i)] = 1.0;
+                i = i + 1;
+            }
+        }
+        this.mstep(x, resp);
+
+        float64[] hist = heap float64[this.maxIter];
+        this.convergedV = false;
+        float64 prev = 0.0;
+        int64 it = 0;
+        boolean go = true;
+        while (it < this.maxIter && go) {
+            float64 lb = this.eval(x, resp, true);
+            hist[it] = lb;
+            this.mstep(x, resp);
+            if (it > (int64) 0) {
+                float64 change = lb - prev;
+                if (change < 0.0) {
+                    change = 0.0 - change;
+                }
+                if (change < this.tol) {
+                    this.convergedV = true;
+                    go = false;
+                }
+            }
+            prev = lb;
+            it = it + 1;
+        }
+        this.llHist #= hist;
+        this.llCount = it;
+        this.iters = it;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** Mean log-likelihood per EM iteration, in order — non-decreasing by
+     *  EM's contract (§12.3). */
+    public #float64[] logLikelihoodHistory() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "GaussianMixture.logLikelihoodHistory: fit first");
+        }
+        int64 c = this.llCount;
+        float64[] out = heap float64[c];
+        int64 i = 0;
+        while (i < c) {
+            out[i] = this.llHist[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Lower-bound change fell under `tol` within `maxIter` (§5.7). */
+    public boolean converged() {
+        if (!this.fitted) {
+            throw heap MlException("GaussianMixture.converged: fit first");
+        }
+        return this.convergedV;
+    }
+
+    /** True when any component's unregularized variance fell under the
+     *  `regCovar` floor during fitting — the classic EM collapse (§5.4). */
+    public boolean collapsed() {
+        if (!this.fitted) {
+            throw heap MlException("GaussianMixture.collapsed: fit first");
+        }
+        return this.collapsedV;
+    }
+
+    public int64 iterations() {
+        return this.iters;
+    }
+
+    /** `(k,)` mixing weights. */
+    public #Tensor<float64> weights() {
+        if (!this.fitted) {
+            throw heap MlException("GaussianMixture.weights: fit first");
+        }
+        int64 k = this.kComp;
+        float64[] out = heap float64[k];
+        int64 c = 0;
+        while (c < k) {
+            out[c] = this.weightsA[c];
+            c = c + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = k;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** `(k, p)` component means. */
+    public #Tensor<float64> means() {
+        if (!this.fitted) {
+            throw heap MlException("GaussianMixture.means: fit first");
+        }
+        int64 k = this.kComp;
+        int64 p = this.pDims;
+        float64[] out = heap float64[k * p];
+        int64 i = 0;
+        while (i < k * p) {
+            out[i] = this.meansA[i];
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = k;
+        sh[1] = p;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** Covariances shaped by type (sklearn convention): full `(k, p, p)`,
+     *  tied `(p, p)`, diag `(k, p)`, spherical `(k,)`. */
+    public #Tensor<float64> covariances() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "GaussianMixture.covariances: fit first");
+        }
+        int64 k = this.kComp;
+        int64 p = this.pDims;
+        int64 len = (int64) this.covA.count();
+        float64[] out = heap float64[len];
+        int64 i = 0;
+        while (i < len) {
+            out[i] = this.covA[i];
+            i = i + 1;
+        }
+        if (this.covType == (int64) 0) {
+            int64[] sh = heap int64[3];
+            sh[0] = k;
+            sh[1] = p;
+            sh[2] = p;
+            return Tensor.of<float64>(out, sh);
+        }
+        if (this.covType == (int64) 1) {
+            int64[] sh = heap int64[2];
+            sh[0] = p;
+            sh[1] = p;
+            return Tensor.of<float64>(out, sh);
+        }
+        if (this.covType == (int64) 2) {
+            int64[] sh = heap int64[2];
+            sh[0] = k;
+            sh[1] = p;
+            return Tensor.of<float64>(out, sh);
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = k;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** `(n, k)` posterior responsibilities, each row summing to 1 (§5.2). */
+    public #Tensor<float64> predictProba(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException(
+                "GaussianMixture.predictProba: fit first");
+        }
+        if (x.ndim() != 2 || x.shapeAt(1) != this.pDims) {
+            throw heap MlException(
+                "GaussianMixture.predictProba: x must be (n, p) matching "
+                + "the fit");
+        }
+        int64 n = x.shapeAt(0);
+        int64 k = this.kComp;
+        float64[] resp = heap float64[n * k];
+        this.eval(x, resp, true);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        return Tensor.of<float64>(resp, sh);
+    }
+
+    /** Hard component ids: argmax responsibility per row. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("GaussianMixture.predict: fit first");
+        }
+        if (x.ndim() != 2 || x.shapeAt(1) != this.pDims) {
+            throw heap MlException(
+                "GaussianMixture.predict: x must be (n, p) matching the "
+                + "fit");
+        }
+        int64 n = x.shapeAt(0);
+        int64 k = this.kComp;
+        float64[] resp = heap float64[n * k];
+        this.eval(x, resp, true);
+        float64[] out = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            int64 best = 0;
+            float64 bv = resp[i * k];
+            int64 c = 1;
+            while (c < k) {
+                if (resp[i * k + c] > bv) {
+                    bv = resp[i * k + c];
+                    best = c;
+                }
+                c = c + 1;
+            }
+            out[i] = (float64) best;
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** Mean per-sample log-likelihood of `x` (sklearn `score`). */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        if (!this.fitted) {
+            throw heap MlException("GaussianMixture.score: fit first");
+        }
+        float64[] none = heap float64[1];
+        return this.eval(x, none, false);
+    }
+
+    /** Free parameters: means + covariances + weights − 1. */
+    private int64 nParameters() {
+        int64 k = this.kComp;
+        int64 p = this.pDims;
+        int64 covP = k;
+        if (this.covType == (int64) 0) {
+            covP = k * p * (p + (int64) 1) / (int64) 2;
+        } else if (this.covType == (int64) 1) {
+            covP = p * (p + (int64) 1) / (int64) 2;
+        } else if (this.covType == (int64) 2) {
+            covP = k * p;
+        }
+        return covP + k * p + k - (int64) 1;
+    }
+
+    /** Akaike information criterion on `x` — lower is better (§5.5). */
+    public float64 aic(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("GaussianMixture.aic: fit first");
+        }
+        float64[] none = heap float64[1];
+        float64 ll = this.eval(x, none, false) * (float64) x.shapeAt(0);
+        return 2.0 * (float64) this.nParameters() - 2.0 * ll;
+    }
+
+    /** Bayesian information criterion on `x` — lower is better (§5.5). */
+    public float64 bic(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("GaussianMixture.bic: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        float64[] none = heap float64[1];
+        float64 ll = this.eval(x, none, false) * (float64) n;
+        return Math.log((float64) n) * (float64) this.nParameters()
+            - 2.0 * ll;
+    }
+}

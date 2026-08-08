@@ -1,0 +1,33 @@
+package dev.cajeta.ml.tree;
+
+/**
+ * The criterion seam behind {@link Trees} (ml-trees-ensembles U2): nothing in
+ * the grower hardcodes an impurity. An implementation scores a contiguous
+ * slice of a node's target values and materializes a leaf payload.
+ *
+ * `weighted` returns `w * impurity(slice)` (w = slice length), so the
+ * grower's split proxy is simply `-(weighted(left) + weighted(right))` —
+ * monotone in impurity decrease for a fixed node, sklearn's own proxy shape.
+ *
+ * NOTE (perf debt, revisit for U6 forests): slices are re-scanned per
+ * candidate — O(m²) per feature per node — instead of sklearn's O(m)
+ * incremental update. Correctness-first; the parity fixtures are tiny.
+ */
+interface Impurity {
+    /** `w * impurity` of `ys[lo, hi)` under parallel sample weights `ws`
+     *  (w = the slice's weighted count: Σ ws·classWeight). */
+    float64 weighted(float64[] ys, float64[] ws, int64 lo, int64 hi);
+
+    /** The slice's weighted sample count. */
+    float64 weightedN(float64[] ys, float64[] ws, int64 lo, int64 hi);
+
+    /** Is a split into `[lo,mid) / [mid,hi)` admissible? (poisson: both
+     *  child sums must be positive; everything else: always). */
+    boolean validSplit(float64[] ys, float64[] ws, int64 lo, int64 mid, int64 hi);
+
+    /** Leaf payload width: K class fractions, or 1. */
+    int64 width();
+
+    /** Write the leaf payload for `ys[lo, hi)` at `value[off..off+width)`. */
+    void leafInto(float64[] ys, float64[] ws, int64 lo, int64 hi, float64[] value, int64 off);
+}

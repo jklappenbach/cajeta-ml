@@ -2,13 +2,13 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.KFold;
-import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.select.KFold;
+import dev.cajeta.ml.linear.LinearRegression;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.Pipeline;
-import dev.cajeta.ml.Ridge;
-import dev.cajeta.ml.Split;
-import dev.cajeta.ml.StandardScaler;
+import dev.cajeta.ml.linear.Ridge;
+import dev.cajeta.ml.select.Split;
+import dev.cajeta.ml.preprocess.StandardScaler;
 
 /**
  * cajeta-ml-v2 plan 3.1 — Pipeline: a Predictor built from stages.

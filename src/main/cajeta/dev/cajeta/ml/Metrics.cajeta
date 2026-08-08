@@ -5,6 +5,9 @@ import cajeta.math.distance.Distance;
 import cajeta.math.distance.Metric;
 import cajeta.math.distance.Euclidean;
 import cajeta.math.random.Generator;
+import dev.cajeta.ml.inspect.ClassificationReport;
+import dev.cajeta.ml.cluster.KMeans;
+import dev.cajeta.ml.inspect.PrCurve;
 
 /**
  * The metric surface (sklearn.metrics parity): pure static functions over

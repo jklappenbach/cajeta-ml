@@ -2,9 +2,9 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.DecisionTreeClassifier;
-import dev.cajeta.ml.RandomForestClassifier;
-import dev.cajeta.ml.RandomForestRegressor;
+import dev.cajeta.ml.tree.DecisionTreeClassifier;
+import dev.cajeta.ml.ensemble.RandomForestClassifier;
+import dev.cajeta.ml.ensemble.RandomForestRegressor;
 
 /**
  * ml-trees-ensembles U6 (forests) — per-node feature subsampling verified

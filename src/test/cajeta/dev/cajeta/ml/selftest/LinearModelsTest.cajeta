@@ -2,8 +2,8 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.LinearRegression;
-import dev.cajeta.ml.Ridge;
+import dev.cajeta.ml.linear.LinearRegression;
+import dev.cajeta.ml.linear.Ridge;
 
 /**
  * cajeta-ml plan Units 4 + 5 — LinearRegression and Ridge pinned against

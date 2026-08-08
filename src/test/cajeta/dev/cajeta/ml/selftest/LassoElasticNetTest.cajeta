@@ -2,8 +2,8 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.ElasticNet;
-import dev.cajeta.ml.Lasso;
+import dev.cajeta.ml.linear.ElasticNet;
+import dev.cajeta.ml.linear.Lasso;
 
 /**
  * cajeta-ml-v2 plan 1.1 — Lasso/ElasticNet coordinate descent, pinned

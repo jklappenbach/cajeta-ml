@@ -2,15 +2,15 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.Gaussians;
-import dev.cajeta.ml.KFold;
-import dev.cajeta.ml.KNeighborsClassifier;
-import dev.cajeta.ml.LinearDiscriminantAnalysis;
-import dev.cajeta.ml.PCA;
+import dev.cajeta.ml.discriminant.Gaussians;
+import dev.cajeta.ml.select.KFold;
+import dev.cajeta.ml.neighbors.KNeighborsClassifier;
+import dev.cajeta.ml.discriminant.LinearDiscriminantAnalysis;
+import dev.cajeta.ml.decompose.PCA;
 import dev.cajeta.ml.Pipeline;
 import dev.cajeta.ml.Predictor;
-import dev.cajeta.ml.QuadraticDiscriminantAnalysis;
-import dev.cajeta.ml.Split;
+import dev.cajeta.ml.discriminant.QuadraticDiscriminantAnalysis;
+import dev.cajeta.ml.select.Split;
 import dev.cajeta.ml.Transformer;
 
 /**

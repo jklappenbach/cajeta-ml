@@ -2,8 +2,8 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.DummyRegressor;
-import dev.cajeta.ml.IdentityTransformer;
+import dev.cajeta.ml.linear.DummyRegressor;
+import dev.cajeta.ml.preprocess.IdentityTransformer;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.Predictor;
 import dev.cajeta.ml.Transformer;

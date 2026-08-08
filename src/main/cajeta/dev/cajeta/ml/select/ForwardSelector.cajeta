@@ -1,0 +1,212 @@
+package dev.cajeta.ml.select;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Transformer;
+
+/**
+ * Greedy forward feature selection over the estimator protocol (spec
+ * §10.4): starting empty, each round cross-validates every not-yet-chosen
+ * feature added to the current subset — a fresh estimator per fold from
+ * the {@link EstimatorFactory}, scored under a {@link Scorers} metric name
+ * on seeded shuffled folds — and keeps the best. Selection stops at the
+ * target count, or early when no candidate strictly improves the score
+ * (ties break toward the lowest feature index, so a run is deterministic
+ * per seed).
+ *
+ * A {@link Transformer} (§10.5): `transform` keeps the selected columns,
+ * in ascending original-column order (sklearn's convention), so the
+ * selector composes in a {@link Pipeline} ahead of any estimator.
+ */
+public final class ForwardSelector implements Transformer {
+
+    private EstimatorFactory factory;
+    private Tensor<float64> paramsV;    // handed to every create()
+    private int64 nSelect;
+    private int64 nFolds;
+    private int32 metricC;              // 0 accuracy, 1 f1, 2 rocAuc, 3 r2
+    private uint64 seed;
+    private Tensor<int64> selV;         // (nSel,) ascending, once fitted
+    private int64 nSel;
+    private int64 pFit;
+    private boolean fitted;
+
+    public ForwardSelector(#EstimatorFactory factory,
+                           #Tensor<float64> params, int64 nSelect,
+                           int64 nFolds, String metric, uint64 seed) {
+        if (nSelect < 1) {
+            throw heap MlException(
+                "ForwardSelector: nSelect must be >= 1");
+        }
+        if (nFolds < 2) {
+            throw heap MlException(
+                "ForwardSelector: nFolds must be >= 2");
+        }
+        this.factory #= factory;
+        this.paramsV #= params;
+        this.nSelect = nSelect;
+        this.nFolds = nFolds;
+        this.metricC = ForwardSelector.checkMetric(metric);
+        this.seed = seed;
+        this.nSel = 0;
+        this.pFit = 0;
+        this.fitted = false;
+        return;
+    }
+
+    static int32 checkMetric(String metric) {
+        if (metric.equals("accuracy")) { return 0; }
+        if (metric.equals("f1")) { return 1; }
+        if (metric.equals("rocAuc")) { return 2; }
+        if (metric.equals("r2")) { return 3; }
+        throw heap MlException("ForwardSelector: unknown metric \""
+            + metric + "\" — supported: accuracy, f1, rocAuc, r2");
+    }
+
+    String metricName() {
+        if (this.metricC == 0) { return "accuracy"; }
+        if (this.metricC == 1) { return "f1"; }
+        if (this.metricC == 2) { return "rocAuc"; }
+        return "r2";
+    }
+
+    /** `(n, w)` copy of `x` keeping columns where `keep` is set. */
+    static #Tensor<float64> takeColumns(Tensor<float64> x, boolean[] keep,
+                                        int64 w) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = w;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            int64 j = 0;
+            while (j < p) {
+                if (keep[j]) {
+                    out.flatSet(i * w + c, x.get2(i, j));
+                    c = c + 1;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        if (this.nSelect > p) {
+            throw heap MlException("ForwardSelector.fit: nSelect exceeds "
+                + "the feature count");
+        }
+        KFold kf = heap KFold(this.nFolds, true, this.seed);
+        Tensor<int64> foldIds = kf.assignments(n);
+
+        boolean[] chosen = heap boolean[p];
+        boolean[] cand = heap boolean[p];
+        int64 count = 0;
+        float64 cur = 0.0;
+        boolean grow = true;
+        while (grow && count < this.nSelect) {
+            int64 bestJ = -1;
+            float64 bestS = 0.0;
+            int64 j = 0;
+            while (j < p) {
+                if (!chosen[j]) {
+                    int64 t = 0;
+                    while (t < p) {
+                        cand[t] = chosen[t];
+                        t = t + 1;
+                    }
+                    cand[j] = true;
+                    Tensor<float64> xSub =
+                        ForwardSelector.takeColumns(x, cand, count + 1);
+                    float64 s = GridSearch.scoreCombo(this.factory,
+                        this.paramsV, xSub, y, foldIds, this.nFolds,
+                        this.metricName());
+                    if (bestJ < 0 || s > bestS) {
+                        bestJ = j;
+                        bestS = s;
+                    }
+                }
+                j = j + 1;
+            }
+            if (count > 0 && bestS <= cur) {
+                grow = false;
+            } else {
+                chosen[bestJ] = true;
+                count = count + 1;
+                cur = bestS;
+            }
+        }
+
+        int64[] sh = heap int64[1];
+        sh[0] = count;
+        Tensor<int64> sel = Tensor.zeros<int64>(sh);
+        int64 c = 0;
+        int64 j2 = 0;
+        while (j2 < p) {
+            if (chosen[j2]) {
+                sel.set1(c, j2);
+                c = c + 1;
+            }
+            j2 = j2 + 1;
+        }
+        this.selV #= sel;
+        this.nSel = count;
+        this.pFit = p;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** How many features the fit kept (may stop under the target). */
+    public int64 selectedCount() {
+        if (!this.fitted) {
+            throw heap MlException("ForwardSelector.selectedCount: fit first");
+        }
+        return this.nSel;
+    }
+
+    /** The `i`-th selected original column, ascending order. */
+    public int64 selectedAt(int64 i) {
+        if (!this.fitted) {
+            throw heap MlException("ForwardSelector.selectedAt: fit first");
+        }
+        if (i < 0 || i >= this.nSel) {
+            throw heap MlException("ForwardSelector.selectedAt: index out "
+                + "of range");
+        }
+        return this.selV.get1(i);
+    }
+
+    public #Tensor<float64> transform(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("ForwardSelector.transform: fit first");
+        }
+        if (x.shapeAt(1) != this.pFit) {
+            throw heap MlException("ForwardSelector.transform: feature "
+                + "count differs from fit");
+        }
+        boolean[] keep = heap boolean[this.pFit];
+        int64 i = 0;
+        while (i < this.nSel) {
+            keep[this.selV.get1(i)] = true;
+            i = i + 1;
+        }
+        return ForwardSelector.takeColumns(x, keep, this.nSel);
+    }
+
+    public #Tensor<float64> fitTransform(Tensor<float64> x,
+                                         Tensor<float64> y) {
+        this.fit(x, y);
+        return this.transform(x);
+    }
+}

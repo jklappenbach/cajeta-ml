@@ -2,9 +2,9 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.LinearRegression;
-import dev.cajeta.ml.LogisticRegression;
-import dev.cajeta.ml.SummaryResult;
+import dev.cajeta.ml.linear.LinearRegression;
+import dev.cajeta.ml.linear.LogisticRegression;
+import dev.cajeta.ml.linear.SummaryResult;
 
 /**
  * cajeta-ml plan Units 6 + 7 — LogisticRegression (newton-cholesky) pinned

@@ -1,0 +1,94 @@
+package dev.cajeta.ml.ensemble;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.EstimatorFactory;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+
+/**
+ * The regression twin of {@link BaggingClassifier} (ml-trees-ensembles U5,
+ * spec §6): fresh base models through {@link EstimatorFactory}, seeded
+ * bootstrap per member (`seed + i`), aggregation by MEAN, OOB R² on demand.
+ */
+public final class BaggingRegressor implements Predictor {
+
+    Bagging core;
+    boolean fitted;
+
+    public BaggingRegressor(#EstimatorFactory factory, Tensor<float64> baseParams,
+                            int64 nEstimators, uint64 seed) {
+        if (nEstimators < 1) {
+            throw heap MlException("BaggingRegressor: nEstimators must be >= 1");
+        }
+        Bagging b = heap Bagging(#factory, baseParams, nEstimators, seed);
+        this.core #= b;
+        this.fitted = false;
+        return;
+    }
+
+    /** Row fraction per member (sklearn `max_samples`), (0, 1]. */
+    public void setMaxSamples(float64 f) {
+        if (f <= 0.0 || f > 1.0) {
+            throw heap MlException("BaggingRegressor: maxSamples must be in (0, 1]");
+        }
+        this.core.maxSamples = f;
+        return;
+    }
+
+    /** Feature fraction per member (sklearn `max_features`), (0, 1]. */
+    public void setMaxFeatures(float64 f) {
+        if (f <= 0.0 || f > 1.0) {
+            throw heap MlException("BaggingRegressor: maxFeatures must be in (0, 1]");
+        }
+        this.core.maxFeatures = f;
+        return;
+    }
+
+    /** Sample features WITH replacement too (§6.4). */
+    public void setBootstrapFeatures(boolean b) {
+        this.core.bootstrapFeatures = b;
+        return;
+    }
+
+    /** Compute the out-of-bag R² during fit (§6.5). */
+    public void setOobScore(boolean b) {
+        this.core.oobEnabled = b;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("BaggingRegressor.fit: x must be 2-D (n, p)");
+        }
+        if (y.ndim() != 1 || y.shapeAt(0) != x.shapeAt(0)) {
+            throw heap MlException("BaggingRegressor.fit: y must be (n,) matching x rows");
+        }
+        this.core.fit(x, y, false);
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(n,)` member means. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("BaggingRegressor.predict: fit first");
+        }
+        return this.core.aggregate(x, false);
+    }
+
+    /** R². */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        return Metrics.r2(y, p);
+    }
+
+    /** The out-of-bag R² computed at fit (requires setOobScore(true)). */
+    public float64 oobScore() {
+        return this.core.oob();
+    }
+}

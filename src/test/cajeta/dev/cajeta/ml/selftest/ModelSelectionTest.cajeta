@@ -3,18 +3,18 @@ package dev.cajeta.ml.selftest;
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
 import dev.cajeta.ml.EstimatorFactory;
-import dev.cajeta.ml.GridSearch;
-import dev.cajeta.ml.HoldoutResult;
-import dev.cajeta.ml.KFold;
-import dev.cajeta.ml.KNeighborsRegressor;
-import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.select.GridSearch;
+import dev.cajeta.ml.select.HoldoutResult;
+import dev.cajeta.ml.select.KFold;
+import dev.cajeta.ml.neighbors.KNeighborsRegressor;
+import dev.cajeta.ml.linear.LogisticRegression;
 import dev.cajeta.ml.Predictor;
-import dev.cajeta.ml.RandomizedSearch;
-import dev.cajeta.ml.RepeatedHoldout;
-import dev.cajeta.ml.Scorers;
-import dev.cajeta.ml.SearchResult;
-import dev.cajeta.ml.Split;
-import dev.cajeta.ml.StratifiedKFold;
+import dev.cajeta.ml.select.RandomizedSearch;
+import dev.cajeta.ml.select.RepeatedHoldout;
+import dev.cajeta.ml.select.Scorers;
+import dev.cajeta.ml.select.SearchResult;
+import dev.cajeta.ml.select.Split;
+import dev.cajeta.ml.select.StratifiedKFold;
 
 /**
  * ml-classification-gaps plan Unit 5 — model selection (spec §7):

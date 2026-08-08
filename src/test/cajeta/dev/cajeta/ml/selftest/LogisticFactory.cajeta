@@ -2,7 +2,7 @@ package dev.cajeta.ml.selftest;
 
 import cajeta.math.Tensor;
 import dev.cajeta.ml.EstimatorFactory;
-import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.linear.LogisticRegression;
 import dev.cajeta.ml.Predictor;
 
 /** A non-tree base estimator for BaggingTest §11.5: nothing tree-shaped. */

@@ -1,0 +1,222 @@
+package dev.cajeta.ml.ensemble;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.tree.DecisionTreeRegressor;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+
+/**
+ * The regression twin of {@link RandomForestClassifier} (ml-trees-ensembles
+ * U6, spec §7): bootstrap per member (`seed + i`), per-node feature
+ * subsampling (default ALL `p` features — sklearn's regression default),
+ * aggregation by mean, OOB R² per §6.5/§6.6.
+ */
+public final class RandomForestRegressor implements Predictor {
+
+    int64 nEstimators;
+    uint64 seed;
+    int64 maxDepth;
+    int64 maxFeaturesCount;   // 0 = all p (sklearn's regression default)
+    boolean oobEnabled;
+
+    ArrayList<DecisionTreeRegressor> members;
+    boolean[] inBag;
+    int64 nTrain;
+    int64 nFeatures;
+    float64 oobValue;
+    boolean oobComputed;
+    boolean fitted;
+
+    public RandomForestRegressor(int64 nEstimators, uint64 seed) {
+        if (nEstimators < 1) {
+            throw heap MlException("RandomForestRegressor: nEstimators must be >= 1");
+        }
+        this.nEstimators = nEstimators;
+        this.seed = seed;
+        this.maxDepth = 0;
+        this.maxFeaturesCount = 0;
+        this.oobEnabled = false;
+        this.oobComputed = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** Per-tree depth cap (0 = unbounded). */
+    public void setMaxDepth(int64 v) {
+        if (v < 0) {
+            throw heap MlException("RandomForestRegressor: maxDepth must be >= 0");
+        }
+        this.maxDepth = v;
+        return;
+    }
+
+    /** Features considered per node (0 = all p, sklearn's regression default). */
+    public void setMaxFeaturesCount(int64 v) {
+        if (v < 0) {
+            throw heap MlException("RandomForestRegressor: maxFeaturesCount must be >= 0");
+        }
+        this.maxFeaturesCount = v;
+        return;
+    }
+
+    /** Compute the out-of-bag R² during fit (§7.6/§6.5). */
+    public void setOobScore(boolean b) {
+        this.oobEnabled = b;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("RandomForestRegressor.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException("RandomForestRegressor.fit: y must be (n,) matching x rows");
+        }
+        int64 nf = x.shapeAt(1);
+        this.nTrain = n;
+        this.nFeatures = nf;
+        int64 mf = this.maxFeaturesCount;
+        if (mf == 0 || mf > nf) { mf = nf; }
+
+        ArrayList<DecisionTreeRegressor> ms = heap ArrayList<DecisionTreeRegressor>();
+        this.inBag #= heap boolean[this.nEstimators * n];
+        int64 e = 0;
+        while (e < this.nEstimators) {
+            uint64 se = this.seed + (uint64) e;
+            Generator g = heap Generator(se);
+            Tensor<int64> rows = g.integers(0, n, n);
+            float64[] xa = heap float64[n * nf];
+            float64[] ya = heap float64[n];
+            int64 r = 0;
+            while (r < n) {
+                int64 src = rows.flatGet(r);
+                this.inBag[e * n + src] = true;
+                int64 c = 0;
+                while (c < nf) { xa[r * nf + c] = x.flatGet(src * nf + c); c = c + 1; }
+                ya[r] = y.get1(src);
+                r = r + 1;
+            }
+            int64[] xsh = heap int64[2]; xsh[0] = n; xsh[1] = nf;
+            int64[] ysh = heap int64[1]; ysh[0] = n;
+            DecisionTreeRegressor t = heap DecisionTreeRegressor(
+                "squared_error", this.maxDepth, "best", se);
+            t.setMaxFeaturesNode(mf);
+            t.fit(Tensor.of<float64>(xa, xsh), Tensor.of<float64>(ya, ysh));
+            ms.add(#t);
+            e = e + 1;
+        }
+        this.members #= ms;
+        this.fitted = true;
+        if (this.oobEnabled) {
+            this.oobValue = this.computeOob(x, y);
+            this.oobComputed = true;
+        }
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(n,)` member means. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("RandomForestRegressor.predict: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        float64[] acc = heap float64[n];
+        int64 e = 0;
+        while (e < this.nEstimators) {
+            DecisionTreeRegressor t = this.members.get((int32) e);
+            Tensor<float64> pe = t.predict(x);
+            int64 r = 0;
+            while (r < n) { acc[r] = acc[r] + pe.flatGet(r); r = r + 1; }
+            e = e + 1;
+        }
+        int64 r2 = 0;
+        while (r2 < n) { acc[r2] = acc[r2] / (float64) this.nEstimators; r2 = r2 + 1; }
+        int64[] sh = heap int64[1]; sh[0] = n;
+        return Tensor.of<float64>(acc, sh);
+    }
+
+    /** R². */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        return Metrics.r2(y, p);
+    }
+
+    float64 computeOob(Tensor<float64> x, Tensor<float64> y) {
+        int64 n = this.nTrain;
+        float64[] sum = heap float64[n];
+        int64[] cnt = heap int64[n];
+        int64 e = 0;
+        while (e < this.nEstimators) {
+            DecisionTreeRegressor t = this.members.get((int32) e);
+            Tensor<float64> pe = t.predict(x);
+            int64 r = 0;
+            while (r < n) {
+                if (!this.inBag[e * n + r]) {
+                    sum[r] = sum[r] + pe.flatGet(r);
+                    cnt[r] = cnt[r] + 1;
+                }
+                r = r + 1;
+            }
+            e = e + 1;
+        }
+        int64 covered = 0;
+        int64 r3 = 0;
+        while (r3 < n) { if (cnt[r3] > 0) { covered = covered + 1; } r3 = r3 + 1; }
+        if (covered == 0) {
+            throw heap MlException("RandomForestRegressor oobScore: no sample "
+                + "was ever out-of-bag (too few estimators) — the OOB estimate "
+                + "does not exist for this configuration");
+        }
+        float64[] yt = heap float64[covered];
+        float64[] pt = heap float64[covered];
+        int64 j = 0;
+        r3 = 0;
+        while (r3 < n) {
+            if (cnt[r3] > 0) {
+                yt[j] = y.get1(r3);
+                pt[j] = sum[r3] / (float64) cnt[r3];
+                j = j + 1;
+            }
+            r3 = r3 + 1;
+        }
+        int64[] sh = heap int64[1]; sh[0] = covered;
+        return Metrics.r2(Tensor.of<float64>(yt, sh), Tensor.of<float64>(pt, sh));
+    }
+
+    /** The out-of-bag R² computed at fit (requires setOobScore(true)). */
+    public float64 oobScore() {
+        if (!this.oobComputed) {
+            throw heap MlException("RandomForestRegressor.oobScore: enable "
+                + "setOobScore(true) before fit");
+        }
+        return this.oobValue;
+    }
+
+    /** Ensemble feature importances: the members' average (§5.1/4.1.4). */
+    public #Tensor<float64> featureImportances() {
+        if (!this.fitted) {
+            throw heap MlException("RandomForestRegressor.featureImportances: fit first");
+        }
+        float64[] acc = heap float64[this.nFeatures];
+        int64 e = 0;
+        while (e < this.nEstimators) {
+            DecisionTreeRegressor t = this.members.get((int32) e);
+            Tensor<float64> imp = t.featureImportances();
+            int64 f = 0;
+            while (f < this.nFeatures) { acc[f] = acc[f] + imp.flatGet(f); f = f + 1; }
+            e = e + 1;
+        }
+        int64 f2 = 0;
+        while (f2 < this.nFeatures) { acc[f2] = acc[f2] / (float64) this.nEstimators; f2 = f2 + 1; }
+        int64[] sh = heap int64[1]; sh[0] = this.nFeatures;
+        return Tensor.of<float64>(acc, sh);
+    }
+}

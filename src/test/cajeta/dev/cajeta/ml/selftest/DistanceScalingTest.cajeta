@@ -9,9 +9,9 @@ import cajeta.math.distance.Manhattan;
 import cajeta.math.distance.Chebyshev;
 import cajeta.math.distance.Minkowski;
 import cajeta.math.distance.Cosine;
-import dev.cajeta.ml.KMeans;
-import dev.cajeta.ml.StandardScaler;
-import dev.cajeta.ml.MinMaxScaler;
+import dev.cajeta.ml.cluster.KMeans;
+import dev.cajeta.ml.preprocess.StandardScaler;
+import dev.cajeta.ml.preprocess.MinMaxScaler;
 
 /**
  * ml-unsupervised plan 2.1 — the §2 distance seam and §3 scaling, consumed

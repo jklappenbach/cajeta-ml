@@ -1,0 +1,183 @@
+package dev.cajeta.ml.neighbors;
+
+import cajeta.math.Tensor;
+import cajeta.math.Math;
+import cajeta.math.distance.Euclidean;
+import cajeta.math.distance.Metric;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+
+/**
+ * Nadaraya-Watson kernel regression (spec §9): each prediction is the
+ * kernel-weighted mean of the training targets, weights `K(d/h)` over the
+ * §5.6 metric seam (euclidean default). Kernels: `gaussian`
+ * `exp(-u²/2)`, `epanechnikov` `0.75(1-u²)`, `tricube`
+ * `(70/81)(1-|u|³)³`, `uniform` — the compact three vanish past `u = 1`.
+ * Bandwidth must be positive (§9.3). When every training point has zero
+ * weight (compact kernel, far query), the prediction FALLS BACK TO THE
+ * NEAREST TRAINING TARGET — the documented §9.5 rule; never a silent NaN.
+ * sklearn has no Nadaraya-Watson estimator (DifferencesFromSklearn); the
+ * parity pins are the closed formula itself.
+ */
+public final class KernelRegressor implements Predictor {
+
+    private int32 kernC;                // 0 gauss, 1 epan, 2 tricube, 3 uni
+    private float64 bandH;
+    private Metric metricM;
+    private boolean hasMetric;
+    private Tensor<float64> trainX;
+    private Tensor<float64> trainY;
+    private boolean fitted;
+
+    public KernelRegressor(String kernel, float64 bandwidth) {
+        this.kernC = checkKernel(kernel);
+        if (bandwidth <= 0.0) {
+            throw heap MlException(
+                "KernelRegressor: bandwidth must be > 0");
+        }
+        this.bandH = bandwidth;
+        this.hasMetric = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** Any stdlib or caller-defined metric for the distance step. */
+    public KernelRegressor(String kernel, float64 bandwidth,
+                           #Metric metric) {
+        this.kernC = checkKernel(kernel);
+        if (bandwidth <= 0.0) {
+            throw heap MlException(
+                "KernelRegressor: bandwidth must be > 0");
+        }
+        this.bandH = bandwidth;
+        this.metricM #= metric;
+        this.hasMetric = true;
+        this.fitted = false;
+        return;
+    }
+
+    static int32 checkKernel(String kernel) {
+        if (kernel.equals("gaussian")) {
+            return (int32) 0;
+        }
+        if (kernel.equals("epanechnikov")) {
+            return (int32) 1;
+        }
+        if (kernel.equals("tricube")) {
+            return (int32) 2;
+        }
+        if (kernel.equals("uniform")) {
+            return (int32) 3;
+        }
+        throw heap MlException("KernelRegressor: unknown kernel \"" + kernel
+            + "\" — supported: gaussian, epanechnikov, tricube, uniform");
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "KernelRegressor.fit: x must be 2-D (n, p)");
+        }
+        if (y.ndim() != 1 || y.shapeAt(0) != x.shapeAt(0)) {
+            throw heap MlException(
+                "KernelRegressor.fit: y must be (n,) matching x rows");
+        }
+        Tensor<float64> cx = x.copy();
+        Tensor<float64> cy = y.copy();
+        this.trainX #= cx;
+        this.trainY #= cy;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    float64 kernelAt(float64 u) {
+        if (this.kernC == (int32) 0) {
+            return Math.exp(-0.5 * u * u);
+        }
+        if (u > 1.0) {
+            return 0.0;
+        }
+        if (this.kernC == (int32) 1) {
+            return 0.75 * (1.0 - u * u);
+        }
+        if (this.kernC == (int32) 2) {
+            float64 t = 1.0 - u * u * u;
+            return (70.0 / 81.0) * t * t * t;
+        }
+        return 1.0;
+    }
+
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("KernelRegressor.predict: fit first");
+        }
+        int64 p = this.trainX.shapeAt(1);
+        if (x.ndim() != 2 || x.shapeAt(1) != p) {
+            throw heap MlException("KernelRegressor.predict: x must be "
+                + "(n, p) with p matching the fit");
+        }
+        int64 n = x.shapeAt(0);
+        int64 m = this.trainX.shapeAt(0);
+        int64[] vs = heap int64[1];
+        vs[0] = p;
+        Tensor<float64> qv = Tensor.zeros<float64>(vs);
+        Tensor<float64> tv = Tensor.zeros<float64>(vs);
+        Metric fallbackE = heap Euclidean();
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            float64 num = 0.0;
+            float64 den = 0.0;
+            float64 bestD = 0.0;
+            int64 bestI = -1;
+            int64 j = 0;
+            while (j < p) {
+                qv.flatSet(j, x.get2(i, j));
+                j = j + 1;
+            }
+            int64 r = 0;
+            while (r < m) {
+                j = 0;
+                while (j < p) {
+                    tv.flatSet(j, this.trainX.get2(r, j));
+                    j = j + 1;
+                }
+                float64 d = 0.0;
+                if (this.hasMetric) {
+                    d = this.metricM.distance(tv, qv);
+                } else {
+                    d = fallbackE.distance(tv, qv);
+                }
+                if (bestI < 0 || d < bestD) {
+                    bestD = d;
+                    bestI = r;
+                }
+                float64 k = this.kernelAt(d / this.bandH);
+                num = num + k * this.trainY.get1(r);
+                den = den + k;
+                r = r + 1;
+            }
+            if (den > 0.0) {
+                out.set1(i, num / den);
+            } else {
+                // §9.5: explicit fallback — the nearest training target.
+                out.set1(i, this.trainY.get1(bestI));
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** R² — the regressor `score` convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> pr = this.predict(x);
+        return Metrics.r2(y, pr);
+    }
+}

@@ -3,8 +3,8 @@ package dev.cajeta.ml.selftest;
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
 import cajeta.math.distance.Manhattan;
-import dev.cajeta.ml.KMeans;
-import dev.cajeta.ml.DBSCAN;
+import dev.cajeta.ml.cluster.KMeans;
+import dev.cajeta.ml.cluster.DBSCAN;
 
 /**
  * ml-unsupervised plan 6.1 — DBSCAN (spec §7, §12.5). Noise is labelled

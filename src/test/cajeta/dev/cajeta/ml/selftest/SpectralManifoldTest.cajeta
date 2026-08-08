@@ -2,9 +2,9 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.Isomap;
-import dev.cajeta.ml.LLE;
-import dev.cajeta.ml.SpectralEmbedding;
+import dev.cajeta.ml.manifold.Isomap;
+import dev.cajeta.ml.manifold.LLE;
+import dev.cajeta.ml.manifold.SpectralEmbedding;
 
 /**
  * ml-unsupervised plan 11.1 — the spectral manifold family (spec

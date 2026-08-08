@@ -3,7 +3,7 @@ package dev.cajeta.ml.selftest;
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
 import cajeta.math.distance.Manhattan;
-import dev.cajeta.ml.AgglomerativeClustering;
+import dev.cajeta.ml.cluster.AgglomerativeClustering;
 
 /**
  * ml-unsupervised plan 5.1 — hierarchical clustering (spec §6, §12.4).

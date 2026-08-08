@@ -2,7 +2,7 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.Gaussians;
+import dev.cajeta.ml.discriminant.Gaussians;
 
 /**
  * ml-classification-gaps plan Unit 1 — shared Gaussian machinery (spec §4).

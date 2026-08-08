@@ -1,0 +1,77 @@
+package dev.cajeta.ml.select;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.neighbors.KNeighborsClassifier;
+import dev.cajeta.ml.discriminant.LinearDiscriminantAnalysis;
+import dev.cajeta.ml.linear.LogisticRegression;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+import dev.cajeta.ml.ProbClassifier;
+import dev.cajeta.ml.discriminant.QuadraticDiscriminantAnalysis;
+
+/**
+ * Metric selection by name (spec §7.8): `accuracy`, `f1`, `rocAuc` — so
+ * an unbalanced problem is never scored on accuracy by default silently.
+ * `rocAuc` needs continuous scores and therefore a {@link ProbClassifier};
+ * anything else is loud (§12.4), never a quiet fallback.
+ */
+public final class Scorers {
+
+    /** Score `est` on `(x, y)` under the named metric. */
+    public static float64 score(String metric, Predictor est,
+                                Tensor<float64> x, Tensor<float64> y) {
+        if (metric.equals("accuracy")) {
+            Tensor<float64> pred = est.predict(x);
+            return Metrics.accuracy(y, pred);
+        }
+        if (metric.equals("f1")) {
+            Tensor<float64> pred = est.predict(x);
+            return Metrics.f1(y, pred);
+        }
+        if (metric.equals("r2")) {
+            Tensor<float64> pred = est.predict(x);
+            return Metrics.r2(y, pred);
+        }
+        if (metric.equals("rocAuc")) {
+            // Concrete downcasts, not `instanceof ProbClassifier pc`: a
+            // generic-returning call through an iface→iface downcast
+            // miscompiles today (iface-downcast-generic-call defect,
+            // registered 2026-08-05) — class targets dispatch correctly.
+            if (est instanceof LogisticRegression c1) {
+                Tensor<float64> pr = c1.predictProba(x);
+                return Scorers.aucFromProba(y, pr);
+            }
+            if (est instanceof KNeighborsClassifier c2) {
+                Tensor<float64> pr = c2.predictProba(x);
+                return Scorers.aucFromProba(y, pr);
+            }
+            if (est instanceof LinearDiscriminantAnalysis c3) {
+                Tensor<float64> pr = c3.predictProba(x);
+                return Scorers.aucFromProba(y, pr);
+            }
+            if (est instanceof QuadraticDiscriminantAnalysis c4) {
+                Tensor<float64> pr = c4.predictProba(x);
+                return Scorers.aucFromProba(y, pr);
+            }
+            throw heap MlException("Scorers: rocAuc needs posterior "
+                + "probabilities — the estimator must expose predictProba "
+                + "(ProbClassifier)");
+        }
+        throw heap MlException("Scorers: unknown metric \"" + metric
+            + "\" — supported: accuracy, f1, rocAuc, r2");
+    }
+
+    static float64 aucFromProba(Tensor<float64> y, Tensor<float64> pr) {
+        int64 n = pr.shapeAt(0);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> pos = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            pos.set1(i, pr.get2(i, 1));
+            i = i + 1;
+        }
+        return Metrics.rocAuc(y, pos);
+    }
+}

@@ -2,8 +2,8 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.LogisticRegression;
-import dev.cajeta.ml.SummaryResult;
+import dev.cajeta.ml.linear.LogisticRegression;
+import dev.cajeta.ml.linear.SummaryResult;
 
 /**
  * ml-classification-gaps plan Unit 4 — cost-aware and sparse logistic

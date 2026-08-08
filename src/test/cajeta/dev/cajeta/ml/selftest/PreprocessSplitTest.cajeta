@@ -2,13 +2,13 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.select.KFold;
 import dev.cajeta.ml.Metrics;
-import dev.cajeta.ml.MinMaxScaler;
+import dev.cajeta.ml.preprocess.MinMaxScaler;
 import dev.cajeta.ml.MlException;
-import dev.cajeta.ml.Split;
-import dev.cajeta.ml.StandardScaler;
-import dev.cajeta.ml.DummyRegressor;
+import dev.cajeta.ml.select.Split;
+import dev.cajeta.ml.preprocess.StandardScaler;
+import dev.cajeta.ml.linear.DummyRegressor;
 
 /**
  * cajeta-ml plan 3.1.1–3.1.3 + 3.3.1 — scalers (sklearn-pinned values,

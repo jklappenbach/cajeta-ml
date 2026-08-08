@@ -7,11 +7,11 @@ import cajeta.math.distance.Euclidean;
 import cajeta.math.distance.Manhattan;
 import cajeta.math.distance.Metric;
 import cajeta.math.distance.Minkowski;
-import dev.cajeta.ml.KNeighborsClassifier;
-import dev.cajeta.ml.KNeighborsRegressor;
+import dev.cajeta.ml.neighbors.KNeighborsClassifier;
+import dev.cajeta.ml.neighbors.KNeighborsRegressor;
 import dev.cajeta.ml.Pipeline;
 import dev.cajeta.ml.Predictor;
-import dev.cajeta.ml.StandardScaler;
+import dev.cajeta.ml.preprocess.StandardScaler;
 import dev.cajeta.ml.Transformer;
 
 /**

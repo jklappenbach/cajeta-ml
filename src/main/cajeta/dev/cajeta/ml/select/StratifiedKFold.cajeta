@@ -1,0 +1,112 @@
+package dev.cajeta.ml.select;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+import dev.cajeta.ml.MlException;
+
+/**
+ * Stratified k-fold (spec §7.1): every fold preserves the class
+ * proportions of the full sample — the correct default on imbalanced
+ * data, where plain `KFold` can produce folds with no positive at all.
+ * Members of each class are dealt round-robin (seeded shuffle first when
+ * requested), so per-class fold counts differ by at most one. A class
+ * with fewer members than folds is loud, naming the class (§7.2).
+ */
+public final class StratifiedKFold {
+
+    private int64 kFolds;
+    private boolean shuffleV;
+    private uint64 seedV;
+
+    public StratifiedKFold(int64 k, boolean shuffle, uint64 seed) {
+        if (k < 2) {
+            throw heap MlException("StratifiedKFold: k must be >= 2");
+        }
+        this.kFolds = k;
+        this.shuffleV = shuffle;
+        this.seedV = seed;
+        return;
+    }
+
+    public int64 folds() {
+        return this.kFolds;
+    }
+
+    /** A fold id per row of `y (n,)` — labels must be integers 0..K-1. */
+    public #Tensor<int64> assignments(Tensor<float64> y) {
+        int64 n = y.shapeAt(0);
+        int64 kc = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 c = (int64) y.flatGet(i);
+            if (c + 1 > kc) {
+                kc = c + 1;
+            }
+            i = i + 1;
+        }
+        int64[] counts = heap int64[kc];
+        i = 0;
+        while (i < n) {
+            int64 c = (int64) y.flatGet(i);
+            counts[c] = counts[c] + 1;
+            i = i + 1;
+        }
+        int64 c2 = 0;
+        while (c2 < kc) {
+            if (counts[c2] > 0 && counts[c2] < this.kFolds) {
+                throw heap MlException("StratifiedKFold: class "
+                    + Int64.of(c2).toString() + " has only "
+                    + Int64.of(counts[c2]).toString()
+                    + " member(s) for " + Int64.of(this.kFolds).toString()
+                    + " folds — a fold would go without it");
+            }
+            c2 = c2 + 1;
+        }
+
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        Generator gen = heap Generator(this.seedV);
+        c2 = 0;
+        while (c2 < kc) {
+            int64 nk = counts[c2];
+            if (nk > 0) {
+                // The class's row indices, optionally seeded-shuffled.
+                int64[] rows = heap int64[nk];
+                int64 w = 0;
+                i = 0;
+                while (i < n) {
+                    if ((int64) y.flatGet(i) == c2) {
+                        rows[w] = i;
+                        w = w + 1;
+                    }
+                    i = i + 1;
+                }
+                if (this.shuffleV) {
+                    Tensor<int64> perm = gen.permutation(nk);
+                    int64[] shuf = heap int64[nk];
+                    int64 s = 0;
+                    while (s < nk) {
+                        int64 ps = perm.get1(s);
+                        shuf[s] = rows[ps];
+                        s = s + 1;
+                    }
+                    s = 0;
+                    while (s < nk) {
+                        rows[s] = shuf[s];
+                        s = s + 1;
+                    }
+                }
+                // Deal round-robin.
+                int64 s2 = 0;
+                while (s2 < nk) {
+                    int64 ri = rows[s2];
+                    out.set1(ri, s2 % this.kFolds);
+                    s2 = s2 + 1;
+                }
+            }
+            c2 = c2 + 1;
+        }
+        return #out;
+    }
+}

@@ -2,12 +2,12 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.ClassificationReport;
-import dev.cajeta.ml.ForwardSelector;
-import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.inspect.ClassificationReport;
+import dev.cajeta.ml.select.ForwardSelector;
+import dev.cajeta.ml.linear.LogisticRegression;
 import dev.cajeta.ml.Metrics;
 import dev.cajeta.ml.Pipeline;
-import dev.cajeta.ml.PrCurve;
+import dev.cajeta.ml.inspect.PrCurve;
 import dev.cajeta.ml.Predictor;
 
 /**

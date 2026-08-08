@@ -6,7 +6,7 @@ import cajeta.nucleo.column.Column;
 import cajeta.nucleo.frame.Table;
 import dev.cajeta.ml.Design;
 import dev.cajeta.ml.Frames;
-import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.linear.LinearRegression;
 import dev.cajeta.ml.MlException;
 
 /**

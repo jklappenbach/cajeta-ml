@@ -2,7 +2,7 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.linear.LogisticRegression;
 
 /**
  * cajeta-ml-v2 plan 2.1 — multinomial softmax logistic, pinned against

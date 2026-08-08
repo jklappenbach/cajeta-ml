@@ -1,6 +1,6 @@
 ---
 id: ml-classification
-applies-to: [dev.cajeta.ml.LinearDiscriminantAnalysis, dev.cajeta.ml.QuadraticDiscriminantAnalysis, dev.cajeta.ml.KNeighborsClassifier, dev.cajeta.ml.LogisticRegression, dev.cajeta.ml.KernelRegressor]
+applies-to: [dev.cajeta.ml.discriminant.LinearDiscriminantAnalysis, dev.cajeta.ml.discriminant.QuadraticDiscriminantAnalysis, dev.cajeta.ml.neighbors.KNeighborsClassifier, dev.cajeta.ml.linear.LogisticRegression, dev.cajeta.ml.neighbors.KernelRegressor]
 title: Classification — discriminants (LDA/QDA), k-NN with metrics & weights, cost-aware & L1 logistic, kernel regression
 description: The 0.8.0 classification surface — Gaussian discriminants with shrinkage and LDA-as-Transformer, the metric-agnostic k-NN classifier with symmetric distance weighting, class/sample weights + decision thresholds + L1 coordinate descent on LogisticRegression, and Nadaraya-Watson kernel regression with its stated far-query policy.
 ---

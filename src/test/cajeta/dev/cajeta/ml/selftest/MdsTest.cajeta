@@ -5,7 +5,7 @@ import cajeta.math.Tensor;
 import cajeta.math.distance.Distance;
 import cajeta.math.distance.Metric;
 import cajeta.math.distance.Euclidean;
-import dev.cajeta.ml.MDS;
+import dev.cajeta.ml.manifold.MDS;
 
 /**
  * ml-unsupervised plan 10.1 — MDS (spec §9.8–§9.10, §12.9, §12.10).

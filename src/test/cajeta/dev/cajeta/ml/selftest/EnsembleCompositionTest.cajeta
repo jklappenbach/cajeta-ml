@@ -2,15 +2,15 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.AdaBoostClassifier;
-import dev.cajeta.ml.DecisionTreeClassifier;
-import dev.cajeta.ml.DecisionTreeRegressor;
-import dev.cajeta.ml.GradientBoostingRegressor;
-import dev.cajeta.ml.KFold;
+import dev.cajeta.ml.ensemble.AdaBoostClassifier;
+import dev.cajeta.ml.tree.DecisionTreeClassifier;
+import dev.cajeta.ml.tree.DecisionTreeRegressor;
+import dev.cajeta.ml.ensemble.GradientBoostingRegressor;
+import dev.cajeta.ml.select.KFold;
 import dev.cajeta.ml.Predictor;
-import dev.cajeta.ml.RandomForestClassifier;
-import dev.cajeta.ml.RandomForestRegressor;
-import dev.cajeta.ml.Split;
+import dev.cajeta.ml.ensemble.RandomForestClassifier;
+import dev.cajeta.ml.ensemble.RandomForestRegressor;
+import dev.cajeta.ml.select.Split;
 
 /**
  * ml-trees-ensembles U8 (§12.1) — every new estimator composes in

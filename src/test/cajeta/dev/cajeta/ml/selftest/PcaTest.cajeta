@@ -2,8 +2,8 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.LinearRegression;
-import dev.cajeta.ml.PCA;
+import dev.cajeta.ml.linear.LinearRegression;
+import dev.cajeta.ml.decompose.PCA;
 import dev.cajeta.ml.Pipeline;
 
 /**

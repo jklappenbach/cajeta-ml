@@ -2,8 +2,8 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.KMeans;
-import dev.cajeta.ml.GaussianMixture;
+import dev.cajeta.ml.cluster.KMeans;
+import dev.cajeta.ml.cluster.GaussianMixture;
 
 /**
  * ml-unsupervised plan 4.1 — Gaussian mixtures (spec §5, §12.3).

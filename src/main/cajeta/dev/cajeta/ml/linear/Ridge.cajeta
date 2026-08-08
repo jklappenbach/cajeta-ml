@@ -1,0 +1,278 @@
+package dev.cajeta.ml.linear;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+
+/**
+ * L2-regularized least squares (sklearn `Ridge`): solve
+ * `(XᵀX + αI)·w = Xᵀy` by Cholesky + factor application — sklearn's dense
+ * `auto` solver — or, with `svdSolver`, via the singular value filter
+ * `s/(s²+α)` (survives near-singular Grams). The intercept is never
+ * regularized: X and y are centered first (sklearn's preprocessing).
+ * Supports `(n,)` and `(n,k)` targets.
+ */
+public final class Ridge implements Predictor {
+
+    private float64 alpha;
+    private boolean fitIcpt;
+    private boolean useSvd;
+    private Tensor<float64> coefM;      // (p, k)
+    private Tensor<float64> iceptV;     // (k,)
+    private boolean yWas1D;
+    private boolean fitted;
+
+    public Ridge(float64 alpha, boolean fitIntercept, boolean svdSolver) {
+        if (alpha < 0.0) {
+            throw heap MlException("Ridge: alpha must be >= 0");
+        }
+        this.alpha = alpha;
+        this.fitIcpt = fitIntercept;
+        this.useSvd = svdSolver;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("Ridge.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        if (y.ndim() < 1 || y.ndim() > 2 || y.shapeAt(0) != n) {
+            throw heap MlException("Ridge.fit: y must be (n,) or (n,k) matching x rows");
+        }
+        this.yWas1D = y.ndim() == 1;
+        Tensor<float64> ym2 = LinearRegression.asMatrix(y, n);
+        int64 k = ym2.shapeAt(1);
+        Tensor<float64> design = x.copy();
+        int64[] pm = heap int64[1];
+        pm[0] = p;
+        Tensor<float64> xmean = Tensor.zeros<float64>(pm);
+        int64[] km = heap int64[1];
+        km[0] = k;
+        Tensor<float64> ymean = Tensor.zeros<float64>(km);
+        if (this.fitIcpt) {
+            int64 j = 0;
+            while (j < p) {
+                float64 acc = 0.0;
+                int64 i = 0;
+                while (i < n) {
+                    acc = acc + x.get2(i, j);
+                    i = i + 1;
+                }
+                xmean.set1(j, acc / (float64) n);
+                j = j + 1;
+            }
+            int64 c = 0;
+            while (c < k) {
+                float64 acc = 0.0;
+                int64 i = 0;
+                while (i < n) {
+                    acc = acc + ym2.get2(i, c);
+                    i = i + 1;
+                }
+                ymean.set1(c, acc / (float64) n);
+                c = c + 1;
+            }
+            int64 i2 = 0;
+            while (i2 < n) {
+                int64 j2 = 0;
+                while (j2 < p) {
+                    design.flatSet(i2 * p + j2, x.get2(i2, j2) - xmean.get1(j2));
+                    j2 = j2 + 1;
+                }
+                int64 c2 = 0;
+                while (c2 < k) {
+                    ym2.flatSet(i2 * k + c2, ym2.get2(i2, c2) - ymean.get1(c2));
+                    c2 = c2 + 1;
+                }
+                i2 = i2 + 1;
+            }
+        }
+        // Xᵀy (p, k)
+        int64[] psh = heap int64[2];
+        psh[0] = p;
+        psh[1] = k;
+        Tensor<float64> xty = Tensor.zeros<float64>(psh);
+        int64 j3 = 0;
+        while (j3 < p) {
+            int64 c3 = 0;
+            while (c3 < k) {
+                float64 acc = 0.0;
+                int64 i3 = 0;
+                while (i3 < n) {
+                    acc = acc + design.get2(i3, j3) * ym2.get2(i3, c3);
+                    i3 = i3 + 1;
+                }
+                xty.flatSet(j3 * k + c3, acc);
+                c3 = c3 + 1;
+            }
+            j3 = j3 + 1;
+        }
+        int64[] wsh = heap int64[2];
+        wsh[0] = p;
+        wsh[1] = k;
+        Tensor<float64> w = Tensor.zeros<float64>(wsh);
+        if (this.useSvd) {
+            // w = V · diag(s/(s²+α)) · Uᵀ·yc
+            Tensor<float64>[] sv = LinAlg.svd<float64>(design);
+            int64 r = sv[1].shapeAt(0);
+            int64 j4 = 0;
+            while (j4 < p) {
+                int64 c4 = 0;
+                while (c4 < k) {
+                    float64 acc = 0.0;
+                    int64 rr = 0;
+                    while (rr < r) {
+                        float64 s = sv[1].get1(rr);
+                        float64 filt = s / (s * s + this.alpha);
+                        // (Uᵀ·yc)[rr, c4]
+                        float64 uy = 0.0;
+                        int64 i4 = 0;
+                        while (i4 < n) {
+                            uy = uy + sv[0].get2(i4, rr) * ym2.get2(i4, c4);
+                            i4 = i4 + 1;
+                        }
+                        acc = acc + sv[2].get2(rr, j4) * filt * uy;
+                        rr = rr + 1;
+                    }
+                    w.flatSet(j4 * k + c4, acc);
+                    c4 = c4 + 1;
+                }
+                j4 = j4 + 1;
+            }
+        } else {
+            // Gram + αI, Cholesky, factor application
+            Tensor<float64> g = Tensor.matmul<float64>(design.transpose(), design);
+            int64 dgi = 0;
+            while (dgi < p) {
+                g.flatSet(dgi * p + dgi, g.get2(dgi, dgi) + this.alpha);
+                dgi = dgi + 1;
+            }
+            Tensor<float64> l = LinAlg.cholesky<float64>(g);
+            Tensor<float64> ws = LinAlg.choSolve<float64>(l, xty);
+            int64 wi = 0;
+            while (wi < p) {
+                int64 wc = 0;
+                while (wc < k) {
+                    w.flatSet(wi * k + wc, ws.get2(wi, wc));
+                    wc = wc + 1;
+                }
+                wi = wi + 1;
+            }
+        }
+        Tensor<float64> ic = Tensor.zeros<float64>(km);
+        if (this.fitIcpt) {
+            int64 c = 0;
+            while (c < k) {
+                float64 acc = ymean.get1(c);
+                int64 j = 0;
+                while (j < p) {
+                    acc = acc - xmean.get1(j) * w.get2(j, c);
+                    j = j + 1;
+                }
+                ic.set1(c, acc);
+                c = c + 1;
+            }
+        }
+        this.coefM #= w;
+        this.iceptV #= ic;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** Coefficient matrix `(p, k)`. */
+    public Tensor<float64> coefMatrix() {
+        if (!this.fitted) {
+            throw heap MlException("Ridge.coefMatrix: fit first");
+        }
+        return this.coefM;
+    }
+
+    /** Intercept vector `(k,)`. */
+    public Tensor<float64> interceptVector() {
+        if (!this.fitted) {
+            throw heap MlException("Ridge.interceptVector: fit first");
+        }
+        return this.iceptV;
+    }
+
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("Ridge.predict: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = this.coefM.shapeAt(0);
+        int64 k = this.coefM.shapeAt(1);
+        int64[] sh2 = heap int64[2];
+        sh2[0] = n;
+        sh2[1] = k;
+        Tensor<float64> out2 = Tensor.zeros<float64>(sh2);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                float64 acc = this.iceptV.get1(c);
+                int64 j = 0;
+                while (j < p) {
+                    acc = acc + x.get2(i, j) * this.coefM.get2(j, c);
+                    j = j + 1;
+                }
+                out2.flatSet(i * k + c, acc);
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        if (this.yWas1D) {
+            int64[] sh1 = heap int64[1];
+            sh1[0] = n;
+            Tensor<float64> out1 = Tensor.zeros<float64>(sh1);
+            int64 i1 = 0;
+            while (i1 < n) {
+                out1.set1(i1, out2.get2(i1, 0));
+                i1 = i1 + 1;
+            }
+            return #out1;
+        }
+        return #out2;
+    }
+
+    /** R² (uniform average over outputs), the regressor convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> pred = this.predict(x);
+        int64 n = y.shapeAt(0);
+        Tensor<float64> ym2 = LinearRegression.asMatrix(y, n);
+        Tensor<float64> pm2 = LinearRegression.asMatrix(pred, n);
+        int64 k = ym2.shapeAt(1);
+        float64 total = 0.0;
+        int64 c = 0;
+        while (c < k) {
+            float64 mean = 0.0;
+            int64 i = 0;
+            while (i < n) {
+                mean = mean + ym2.get2(i, c);
+                i = i + 1;
+            }
+            mean = mean / (float64) n;
+            float64 ssRes = 0.0;
+            float64 ssTot = 0.0;
+            i = 0;
+            while (i < n) {
+                float64 dr = ym2.get2(i, c) - pm2.get2(i, c);
+                float64 dt = ym2.get2(i, c) - mean;
+                ssRes = ssRes + dr * dr;
+                ssTot = ssTot + dt * dt;
+                i = i + 1;
+            }
+            total = total + 1.0 - ssRes / ssTot;
+            c = c + 1;
+        }
+        return total / (float64) k;
+    }
+}

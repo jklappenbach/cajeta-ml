@@ -1,6 +1,6 @@
 ---
 id: ml-selection-pipelines
-applies-to: [dev.cajeta.ml.Split, dev.cajeta.ml.KFold, dev.cajeta.ml.Pipeline, dev.cajeta.ml.StandardScaler, dev.cajeta.ml.MinMaxScaler, dev.cajeta.ml.PCA, dev.cajeta.ml.Metrics]
+applies-to: [dev.cajeta.ml.select.Split, dev.cajeta.ml.select.KFold, dev.cajeta.ml.Pipeline, dev.cajeta.ml.preprocess.StandardScaler, dev.cajeta.ml.preprocess.MinMaxScaler, dev.cajeta.ml.decompose.PCA, dev.cajeta.ml.Metrics]
 title: Model selection & pipelines — splits, K-fold CV, Pipeline, scalers, PCA, metrics
 description: The deterministic split/CV machinery, Pipeline's leakage-free-by-construction contract (and the affine-equivariance trap when testing it), scaler/PCA transformer surfaces, and the Metrics reference.
 ---

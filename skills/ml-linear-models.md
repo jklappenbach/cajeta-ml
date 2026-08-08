@@ -1,6 +1,6 @@
 ---
 id: ml-linear-models
-applies-to: [dev.cajeta.ml.LinearRegression, dev.cajeta.ml.Ridge, dev.cajeta.ml.Lasso, dev.cajeta.ml.ElasticNet, dev.cajeta.ml.LogisticRegression, dev.cajeta.ml.SummaryResult]
+applies-to: [dev.cajeta.ml.linear.LinearRegression, dev.cajeta.ml.linear.Ridge, dev.cajeta.ml.linear.Lasso, dev.cajeta.ml.linear.ElasticNet, dev.cajeta.ml.linear.LogisticRegression, dev.cajeta.ml.linear.SummaryResult]
 title: Linear models — OLS with inference, Ridge, Lasso/ElasticNet (cd), Logistic (binary/OvR/softmax)
 description: Which linear model for which job, the fitted-surface accessors (coefMatrix vs coef, intercepts), summary() semantics (classical OLS vs penalized Wald), the cd models' exact-sklearn behavior + sparse fitSparse contract, and the multinomial knob.
 ---

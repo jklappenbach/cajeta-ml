@@ -2,11 +2,11 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.FastICA;
-import dev.cajeta.ml.NMF;
-import dev.cajeta.ml.FactorAnalysis;
+import dev.cajeta.ml.decompose.FastICA;
+import dev.cajeta.ml.decompose.NMF;
+import dev.cajeta.ml.decompose.FactorAnalysis;
 import dev.cajeta.ml.Pipeline;
-import dev.cajeta.ml.LinearRegression;
+import dev.cajeta.ml.linear.LinearRegression;
 
 /**
  * ml-unsupervised plan 9.1 — linear decomposition (spec §10, §12.9).

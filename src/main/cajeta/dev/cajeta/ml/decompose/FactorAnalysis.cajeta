@@ -1,0 +1,515 @@
+package dev.cajeta.ml.decompose;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Transformer;
+
+/**
+ * Factor analysis by EM (sklearn `FactorAnalysis` model): `x = Λz + ε`
+ * with `z ~ N(0, I)` and `ε ~ N(0, Ψ)`, `Ψ` DIAGONAL with per-feature
+ * noise variances — which is the whole distinction from PCA (§10.6): PCA
+ * assumes isotropic noise and mixes per-feature noise into the
+ * components; FA models each feature's noise separately, so features
+ * with different error scales do not contaminate the loadings.
+ *
+ * The log-likelihood is monotonically non-decreasing across EM
+ * iterations (§10.5 — the same §5.6 assertion as GaussianMixture, for
+ * the same reason). Loadings are identifiable only up to ROTATION and
+ * sign (§12.9): compare `Λ·Λᵀ` and `Ψ`, never raw loadings.
+ */
+public final class FactorAnalysis implements Transformer {
+
+    private int64 kComp;
+    private int64 maxIter;
+    private float64 tol;
+    private int64 pFeat;
+    private float64[] meanA;     // (p)
+    private float64[] lamA;      // (p*k)
+    private float64[] psiA;      // (p)
+    private float64[] llHist;
+    private int64 llCount;
+    private boolean fitted;
+
+    /** maxIter 1000, tol 1e-10 on the mean log-likelihood change. */
+    public FactorAnalysis(int64 k) {
+        if (k < 1) {
+            throw heap MlException("FactorAnalysis: k must be >= 1");
+        }
+        this.kComp = k;
+        this.maxIter = 1000;
+        this.tol = 0.0000000001;
+        this.fitted = false;
+        return;
+    }
+
+    public FactorAnalysis(int64 k, int64 maxIter, float64 tol) {
+        if (k < 1) {
+            throw heap MlException("FactorAnalysis: k must be >= 1");
+        }
+        this.kComp = k;
+        this.maxIter = maxIter;
+        this.tol = tol;
+        this.fitted = false;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException(
+                "FactorAnalysis.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 k = this.kComp;
+        if (k >= p) {
+            throw heap MlException("FactorAnalysis.fit: need k < p");
+        }
+        this.pFeat = p;
+
+        float64[] mean = heap float64[p];
+        int64 j = 0;
+        while (j < p) {
+            float64 s = 0.0;
+            int64 i = 0;
+            while (i < n) {
+                s = s + x.get2(i, j);
+                i = i + 1;
+            }
+            mean[j] = s / (float64) n;
+            j = j + 1;
+        }
+        // Sample covariance S (p, p).
+        float64[] sM = heap float64[p * p];
+        int64 a = 0;
+        while (a < p) {
+            int64 b = 0;
+            while (b < p) {
+                float64 s = 0.0;
+                int64 i = 0;
+                while (i < n) {
+                    s = s + (x.get2(i, a) - mean[a])
+                          * (x.get2(i, b) - mean[b]);
+                    i = i + 1;
+                }
+                sM[a * p + b] = s / (float64) n;
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+
+        // Init: top-k eigenpairs of S for Λ, residual diagonal for Ψ.
+        int64[] ss = heap int64[2];
+        ss[0] = p;
+        ss[1] = p;
+        Tensor<float64> st = Tensor.of<float64>(sM, ss);
+        Tensor<float64>[] ev = LinAlg.eigh<float64>(st);
+        Tensor<float64> w = ev[0];
+        Tensor<float64> v = ev[1];
+        float64[] lam = heap float64[p * k];
+        int64 c = 0;
+        while (c < k) {
+            int64 src = p - (int64) 1 - c;
+            float64 lv = w.get1(src);
+            if (lv < 1.0E-8) {
+                lv = 1.0E-8;
+            }
+            float64 sc = Math.sqrt(lv);
+            int64 r = 0;
+            while (r < p) {
+                lam[r * k + c] = v.get2(r, src) * sc;
+                r = r + 1;
+            }
+            c = c + 1;
+        }
+        float64[] psi = heap float64[p];
+        j = 0;
+        while (j < p) {
+            float64 ll = 0.0;
+            c = 0;
+            while (c < k) {
+                ll = ll + lam[j * k + c] * lam[j * k + c];
+                c = c + 1;
+            }
+            float64 r = sM[j * p + j] - ll;
+            if (r < 0.000001) {
+                r = 0.000001;
+            }
+            psi[j] = r;
+            j = j + 1;
+        }
+
+        // EM. All matrices are small (p, k) — direct products through
+        // LinAlg for the k×k inverse and the p×p model determinant.
+        float64[] hist = heap float64[this.maxIter];
+        float64 prev = 0.0;
+        int64 it = 0;
+        boolean go = true;
+        while (it < this.maxIter && go) {
+            // Log-likelihood under the current parameters:
+            // -0.5 (p ln 2π + ln|Σ| + tr(Σ⁻¹ S)), Σ = ΛΛᵀ + Ψ.
+            int64[] ms = heap int64[2];
+            ms[0] = p;
+            ms[1] = p;
+            Tensor<float64> sig = Tensor.zeros<float64>(ms);
+            a = 0;
+            while (a < p) {
+                int64 b = 0;
+                while (b < p) {
+                    float64 s = 0.0;
+                    c = 0;
+                    while (c < k) {
+                        s = s + lam[a * k + c] * lam[b * k + c];
+                        c = c + 1;
+                    }
+                    if (a == b) {
+                        s = s + psi[a];
+                    }
+                    sig.flatSet(a * p + b, s);
+                    b = b + 1;
+                }
+                a = a + 1;
+            }
+            Tensor<float64> sigInv = LinAlg.inv<float64>(sig);
+            Tensor<float64> sld = LinAlg.slogdet<float64>(sig);
+            float64 tr = 0.0;
+            a = 0;
+            while (a < p) {
+                int64 b = 0;
+                while (b < p) {
+                    tr = tr + sigInv.get2(a, b) * sM[b * p + a];
+                    b = b + 1;
+                }
+                a = a + 1;
+            }
+            float64 ll = 0.0 - 0.5 * ((float64) p * 1.8378770664093453
+                + sld.get1(1) + tr);
+            hist[it] = ll;
+
+            // E-step: G = (I + Λᵀ Ψ⁻¹ Λ)⁻¹; β = G Λᵀ Ψ⁻¹ (k, p).
+            int64[] gs = heap int64[2];
+            gs[0] = k;
+            gs[1] = k;
+            Tensor<float64> gM = Tensor.zeros<float64>(gs);
+            a = 0;
+            while (a < k) {
+                int64 b = 0;
+                while (b < k) {
+                    float64 s = 0.0;
+                    j = 0;
+                    while (j < p) {
+                        s = s + lam[j * k + a] * lam[j * k + b] / psi[j];
+                        j = j + 1;
+                    }
+                    if (a == b) {
+                        s = s + 1.0;
+                    }
+                    gM.flatSet(a * k + b, s);
+                    b = b + 1;
+                }
+                a = a + 1;
+            }
+            Tensor<float64> g = LinAlg.inv<float64>(gM);
+            float64[] beta = heap float64[k * p];
+            a = 0;
+            while (a < k) {
+                j = 0;
+                while (j < p) {
+                    float64 s = 0.0;
+                    int64 b = 0;
+                    while (b < k) {
+                        s = s + g.get2(a, b) * lam[j * k + b] / psi[j];
+                        b = b + 1;
+                    }
+                    beta[a * p + j] = s;
+                    j = j + 1;
+                }
+                a = a + 1;
+            }
+            // βS (k, p) and Ezz = G + βSβᵀ (k, k).
+            float64[] bs = heap float64[k * p];
+            a = 0;
+            while (a < k) {
+                j = 0;
+                while (j < p) {
+                    float64 s = 0.0;
+                    int64 q = 0;
+                    while (q < p) {
+                        s = s + beta[a * p + q] * sM[q * p + j];
+                        q = q + 1;
+                    }
+                    bs[a * p + j] = s;
+                    j = j + 1;
+                }
+                a = a + 1;
+            }
+            int64[] zs = heap int64[2];
+            zs[0] = k;
+            zs[1] = k;
+            Tensor<float64> ezz = Tensor.zeros<float64>(zs);
+            a = 0;
+            while (a < k) {
+                int64 b = 0;
+                while (b < k) {
+                    float64 s = g.get2(a, b);
+                    j = 0;
+                    while (j < p) {
+                        s = s + bs[a * p + j] * beta[b * p + j];
+                        j = j + 1;
+                    }
+                    ezz.flatSet(a * k + b, s);
+                    b = b + 1;
+                }
+                a = a + 1;
+            }
+            // M-step: Λ = (βS)ᵀ · Ezz⁻¹; Ψ = diag(S − Λ·βS).
+            Tensor<float64> ezzInv = LinAlg.inv<float64>(ezz);
+            j = 0;
+            while (j < p) {
+                c = 0;
+                while (c < k) {
+                    float64 s = 0.0;
+                    int64 b = 0;
+                    while (b < k) {
+                        s = s + bs[b * p + j] * ezzInv.get2(b, c);
+                        b = b + 1;
+                    }
+                    lam[j * k + c] = s;
+                    c = c + 1;
+                }
+                j = j + 1;
+            }
+            j = 0;
+            while (j < p) {
+                float64 s = 0.0;
+                c = 0;
+                while (c < k) {
+                    s = s + lam[j * k + c] * bs[c * p + j];
+                    c = c + 1;
+                }
+                float64 nv = sM[j * p + j] - s;
+                if (nv < 0.000000000001) {
+                    nv = 0.000000000001;
+                }
+                psi[j] = nv;
+                j = j + 1;
+            }
+            if (it > (int64) 0) {
+                float64 ch = ll - prev;
+                if (ch < 0.0) {
+                    ch = 0.0 - ch;
+                }
+                if (ch < this.tol) {
+                    go = false;
+                }
+            }
+            prev = ll;
+            it = it + 1;
+        }
+
+        this.meanA #= mean;
+        this.lamA #= lam;
+        this.psiA #= psi;
+        this.llHist #= hist;
+        this.llCount = it;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(p, k)` loadings — identifiable up to rotation and sign; compare
+     *  `loadings·loadingsᵀ`, not raw columns (§12.9). */
+    public #Tensor<float64> loadings() {
+        if (!this.fitted) {
+            throw heap MlException("FactorAnalysis.loadings: fit first");
+        }
+        int64 p = this.pFeat;
+        int64 k = this.kComp;
+        float64[] out = heap float64[p * k];
+        int64 i = 0;
+        while (i < p * k) {
+            out[i] = this.lamA[i];
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = p;
+        sh[1] = k;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** `(p,)` per-feature noise variances — FA's reason to exist. */
+    public #Tensor<float64> noiseVariances() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "FactorAnalysis.noiseVariances: fit first");
+        }
+        int64 p = this.pFeat;
+        float64[] out = heap float64[p];
+        int64 i = 0;
+        while (i < p) {
+            out[i] = this.psiA[i];
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = p;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** Mean log-likelihood per EM iteration — non-decreasing (§10.5). */
+    public #float64[] logLikelihoodHistory() {
+        if (!this.fitted) {
+            throw heap MlException(
+                "FactorAnalysis.logLikelihoodHistory: fit first");
+        }
+        int64 c = this.llCount;
+        float64[] out = heap float64[c];
+        int64 i = 0;
+        while (i < c) {
+            out[i] = this.llHist[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Mean per-sample log-likelihood of `x` under the fitted model
+     *  (sklearn `score`). */
+    public float64 meanLogLikelihood(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException(
+                "FactorAnalysis.meanLogLikelihood: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = this.pFeat;
+        int64 k = this.kComp;
+        int64[] ms = heap int64[2];
+        ms[0] = p;
+        ms[1] = p;
+        Tensor<float64> sig = Tensor.zeros<float64>(ms);
+        int64 a = 0;
+        while (a < p) {
+            int64 b = 0;
+            while (b < p) {
+                float64 s = 0.0;
+                int64 c = 0;
+                while (c < k) {
+                    s = s + this.lamA[a * k + c] * this.lamA[b * k + c];
+                    c = c + 1;
+                }
+                if (a == b) {
+                    s = s + this.psiA[a];
+                }
+                sig.flatSet(a * p + b, s);
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        Tensor<float64> sigInv = LinAlg.inv<float64>(sig);
+        Tensor<float64> sld = LinAlg.slogdet<float64>(sig);
+        float64 acc = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 q = 0.0;
+            a = 0;
+            while (a < p) {
+                int64 b = 0;
+                while (b < p) {
+                    q = q + (x.get2(i, a) - this.meanA[a])
+                          * sigInv.get2(a, b)
+                          * (x.get2(i, b) - this.meanA[b]);
+                    b = b + 1;
+                }
+                a = a + 1;
+            }
+            acc = acc + q;
+            i = i + 1;
+        }
+        return 0.0 - 0.5 * ((float64) p * 1.8378770664093453
+            + sld.get1(1) + acc / (float64) n);
+    }
+
+    /** `(n, k)` posterior factor means for `x`. */
+    public #Tensor<float64> transform(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("FactorAnalysis.transform: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = this.pFeat;
+        int64 k = this.kComp;
+        if (x.ndim() != 2 || x.shapeAt(1) != p) {
+            throw heap MlException(
+                "FactorAnalysis.transform: x must be (n, p) matching "
+                + "the fit");
+        }
+        // B = Ψ⁻¹ Λ (I + Λᵀ Ψ⁻¹ Λ)⁻¹ (p, k); z = (x − mean)·B.
+        int64[] gs = heap int64[2];
+        gs[0] = k;
+        gs[1] = k;
+        Tensor<float64> gM = Tensor.zeros<float64>(gs);
+        int64 a = 0;
+        while (a < k) {
+            int64 b = 0;
+            while (b < k) {
+                float64 s = 0.0;
+                int64 j = 0;
+                while (j < p) {
+                    s = s + this.lamA[j * k + a] * this.lamA[j * k + b]
+                        / this.psiA[j];
+                    j = j + 1;
+                }
+                if (a == b) {
+                    s = s + 1.0;
+                }
+                gM.flatSet(a * k + b, s);
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        Tensor<float64> g = LinAlg.inv<float64>(gM);
+        float64[] bM = heap float64[p * k];
+        int64 j2 = 0;
+        while (j2 < p) {
+            int64 c = 0;
+            while (c < k) {
+                float64 s = 0.0;
+                int64 b = 0;
+                while (b < k) {
+                    s = s + this.lamA[j2 * k + b] * g.get2(b, c);
+                    b = b + 1;
+                }
+                bM[j2 * k + c] = s / this.psiA[j2];
+                c = c + 1;
+            }
+            j2 = j2 + 1;
+        }
+        float64[] out = heap float64[n * k];
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                float64 s = 0.0;
+                j2 = 0;
+                while (j2 < p) {
+                    s = s + (x.get2(i, j2) - this.meanA[j2])
+                          * bM[j2 * k + c];
+                    j2 = j2 + 1;
+                }
+                out[i * k + c] = s;
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = k;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    public #Tensor<float64> fitTransform(Tensor<float64> x,
+                                         Tensor<float64> y) {
+        this.fit(x, y);
+        return this.transform(x);
+    }
+}

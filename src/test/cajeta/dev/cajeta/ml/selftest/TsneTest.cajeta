@@ -3,8 +3,8 @@ package dev.cajeta.ml.selftest;
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
 import cajeta.math.stats.Information;
-import dev.cajeta.ml.KMeans;
-import dev.cajeta.ml.TSNE;
+import dev.cajeta.ml.cluster.KMeans;
+import dev.cajeta.ml.manifold.TSNE;
 
 /**
  * ml-unsupervised plan 8.1 — t-SNE and divergence (spec §9.1–§9.7).

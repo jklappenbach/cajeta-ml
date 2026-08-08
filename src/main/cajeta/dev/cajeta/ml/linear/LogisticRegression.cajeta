@@ -1,0 +1,1023 @@
+package dev.cajeta.ml.linear;
+
+import cajeta.math.Tensor;
+import cajeta.math.linalg.LinAlg;
+import cajeta.math.stats.Stats;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.ProbClassifier;
+
+/**
+ * Logistic regression by IRLS/Newton with Cholesky steps — sklearn's
+ * `newton-cholesky` solver. Objective (sklearn's): minimize
+ * `0.5·‖w‖² + C·Σ log(1+exp(−ỹ·f))` — L2 on by default (`C = 1.0`, the
+ * sklearn convention, loudly documented: statisticians expecting an
+ * unpenalized fit should pass a very large `C`). The intercept is never
+ * penalized. Binary targets fit directly; `K > 2` classes fit one-vs-rest
+ * by default, or ONE softmax likelihood with the explicit `multinomial`
+ * constructor knob (sklearn ≥ 1.7's only multiclass mode — see
+ * DifferencesFromSklearn).
+ *
+ * Non-convergence within `maxIter` prints a LOUD warning (sklearn's is
+ * easy to miss) and keeps the last iterate; `converged()` reports it.
+ */
+public final class LogisticRegression implements ProbClassifier {
+
+    private float64 cReg;
+    private float64 tol;
+    private int64 maxIter;
+    private boolean multinomialV;
+    private int32 penaltyC;             // 0 l2 (IRLS), 1 l1/elastic-net (CD)
+    private float64 l1Ratio;            // elastic-net mix; 1 = pure L1
+    private boolean hasClassW;
+    private float64[] classWA;
+    private boolean balancedW;
+    private Tensor<float64> coefM;      // (p, K') — K'=1 binary, else K
+    private Tensor<float64> iceptV;     // (K',)
+    private int64 nClasses;
+    private boolean convergedV;
+    private boolean fitted;
+
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = false;
+        this.penaltyC = (int32) 0;
+        this.hasClassW = false;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /**
+     * Penalty selection (spec §6.6): `"l1"` fits the L1-penalized
+     * likelihood by glmnet-style coordinate descent — exact zeros appear,
+     * the intercept is unpenalized.
+     */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              String penalty) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        if (!penalty.equals("l1")) {
+            throw heap MlException("LogisticRegression: unknown penalty \""
+                + penalty + "\" — supported: l1 (or the elasticnet ctor)");
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = false;
+        this.penaltyC = (int32) 1;
+        this.l1Ratio = 1.0;
+        this.hasClassW = false;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /**
+     * Elastic net (spec §6.7): `ratio = 1` reproduces the L1 fit,
+     * `ratio = 0` the L2 fit.
+     */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              String penalty, float64 ratio) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        if (!penalty.equals("elasticnet")) {
+            throw heap MlException("LogisticRegression: unknown penalty \""
+                + penalty + "\" — the mixing-ratio ctor takes elasticnet");
+        }
+        if (ratio < 0.0 || ratio > 1.0) {
+            throw heap MlException(
+                "LogisticRegression: l1 ratio must be in [0, 1]");
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = false;
+        this.penaltyC = (int32) 1;
+        this.l1Ratio = ratio;
+        this.hasClassW = false;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** Explicit per-class weights (spec §6.1), indexed by label. */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              boolean multinomial, #float64[] classWeights) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        int64 i = 0;
+        while (i < (int64) classWeights.count()) {
+            if (classWeights[i] <= 0.0) {
+                throw heap MlException(
+                    "LogisticRegression: class weights must be > 0");
+            }
+            i = i + 1;
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = multinomial;
+        this.penaltyC = (int32) 0;
+        this.hasClassW = true;
+        this.classWA #= classWeights;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /** `"balanced"`: weights `n / (K · n_k)` from the data (spec §6.2). */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              boolean multinomial, String balanced) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        if (!balanced.equals("balanced")) {
+            throw heap MlException("LogisticRegression: the String weight "
+                + "mode must be \"balanced\" — pass explicit weights as "
+                + "float64[]");
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = multinomial;
+        this.penaltyC = (int32) 0;
+        this.hasClassW = false;
+        this.balancedW = true;
+        this.fitted = false;
+        return;
+    }
+
+    /**
+     * `multinomial`: for `K > 2`, fit ONE softmax likelihood (sklearn ≥ 1.7's
+     * only multiclass mode) instead of one-vs-rest — an explicit knob, never
+     * a silent strategy switch. Binary targets take the direct binary fit
+     * either way (as sklearn's does). OvR remains this class's default for
+     * v1 compatibility; see DifferencesFromSklearn.
+     */
+    public LogisticRegression(float64 c, float64 tol, int64 maxIter,
+                              boolean multinomial) {
+        if (c <= 0.0) {
+            throw heap MlException("LogisticRegression: C must be > 0");
+        }
+        this.cReg = c;
+        this.tol = tol;
+        this.maxIter = maxIter;
+        this.multinomialV = multinomial;
+        this.penaltyC = (int32) 0;
+        this.hasClassW = false;
+        this.balancedW = false;
+        this.fitted = false;
+        return;
+    }
+
+    /**
+     * One Newton/IRLS solve for a binary 0/1 target: returns `(p+1,)` theta
+     * (weights, then intercept). Sets `convergedV` false (and warns) on a
+     * blown iteration cap.
+     */
+    #Tensor<float64> newtonBinary(Tensor<float64> x, Tensor<float64> yb,
+                                  Tensor<float64> obsW) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 d = p + 1;
+        int64[] dm = heap int64[1];
+        dm[0] = d;
+        Tensor<float64> theta = Tensor.zeros<float64>(dm);
+        int64[] hs = heap int64[2];
+        hs[0] = d;
+        hs[1] = d;
+        boolean ok = false;
+        int64 it = 0;
+        while (it < this.maxIter) {
+            // p_i = expit(x_i·w + b); grad = [w;0] + C·Xdᵀ(p−y)
+            Tensor<float64> grad = Tensor.zeros<float64>(dm);
+            int64 j = 0;
+            while (j < p) {
+                grad.set1(j, theta.get1(j));
+                j = j + 1;
+            }
+            Tensor<float64> h = Tensor.zeros<float64>(hs);
+            j = 0;
+            while (j < p) {
+                h.flatSet(j * d + j, 1.0);
+                j = j + 1;
+            }
+            int64 i = 0;
+            while (i < n) {
+                float64 z = theta.get1(p);
+                int64 j2 = 0;
+                while (j2 < p) {
+                    z = z + x.get2(i, j2) * theta.get1(j2);
+                    j2 = j2 + 1;
+                }
+                float64 pi = Stats.expit(z);
+                float64 ow = obsW.get1(i);
+                float64 gi = this.cReg * ow * (pi - yb.get1(i));
+                float64 wi = this.cReg * ow * pi * (1.0 - pi);
+                j2 = 0;
+                while (j2 < p) {
+                    grad.set1(j2, grad.get1(j2) + gi * x.get2(i, j2));
+                    j2 = j2 + 1;
+                }
+                grad.set1(p, grad.get1(p) + gi);
+                // H += wi · xd xdᵀ  (xd = [x_i, 1])
+                int64 a = 0;
+                while (a < d) {
+                    float64 xa = 1.0;
+                    if (a < p) { xa = x.get2(i, a); }
+                    int64 b = 0;
+                    while (b < d) {
+                        float64 xb = 1.0;
+                        if (b < p) { xb = x.get2(i, b); }
+                        h.flatSet(a * d + b, h.get2(a, b) + wi * xa * xb);
+                        b = b + 1;
+                    }
+                    a = a + 1;
+                }
+                i = i + 1;
+            }
+            // converged when the gradient is flat
+            float64 gmax = LinAlg.normInfVec<float64>(grad);
+            if (gmax < this.tol) {
+                ok = true;
+                break;
+            }
+            Tensor<float64> l = LinAlg.cholesky<float64>(h);
+            Tensor<float64> step = LinAlg.choSolve<float64>(l, grad);
+            int64 j3 = 0;
+            while (j3 < d) {
+                theta.set1(j3, theta.get1(j3) - step.get1(j3));
+                j3 = j3 + 1;
+            }
+            it = it + 1;
+        }
+        if (!ok) {
+            this.convergedV = false;
+            System.stdout.println(
+                "warning: LogisticRegression did not converge within maxIter"
+                + " (gradient still above tol) — results are the last"
+                + " iterate; raise maxIter or tol, or check for separable"
+                + " data");
+        }
+        return #theta;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        int64[] zs = heap int64[1];
+        zs[0] = 0;
+        Tensor<float64> none = Tensor.zeros<float64>(zs);
+        this.fitW(x, y, none);
+        return;
+    }
+
+    /** Per-observation sample weights (spec §6.3) — they compose
+     *  multiplicatively with any class weights. */
+    public void fit(Tensor<float64> x, Tensor<float64> y,
+                    Tensor<float64> sampleWeights) {
+        if (sampleWeights.ndim() != 1
+                || sampleWeights.shapeAt(0) != x.shapeAt(0)) {
+            throw heap MlException("LogisticRegression.fit: sampleWeights "
+                + "must be (n,) matching x rows");
+        }
+        this.fitW(x, y, sampleWeights);
+        return;
+    }
+
+    void fitW(Tensor<float64> x, Tensor<float64> y, Tensor<float64> sw) {
+        if (x.ndim() != 2) {
+            throw heap MlException("LogisticRegression.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException("LogisticRegression.fit: y must be (n,) labels matching x rows");
+        }
+        // labels: non-negative integers 0..K-1
+        int64 kmax = 0;
+        int64 i = 0;
+        while (i < n) {
+            float64 v = y.get1(i);
+            int64 li = (int64) v;
+            if (v != (float64) li || li < 0) {
+                throw heap MlException("LogisticRegression.fit: labels must be integers 0..K-1");
+            }
+            if (li > kmax) { kmax = li; }
+            i = i + 1;
+        }
+        int64 kcls = kmax + 1;
+        if (kcls < 2) { kcls = 2; }
+        this.nClasses = kcls;
+        this.convergedV = true;
+
+        // Effective observation weights: sample × class (spec §6.1–§6.3).
+        int64[] wm = heap int64[1];
+        wm[0] = n;
+        Tensor<float64> obsW = Tensor.zeros<float64>(wm);
+        i = 0;
+        while (i < n) {
+            float64 base = 1.0;
+            if (sw.size() == n) {
+                base = sw.get1(i);
+            }
+            obsW.set1(i, base);
+            i = i + 1;
+        }
+        if (this.hasClassW) {
+            if ((int64) this.classWA.count() != kcls) {
+                throw heap MlException("LogisticRegression.fit: class "
+                    + "weights length must equal the class count");
+            }
+            i = 0;
+            while (i < n) {
+                int64 li2 = (int64) y.get1(i);
+                obsW.set1(i, obsW.get1(i) * this.classWA[li2]);
+                i = i + 1;
+            }
+        } else if (this.balancedW) {
+            float64[] counts = heap float64[kcls];
+            i = 0;
+            while (i < n) {
+                int64 li2 = (int64) y.get1(i);
+                counts[li2] = counts[li2] + 1.0;
+                i = i + 1;
+            }
+            i = 0;
+            while (i < n) {
+                int64 li2 = (int64) y.get1(i);
+                obsW.set1(i, obsW.get1(i) * (float64) n
+                    / ((float64) kcls * counts[li2]));
+                i = i + 1;
+            }
+        }
+
+        if (this.multinomialV && kcls > 2) {
+            if (this.penaltyC != (int32) 0) {
+                throw heap MlException("LogisticRegression.fit: the L1/"
+                    + "elastic-net penalty is not supported with the "
+                    + "multinomial fit — use the OvR default");
+            }
+            this.fitSoftmax(x, y, kcls, obsW);
+            return;
+        }
+        int64 kcols = 1;
+        if (kcls > 2) { kcols = kcls; }
+        int64[] cs = heap int64[2];
+        cs[0] = p;
+        cs[1] = kcols;
+        int64[] im = heap int64[1];
+        im[0] = kcols;
+        Tensor<float64> cm = Tensor.zeros<float64>(cs);
+        Tensor<float64> ic = Tensor.zeros<float64>(im);
+        int64[] nm = heap int64[1];
+        nm[0] = n;
+        int64 col = 0;
+        while (col < kcols) {
+            // binary: the target itself; OvR: the class-col indicator
+            Tensor<float64> yb = Tensor.zeros<float64>(nm);
+            int64 i2 = 0;
+            while (i2 < n) {
+                float64 lab = y.get1(i2);
+                if (kcols == 1) {
+                    yb.set1(i2, lab);
+                } else if ((int64) lab == col) {
+                    yb.set1(i2, 1.0);
+                }
+                i2 = i2 + 1;
+            }
+            Tensor<float64> theta = this.fitColumn(x, yb, obsW);
+            int64 j = 0;
+            while (j < p) {
+                cm.flatSet(j * kcols + col, theta.get1(j));
+                j = j + 1;
+            }
+            ic.set1(col, theta.get1(p));
+            col = col + 1;
+        }
+        this.coefM #= cm;
+        this.iceptV #= ic;
+        this.fitted = true;
+        return;
+    }
+
+    /** One binary column: Newton/IRLS (L2) or coordinate descent (L1/enet). */
+    #Tensor<float64> fitColumn(Tensor<float64> x, Tensor<float64> yb,
+                               Tensor<float64> obsW) {
+        if (this.penaltyC == (int32) 0) {
+            Tensor<float64> t = this.newtonBinary(x, yb, obsW);
+            return #t;
+        }
+        Tensor<float64> t = this.cdBinary(x, yb, obsW);
+        return #t;
+    }
+
+    /**
+     * glmnet-style coordinate descent (spec §6.6, resolved §11.2) for the
+     * elastic-net objective `ρ·‖w‖₁ + (1−ρ)/2·‖w‖² + C·Σ obsWᵢ·logloss`
+     * (intercept unpenalized): outer IRLS re-quadratization, one full CD
+     * sweep with the soft-threshold update per outer pass. `ρ = 1` is pure
+     * L1 — exact zeros survive because the update IS a soft threshold.
+     */
+    #Tensor<float64> cdBinary(Tensor<float64> x, Tensor<float64> yb,
+                              Tensor<float64> obsW) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64[] dm = heap int64[1];
+        dm[0] = p + 1;
+        Tensor<float64> theta = Tensor.zeros<float64>(dm);   // [w, b]
+        float64 rho = this.l1Ratio;
+        float64[] eta = heap float64[n];
+        float64[] wq = heap float64[n];
+        float64[] r = heap float64[n];
+        boolean ok = false;
+        int64 it = 0;
+        while (it < this.maxIter) {
+            // Quadratize: working weights and residuals at the current θ.
+            int64 i = 0;
+            while (i < n) {
+                float64 z = theta.get1(p);
+                int64 j = 0;
+                while (j < p) {
+                    z = z + x.get2(i, j) * theta.get1(j);
+                    j = j + 1;
+                }
+                eta[i] = z;
+                float64 mu = Stats.expit(z);
+                if (mu < 0.000001) {
+                    mu = 0.000001;
+                }
+                if (mu > 0.999999) {
+                    mu = 0.999999;
+                }
+                float64 vv = mu * (1.0 - mu);
+                wq[i] = this.cReg * obsW.get1(i) * vv;
+                // r = working target − η
+                r[i] = (yb.get1(i) - mu) / vv;
+                i = i + 1;
+            }
+            // One CD sweep over the coordinates + the intercept.
+            float64 maxD = 0.0;
+            int64 j = 0;
+            while (j < p) {
+                float64 wj = theta.get1(j);
+                float64 num = 0.0;
+                float64 den = 0.0;
+                i = 0;
+                while (i < n) {
+                    float64 xij = x.get2(i, j);
+                    num = num + wq[i] * xij * (r[i] + xij * wj);
+                    den = den + wq[i] * xij * xij;
+                    i = i + 1;
+                }
+                // Soft threshold at ρ; ridge term (1−ρ) in the denominator.
+                float64 wNew = 0.0;
+                if (num > rho) {
+                    wNew = (num - rho) / (den + (1.0 - rho));
+                } else if (num < -rho) {
+                    wNew = (num + rho) / (den + (1.0 - rho));
+                }
+                float64 delta = wNew - wj;
+                if (delta != 0.0) {
+                    i = 0;
+                    while (i < n) {
+                        r[i] = r[i] - x.get2(i, j) * delta;
+                        i = i + 1;
+                    }
+                    theta.set1(j, wNew);
+                }
+                float64 ad = delta;
+                if (ad < 0.0) {
+                    ad = -ad;
+                }
+                if (ad > maxD) {
+                    maxD = ad;
+                }
+                j = j + 1;
+            }
+            // Intercept: weighted mean of the residual, unpenalized.
+            float64 num = 0.0;
+            float64 den = 0.0;
+            i = 0;
+            while (i < n) {
+                num = num + wq[i] * r[i];
+                den = den + wq[i];
+                i = i + 1;
+            }
+            float64 db = num / den;
+            if (db != 0.0) {
+                i = 0;
+                while (i < n) {
+                    r[i] = r[i] - db;
+                    i = i + 1;
+                }
+                theta.set1(p, theta.get1(p) + db);
+            }
+            float64 adb = db;
+            if (adb < 0.0) {
+                adb = -adb;
+            }
+            if (adb > maxD) {
+                maxD = adb;
+            }
+            if (maxD < this.tol) {
+                ok = true;
+                break;
+            }
+            it = it + 1;
+        }
+        if (!ok) {
+            this.convergedV = false;
+            System.stdout.println(
+                "warning: LogisticRegression (L1/elastic-net) did not"
+                + " converge within maxIter (parameter change still above"
+                + " tol) — results are the last iterate; raise maxIter or"
+                + " tol");
+        }
+        return #theta;
+    }
+
+    /**
+     * The softmax fit (spec §3): damped full Newton on the SYMMETRIC
+     * K-block parametrization — sklearn's objective
+     * `0.5·Σ_k‖w_k‖² + C·Σ_i −log p_{i,y_i}` (intercepts unpenalized), so
+     * probabilities match sklearn's multinomial mode. The intercept
+     * direction (adding a constant to every class) is objective-flat; a
+     * tiny Levenberg damping keeps the Cholesky solvable through that null
+     * direction, and the gauge is fixed afterwards by centering the
+     * intercepts (probabilities are invariant; raw sklearn intercepts are
+     * optimizer-path noise and are never pinned).
+     */
+    void fitSoftmax(Tensor<float64> x, Tensor<float64> y, int64 kcls,
+                    Tensor<float64> obsW) {
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 blk = p + 1;                  // [w_k (p), b_k]
+        int64 dim = kcls * blk;
+        int64[] dm = heap int64[1];
+        dm[0] = dim;
+        Tensor<float64> theta = Tensor.zeros<float64>(dm);
+        int64[] hs = heap int64[2];
+        hs[0] = dim;
+        hs[1] = dim;
+        float64[] probs = heap float64[kcls];
+        boolean ok = false;
+        int64 it = 0;
+        while (it < this.maxIter) {
+            // grad: penalty on weights, then C·Σ (p_ik − y_ik)·xd
+            Tensor<float64> grad = Tensor.zeros<float64>(dm);
+            int64 c = 0;
+            while (c < kcls) {
+                int64 j = 0;
+                while (j < p) {
+                    grad.set1(c * blk + j, theta.get1(c * blk + j));
+                    j = j + 1;
+                }
+                c = c + 1;
+            }
+            Tensor<float64> h = Tensor.zeros<float64>(hs);
+            int64 a0 = 0;
+            while (a0 < dim) {
+                // penalty diag on weight coords; damping everywhere (the
+                // intercept-translation direction is objective-flat).
+                float64 dv = 0.00000001;
+                if (a0 % blk != p) { dv = dv + 1.0; }
+                h.flatSet(a0 * dim + a0, dv);
+                a0 = a0 + 1;
+            }
+            int64 i = 0;
+            while (i < n) {
+                // softmax probabilities for row i (max-shifted)
+                float64 zmax = 0.0;
+                c = 0;
+                while (c < kcls) {
+                    float64 z = theta.get1(c * blk + p);
+                    int64 j = 0;
+                    while (j < p) {
+                        z = z + x.get2(i, j) * theta.get1(c * blk + j);
+                        j = j + 1;
+                    }
+                    probs[c] = z;
+                    if (c == 0 || z > zmax) { zmax = z; }
+                    c = c + 1;
+                }
+                float64 zsum = 0.0;
+                c = 0;
+                while (c < kcls) {
+                    probs[c] = Math.exp(probs[c] - zmax);
+                    zsum = zsum + probs[c];
+                    c = c + 1;
+                }
+                c = 0;
+                while (c < kcls) {
+                    probs[c] = probs[c] / zsum;
+                    c = c + 1;
+                }
+                int64 yi = (int64) y.get1(i);
+                float64 owi = obsW.get1(i);
+                c = 0;
+                while (c < kcls) {
+                    float64 resid = probs[c];
+                    if (c == yi) { resid = resid - 1.0; }
+                    float64 gi = this.cReg * owi * resid;
+                    int64 j = 0;
+                    while (j < p) {
+                        grad.set1(c * blk + j,
+                            grad.get1(c * blk + j) + gi * x.get2(i, j));
+                        j = j + 1;
+                    }
+                    grad.set1(c * blk + p, grad.get1(c * blk + p) + gi);
+                    c = c + 1;
+                }
+                // H += C · (diag(p) − p pᵀ) ⊗ xd xdᵀ
+                c = 0;
+                while (c < kcls) {
+                    int64 c2 = 0;
+                    while (c2 < kcls) {
+                        float64 wcc = -probs[c] * probs[c2];
+                        if (c == c2) { wcc = wcc + probs[c]; }
+                        wcc = this.cReg * owi * wcc;
+                        if (wcc != 0.0) {
+                            int64 a = 0;
+                            while (a < blk) {
+                                float64 xa = 1.0;
+                                if (a < p) { xa = x.get2(i, a); }
+                                int64 b = 0;
+                                while (b < blk) {
+                                    float64 xb = 1.0;
+                                    if (b < p) { xb = x.get2(i, b); }
+                                    int64 r = c * blk + a;
+                                    int64 s = c2 * blk + b;
+                                    h.flatSet(r * dim + s,
+                                        h.get2(r, s) + wcc * xa * xb);
+                                    b = b + 1;
+                                }
+                                a = a + 1;
+                            }
+                        }
+                        c2 = c2 + 1;
+                    }
+                    c = c + 1;
+                }
+                i = i + 1;
+            }
+            float64 gmax = LinAlg.normInfVec<float64>(grad);
+            if (gmax < this.tol) {
+                ok = true;
+                break;
+            }
+            Tensor<float64> l = LinAlg.cholesky<float64>(h);
+            Tensor<float64> step = LinAlg.choSolve<float64>(l, grad);
+            int64 t2 = 0;
+            while (t2 < dim) {
+                theta.set1(t2, theta.get1(t2) - step.get1(t2));
+                t2 = t2 + 1;
+            }
+            it = it + 1;
+        }
+        if (!ok) {
+            this.convergedV = false;
+            System.stdout.println(
+                "warning: LogisticRegression did not converge within maxIter"
+                + " (gradient still above tol) — results are the last"
+                + " iterate; raise maxIter or tol, or check for separable"
+                + " data");
+        }
+        // Gauge: center the intercepts (probability-invariant, deterministic).
+        float64 bmean = 0.0;
+        int64 c3 = 0;
+        while (c3 < kcls) {
+            bmean = bmean + theta.get1(c3 * blk + p);
+            c3 = c3 + 1;
+        }
+        bmean = bmean / (float64) kcls;
+        int64[] cs2 = heap int64[2];
+        cs2[0] = p;
+        cs2[1] = kcls;
+        int64[] im2 = heap int64[1];
+        im2[0] = kcls;
+        Tensor<float64> cm2 = Tensor.zeros<float64>(cs2);
+        Tensor<float64> ic2 = Tensor.zeros<float64>(im2);
+        c3 = 0;
+        while (c3 < kcls) {
+            int64 j = 0;
+            while (j < p) {
+                cm2.flatSet(j * kcls + c3, theta.get1(c3 * blk + j));
+                j = j + 1;
+            }
+            ic2.set1(c3, theta.get1(c3 * blk + p) - bmean);
+            c3 = c3 + 1;
+        }
+        this.coefM #= cm2;
+        this.iceptV #= ic2;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** False when the last fit blew the iteration cap (warning printed). */
+    public boolean converged() {
+        if (!this.fitted) {
+            throw heap MlException("LogisticRegression.converged: fit first");
+        }
+        return this.convergedV;
+    }
+
+    /** Coefficient matrix `(p, K')` — one column per one-vs-rest problem. */
+    public Tensor<float64> coefMatrix() {
+        if (!this.fitted) {
+            throw heap MlException("LogisticRegression.coefMatrix: fit first");
+        }
+        return this.coefM;
+    }
+
+    /** Intercept vector `(K',)`. */
+    public Tensor<float64> interceptVector() {
+        if (!this.fitted) {
+            throw heap MlException("LogisticRegression.interceptVector: fit first");
+        }
+        return this.iceptV;
+    }
+
+    /** Raw per-column scores `z = x·w + b`, `(n, K')`. */
+    #Tensor<float64> decision(Tensor<float64> x) {
+        int64 n = x.shapeAt(0);
+        int64 p = this.coefM.shapeAt(0);
+        int64 kcols = this.coefM.shapeAt(1);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = kcols;
+        Tensor<float64> z = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < kcols) {
+                float64 acc = this.iceptV.get1(c);
+                int64 j = 0;
+                while (j < p) {
+                    acc = acc + x.get2(i, j) * this.coefM.get2(j, c);
+                    j = j + 1;
+                }
+                z.flatSet(i * kcols + c, acc);
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        return #z;
+    }
+
+    /**
+     * Class probabilities `(n, K)`: binary → `[1−p, p]`; one-vs-rest →
+     * per-class sigmoids normalized to sum 1 (the sklearn OvR convention).
+     */
+    public #Tensor<float64> predictProba(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("LogisticRegression.predictProba: fit first");
+        }
+        Tensor<float64> z = this.decision(x);
+        int64 n = z.shapeAt(0);
+        int64 kcols = z.shapeAt(1);
+        int64 kout = this.nClasses;
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = kout;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            if (kcols == 1) {
+                float64 p1 = Stats.expit(z.get2(i, 0));
+                out.flatSet(i * kout, 1.0 - p1);
+                out.flatSet(i * kout + 1, p1);
+            } else if (this.multinomialV) {
+                // softmax over the K decision values (max-shifted)
+                float64 zmax = z.get2(i, 0);
+                int64 c0 = 1;
+                while (c0 < kcols) {
+                    if (z.get2(i, c0) > zmax) { zmax = z.get2(i, c0); }
+                    c0 = c0 + 1;
+                }
+                float64 sum = 0.0;
+                c0 = 0;
+                while (c0 < kcols) {
+                    float64 e = Math.exp(z.get2(i, c0) - zmax);
+                    out.flatSet(i * kout + c0, e);
+                    sum = sum + e;
+                    c0 = c0 + 1;
+                }
+                c0 = 0;
+                while (c0 < kcols) {
+                    out.flatSet(i * kout + c0, out.get2(i, c0) / sum);
+                    c0 = c0 + 1;
+                }
+            } else {
+                float64 sum = 0.0;
+                int64 c = 0;
+                while (c < kcols) {
+                    float64 s = Stats.expit(z.get2(i, c));
+                    out.flatSet(i * kout + c, s);
+                    sum = sum + s;
+                    c = c + 1;
+                }
+                c = 0;
+                while (c < kcols) {
+                    out.flatSet(i * kout + c, out.get2(i, c) / sum);
+                    c = c + 1;
+                }
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Predicted labels `(n,)`: binary threshold 0.5 / one-vs-rest argmax. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("LogisticRegression.predict: fit first");
+        }
+        Tensor<float64> z = this.decision(x);
+        int64 n = z.shapeAt(0);
+        int64 kcols = z.shapeAt(1);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            if (kcols == 1) {
+                if (z.get2(i, 0) > 0.0) { out.set1(i, 1.0); }
+            } else {
+                int64 best = 0;
+                float64 bv = z.get2(i, 0);
+                int64 c = 1;
+                while (c < kcols) {
+                    float64 v = z.get2(i, c);
+                    if (v > bv) { bv = v; best = c; }
+                    c = c + 1;
+                }
+                out.set1(i, (float64) best);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * The binary decision at an explicit probability cut (spec §6.4):
+     * label 1 iff `P(y=1|x) > threshold`. The no-argument `predict` keeps
+     * the 0.5 behaviour untouched (§12.5).
+     */
+    public #Tensor<float64> predict(Tensor<float64> x, float64 threshold) {
+        if (!this.fitted) {
+            throw heap MlException("LogisticRegression.predict: fit first");
+        }
+        if (threshold <= 0.0 || threshold >= 1.0) {
+            throw heap MlException("LogisticRegression.predict: threshold "
+                + "must be strictly inside (0, 1)");
+        }
+        if (this.nClasses != 2) {
+            throw heap MlException("LogisticRegression.predict: a decision "
+                + "threshold applies to BINARY fits only — multiclass "
+                + "predictions are the posterior argmax");
+        }
+        Tensor<float64> pr = this.predictProba(x);
+        int64 n = pr.shapeAt(0);
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            if (pr.get2(i, 1) > threshold) {
+                out.set1(i, 1.0);
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** Accuracy — the classifier `score` convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> pred = this.predict(x);
+        int64 n = y.shapeAt(0);
+        int64 hit = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (pred.get1(i) == y.get1(i)) { hit = hit + 1; }
+            i = i + 1;
+        }
+        return (float64) hit / (float64) n;
+    }
+
+    /**
+     * Wald summary of a BINARY fit at the optimum: standard errors from the
+     * inverse penalized Hessian, z statistics, normal p-values. `penalized`
+     * is ALWAYS set — L2 is on (M3), so these are NOT classical p-values;
+     * refit with a very large `C` for near-classical numbers. The r²/F
+     * fields are 0 (not defined for logistic).
+     */
+    public #SummaryResult summary(Tensor<float64> x, Tensor<float64> y) {
+        if (!this.fitted) {
+            throw heap MlException("LogisticRegression.summary: fit first");
+        }
+        if (this.nClasses > 2) {
+            throw heap MlException("LogisticRegression.summary: binary fits only");
+        }
+        if (this.penaltyC != (int32) 0) {
+            throw heap MlException("LogisticRegression.summary: standard "
+                + "errors, z statistics, and p-values are not valid for an "
+                + "L1/elastic-net fit (the penalty biases the optimum and "
+                + "breaks the Wald approximation) — refit with the L2 ctor "
+                + "for a summary");
+        }
+        int64 n = x.shapeAt(0);
+        int64 p = x.shapeAt(1);
+        int64 d = p + 1;
+        // theta in summary order: intercept first, then features
+        int64[] dm = heap int64[1];
+        dm[0] = d;
+        Tensor<float64> beta = Tensor.zeros<float64>(dm);
+        beta.set1(0, this.iceptV.get1(0));
+        int64 j = 0;
+        while (j < p) {
+            beta.set1(j + 1, this.coefM.get2(j, 0));
+            j = j + 1;
+        }
+        // penalized Hessian at the optimum, in the same (icpt-first) order
+        int64[] hs = heap int64[2];
+        hs[0] = d;
+        hs[1] = d;
+        Tensor<float64> h = Tensor.zeros<float64>(hs);
+        j = 1;
+        while (j < d) {
+            h.flatSet(j * d + j, 1.0);
+            j = j + 1;
+        }
+        int64 i = 0;
+        while (i < n) {
+            float64 z = this.iceptV.get1(0);
+            int64 j2 = 0;
+            while (j2 < p) {
+                z = z + x.get2(i, j2) * this.coefM.get2(j2, 0);
+                j2 = j2 + 1;
+            }
+            float64 pi = Stats.expit(z);
+            float64 wi = this.cReg * pi * (1.0 - pi);
+            int64 a = 0;
+            while (a < d) {
+                float64 xa = 1.0;
+                if (a > 0) { xa = x.get2(i, a - 1); }
+                int64 b = 0;
+                while (b < d) {
+                    float64 xb = 1.0;
+                    if (b > 0) { xb = x.get2(i, b - 1); }
+                    h.flatSet(a * d + b, h.get2(a, b) + wi * xa * xb);
+                    b = b + 1;
+                }
+                a = a + 1;
+            }
+            i = i + 1;
+        }
+        Tensor<float64> hinv = LinAlg.inv<float64>(h);
+        Tensor<float64> se = Tensor.zeros<float64>(dm);
+        Tensor<float64> zs = Tensor.zeros<float64>(dm);
+        Tensor<float64> pv = Tensor.zeros<float64>(dm);
+        int64 j3 = 0;
+        while (j3 < d) {
+            float64 s = Math.sqrt(hinv.get2(j3, j3));
+            se.set1(j3, s);
+            float64 zv = beta.get1(j3) / s;
+            zs.set1(j3, zv);
+            float64 az = zv;
+            if (az < 0.0) { az = -az; }
+            pv.set1(j3, 2.0 * (1.0 - Stats.normalCdf(az)));
+            j3 = j3 + 1;
+        }
+        // design condition (with the 1s column)
+        int64[] dsh = heap int64[2];
+        dsh[0] = n;
+        dsh[1] = d;
+        Tensor<float64> xd = Tensor.zeros<float64>(dsh);
+        i = 0;
+        while (i < n) {
+            xd.flatSet(i * d, 1.0);
+            int64 j4 = 0;
+            while (j4 < p) {
+                xd.flatSet(i * d + 1 + j4, x.get2(i, j4));
+                j4 = j4 + 1;
+            }
+            i = i + 1;
+        }
+        float64 cnd = LinAlg.cond<float64>(xd);
+        boolean cwarn = cnd > 100000000.0;
+        SummaryResult res = heap SummaryResult(#beta, #se, #zs, #pv, 0.0, 0.0,
+                                               0.0, cnd, n - d, cwarn, true);
+        return #res;
+    }
+}

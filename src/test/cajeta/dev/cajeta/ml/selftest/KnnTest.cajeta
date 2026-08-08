@@ -2,8 +2,8 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.KNeighborsClassifier;
-import dev.cajeta.ml.KNeighborsRegressor;
+import dev.cajeta.ml.neighbors.KNeighborsClassifier;
+import dev.cajeta.ml.neighbors.KNeighborsRegressor;
 
 /**
  * cajeta-ml-v2 plan 5.1 — kNN, pinned against sklearn 1.9.0

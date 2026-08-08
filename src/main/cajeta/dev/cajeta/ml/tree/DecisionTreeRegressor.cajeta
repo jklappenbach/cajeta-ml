@@ -1,0 +1,291 @@
+package dev.cajeta.ml.tree;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+
+/**
+ * Exact-split decision tree regression (sklearn `DecisionTreeRegressor`,
+ * criterion `squared_error`; ml-trees-ensembles U1): recursively choose the
+ * split maximizing variance reduction (sklearn's MSE proxy
+ * `sumL²/nL + sumR²/nR`); each leaf predicts the mean of its training
+ * targets. `maxDepth` 0 grows until purity. Deterministic by construction
+ * (see {@link Trees}); a refit is bit-identical.
+ */
+public final class DecisionTreeRegressor implements Predictor {
+
+    String criterion;
+    int64 maxDepth;
+    int64 splitter;      // 0 = best, 1 = random
+    uint64 seed;
+    int64 minSamplesSplit;
+    int64 minSamplesLeaf;
+    int64 maxLeafNodes;
+    int64 maxFeaturesNode;
+    float64 minImpurityDecrease;
+    float64 ccpAlpha;
+    int64 nFeatures;
+    Trees tree;
+    boolean fitted;
+
+    public DecisionTreeRegressor() {
+        this.initR("squared_error", 0, "best", (uint64) 0);
+        return;
+    }
+
+    /** `maxDepth` 0 = unbounded; negative is rejected (§12.6). */
+    public DecisionTreeRegressor(int64 maxDepth) {
+        this.initR("squared_error", maxDepth, "best", (uint64) 0);
+        return;
+    }
+
+    /** `criterion` squared_error | absolute_error | poisson (§3.4). */
+    public DecisionTreeRegressor(String criterion, int64 maxDepth) {
+        this.initR(criterion, maxDepth, "best", (uint64) 0);
+        return;
+    }
+
+    /** `splitter` "best" | "random" (the Extra-Trees seam, §3.6). */
+    public DecisionTreeRegressor(String criterion, int64 maxDepth,
+                                 String splitter, uint64 seed) {
+        this.initR(criterion, maxDepth, splitter, seed);
+        return;
+    }
+
+    void initR(String criterion, int64 maxDepth, String splitter, uint64 seed) {
+        if (!criterion.equals("squared_error") && !criterion.equals("absolute_error")
+            && !criterion.equals("poisson")) {
+            throw heap MlException("DecisionTreeRegressor: unsupported "
+                + "criterion '" + criterion
+                + "' (squared_error | absolute_error | poisson)");
+        }
+        if (maxDepth < 0) {
+            throw heap MlException("DecisionTreeRegressor: maxDepth must "
+                + "be >= 0 (0 = unbounded)");
+        }
+        if (!splitter.equals("best") && !splitter.equals("random")) {
+            throw heap MlException("DecisionTreeRegressor: unsupported "
+                + "splitter '" + splitter + "' (best | random)");
+        }
+        this.criterion = criterion;
+        this.maxDepth = maxDepth;
+        this.splitter = splitter.equals("best") ? (int64) 0 : (int64) 1;
+        this.seed = seed;
+        this.minSamplesSplit = 2;
+        this.minSamplesLeaf = 1;
+        this.maxLeafNodes = 0;
+        this.maxFeaturesNode = 0;
+        this.minImpurityDecrease = 0.0;
+        this.ccpAlpha = 0.0;
+        this.fitted = false;
+        return;
+    }
+
+    /** Minimum samples a node needs to be split (sklearn `min_samples_split`). */
+    public void setMinSamplesSplit(int64 v) {
+        if (v < 2) {
+            throw heap MlException("DecisionTreeRegressor: minSamplesSplit must be >= 2");
+        }
+        this.minSamplesSplit = v;
+        return;
+    }
+
+    /** Minimum samples each child must keep (sklearn `min_samples_leaf`). */
+    public void setMinSamplesLeaf(int64 v) {
+        if (v < 1) {
+            throw heap MlException("DecisionTreeRegressor: minSamplesLeaf must be >= 1");
+        }
+        this.minSamplesLeaf = v;
+        return;
+    }
+
+    /** Leaf budget; > 0 switches growth to BEST-FIRST (sklearn `max_leaf_nodes`). */
+    public void setMaxLeafNodes(int64 v) {
+        if (v != 0 && v < 2) {
+            throw heap MlException("DecisionTreeRegressor: maxLeafNodes must be 0 (unbounded) or >= 2");
+        }
+        this.maxLeafNodes = v;
+        return;
+    }
+
+
+    /** Features CONSIDERED PER NODE (0 = all): the random-forest lever
+     *  (spec §7.1) — a fresh seeded draw at every node, not per tree. */
+    public void setMaxFeaturesNode(int64 v) {
+        if (v < 0) {
+            throw heap MlException("DecisionTreeRegressor: maxFeaturesNode must be >= 0");
+        }
+        this.maxFeaturesNode = v;
+        return;
+    }
+
+    /** Weighted-decrease floor for a split (sklearn `min_impurity_decrease`). */
+    public void setMinImpurityDecrease(float64 v) {
+        if (v < 0.0) {
+            throw heap MlException("DecisionTreeRegressor: minImpurityDecrease must be >= 0");
+        }
+        this.minImpurityDecrease = v;
+        return;
+    }
+
+    /** Minimal cost-complexity pruning strength (sklearn `ccp_alpha`). */
+    public void setCcpAlpha(float64 v) {
+        if (v < 0.0) {
+            throw heap MlException("DecisionTreeRegressor: ccpAlpha must be >= 0");
+        }
+        this.ccpAlpha = v;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("DecisionTreeRegressor.fit: x must be 2-D (n, p)");
+        }
+        int64 nw = x.shapeAt(0);
+        float64[] ones = heap float64[nw];
+        int64 wi = 0;
+        while (wi < nw) { ones[wi] = 1.0; wi = wi + 1; }
+        this.fitCore(x, y, #ones);
+        return;
+    }
+
+    void fitCore(Tensor<float64> x, Tensor<float64> y, #float64[] w) {
+        int64 n = x.shapeAt(0);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException("DecisionTreeRegressor.fit: y must be (n,) matching x rows");
+        }
+        this.nFeatures = x.shapeAt(1);
+        if (this.criterion.equals("poisson")) {
+            float64 sum = 0.0;
+            int64 j = 0;
+            while (j < n) {
+                float64 v = y.get1(j);
+                if (v < 0.0) {
+                    throw heap MlException("DecisionTreeRegressor.fit: poisson "
+                        + "requires non-negative targets");
+                }
+                sum = sum + v;
+                j = j + 1;
+            }
+            if (sum <= 0.0) {
+                throw heap MlException("DecisionTreeRegressor.fit: poisson "
+                    + "requires a positive target sum");
+            }
+        }
+        Trees t;
+        if (this.criterion.equals("squared_error")) {
+            t = heap Trees(heap SquaredErrorImpurity(), this.maxDepth, this.splitter, this.seed);
+        } else if (this.criterion.equals("absolute_error")) {
+            t = heap Trees(heap AbsoluteErrorImpurity(), this.maxDepth, this.splitter, this.seed);
+        } else {
+            t = heap Trees(heap PoissonImpurity(), this.maxDepth, this.splitter, this.seed);
+        }
+        t.minSamplesSplit = this.minSamplesSplit;
+        t.minSamplesLeaf = this.minSamplesLeaf;
+        t.maxLeafNodes = this.maxLeafNodes;
+        t.maxFeaturesNode = this.maxFeaturesNode;
+        t.minImpurityDecrease = this.minImpurityDecrease;
+        t.ccpAlpha = this.ccpAlpha;
+        t.fitW(x, y, #w, n, this.nFeatures);
+        this.tree #= t;
+        this.fitted = true;
+        return;
+    }
+
+
+    /**
+     * Sample-weighted fit (sklearn `fit(X, y, sample_weight)`): each
+     * sample's impurity and leaf contribution scales by `w` — the AdaBoost
+     * lever. Weights must be positive.
+     */
+    public void fitWeighted(Tensor<float64> x, Tensor<float64> y, Tensor<float64> w) {
+        if (w.ndim() != 1 || w.shapeAt(0) != x.shapeAt(0)) {
+            throw heap MlException("DecisionTreeRegressor.fitWeighted: w must be (n,) matching x rows");
+        }
+        int64 n = x.shapeAt(0);
+        float64[] wa = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            wa[i] = w.get1(i);
+            if (wa[i] <= 0.0) {
+                throw heap MlException("DecisionTreeRegressor.fitWeighted: weights must be > 0");
+            }
+            i = i + 1;
+        }
+        this.fitCore(x, y, #wa);
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** `(n,)` leaf means. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("DecisionTreeRegressor.predict: fit first");
+        }
+        if (x.ndim() != 2 || x.shapeAt(1) != this.nFeatures) {
+            throw heap MlException("DecisionTreeRegressor.predict: x must be "
+                + "(n, p) with p matching the fit");
+        }
+        int64 n = x.shapeAt(0);
+        float64[] out = heap float64[n];
+        int64 r = 0;
+        while (r < n) {
+            out[r] = this.tree.value[this.tree.leafOf(x, r, this.nFeatures)];
+            r = r + 1;
+        }
+        int64[] sh = heap int64[1]; sh[0] = n;
+        return Tensor.of<float64>(out, sh);
+    }
+
+    /** R² — the regressor `score` convention. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        return Metrics.r2(y, p);
+    }
+
+    /** The realized tree depth. */
+    public int64 depth() {
+        if (!this.fitted) {
+            throw heap MlException("DecisionTreeRegressor.depth: fit first");
+        }
+        return this.tree.realizedDepth;
+    }
+
+    /** The realized leaf count. */
+    public int64 leafCount() {
+        if (!this.fitted) {
+            throw heap MlException("DecisionTreeRegressor.leafCount: fit first");
+        }
+        return this.tree.leaves;
+    }
+
+
+    /**
+     * Normalized impurity-based feature importances (`(nf,)`, summing to 1;
+     * sklearn `feature_importances_`). CAVEAT (spec §4.1.5): impurity
+     * importance is biased TOWARD high-cardinality/continuous features —
+     * they offer more candidate splits, so comparing a continuous feature's
+     * importance against a binary one overstates the continuous one. Prefer
+     * permutation importance for cross-cardinality comparisons.
+     */
+    public #Tensor<float64> featureImportances() {
+        if (!this.fitted) {
+            throw heap MlException("DecisionTreeRegressor.featureImportances: fit first");
+        }
+        float64[] imp = this.tree.importances();
+        int64[] sh = heap int64[1]; sh[0] = this.nFeatures;
+        return Tensor.of<float64>(imp, sh);
+    }
+
+    /** Readable root-to-leaf rule dump (§2.8). */
+    public #String exportText() {
+        if (!this.fitted) {
+            throw heap MlException("DecisionTreeRegressor.exportText: fit first");
+        }
+        return this.tree.exportText();
+    }
+}

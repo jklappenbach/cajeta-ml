@@ -2,9 +2,9 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.DecisionTreeClassifier;
+import dev.cajeta.ml.tree.DecisionTreeClassifier;
 import dev.cajeta.ml.MlException;
-import dev.cajeta.ml.PruningPath;
+import dev.cajeta.ml.tree.PruningPath;
 
 /**
  * ml-trees-ensembles U3 — pruning and regularization vs PINNED sklearn

@@ -1,6 +1,6 @@
 ---
 id: ml-model-selection
-applies-to: [dev.cajeta.ml.StratifiedKFold, dev.cajeta.ml.RepeatedHoldout, dev.cajeta.ml.GridSearch, dev.cajeta.ml.RandomizedSearch, dev.cajeta.ml.Scorers, dev.cajeta.ml.EstimatorFactory, dev.cajeta.ml.ForwardSelector, dev.cajeta.ml.OneHotEncoder, dev.cajeta.ml.OrdinalEncoder, dev.cajeta.ml.PrCurve, dev.cajeta.ml.ClassificationReport]
+applies-to: [dev.cajeta.ml.select.StratifiedKFold, dev.cajeta.ml.select.RepeatedHoldout, dev.cajeta.ml.select.GridSearch, dev.cajeta.ml.select.RandomizedSearch, dev.cajeta.ml.select.Scorers, dev.cajeta.ml.EstimatorFactory, dev.cajeta.ml.select.ForwardSelector, dev.cajeta.ml.preprocess.OneHotEncoder, dev.cajeta.ml.preprocess.OrdinalEncoder, dev.cajeta.ml.inspect.PrCurve, dev.cajeta.ml.inspect.ClassificationReport]
 title: Model selection 0.8.0 — stratification, repeated holdout, grid/random search, encoders, forward selection, PR curves & reports
 description: The 0.8.0 selection surface — stratified splits/folds that fail loudly, repeated holdout with per-split scores, hyperparameter search over EstimatorFactory with failure capture and Scorers metric names, categorical encoders with a loud unseen policy, greedy CV-scored forward feature selection, and the PR-curve/average-precision/classification-report trio.
 ---

@@ -1,6 +1,6 @@
 ---
 id: ml-cluster-neighbors
-applies-to: [dev.cajeta.ml.KMeans, dev.cajeta.ml.KNeighborsRegressor, dev.cajeta.ml.KNeighborsClassifier]
+applies-to: [dev.cajeta.ml.cluster.KMeans, dev.cajeta.ml.neighbors.KNeighborsRegressor, dev.cajeta.ml.neighbors.KNeighborsClassifier]
 title: KMeans & k-nearest neighbors — surfaces, determinism, tie-breaks, score semantics
 description: The clustering/neighbors estimators — KMeans' seeded k-means++ and negative-inertia score, kNN's brute-force + zero-distance rule, and the deterministic tie-breaks this library documents where sklearn leaves them unspecified.
 ---

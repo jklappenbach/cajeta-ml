@@ -1,6 +1,6 @@
 ---
 id: ml-embeddings-decomposition
-applies-to: [dev.cajeta.ml.TSNE, dev.cajeta.ml.MDS, dev.cajeta.ml.Isomap, dev.cajeta.ml.LLE, dev.cajeta.ml.SpectralEmbedding, dev.cajeta.ml.FastICA, dev.cajeta.ml.NMF, dev.cajeta.ml.FactorAnalysis]
+applies-to: [dev.cajeta.ml.manifold.TSNE, dev.cajeta.ml.manifold.MDS, dev.cajeta.ml.manifold.Isomap, dev.cajeta.ml.manifold.LLE, dev.cajeta.ml.manifold.SpectralEmbedding, dev.cajeta.ml.decompose.FastICA, dev.cajeta.ml.decompose.NMF, dev.cajeta.ml.decompose.FactorAnalysis]
 title: Embeddings & decomposition — t-SNE, MDS, Isomap, LLE, SpectralEmbedding, FastICA, NMF, FactorAnalysis
 description: The manifold/embedding family with its honesty rules (who can transform unseen points and who only pretends), the linear decompositions beyond PCA, and the indeterminacies (sign, rotation, permutation, scale) that make raw-coordinate comparison a bug.
 ---

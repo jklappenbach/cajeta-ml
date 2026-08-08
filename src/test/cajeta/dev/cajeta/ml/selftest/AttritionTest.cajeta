@@ -3,7 +3,7 @@ package dev.cajeta.ml.selftest;
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
 import cajeta.math.npio.Npy;
-import dev.cajeta.ml.DecisionTreeClassifier;
+import dev.cajeta.ml.tree.DecisionTreeClassifier;
 
 /**
  * ml-trees-ensembles U8 — the HR Employee Attrition reference pipeline

@@ -1,0 +1,213 @@
+package dev.cajeta.ml.ensemble;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.tree.DecisionTreeClassifier;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.Predictor;
+
+/**
+ * AdaBoost classification, SAMME (ml-trees-ensembles U6, spec §8.1–§8.2;
+ * sklearn 1.9 ships SAMME only — SAMME.R was removed with the `algorithm`
+ * parameter). Base stumps ({@link DecisionTreeClassifier}, depth
+ * `baseDepth`, default 1) fit SEQUENTIALLY on reweighted samples: each
+ * round's weighted error `err = Σ w[misclassified] / Σ w` yields the
+ * estimator weight `α = learningRate · (ln((1−err)/err) + ln(K−1))`,
+ * misclassified samples scale by `e^α`, and weights renormalize.
+ * Prediction is the α-weighted vote. Rounds stop early when a stump is
+ * perfect (err ≤ 0: it alone decides) or no better than chance
+ * (err ≥ 1 − 1/K: it is discarded), sklearn's own gates. Deterministic —
+ * the stumps use the exact splitter, no RNG anywhere — so estimator
+ * errors and weights are pinned against sklearn EXACTLY.
+ */
+public final class AdaBoostClassifier implements Predictor {
+
+    int64 nEstimators;
+    float64 learningRate;
+    int64 baseDepth;
+    ArrayList<DecisionTreeClassifier> members;
+    float64[] alphas;
+    int64 nUsed;
+    int64 nClasses;
+    int64 nFeatures;
+    boolean fitted;
+
+    public AdaBoostClassifier(int64 nEstimators, float64 learningRate) {
+        if (nEstimators < 1) {
+            throw heap MlException("AdaBoostClassifier: nEstimators must be >= 1");
+        }
+        if (learningRate <= 0.0) {
+            throw heap MlException("AdaBoostClassifier: learningRate must be > 0");
+        }
+        this.nEstimators = nEstimators;
+        this.learningRate = learningRate;
+        this.baseDepth = 1;
+        this.fitted = false;
+        return;
+    }
+
+    /** Base-stump depth (sklearn's default estimator is a depth-1 tree). */
+    public void setBaseDepth(int64 v) {
+        if (v < 1) {
+            throw heap MlException("AdaBoostClassifier: baseDepth must be >= 1");
+        }
+        this.baseDepth = v;
+        return;
+    }
+
+    public void fit(Tensor<float64> x, Tensor<float64> y) {
+        if (x.ndim() != 2) {
+            throw heap MlException("AdaBoostClassifier.fit: x must be 2-D (n, p)");
+        }
+        int64 n = x.shapeAt(0);
+        if (y.ndim() != 1 || y.shapeAt(0) != n) {
+            throw heap MlException("AdaBoostClassifier.fit: y must be (n,) matching x rows");
+        }
+        this.nFeatures = x.shapeAt(1);
+        int64 kmax = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 li = (int64) y.get1(i);
+            if (li > kmax) { kmax = li; }
+            i = i + 1;
+        }
+        int64 k = kmax + 1;
+        if (k < 2) { k = 2; }
+        this.nClasses = k;
+
+        float64[] w = heap float64[n];
+        i = 0;
+        while (i < n) { w[i] = 1.0 / (float64) n; i = i + 1; }
+        int64[] wsh = heap int64[1]; wsh[0] = n;
+
+        ArrayList<DecisionTreeClassifier> ms = heap ArrayList<DecisionTreeClassifier>();
+        float64[] al = heap float64[this.nEstimators];
+        int64 used = 0;
+        int64 e = 0;
+        while (e < this.nEstimators) {
+            float64[] wc = heap float64[n];
+            i = 0;
+            while (i < n) { wc[i] = w[i]; i = i + 1; }
+            DecisionTreeClassifier t = heap DecisionTreeClassifier("gini", this.baseDepth);
+            t.fitWeighted(x, y, Tensor.of<float64>(wc, wsh));
+            Tensor<float64> p = t.predict(x);
+
+            float64 err = 0.0;
+            float64 wsum = 0.0;
+            i = 0;
+            while (i < n) {
+                wsum = wsum + w[i];
+                if (p.flatGet(i) != y.get1(i)) { err = err + w[i]; }
+                i = i + 1;
+            }
+            err = err / wsum;
+
+            if (err <= 0.0) {
+                // A perfect stump decides alone (sklearn's early stop).
+                al[used] = 1.0;
+                ms.add(#t);
+                used = used + 1;
+                e = e + 1;
+                break;
+            }
+            if (err >= 1.0 - 1.0 / (float64) k) {
+                // No better than chance: discard and stop.
+                break;
+            }
+            float64 alpha = this.learningRate
+                * (Math.log((1.0 - err) / err) + Math.log((float64) k - 1.0));
+            al[used] = alpha;
+            ms.add(#t);
+            used = used + 1;
+
+            // Reweight: misclassified samples scale by e^alpha; renormalize.
+            float64 total = 0.0;
+            i = 0;
+            while (i < n) {
+                if (p.flatGet(i) != y.get1(i)) {
+                    w[i] = w[i] * Math.exp(alpha);
+                }
+                total = total + w[i];
+                i = i + 1;
+            }
+            i = 0;
+            while (i < n) { w[i] = w[i] / total; i = i + 1; }
+            e = e + 1;
+        }
+        if (used == 0) {
+            throw heap MlException("AdaBoostClassifier.fit: the first stump was "
+                + "no better than chance — boosting cannot start on this data");
+        }
+        this.members #= ms;
+        this.alphas #= al;
+        this.nUsed = used;
+        this.fitted = true;
+        return;
+    }
+
+    public boolean isFitted() {
+        return this.fitted;
+    }
+
+    /** The weighted per-round errors are not retained; the estimator weights
+     *  (alphas) are — sklearn's `estimator_weights_`. `(nUsed,)`. */
+    public #Tensor<float64> estimatorWeights() {
+        if (!this.fitted) {
+            throw heap MlException("AdaBoostClassifier.estimatorWeights: fit first");
+        }
+        float64[] outA = heap float64[this.nUsed];
+        int64 i = 0;
+        while (i < this.nUsed) { outA[i] = this.alphas[i]; i = i + 1; }
+        int64[] sh = heap int64[1]; sh[0] = this.nUsed;
+        return Tensor.of<float64>(outA, sh);
+    }
+
+    /** `(n,)` labels by alpha-weighted vote. */
+    public #Tensor<float64> predict(Tensor<float64> x) {
+        if (!this.fitted) {
+            throw heap MlException("AdaBoostClassifier.predict: fit first");
+        }
+        int64 n = x.shapeAt(0);
+        int64 k = this.nClasses;
+        float64[] scores = heap float64[n * k];
+        int64 e = 0;
+        while (e < this.nUsed) {
+            DecisionTreeClassifier t = this.members.get((int32) e);
+            Tensor<float64> p = t.predict(x);
+            int64 r = 0;
+            while (r < n) {
+                int64 lb = (int64) p.flatGet(r);
+                scores[r * k + lb] = scores[r * k + lb] + this.alphas[e];
+                r = r + 1;
+            }
+            e = e + 1;
+        }
+        float64[] outp = heap float64[n];
+        int64 r2 = 0;
+        while (r2 < n) {
+            int64 best = 0;
+            int64 c = 1;
+            while (c < k) {
+                if (scores[r2 * k + c] > scores[r2 * k + best]) { best = c; }
+                c = c + 1;
+            }
+            outp[r2] = (float64) best;
+            r2 = r2 + 1;
+        }
+        int64[] sh = heap int64[1]; sh[0] = n;
+        return Tensor.of<float64>(outp, sh);
+    }
+
+    /** Accuracy. */
+    public float64 score(Tensor<float64> x, Tensor<float64> y) {
+        Tensor<float64> p = this.predict(x);
+        int64 n = p.shapeAt(0);
+        int64 hits = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (p.get1(i) == y.get1(i)) { hits = hits + 1; }
+            i = i + 1;
+        }
+        return (float64) hits / (float64) n;
+    }
+}

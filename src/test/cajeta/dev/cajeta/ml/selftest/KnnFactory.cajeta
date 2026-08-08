@@ -2,7 +2,7 @@ package dev.cajeta.ml.selftest;
 
 import cajeta.math.Tensor;
 import dev.cajeta.ml.EstimatorFactory;
-import dev.cajeta.ml.KNeighborsClassifier;
+import dev.cajeta.ml.neighbors.KNeighborsClassifier;
 import dev.cajeta.ml.Predictor;
 
 /** k-NN factory for search tests: params[0] = k. */

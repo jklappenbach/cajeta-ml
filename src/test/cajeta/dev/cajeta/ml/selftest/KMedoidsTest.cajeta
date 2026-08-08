@@ -6,8 +6,8 @@ import cajeta.math.distance.Metric;
 import cajeta.math.distance.Euclidean;
 import cajeta.math.distance.Manhattan;
 import cajeta.math.distance.Chebyshev;
-import dev.cajeta.ml.KMeans;
-import dev.cajeta.ml.KMedoids;
+import dev.cajeta.ml.cluster.KMeans;
+import dev.cajeta.ml.cluster.KMedoids;
 
 /**
  * ml-unsupervised plan 3.1 — K-medoids (spec §4). Centres are actual data

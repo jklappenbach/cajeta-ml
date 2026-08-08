@@ -2,8 +2,8 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.AdaBoostClassifier;
-import dev.cajeta.ml.GradientBoostingRegressor;
+import dev.cajeta.ml.ensemble.AdaBoostClassifier;
+import dev.cajeta.ml.ensemble.GradientBoostingRegressor;
 
 /**
  * ml-trees-ensembles U6 (boosting) vs PINNED sklearn 1.9.0 (gen_tree.py

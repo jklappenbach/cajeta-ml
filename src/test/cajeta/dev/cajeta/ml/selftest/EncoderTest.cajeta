@@ -2,11 +2,11 @@ package dev.cajeta.ml.selftest;
 
 import dev.cajeta.unit.Assert;
 import cajeta.math.Tensor;
-import dev.cajeta.ml.OneHotEncoder;
-import dev.cajeta.ml.OrdinalEncoder;
+import dev.cajeta.ml.preprocess.OneHotEncoder;
+import dev.cajeta.ml.preprocess.OrdinalEncoder;
 import dev.cajeta.ml.Pipeline;
 import dev.cajeta.ml.Predictor;
-import dev.cajeta.ml.LogisticRegression;
+import dev.cajeta.ml.linear.LogisticRegression;
 import dev.cajeta.ml.Transformer;
 
 /**

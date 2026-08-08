@@ -1,6 +1,6 @@
 ---
 id: ml-clustering
-applies-to: [dev.cajeta.ml.KMedoids, dev.cajeta.ml.GaussianMixture, dev.cajeta.ml.AgglomerativeClustering, dev.cajeta.ml.DBSCAN]
+applies-to: [dev.cajeta.ml.cluster.KMedoids, dev.cajeta.ml.cluster.GaussianMixture, dev.cajeta.ml.cluster.AgglomerativeClustering, dev.cajeta.ml.cluster.DBSCAN]
 title: The clustering family — KMedoids, GaussianMixture, AgglomerativeClustering, DBSCAN, and how to choose
 description: The 0.6.0 clustering surface beyond KMeans — medoid robustness, EM mixtures with four covariance types and collapse reporting, hierarchical fits that answer many k, density clustering that labels noise — plus the selection table and the ownership/determinism rules they share.
 ---

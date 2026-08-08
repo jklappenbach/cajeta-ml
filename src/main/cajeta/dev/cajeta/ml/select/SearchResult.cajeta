@@ -1,0 +1,95 @@
+package dev.cajeta.ml.select;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.MlException;
+
+/**
+ * A hyperparameter search's full record (spec §7.5): every combination
+ * tried with its cross-validated score and ok/failed flag — the table IS
+ * the K-versus-error sweep of §7.9 when the grid is one-dimensional.
+ * `best*` consider only combinations that completed (§7.10).
+ */
+public final class SearchResult {
+
+    private Tensor<float64> combosM;    // (c, m)
+    private Tensor<float64> scoresV;    // (c,)
+    private Tensor<float64> okV;        // (c,) 1 ok / 0 failed
+    private int64 bestI;
+
+    public SearchResult(#Tensor<float64> combos, #Tensor<float64> scores,
+                        #Tensor<float64> ok) {
+        this.combosM #= combos;
+        this.scoresV #= scores;
+        this.okV #= ok;
+        this.bestI = -1;
+        int64 c = 0;
+        while (c < this.scoresV.size()) {
+            if (this.okV.flatGet(c) > 0.5) {
+                if (this.bestI < 0 || this.scoresV.flatGet(c)
+                        > this.scoresV.flatGet(this.bestI)) {
+                    this.bestI = c;
+                }
+            }
+            c = c + 1;
+        }
+        return;
+    }
+
+    /** Combinations tried. */
+    public int64 count() {
+        return this.scoresV.size();
+    }
+
+    /** Value of dimension `dim` in combination `i`. */
+    public float64 param(int64 i, int64 dim) {
+        return this.combosM.get2(i, dim);
+    }
+
+    /** Combination `i`'s cross-validated score (0 when it failed). */
+    public float64 score(int64 i) {
+        return this.scoresV.flatGet(i);
+    }
+
+    public boolean ok(int64 i) {
+        return this.okV.flatGet(i) > 0.5;
+    }
+
+    /** How many combinations threw (§7.10). */
+    public int64 failures() {
+        int64 f = 0;
+        int64 c = 0;
+        while (c < this.okV.size()) {
+            if (this.okV.flatGet(c) < 0.5) {
+                f = f + 1;
+            }
+            c = c + 1;
+        }
+        return f;
+    }
+
+    public float64 bestScore() {
+        if (this.bestI < 0) {
+            throw heap MlException(
+                "SearchResult: every combination failed — no best exists");
+        }
+        return this.scoresV.flatGet(this.bestI);
+    }
+
+    /** The winning combination `(m,)`. */
+    public #Tensor<float64> bestParams() {
+        if (this.bestI < 0) {
+            throw heap MlException(
+                "SearchResult: every combination failed — no best exists");
+        }
+        int64 m = this.combosM.shapeAt(1);
+        int64[] sh = heap int64[1];
+        sh[0] = m;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 j = 0;
+        while (j < m) {
+            out.set1(j, this.combosM.get2(this.bestI, j));
+            j = j + 1;
+        }
+        return #out;
+    }
+}

@@ -1,6 +1,7 @@
 package dev.cajeta.ml;
 
 import cajeta.math.Tensor;
+import dev.cajeta.ml.preprocess.IdentityTransformer;
 
 /**
  * A fitted chain — zero to three {@link Transformer} stages and a final
