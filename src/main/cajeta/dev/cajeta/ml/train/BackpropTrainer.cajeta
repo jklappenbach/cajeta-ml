@@ -46,7 +46,9 @@ public class BackpropTrainer {
      */
     public BackpropTrainer(Module net, #Optimizer opt, int32 lossKind,
                            float32 clipNorm) {
-        this.net = net;
+        // `#=` (ownership 3.3.3): record the caller's mode — a lent module
+        // stays lent, `#net` at the call site transfers it.
+        this.net #= net;
         this.opt #= opt;
         this.lossKind = lossKind;
         this.clipNorm = clipNorm;

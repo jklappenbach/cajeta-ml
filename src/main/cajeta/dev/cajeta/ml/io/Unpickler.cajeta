@@ -54,12 +54,17 @@ public class Unpickler {
                      ArrayList<String> entryNames,
                      ArrayList<int64> entryOffsets,
                      ArrayList<int64> entrySizes) {
-        this.raw = raw;
+        // `#=` on the four caller-supplied fields (ownership 3.3.3): the
+        // unpickler reads all of them for its whole life, well past this call.
+        // `#=` records the caller's mode per field — lent stays lent, which is
+        // what the plain stores these replace already did, and a caller that
+        // spells `#raw` hands the buffer over to be freed with the unpickler.
+        this.raw #= raw;
         this.pos = at;
         this.end = at + len;
-        this.entryNames = entryNames;
-        this.entryOffsets = entryOffsets;
-        this.entrySizes = entrySizes;
+        this.entryNames #= entryNames;
+        this.entryOffsets #= entryOffsets;
+        this.entrySizes #= entrySizes;
         this.sTag = heap ArrayList<int32>();
         this.sInt = heap ArrayList<int64>();
         this.sStr = heap ArrayList<String>();

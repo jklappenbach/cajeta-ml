@@ -43,8 +43,10 @@ public class Batches {
             throw heap MlException("Batches: x has " + this.rows + " rows, y "
                 + "has " + y.shapeAt(0));
         }
-        this.x = x;
-        this.y = y;
+        // `#=` (ownership 3.3.3): record the caller's mode — lent tensors stay
+        // lent (unchanged behaviour), `#x` / `#y` at the call site transfer.
+        this.x #= x;
+        this.y #= y;
         this.batchSize = batchSize;
         this.seed = seed;
         this.cols = 1;
