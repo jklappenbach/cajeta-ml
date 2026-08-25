@@ -147,9 +147,9 @@ public class MdsTest {
     // seeded restarts reproducing exactly.
     @Test
     public void metricSmacofMatchesSklearnStructure() {
-        Tensor<float64> x = MdsTest.helix();
+        Tensor<float64> x #= MdsTest.helix();
         MDS m = heap MDS((int64) 2, (uint64) 3);
-        Tensor<float64> e = m.fitTransform(x);
+        Tensor<float64> e #= m.fitTransform(x);
         Assert.equals((int64) 10, e.shapeAt(0));
         Assert.equals((int64) 2, e.shapeAt(1));
         // Stress within tolerance of sklearn's 0.17731828785073134.
@@ -157,12 +157,12 @@ public class MdsTest {
             0.02));
         // Structure, not coordinates: distances correlate > 0.99.
         Metric eu = heap Euclidean();
-        Tensor<float64> din = Distance.pdist(x, eu);
-        Tensor<float64> dem = Distance.pdist(e, eu);
+        Tensor<float64> din #= Distance.pdist(x, eu);
+        Tensor<float64> dem #= Distance.pdist(e, eu);
         Assert.isTrue(MdsTest.distCorr(din, dem, (int64) 10) > 0.99);
         // Seeded reproduction, exact.
         MDS m2 = heap MDS((int64) 2, (uint64) 3);
-        Tensor<float64> e2 = m2.fitTransform(x);
+        Tensor<float64> e2 #= m2.fitTransform(x);
         int64 i = 0;
         while (i < e.size()) {
             Assert.isTrue(e.flatGet(i) == e2.flatGet(i));
@@ -176,10 +176,10 @@ public class MdsTest {
     // Spearman-like rank structure held.
     @Test
     public void nonMetricVariantIsNamedAndPins() {
-        Tensor<float64> x = MdsTest.helix();
+        Tensor<float64> x #= MdsTest.helix();
         MDS nm = heap MDS((int64) 2, (uint64) 3, "nonmetric", (int64) 8,
             (int64) 500, 0.000000001);
-        Tensor<float64> e = nm.fitTransform(x);
+        Tensor<float64> e #= nm.fitTransform(x);
         // sklearn stress-1 on this fixture: 9.8e-5; ours lands under a
         // loose ceiling (different restarts, same near-perfect fit —
         // this seed: 8.6e-4).
@@ -190,8 +190,8 @@ public class MdsTest {
         // Pearson legitimately dips to 0.943 here while Spearman holds;
         // sklearn's own Spearman on this fixture: 0.975).
         Metric eu = heap Euclidean();
-        Tensor<float64> din = Distance.pdist(x, eu);
-        Tensor<float64> dem = Distance.pdist(e, eu);
+        Tensor<float64> din #= Distance.pdist(x, eu);
+        Tensor<float64> dem #= Distance.pdist(e, eu);
         Assert.isTrue(MdsTest.spearman(din, dem, (int64) 10) > 0.95);
         // An unknown variant name is rejected — no silent default.
         Assert.assertThrows(() -> {
@@ -207,15 +207,15 @@ public class MdsTest {
     // transform for unseen points on the class, §12.10).
     @Test
     public void precomputedDissimilaritiesEmbedDirectly() {
-        Tensor<float64> x = MdsTest.helix();
+        Tensor<float64> x #= MdsTest.helix();
         Metric eu = heap Euclidean();
-        Tensor<float64> d = Distance.pdist(x, eu);
+        Tensor<float64> d #= Distance.pdist(x, eu);
         MDS m = heap MDS((int64) 2, (uint64) 3);
-        Tensor<float64> e = m.fitTransformDissimilarity(d);
+        Tensor<float64> e #= m.fitTransformDissimilarity(d);
         Assert.equals((int64) 10, e.shapeAt(0));
         // Identical to the from-points path (same seed, same D).
         MDS m2 = heap MDS((int64) 2, (uint64) 3);
-        Tensor<float64> e2 = m2.fitTransform(x);
+        Tensor<float64> e2 #= m2.fitTransform(x);
         int64 i = 0;
         while (i < e.size()) {
             Assert.isTrue(e.flatGet(i) == e2.flatGet(i));
@@ -226,7 +226,7 @@ public class MdsTest {
             int64[] sh = heap int64[2];
             sh[0] = 3;
             sh[1] = 4;
-            Tensor<float64> bad = Tensor.zeros<float64>(sh);
+            Tensor<float64> bad #= Tensor.zeros<float64>(sh);
             MDS mb = heap MDS((int64) 2, (uint64) 3);
             mb.fitTransformDissimilarity(bad);
         });

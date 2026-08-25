@@ -109,7 +109,7 @@ public final class FastICA implements Transformer {
         int64[] cs = heap int64[2];
         cs[0] = p;
         cs[1] = p;
-        Tensor<float64> cov = Tensor.zeros<float64>(cs);
+        Tensor<float64> cov #= Tensor.zeros<float64>(cs);
         int64 a = 0;
         while (a < p) {
             int64 b = 0;
@@ -126,7 +126,7 @@ public final class FastICA implements Transformer {
             }
             a = a + 1;
         }
-        Tensor<float64>[] ev = LinAlg.eigh<float64>(cov);
+        Tensor<float64>[] ev #= LinAlg.eigh<float64>(cov);
         Tensor<float64> w = ev[0];
         Tensor<float64> v = ev[1];
         float64[] kMat = heap float64[p * k];    // whitening (p, k)
@@ -167,7 +167,7 @@ public final class FastICA implements Transformer {
         // Unmixing W (k, k): seeded normal init, symmetric decorrelation,
         // parallel fixed-point updates.
         Generator gen = heap Generator(this.seed);
-        Tensor<float32> r0 = gen.normal(k * k);
+        Tensor<float32> r0 #= gen.normal(k * k);
         float64[] wU = heap float64[k * k];
         int64 z = 0;
         while (z < k * k) {
@@ -296,8 +296,8 @@ public final class FastICA implements Transformer {
         int64[] ts = heap int64[2];
         ts[0] = p;
         ts[1] = k;
-        Tensor<float64> tt = Tensor.of<float64>(t, ts);
-        Tensor<float64> pin = LinAlg.pinv<float64>(tt);
+        Tensor<float64> tt #= Tensor.of<float64>(t, ts);
+        Tensor<float64> pin #= LinAlg.pinv<float64>(tt);
         float64[] t2 = heap float64[p * k];
         z = 0;
         while (z < p * k) {
@@ -316,7 +316,7 @@ public final class FastICA implements Transformer {
         int64[] ss = heap int64[2];
         ss[0] = k;
         ss[1] = k;
-        Tensor<float64> wwt = Tensor.zeros<float64>(ss);
+        Tensor<float64> wwt #= Tensor.zeros<float64>(ss);
         int64 a = 0;
         while (a < k) {
             int64 b = 0;
@@ -332,7 +332,7 @@ public final class FastICA implements Transformer {
             }
             a = a + 1;
         }
-        Tensor<float64>[] ev = LinAlg.eigh<float64>(wwt);
+        Tensor<float64>[] ev #= LinAlg.eigh<float64>(wwt);
         Tensor<float64> w = ev[0];
         Tensor<float64> v = ev[1];
         // M = V diag(1/sqrt(w)) Vᵀ, then W ← M·W.

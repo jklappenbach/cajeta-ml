@@ -30,7 +30,7 @@ public class GradOpsTest {
     /** (2,3): (f+1)*0.5 - 1.75 — mixed signs. */
     static #Tensor<float32> a23() {
         int64[] sh = [2, 3];
-        Tensor<float32> t = Tensor.full<float32>(sh, 0.0f);
+        Tensor<float32> t #= Tensor.full<float32>(sh, 0.0f);
         int64 f = 0;
         while (f < 6) {
             t.flatSet(f, (float32) (f + 1) * 0.5f - 1.75f);
@@ -42,7 +42,7 @@ public class GradOpsTest {
     /** (2,3): ((i+2j) % 4)*0.25 + 0.25 — strictly positive. */
     static #Tensor<float32> b23() {
         int64[] sh = [2, 3];
-        Tensor<float32> t = Tensor.full<float32>(sh, 0.0f);
+        Tensor<float32> t #= Tensor.full<float32>(sh, 0.0f);
         int64 f = 0;
         while (f < 6) {
             int64 i = f / 3;
@@ -56,7 +56,7 @@ public class GradOpsTest {
     /** (3,2): (i-j)*0.5 + 0.25. */
     static #Tensor<float32> w32() {
         int64[] sh = [3, 2];
-        Tensor<float32> t = Tensor.full<float32>(sh, 0.0f);
+        Tensor<float32> t #= Tensor.full<float32>(sh, 0.0f);
         int64 f = 0;
         while (f < 6) {
             int64 i = f / 2;
@@ -70,7 +70,7 @@ public class GradOpsTest {
     /** (1,3) broadcast row: j*0.5 + 0.5. */
     static #Tensor<float32> r13() {
         int64[] sh = [1, 3];
-        Tensor<float32> t = Tensor.full<float32>(sh, 0.0f);
+        Tensor<float32> t #= Tensor.full<float32>(sh, 0.0f);
         int64 f = 0;
         while (f < 3) {
             t.flatSet(f, (float32) f * 0.5f + 0.5f);
@@ -93,7 +93,7 @@ public class GradOpsTest {
 
     /** The generator's cotangent weights: K[f] = ((f % 3) + 1) * 0.5. */
     static #Tensor<float32> kLike(Tensor<float32> src) {
-        Tensor<float32> out = src.copy();
+        Tensor<float32> out #= src.copy();
         int64 n = GradOpsTest.countOf(out);
         int64 f = 0;
         while (f < n) {
@@ -105,7 +105,7 @@ public class GradOpsTest {
 
     /** Backprop L = sum(y ⊙ K) through the tape. */
     static void wback(GradTape<float32> t, GradTensor y) {
-        Tensor<float32> kv = GradOpsTest.kLike(t.valueOf(y));
+        Tensor<float32> kv #= GradOpsTest.kLike(t.valueOf(y));
         GradTensor k = t.leaf(kv, false);
         GradTensor loss = t.sum(t.mul(y, k));
         t.backward(loss);
@@ -133,7 +133,7 @@ public class GradOpsTest {
 
     static #Tensor<float64> a23d() {
         int64[] sh = [2, 3];
-        Tensor<float64> t = Tensor.full<float64>(sh, 0.0);
+        Tensor<float64> t #= Tensor.full<float64>(sh, 0.0);
         int64 f = 0;
         while (f < 6) {
             t.flatSet(f, (float64) (f + 1) * 0.5 - 1.75);
@@ -144,7 +144,7 @@ public class GradOpsTest {
 
     static #Tensor<float64> w32d() {
         int64[] sh = [3, 2];
-        Tensor<float64> t = Tensor.full<float64>(sh, 0.0);
+        Tensor<float64> t #= Tensor.full<float64>(sh, 0.0);
         int64 f = 0;
         while (f < 6) {
             int64 i = f / 2;
@@ -156,7 +156,7 @@ public class GradOpsTest {
     }
 
     static #Tensor<float64> kLikeD(Tensor<float64> src) {
-        Tensor<float64> out = src.copy();
+        Tensor<float64> out #= src.copy();
         int64 n = 1;
         int32 d = 0;
         while (d < out.ndim()) {
@@ -206,8 +206,8 @@ public class GradOpsTest {
     @Test
     public void pinAddBroadcast() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
-        Tensor<float32> bv = GradOpsTest.r13();
+        Tensor<float32> av #= GradOpsTest.a23();
+        Tensor<float32> bv #= GradOpsTest.r13();
         GradTensor a = t.leaf(av, true);
         GradTensor b = t.leaf(bv, true);
         GradTensor y = t.add(a, b);
@@ -223,8 +223,8 @@ public class GradOpsTest {
     @Test
     public void pinSubBroadcast() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
-        Tensor<float32> bv = GradOpsTest.r13();
+        Tensor<float32> av #= GradOpsTest.a23();
+        Tensor<float32> bv #= GradOpsTest.r13();
         GradTensor a = t.leaf(av, true);
         GradTensor b = t.leaf(bv, true);
         GradTensor y = t.sub(a, b);
@@ -240,8 +240,8 @@ public class GradOpsTest {
     @Test
     public void pinMulBroadcast() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
-        Tensor<float32> bv = GradOpsTest.r13();
+        Tensor<float32> av #= GradOpsTest.a23();
+        Tensor<float32> bv #= GradOpsTest.r13();
         GradTensor a = t.leaf(av, true);
         GradTensor b = t.leaf(bv, true);
         GradTensor y = t.mul(a, b);
@@ -257,8 +257,8 @@ public class GradOpsTest {
     @Test
     public void pinDivBroadcast() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
-        Tensor<float32> bv = GradOpsTest.r13();
+        Tensor<float32> av #= GradOpsTest.a23();
+        Tensor<float32> bv #= GradOpsTest.r13();
         GradTensor a = t.leaf(av, true);
         GradTensor b = t.leaf(bv, true);
         GradTensor y = t.div(a, b);
@@ -274,8 +274,8 @@ public class GradOpsTest {
     @Test
     public void pinMatmul() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
-        Tensor<float32> bv = GradOpsTest.w32();
+        Tensor<float32> av #= GradOpsTest.a23();
+        Tensor<float32> bv #= GradOpsTest.w32();
         GradTensor a = t.leaf(av, true);
         GradTensor b = t.leaf(bv, true);
         GradTensor y = t.matmul(a, b);
@@ -291,7 +291,7 @@ public class GradOpsTest {
     @Test
     public void pinRelu() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.relu(a);
         float32[] po = [0.0f, 0.0f, 0.0f, 0.25f, 0.75f, 1.25f];
@@ -304,7 +304,7 @@ public class GradOpsTest {
     @Test
     public void pinGelu() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.gelu(a);
         float32[] po = [-0.13206221f, -0.16997051f, -0.10032342f,
@@ -319,7 +319,7 @@ public class GradOpsTest {
     @Test
     public void pinTanh() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.tanh(a);
         float32[] po = [-0.84828365f, -0.63514894f, -0.24491866f,
@@ -334,7 +334,7 @@ public class GradOpsTest {
     @Test
     public void pinSigmoid() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.sigmoid(a);
         float32[] po = [0.22270013f, 0.32082129f, 0.4378235f,
@@ -349,7 +349,7 @@ public class GradOpsTest {
     @Test
     public void pinSoftmax() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.softmax(a);
         float32[] po = [0.18632373f, 0.3071959f, 0.5064804f,
@@ -364,7 +364,7 @@ public class GradOpsTest {
     @Test
     public void pinLogSoftmax() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.logSoftmax(a);
         float32[] po = [-1.68026972f, -1.18026972f, -0.68026966f,
@@ -380,7 +380,7 @@ public class GradOpsTest {
     @Test
     public void pinExp() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.exp(a);
         float32[] po = [0.28650481f, 0.47236654f, 0.77880079f,
@@ -395,7 +395,7 @@ public class GradOpsTest {
     @Test
     public void pinLog() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.b23();
+        Tensor<float32> av #= GradOpsTest.b23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.log(a);
         float32[] po = [-1.38629436f, -0.28768206f, -1.38629436f,
@@ -409,7 +409,7 @@ public class GradOpsTest {
     @Test
     public void pinSqrt() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.b23();
+        Tensor<float32> av #= GradOpsTest.b23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.sqrt(a);
         float32[] po = [0.5f, 0.86602539f, 0.5f, 0.70710677f, 1.0f, 0.70710677f];
@@ -422,7 +422,7 @@ public class GradOpsTest {
     @Test
     public void pinPowScalarCube() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.b23();
+        Tensor<float32> av #= GradOpsTest.b23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.powScalar(a, 3.0f);
         float32[] po = [0.015625f, 0.421875f, 0.015625f, 0.125f, 1.0f, 0.125f];
@@ -435,7 +435,7 @@ public class GradOpsTest {
     @Test
     public void pinSumFull() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.sum(a);
         float32[] po = [0.0f];
@@ -448,7 +448,7 @@ public class GradOpsTest {
     @Test
     public void pinMeanFull() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.mean(a);
         float32[] po = [0.0f];
@@ -462,7 +462,7 @@ public class GradOpsTest {
     @Test
     public void pinSumAxis0Keepdims() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.sumAxis(a, 0);
         float32[] po = [-1.0f, 0.0f, 1.0f];
@@ -477,7 +477,7 @@ public class GradOpsTest {
     @Test
     public void pinMeanAxis1Keepdims() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.meanAxis(a, 1);
         float32[] po = [-0.75f, 0.75f];
@@ -492,7 +492,7 @@ public class GradOpsTest {
     @Test
     public void pinMaxAxis1Keepdims() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.maxAxis(a, 1);
         float32[] po = [-0.25f, 1.25f];
@@ -505,7 +505,7 @@ public class GradOpsTest {
     @Test
     public void pinReshape() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         int64[] ns = [3, 2];
         GradTensor y = t.reshape(a, ns);
@@ -520,7 +520,7 @@ public class GradOpsTest {
     @Test
     public void pinTranspose() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.transpose2d(a);
         float32[] po = [-1.25f, 0.25f, -0.75f, 0.75f, -0.25f, 1.25f];
@@ -533,7 +533,7 @@ public class GradOpsTest {
     @Test
     public void pinSliceAxis1() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
+        Tensor<float32> av #= GradOpsTest.a23();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.slice(a, 1, 1, 3);
         float32[] po = [-0.75f, -0.25f, 0.75f, 1.25f];
@@ -546,8 +546,8 @@ public class GradOpsTest {
     @Test
     public void pinConcatAxis1() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradOpsTest.a23();
-        Tensor<float32> bv = GradOpsTest.b23();
+        Tensor<float32> av #= GradOpsTest.a23();
+        Tensor<float32> bv #= GradOpsTest.b23();
         GradTensor a = t.leaf(av, true);
         GradTensor b = t.leaf(bv, true);
         GradTensor y = t.concat(a, b, 1);
@@ -566,19 +566,19 @@ public class GradOpsTest {
     @Test
     public void mlp2MatchesTorchEndToEnd() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> xv = GradOpsTest.a23();
-        Tensor<float32> w1v = GradOpsTest.w32();
+        Tensor<float32> xv #= GradOpsTest.a23();
+        Tensor<float32> w1v #= GradOpsTest.w32();
         int64[] s2 = [2];
-        Tensor<float32> b1v = Tensor.full<float32>(s2, 0.0f);
+        Tensor<float32> b1v #= Tensor.full<float32>(s2, 0.0f);
         b1v.flatSet(0, 0.1f);
         b1v.flatSet(1, -0.2f);
         int64[] s21 = [2, 1];
-        Tensor<float32> w2v = Tensor.full<float32>(s21, 0.0f);
+        Tensor<float32> w2v #= Tensor.full<float32>(s21, 0.0f);
         w2v.flatSet(0, 0.5f);
         w2v.flatSet(1, -0.25f);
         int64[] s1 = [1];
-        Tensor<float32> b2v = Tensor.full<float32>(s1, 0.05f);
-        Tensor<float32> tv = Tensor.full<float32>(s21, 0.0f);
+        Tensor<float32> b2v #= Tensor.full<float32>(s1, 0.05f);
+        Tensor<float32> tv #= Tensor.full<float32>(s21, 0.0f);
         tv.flatSet(0, 0.5f);
         tv.flatSet(1, -0.5f);
 
@@ -613,14 +613,14 @@ public class GradOpsTest {
     @Test
     public void pinGeluFloat64() {
         GradTape<float64> t = heap GradTape<float64>();
-        Tensor<float64> av = GradOpsTest.a23d();
+        Tensor<float64> av #= GradOpsTest.a23d();
         GradTensor a = t.leaf(av, true);
         GradTensor y = t.gelu(a);
         float64[] po = [-0.13206221708356905, -0.16997051428265111,
                         -0.10032341857926907, 0.14967658142073093,
                         0.58002948571734891, 1.117937782916431];
         GradOpsTest.checkFlatD(t.valueOf(y), po, 0.000000000001);
-        Tensor<float64> kv = GradOpsTest.kLikeD(t.valueOf(y));
+        Tensor<float64> kv #= GradOpsTest.kLikeD(t.valueOf(y));
         GradTensor k = t.leaf(kv, false);
         GradTensor loss = t.sum(t.mul(y, k));
         t.backward(loss);
@@ -633,19 +633,19 @@ public class GradOpsTest {
     @Test
     public void mlp2Float64MatchesTorch() {
         GradTape<float64> t = heap GradTape<float64>();
-        Tensor<float64> xv = GradOpsTest.a23d();
-        Tensor<float64> w1v = GradOpsTest.w32d();
+        Tensor<float64> xv #= GradOpsTest.a23d();
+        Tensor<float64> w1v #= GradOpsTest.w32d();
         int64[] s2 = [2];
-        Tensor<float64> b1v = Tensor.full<float64>(s2, 0.0);
+        Tensor<float64> b1v #= Tensor.full<float64>(s2, 0.0);
         b1v.flatSet(0, 0.1);
         b1v.flatSet(1, -0.2);
         int64[] s21 = [2, 1];
-        Tensor<float64> w2v = Tensor.full<float64>(s21, 0.0);
+        Tensor<float64> w2v #= Tensor.full<float64>(s21, 0.0);
         w2v.flatSet(0, 0.5);
         w2v.flatSet(1, -0.25);
         int64[] s1 = [1];
-        Tensor<float64> b2v = Tensor.full<float64>(s1, 0.05);
-        Tensor<float64> tv = Tensor.full<float64>(s21, 0.0);
+        Tensor<float64> b2v #= Tensor.full<float64>(s1, 0.05);
+        Tensor<float64> tv #= Tensor.full<float64>(s21, 0.0);
         tv.flatSet(0, 0.5);
         tv.flatSet(1, -0.5);
 

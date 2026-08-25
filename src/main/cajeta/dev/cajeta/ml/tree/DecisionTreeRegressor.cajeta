@@ -243,7 +243,7 @@ public final class DecisionTreeRegressor implements Predictor {
 
     /** R² — the regressor `score` convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         return Metrics.r2(y, p);
     }
 
@@ -276,7 +276,7 @@ public final class DecisionTreeRegressor implements Predictor {
         if (!this.fitted) {
             throw heap MlException("DecisionTreeRegressor.featureImportances: fit first");
         }
-        float64[] imp = this.tree.importances();
+        float64[] imp #= this.tree.importances();
         int64[] sh = heap int64[1]; sh[0] = this.nFeatures;
         return Tensor.of<float64>(imp, sh);
     }

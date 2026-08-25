@@ -30,8 +30,8 @@ public class ShapesTest {
     // 1.1.1 — spherical blobs: k well-separated centers, labels known.
     @Test
     public void blobsAreSeededAndSeparated() {
-        Tensor<float64> x = Shapes.blobs((uint64) 7);
-        int64[] y = Shapes.blobLabels();
+        Tensor<float64> x #= Shapes.blobs((uint64) 7);
+        int64[] y #= Shapes.blobLabels();
         Assert.equals((int64) 60, x.shapeAt(0));
         Assert.equals((int64) 2, x.shapeAt(1));
         Assert.equals((int64) 60, (int64) y.count());
@@ -68,8 +68,8 @@ public class ShapesTest {
     // fails here; DBSCAN succeeds. Points lie in two disjoint radius bands.
     @Test
     public void circlesAreNestedAndNonConvex() {
-        Tensor<float64> x = Shapes.circles((uint64) 11);
-        int64[] y = Shapes.circleLabels();
+        Tensor<float64> x #= Shapes.circles((uint64) 11);
+        int64[] y #= Shapes.circleLabels();
         Assert.equals((int64) 80, x.shapeAt(0));
         int64 i = 0;
         while (i < 80) {
@@ -88,8 +88,8 @@ public class ShapesTest {
     // 1.1.2 — elongated non-convex: two moons.
     @Test
     public void moonsAreSeededAndInterleaved() {
-        Tensor<float64> x = Shapes.moons((uint64) 13);
-        int64[] y = Shapes.moonLabels();
+        Tensor<float64> x #= Shapes.moons((uint64) 13);
+        int64[] y #= Shapes.moonLabels();
         Assert.equals((int64) 80, x.shapeAt(0));
         Assert.equals((int64) 80, (int64) y.count());
         // The two moons interleave horizontally: their x-ranges overlap,
@@ -114,8 +114,8 @@ public class ShapesTest {
     // whose empirical means recover the true means within tolerance.
     @Test
     public void overlappingGaussiansRecoverKnownParameters() {
-        Tensor<float64> x = Shapes.overlapGaussians((uint64) 17);
-        int64[] y = Shapes.overlapLabels();
+        Tensor<float64> x #= Shapes.overlapGaussians((uint64) 17);
+        int64[] y #= Shapes.overlapLabels();
         Assert.equals((int64) 120, x.shapeAt(0));
         // True means: (0,0) and (2.5,0) — overlapping at unit variance.
         float64 mx0 = 0.0;
@@ -147,8 +147,8 @@ public class ShapesTest {
     // points appended far from both blobs.
     @Test
     public void noisyBlobsHaveKnownNoise() {
-        Tensor<float64> x = Shapes.noisyBlobs((uint64) 19);
-        int64[] y = Shapes.noisyBlobLabels();
+        Tensor<float64> x #= Shapes.noisyBlobs((uint64) 19);
+        int64[] y #= Shapes.noisyBlobLabels();
         Assert.equals((int64) 45, x.shapeAt(0));
         int64 noise = 0;
         int64 i = 0;
@@ -170,7 +170,7 @@ public class ShapesTest {
     // (~1e4 scale), for §3.4's scale-sensitivity documentation.
     @Test
     public void mixedUnitsDifferByOrdersOfMagnitude() {
-        Tensor<float64> x = Shapes.mixedUnits((uint64) 23);
+        Tensor<float64> x #= Shapes.mixedUnits((uint64) 23);
         Assert.equals((int64) 40, x.shapeAt(0));
         float64 span0 = Shapes.columnSpan(x, (int64) 0);
         float64 span1 = Shapes.columnSpan(x, (int64) 1);

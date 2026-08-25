@@ -206,7 +206,7 @@ public final class ElasticNet implements Predictor {
         while (j < p) { cd[j] = w[j]; j = j + 1; }
         int64[] psh = heap int64[1];
         psh[0] = p;
-        Tensor<float64> coefT = Tensor.of<float64>(cd, psh);
+        Tensor<float64> coefT #= Tensor.of<float64>(cd, psh);
         float64 ic = ymean;
         j = 0;
         while (j < p) { ic = ic - xmean[j] * w[j]; j = j + 1; }
@@ -337,7 +337,7 @@ public final class ElasticNet implements Predictor {
         while (j2 < p) { cd[j2] = w[j2]; j2 = j2 + 1; }
         int64[] psh = heap int64[1];
         psh[0] = p;
-        Tensor<float64> coefT = Tensor.of<float64>(cd, psh);
+        Tensor<float64> coefT #= Tensor.of<float64>(cd, psh);
 
         if (!conv) {
             System.stdout.println(
@@ -519,7 +519,7 @@ public final class ElasticNet implements Predictor {
 
     /** R² (the sklearn regressor `score` convention). */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pr = this.predict(x);
+        Tensor<float64> pr #= this.predict(x);
         return Metrics.r2(y, pr);
     }
 }

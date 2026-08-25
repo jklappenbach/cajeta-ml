@@ -105,7 +105,7 @@ public class TransformerDecoderLayer extends Module {
             zs[0] = b;
             zs[1] = tq;
             zs[2] = mv.shapeAt(1);
-            Tensor<float32> zero = Tensor.zeros<float32>(zs);
+            Tensor<float32> zero #= Tensor.zeros<float32>(zs);
             ca = this.multihead_attn.forwardCross(tape, x1, memory, zero);
         }
         GradTensor x2 = this.norm3d(tape, this.norm2, tape.add(x1, ca),

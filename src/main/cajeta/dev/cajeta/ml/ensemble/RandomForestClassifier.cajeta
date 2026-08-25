@@ -97,7 +97,7 @@ public final class RandomForestClassifier implements Predictor {
         while (e < this.nEstimators) {
             uint64 se = this.seed + (uint64) e;
             Generator g = heap Generator(se);
-            Tensor<int64> rows = g.integers(0, n, n);
+            Tensor<int64> rows #= g.integers(0, n, n);
             float64[] xa = heap float64[n * nf];
             float64[] ya = heap float64[n];
             int64 r = 0;
@@ -137,7 +137,7 @@ public final class RandomForestClassifier implements Predictor {
         int64 e = 0;
         while (e < this.nEstimators) {
             DecisionTreeClassifier t = this.members.get((int32) e);
-            Tensor<float64> pe = t.predict(x);
+            Tensor<float64> pe #= t.predict(x);
             int64 r = 0;
             while (r < n) { preds[e * n + r] = pe.flatGet(r); r = r + 1; }
             e = e + 1;
@@ -151,7 +151,7 @@ public final class RandomForestClassifier implements Predictor {
             throw heap MlException("RandomForestClassifier.predict: fit first");
         }
         int64 n = x.shapeAt(0);
-        float64[] preds = this.allPreds(x, n);
+        float64[] preds #= this.allPreds(x, n);
         int64 kmax = 0;
         int64 i = 0;
         while (i < this.nEstimators * n) {
@@ -183,7 +183,7 @@ public final class RandomForestClassifier implements Predictor {
 
     /** Accuracy. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         int64 n = p.shapeAt(0);
         int64 hits = 0;
         int64 i = 0;
@@ -196,7 +196,7 @@ public final class RandomForestClassifier implements Predictor {
 
     float64 computeOob(Tensor<float64> x, Tensor<float64> y) {
         int64 n = this.nTrain;
-        float64[] preds = this.allPreds(x, n);
+        float64[] preds #= this.allPreds(x, n);
         int64 kmax = 1;
         int64 i = 0;
         while (i < this.nEstimators * n) {
@@ -256,7 +256,7 @@ public final class RandomForestClassifier implements Predictor {
         int64 e = 0;
         while (e < this.nEstimators) {
             DecisionTreeClassifier t = this.members.get((int32) e);
-            Tensor<float64> imp = t.featureImportances();
+            Tensor<float64> imp #= t.featureImportances();
             int64 f = 0;
             while (f < this.nFeatures) { acc[f] = acc[f] + imp.flatGet(f); f = f + 1; }
             e = e + 1;

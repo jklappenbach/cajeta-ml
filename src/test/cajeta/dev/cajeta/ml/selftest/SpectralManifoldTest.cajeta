@@ -53,13 +53,13 @@ public class SpectralManifoldTest {
     // disconnected graph is loud and names nNeighbors.
     @Test
     public void isomapMatchesSklearnAndTransformsUnseen() {
-        Tensor<float64> x = SpectralManifoldTest.roll();
-        Tensor<float64> y = SpectralManifoldTest.ignoredY((int64) 60);
+        Tensor<float64> x #= SpectralManifoldTest.roll();
+        Tensor<float64> y #= SpectralManifoldTest.ignoredY((int64) 60);
         Isomap iso = heap Isomap((int64) 6, (int64) 2);
-        Tensor<float64> e = iso.fitTransform(x, y);
+        Tensor<float64> e #= iso.fitTransform(x, y);
         Assert.equals((int64) 60, e.shapeAt(0));
         Assert.equals((int64) 2, e.shapeAt(1));
-        float64[] lam = iso.kernelEigenvalues();
+        float64[] lam #= iso.kernelEigenvalues();
         Assert.isTrue(Fixtures.close(lam[0], 6913.353627318706, 0.5));
         Assert.isTrue(Fixtures.close(lam[1], 5212.739013918832, 0.5));
         // Column norm² equals the eigenvalue (classical-MDS identity).
@@ -71,7 +71,7 @@ public class SpectralManifoldTest {
         }
         Assert.isTrue(Fixtures.close(n0, lam[0], 0.5));
         // Nyström transform reproduces training rows exactly.
-        Tensor<float64> t2 = iso.transform(x);
+        Tensor<float64> t2 #= iso.transform(x);
         i = 0;
         while (i < t2.size()) {
             Assert.isTrue(Fixtures.close(t2.flatGet(i), e.flatGet(i),
@@ -92,7 +92,7 @@ public class SpectralManifoldTest {
             int64[] sh = heap int64[2];
             sh[0] = 8;
             sh[1] = 2;
-            Tensor<float64> far = Tensor.of<float64>(d, sh);
+            Tensor<float64> far #= Tensor.of<float64>(d, sh);
             Isomap bad = heap Isomap((int64) 2, (int64) 2);
             bad.fit(far, SpectralManifoldTest.ignoredY((int64) 8));
         });
@@ -104,10 +104,10 @@ public class SpectralManifoldTest {
     // transform mapping training rows next to their fitted embedding.
     @Test
     public void lleMatchesSklearnInvariants() {
-        Tensor<float64> x = SpectralManifoldTest.roll();
-        Tensor<float64> y = SpectralManifoldTest.ignoredY((int64) 60);
+        Tensor<float64> x #= SpectralManifoldTest.roll();
+        Tensor<float64> y #= SpectralManifoldTest.ignoredY((int64) 60);
         LLE lle = heap LLE((int64) 6, (int64) 2);
-        Tensor<float64> e = lle.fitTransform(x, y);
+        Tensor<float64> e #= lle.fitTransform(x, y);
         Assert.equals((int64) 60, e.shapeAt(0));
         Assert.equals((int64) 2, e.shapeAt(1));
         // sklearn reconstruction_error_: 1.4469796213604682e-06. The
@@ -131,7 +131,7 @@ public class SpectralManifoldTest {
         }
         // Transform: per-column |correlation| with the fitted embedding
         // > 0.99 over the training rows (self is among the neighbours).
-        Tensor<float64> t = lle.transform(x);
+        Tensor<float64> t #= lle.transform(x);
         c = 0;
         while (c < 2) {
             float64 ma = 0.0;
@@ -171,12 +171,12 @@ public class SpectralManifoldTest {
     // API is fitTransform-only.
     @Test
     public void spectralEmbeddingMatchesSklearnEigenvalues() {
-        Tensor<float64> x = SpectralManifoldTest.roll();
+        Tensor<float64> x #= SpectralManifoldTest.roll();
         SpectralEmbedding sk = heap SpectralEmbedding((int64) 2,
             (int64) 6);
-        Tensor<float64> ek = sk.fitTransform(x);
+        Tensor<float64> ek #= sk.fitTransform(x);
         Assert.equals((int64) 60, ek.shapeAt(0));
-        float64[] wk = sk.eigenvalues();
+        float64[] wk #= sk.eigenvalues();
         Assert.isTrue(Fixtures.close(wk[0], 0.027141530810627867,
             0.00001));
         Assert.isTrue(Fixtures.close(wk[1], 0.054450250389715134,
@@ -188,7 +188,7 @@ public class SpectralManifoldTest {
         SpectralEmbedding sr = heap SpectralEmbedding((int64) 2,
             0.3333333333333333);
         sr.fitTransform(x);
-        float64[] wr = sr.eigenvalues();
+        float64[] wr #= sr.eigenvalues();
         Assert.isTrue(Fixtures.close(wr[0], 0.0004727473308772296,
             0.00001));
         Assert.isTrue(Fixtures.close(wr[1], 0.0020300132590427497,
@@ -208,12 +208,12 @@ public class SpectralManifoldTest {
     // limits live in each class's docs.
     @Test
     public void deterministicUpToSignAndReproducible() {
-        Tensor<float64> x = SpectralManifoldTest.roll();
-        Tensor<float64> y = SpectralManifoldTest.ignoredY((int64) 60);
+        Tensor<float64> x #= SpectralManifoldTest.roll();
+        Tensor<float64> y #= SpectralManifoldTest.ignoredY((int64) 60);
         Isomap a = heap Isomap((int64) 6, (int64) 2);
-        Tensor<float64> ea = a.fitTransform(x, y);
+        Tensor<float64> ea #= a.fitTransform(x, y);
         Isomap b = heap Isomap((int64) 6, (int64) 2);
-        Tensor<float64> eb = b.fitTransform(x, y);
+        Tensor<float64> eb #= b.fitTransform(x, y);
         int64 i = 0;
         while (i < ea.size()) {
             Assert.isTrue(ea.flatGet(i) == eb.flatGet(i));
@@ -221,10 +221,10 @@ public class SpectralManifoldTest {
         }
         SpectralEmbedding s1 = heap SpectralEmbedding((int64) 2,
             (int64) 6);
-        Tensor<float64> e1 = s1.fitTransform(x);
+        Tensor<float64> e1 #= s1.fitTransform(x);
         SpectralEmbedding s2 = heap SpectralEmbedding((int64) 2,
             (int64) 6);
-        Tensor<float64> e2 = s2.fitTransform(x);
+        Tensor<float64> e2 #= s2.fitTransform(x);
         i = 0;
         while (i < e1.size()) {
             Assert.isTrue(e1.flatGet(i) == e2.flatGet(i));

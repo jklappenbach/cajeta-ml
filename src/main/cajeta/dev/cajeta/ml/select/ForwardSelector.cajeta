@@ -79,7 +79,7 @@ public final class ForwardSelector implements Transformer {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = w;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -104,7 +104,7 @@ public final class ForwardSelector implements Transformer {
                 + "the feature count");
         }
         KFold kf = heap KFold(this.nFolds, true, this.seed);
-        Tensor<int64> foldIds = kf.assignments(n);
+        Tensor<int64> foldIds #= kf.assignments(n);
 
         boolean[] chosen = heap boolean[p];
         boolean[] cand = heap boolean[p];
@@ -123,7 +123,7 @@ public final class ForwardSelector implements Transformer {
                         t = t + 1;
                     }
                     cand[j] = true;
-                    Tensor<float64> xSub =
+                    Tensor<float64> xSub #=
                         ForwardSelector.takeColumns(x, cand, count + 1);
                     float64 s = GridSearch.scoreCombo(this.factory,
                         this.paramsV, xSub, y, foldIds, this.nFolds,
@@ -146,7 +146,7 @@ public final class ForwardSelector implements Transformer {
 
         int64[] sh = heap int64[1];
         sh[0] = count;
-        Tensor<int64> sel = Tensor.zeros<int64>(sh);
+        Tensor<int64> sel #= Tensor.zeros<int64>(sh);
         int64 c = 0;
         int64 j2 = 0;
         while (j2 < p) {

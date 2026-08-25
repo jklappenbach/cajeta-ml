@@ -36,22 +36,22 @@ public class PreprocessSplitTest {
 
     @Test
     public void standardScalerMatchesSklearnAndRoundTrips() {
-        Tensor<float64> x = PreprocessSplitTest.x42();
+        Tensor<float64> x #= PreprocessSplitTest.x42();
         StandardScaler s = heap StandardScaler();
         boolean threw = false;
         try {
-            Tensor<float64> bad = s.transform(x);
+            Tensor<float64> bad #= s.transform(x);
         } catch (MlException ex) {
             threw = true;
         }
         Assert.isTrue(threw);
-        Tensor<float64> z = s.fitTransform(x, x);
+        Tensor<float64> z #= s.fitTransform(x, x);
         // sklearn pins: col means [2.5, 32.5], scale [1.118033988749895, 19.20286436967152]
         Assert.isTrue(PreprocessSplitTest.close(z.get2(0, 0), -1.3416407864998738));
         Assert.isTrue(PreprocessSplitTest.close(z.get2(0, 1), -1.171700198827415));
         Assert.isTrue(PreprocessSplitTest.close(z.get2(3, 0), 1.3416407864998738));
         Assert.isTrue(PreprocessSplitTest.close(z.get2(3, 1), 1.4320780207890627));
-        Tensor<float64> back = s.inverseTransform(z);
+        Tensor<float64> back #= s.inverseTransform(z);
         int64 i = 0;
         while (i < 4) {
             int64 j = 0;
@@ -65,14 +65,14 @@ public class PreprocessSplitTest {
 
     @Test
     public void minMaxScalerMatchesSklearnAndRoundTrips() {
-        Tensor<float64> x = PreprocessSplitTest.x42();
+        Tensor<float64> x #= PreprocessSplitTest.x42();
         MinMaxScaler s = heap MinMaxScaler();
-        Tensor<float64> z = s.fitTransform(x, x);
+        Tensor<float64> z #= s.fitTransform(x, x);
         Assert.isTrue(PreprocessSplitTest.close(z.get2(1, 0), 0.3333333333333333));
         Assert.isTrue(PreprocessSplitTest.close(z.get2(1, 1), 0.2));
         Assert.isTrue(PreprocessSplitTest.close(z.get2(0, 0), 0.0));
         Assert.isTrue(PreprocessSplitTest.close(z.get2(3, 1), 1.0));
-        Tensor<float64> back = s.inverseTransform(z);
+        Tensor<float64> back #= s.inverseTransform(z);
         int64 i = 0;
         while (i < 4) {
             int64 j = 0;
@@ -88,7 +88,7 @@ public class PreprocessSplitTest {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = 1;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             x.flatSet(i, (float64) i);
@@ -100,7 +100,7 @@ public class PreprocessSplitTest {
     static #Tensor<float64> bigY(int64 n) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        Tensor<float64> y #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             y.set1(i, (float64) (i * 10));
@@ -111,9 +111,9 @@ public class PreprocessSplitTest {
 
     @Test
     public void trainTestSplitSizesDeterminismCoverage() {
-        Tensor<float64> x = PreprocessSplitTest.bigX((int64) 10);
-        Tensor<float64> y = PreprocessSplitTest.bigY((int64) 10);
-        Tensor<float64>[] s1 = Split.trainTestSplit(x, y, 0.25, (uint64) 42);
+        Tensor<float64> x #= PreprocessSplitTest.bigX((int64) 10);
+        Tensor<float64> y #= PreprocessSplitTest.bigY((int64) 10);
+        Tensor<float64>[] s1 #= Split.trainTestSplit(x, y, 0.25, (uint64) 42);
         // ceil(10*0.25) = 3 test, 7 train
         Assert.equals((int64) 7, s1[0].shapeAt(0));
         Assert.equals((int64) 3, s1[1].shapeAt(0));
@@ -138,7 +138,7 @@ public class PreprocessSplitTest {
         while (i < 3) { sum = sum + s1[3].get1(i); i = i + 1; }
         Assert.isTrue(sum == 450.0);
         // determinism per seed
-        Tensor<float64>[] s2 = Split.trainTestSplit(x, y, 0.25, (uint64) 42);
+        Tensor<float64>[] s2 #= Split.trainTestSplit(x, y, 0.25, (uint64) 42);
         i = 0;
         while (i < 3) {
             Assert.isTrue(s2[3].get1(i) == s1[3].get1(i));
@@ -149,7 +149,7 @@ public class PreprocessSplitTest {
     @Test
     public void kfoldSizesDisjointCoverageDeterminism() {
         KFold kf = heap KFold((int64) 3, true, (uint64) 7);
-        Tensor<int64> a1 = kf.assignments((int64) 10);
+        Tensor<int64> a1 #= kf.assignments((int64) 10);
         // sklearn size rule: 10 into 3 folds -> 4,3,3
         int64[] counts = heap int64[3];
         counts[0] = 0;
@@ -167,7 +167,7 @@ public class PreprocessSplitTest {
         Assert.equals((int64) 3, counts[2]);
         // determinism per seed
         KFold kf2 = heap KFold((int64) 3, true, (uint64) 7);
-        Tensor<int64> a2 = kf2.assignments((int64) 10);
+        Tensor<int64> a2 #= kf2.assignments((int64) 10);
         i = 0;
         while (i < 10) {
             Assert.equals(a1.get1(i), a2.get1(i));
@@ -175,7 +175,7 @@ public class PreprocessSplitTest {
         }
         // unshuffled: contiguous blocks
         KFold kfp = heap KFold((int64) 3, false, (uint64) 0);
-        Tensor<int64> ap = kfp.assignments((int64) 10);
+        Tensor<int64> ap #= kfp.assignments((int64) 10);
         Assert.equals((int64) 0, ap.get1(0));
         Assert.equals((int64) 0, ap.get1(3));
         Assert.equals((int64) 1, ap.get1(4));
@@ -189,11 +189,11 @@ public class PreprocessSplitTest {
         // interface (non-generic returns — unaffected by the
         // iface-generic-returns defect; `predict` stays inside the concrete
         // score()).
-        Tensor<float64> x = PreprocessSplitTest.bigX((int64) 12);
-        Tensor<float64> y = PreprocessSplitTest.bigY((int64) 12);
+        Tensor<float64> x #= PreprocessSplitTest.bigX((int64) 12);
+        Tensor<float64> y #= PreprocessSplitTest.bigY((int64) 12);
         KFold kf = heap KFold((int64) 3, true, (uint64) 5);
         DummyRegressor d = heap DummyRegressor();
-        Tensor<float64> scores = Split.crossValScore(d, x, y, kf);
+        Tensor<float64> scores #= Split.crossValScore(d, x, y, kf);
         Assert.equals((int64) 3, scores.shapeAt(0));
         // the mean predictor scores <= 0 on held-out folds (R² convention)
         int64 f = 0;

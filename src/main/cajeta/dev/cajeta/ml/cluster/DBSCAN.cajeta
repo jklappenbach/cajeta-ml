@@ -68,7 +68,7 @@ public final class DBSCAN implements Estimator {
             throw heap MlException("DBSCAN.fit: x must be 2-D (n, p)");
         }
         int64 n = x.shapeAt(0);
-        Tensor<float64> dm = Distance.pdist(x, this.metricM);
+        Tensor<float64> dm #= Distance.pdist(x, this.metricM);
 
         // Core points: >= minSamples within eps, self included
         // (d(i,i) = 0 always qualifies).
@@ -138,7 +138,7 @@ public final class DBSCAN implements Estimator {
         }
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> lt = Tensor.of<float64>(out, sh);
+        Tensor<float64> lt #= Tensor.of<float64>(out, sh);
         this.labelsV #= lt;
         this.coreV #= isCore;
         this.nClustersV = labelNum;
@@ -195,7 +195,7 @@ public final class DBSCAN implements Estimator {
             throw heap MlException(
                 "DBSCAN.kDistances: need 1 <= k < n");
         }
-        Tensor<float64> dm = Distance.pdist(x, metric);
+        Tensor<float64> dm #= Distance.pdist(x, metric);
         float64[] out = heap float64[n];
         float64[] row = heap float64[n - (int64) 1];
         int64 i = 0;

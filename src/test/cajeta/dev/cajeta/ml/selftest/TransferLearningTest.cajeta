@@ -61,7 +61,7 @@ public class TransferLearningTest {
         int64[] sh = heap int64[2];
         sh[0] = r;
         sh[1] = c;
-        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        Tensor<float32> t #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < r * c) {
             t.flatSet(i, TransferLearningTest.gv(i, off, scale));
@@ -85,8 +85,8 @@ public class TransferLearningTest {
             GradTensor tgt = tape.leaf(y, false);
             GradTensor loss = tape.mseLoss(out, tgt);
             tape.backward(loss);
-            Parameter[] ps = net.parameters();
-            Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+            Parameter[] ps #= net.parameters();
+            Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
             opt.step(gs);
             net.unbindParameters();
             s = s + 1;
@@ -121,15 +121,15 @@ public class TransferLearningTest {
     // unchanged after a training step (values compared), the rest move.
     @Test
     public void frozenSubtreeIsProvablyUnchanged() {
-        Sequential net = TransferLearningTest.buildNet();
+        Sequential net #= TransferLearningTest.buildNet();
         Module l1 = net.at((int32) 0);
         l1.setTrainable(false);
-        Parameter[] l1ps = l1.parameters();
-        Tensor<float32> w0 = l1ps[0].get().copy();
-        Tensor<float32> b0 = l1ps[1].get().copy();
-        Tensor<float32> x = TransferLearningTest.gridTensor((int64) 8,
+        Parameter[] l1ps #= l1.parameters();
+        Tensor<float32> w0 #= l1ps[0].get().copy();
+        Tensor<float32> b0 #= l1ps[1].get().copy();
+        Tensor<float32> x #= TransferLearningTest.gridTensor((int64) 8,
             (int64) 3, (int64) 0, 0.25);
-        Tensor<float32> y = TransferLearningTest.gridTensor((int64) 8,
+        Tensor<float32> y #= TransferLearningTest.gridTensor((int64) 8,
             (int64) 2, (int64) 3, 0.3);
         TransferLearningTest.phase(net, x, y, (int64) 2);
         int64 i = 0;
@@ -144,7 +144,7 @@ public class TransferLearningTest {
         }
         // The head DID train.
         Module l2 = net.at((int32) 2);
-        Parameter[] l2ps = l2.parameters();
+        Parameter[] l2ps #= l2.parameters();
         boolean moved = false;
         i = 0;
         while (i < l2ps[0].get().size()) {
@@ -172,14 +172,14 @@ public class TransferLearningTest {
     public void unfreezeGetsFreshOptimizerState() {
         int64[] sh = heap int64[1];
         sh[0] = 2;
-        Tensor<float32> pv = Tensor.zeros<float32>(sh);
+        Tensor<float32> pv #= Tensor.zeros<float32>(sh);
         pv.set1(0, 1.0f);
         pv.set1(1, 0.0f - 1.0f);
         Parameter p = heap Parameter(#pv);
         Parameter[] ps = heap Parameter[1];
         ps[0] = p;
         Adam opt = heap Adam(#ps, 0.01f);
-        Tensor<float32> g = Tensor.zeros<float32>(sh);
+        Tensor<float32> g #= Tensor.zeros<float32>(sh);
         g.set1(0, 1.0f);
         g.set1(1, 1.0f);
         Tensor<float32>[] gs = heap Tensor<float32>[1];
@@ -210,11 +210,11 @@ public class TransferLearningTest {
     // BIT-IDENTICAL afterward; only the new head is fresh.
     @Test
     public void headReplacementPreservesBackboneBitIdentically() {
-        Sequential net = TransferLearningTest.buildNet();
+        Sequential net #= TransferLearningTest.buildNet();
         Module l1 = net.at((int32) 0);
-        Parameter[] l1ps = l1.parameters();
-        Tensor<float32> w0 = l1ps[0].get().copy();
-        Tensor<float32> b0 = l1ps[1].get().copy();
+        Parameter[] l1ps #= l1.parameters();
+        Tensor<float32> w0 #= l1ps[0].get().copy();
+        Tensor<float32> b0 #= l1ps[1].get().copy();
         Module newHead = heap Linear((int64) 4, (int64) 2, (uint64) 9);
         TransferLearningTest.setLinear((Linear) newHead, (int64) 4,
             (int64) 2, (int64) 50, (int64) 53);
@@ -231,7 +231,7 @@ public class TransferLearningTest {
         }
         // The replaced head reads back the fresh grid, not the old one.
         Module l2 = net.at((int32) 2);
-        Parameter[] l2ps = l2.parameters();
+        Parameter[] l2ps #= l2.parameters();
         Assert.isTrue(l2ps[0].get().flatGet(0)
             == TransferLearningTest.gv((int64) 0, (int64) 50, 0.2));
         Assert.equals((int64) 4, (int64) net.parameters().count());
@@ -241,10 +241,10 @@ public class TransferLearningTest {
     // pretrain, freeze+replace-head, train, unfreeze, train.
     @Test
     public void fineTuneLoopMatchesTorchMetrics() {
-        Sequential net = TransferLearningTest.buildNet();
-        Tensor<float32> x = TransferLearningTest.gridTensor((int64) 8,
+        Sequential net #= TransferLearningTest.buildNet();
+        Tensor<float32> x #= TransferLearningTest.gridTensor((int64) 8,
             (int64) 3, (int64) 0, 0.25);
-        Tensor<float32> y = TransferLearningTest.gridTensor((int64) 8,
+        Tensor<float32> y #= TransferLearningTest.gridTensor((int64) 8,
             (int64) 2, (int64) 3, 0.3);
         float64 la = TransferLearningTest.phase(net, x, y, (int64) 5);
         Assert.isTrue(la > 0.04037976264953613 - 0.00001
@@ -271,18 +271,18 @@ public class TransferLearningTest {
     // configuration, and loading must not reset them).
     @Test
     public void freezeSurvivesCheckpointRoundTrip() {
-        Sequential net = TransferLearningTest.buildNet();
+        Sequential net #= TransferLearningTest.buildNet();
         net.at((int32) 0).setTrainable(false);
-        StateDict sd = Checkpoints.saveStateDict(net);
+        StateDict sd #= Checkpoints.saveStateDict(net);
         // Perturb a backbone value, then load back.
-        Parameter[] l1ps = net.at((int32) 0).parameters();
+        Parameter[] l1ps #= net.at((int32) 0).parameters();
         float32 orig = l1ps[0].get().flatGet(0);
         l1ps[0].get().flatSet(0, 99.0f);
         Checkpoints.loadStateDict(net, sd, true);
         Assert.isTrue(l1ps[0].get().flatGet(0) == orig);
         Assert.isFalse(l1ps[0].isTrainable());
         Assert.isFalse(l1ps[1].isTrainable());
-        Parameter[] headPs = net.at((int32) 2).parameters();
+        Parameter[] headPs #= net.at((int32) 2).parameters();
         Assert.isTrue(headPs[0].isTrainable());
     }
 }

@@ -47,9 +47,9 @@ public class SelectionMatrixTest {
     // the only fixture.
     @Test
     public void everyAlgorithmWinsOnBlobs() {
-        Tensor<float64> x = Shapes.blobs((uint64) 7);
-        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 60);
-        int64[] truth = Shapes.blobLabels();
+        Tensor<float64> x #= Shapes.blobs((uint64) 7);
+        Tensor<float64> y #= SelectionMatrixTest.ignoredY((int64) 60);
+        int64[] truth #= Shapes.blobLabels();
         KMeans km = heap KMeans((int64) 3, (uint64) 1);
         km.fit(x, y);
         Assert.isTrue(Harness.randIndex(
@@ -84,9 +84,9 @@ public class SelectionMatrixTest {
     // justifies DBSCAN and single linkage.
     @Test
     public void onlyDensityAndChainingWinOnRings() {
-        Tensor<float64> x = Shapes.denseCircles((uint64) 31);
-        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 160);
-        int64[] truth = Shapes.denseCircleLabels();
+        Tensor<float64> x #= Shapes.denseCircles((uint64) 31);
+        Tensor<float64> y #= SelectionMatrixTest.ignoredY((int64) 160);
+        int64[] truth #= Shapes.denseCircleLabels();
         DBSCAN db = heap DBSCAN(0.45, (int64) 3);
         db.fit(x, y);
         Assert.isTrue(Harness.randIndex(
@@ -128,9 +128,9 @@ public class SelectionMatrixTest {
     // failure mode, shown rather than hidden.
     @Test
     public void gmmWinsWhereDensityAndMidpointsFail() {
-        Tensor<float64> x = Shapes.unequalVariance((uint64) 29);
-        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 120);
-        int64[] truth = Shapes.unequalVarianceLabels();
+        Tensor<float64> x #= Shapes.unequalVariance((uint64) 29);
+        Tensor<float64> y #= SelectionMatrixTest.ignoredY((int64) 120);
+        int64[] truth #= Shapes.unequalVarianceLabels();
         KMeans km = heap KMeans((int64) 2, (uint64) 5);
         km.fit(x, y);
         float64 rk = Harness.randIndex(
@@ -161,14 +161,14 @@ public class SelectionMatrixTest {
     // such in their own suites).
     @Test
     public void protocolsComposeInPipeline() {
-        Tensor<float64> x = Shapes.mixedUnits((uint64) 23);
-        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 40);
+        Tensor<float64> x #= Shapes.mixedUnits((uint64) 23);
+        Tensor<float64> y #= SelectionMatrixTest.ignoredY((int64) 40);
         StandardScaler sc = heap StandardScaler();
         KMeans km = heap KMeans((int64) 2, (uint64) 6);
-        Pipeline pl = Pipeline.of(#sc, #km);
+        Pipeline pl #= Pipeline.of(#sc, #km);
         pl.fit(x, y);
-        Tensor<float64> pred = pl.predict(x);
-        int64[] lab = SelectionMatrixTest.intLabels(pred, (int64) 40);
+        Tensor<float64> pred #= pl.predict(x);
+        int64[] lab #= SelectionMatrixTest.intLabels(pred, (int64) 40);
         Assert.isTrue(Harness.randIndex(lab,
             Shapes.mixedUnitLabels()) == 1.0);
     }
@@ -177,8 +177,8 @@ public class SelectionMatrixTest {
     // estimators are single-threaded, so thread count cannot enter).
     @Test
     public void seededFitsReproduceAcrossRuns() {
-        Tensor<float64> x = Shapes.blobs((uint64) 7);
-        Tensor<float64> y = SelectionMatrixTest.ignoredY((int64) 60);
+        Tensor<float64> x #= Shapes.blobs((uint64) 7);
+        Tensor<float64> y #= SelectionMatrixTest.ignoredY((int64) 60);
         KMeans a = heap KMeans((int64) 3, (uint64) 9);
         a.fit(x, y);
         KMeans b = heap KMeans((int64) 3, (uint64) 9);

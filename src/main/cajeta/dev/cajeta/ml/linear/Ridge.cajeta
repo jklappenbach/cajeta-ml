@@ -44,15 +44,15 @@ public final class Ridge implements Predictor {
             throw heap MlException("Ridge.fit: y must be (n,) or (n,k) matching x rows");
         }
         this.yWas1D = y.ndim() == 1;
-        Tensor<float64> ym2 = LinearRegression.asMatrix(y, n);
+        Tensor<float64> ym2 #= LinearRegression.asMatrix(y, n);
         int64 k = ym2.shapeAt(1);
-        Tensor<float64> design = x.copy();
+        Tensor<float64> design #= x.copy();
         int64[] pm = heap int64[1];
         pm[0] = p;
-        Tensor<float64> xmean = Tensor.zeros<float64>(pm);
+        Tensor<float64> xmean #= Tensor.zeros<float64>(pm);
         int64[] km = heap int64[1];
         km[0] = k;
-        Tensor<float64> ymean = Tensor.zeros<float64>(km);
+        Tensor<float64> ymean #= Tensor.zeros<float64>(km);
         if (this.fitIcpt) {
             int64 j = 0;
             while (j < p) {
@@ -95,7 +95,7 @@ public final class Ridge implements Predictor {
         int64[] psh = heap int64[2];
         psh[0] = p;
         psh[1] = k;
-        Tensor<float64> xty = Tensor.zeros<float64>(psh);
+        Tensor<float64> xty #= Tensor.zeros<float64>(psh);
         int64 j3 = 0;
         while (j3 < p) {
             int64 c3 = 0;
@@ -114,10 +114,10 @@ public final class Ridge implements Predictor {
         int64[] wsh = heap int64[2];
         wsh[0] = p;
         wsh[1] = k;
-        Tensor<float64> w = Tensor.zeros<float64>(wsh);
+        Tensor<float64> w #= Tensor.zeros<float64>(wsh);
         if (this.useSvd) {
             // w = V · diag(s/(s²+α)) · Uᵀ·yc
-            Tensor<float64>[] sv = LinAlg.svd<float64>(design);
+            Tensor<float64>[] sv #= LinAlg.svd<float64>(design);
             int64 r = sv[1].shapeAt(0);
             int64 j4 = 0;
             while (j4 < p) {
@@ -145,14 +145,14 @@ public final class Ridge implements Predictor {
             }
         } else {
             // Gram + αI, Cholesky, factor application
-            Tensor<float64> g = Tensor.matmul<float64>(design.transpose(), design);
+            Tensor<float64> g #= Tensor.matmul<float64>(design.transpose(), design);
             int64 dgi = 0;
             while (dgi < p) {
                 g.flatSet(dgi * p + dgi, g.get2(dgi, dgi) + this.alpha);
                 dgi = dgi + 1;
             }
-            Tensor<float64> l = LinAlg.cholesky<float64>(g);
-            Tensor<float64> ws = LinAlg.choSolve<float64>(l, xty);
+            Tensor<float64> l #= LinAlg.cholesky<float64>(g);
+            Tensor<float64> ws #= LinAlg.choSolve<float64>(l, xty);
             int64 wi = 0;
             while (wi < p) {
                 int64 wc = 0;
@@ -163,7 +163,7 @@ public final class Ridge implements Predictor {
                 wi = wi + 1;
             }
         }
-        Tensor<float64> ic = Tensor.zeros<float64>(km);
+        Tensor<float64> ic #= Tensor.zeros<float64>(km);
         if (this.fitIcpt) {
             int64 c = 0;
             while (c < k) {
@@ -213,7 +213,7 @@ public final class Ridge implements Predictor {
         int64[] sh2 = heap int64[2];
         sh2[0] = n;
         sh2[1] = k;
-        Tensor<float64> out2 = Tensor.zeros<float64>(sh2);
+        Tensor<float64> out2 #= Tensor.zeros<float64>(sh2);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -232,7 +232,7 @@ public final class Ridge implements Predictor {
         if (this.yWas1D) {
             int64[] sh1 = heap int64[1];
             sh1[0] = n;
-            Tensor<float64> out1 = Tensor.zeros<float64>(sh1);
+            Tensor<float64> out1 #= Tensor.zeros<float64>(sh1);
             int64 i1 = 0;
             while (i1 < n) {
                 out1.set1(i1, out2.get2(i1, 0));
@@ -245,10 +245,10 @@ public final class Ridge implements Predictor {
 
     /** R² (uniform average over outputs), the regressor convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pred = this.predict(x);
+        Tensor<float64> pred #= this.predict(x);
         int64 n = y.shapeAt(0);
-        Tensor<float64> ym2 = LinearRegression.asMatrix(y, n);
-        Tensor<float64> pm2 = LinearRegression.asMatrix(pred, n);
+        Tensor<float64> ym2 #= LinearRegression.asMatrix(y, n);
+        Tensor<float64> pm2 #= LinearRegression.asMatrix(pred, n);
         int64 k = ym2.shapeAt(1);
         float64 total = 0.0;
         int64 c = 0;

@@ -150,11 +150,11 @@ public class KernelRegressionTest {
         xs[1] = 1;
         int64[] ys = heap int64[1];
         ys[0] = 20;
-        Tensor<float64> x = Tensor.of<float64>(xd, xs);
-        Tensor<float64> y = Tensor.of<float64>(yd, ys);
+        Tensor<float64> x #= Tensor.of<float64>(xd, xs);
+        Tensor<float64> y #= Tensor.of<float64>(yd, ys);
 
         KFold kf = heap KFold((int64) 4, true, (uint64) 13);
-        Tensor<int64> fid = kf.assignments((int64) 20);
+        Tensor<int64> fid #= kf.assignments((int64) 20);
         EstimatorFactory f = heap KernelFactory();
         Tensor<float64>[] dims = heap Tensor<float64>[1];
         float64[] hs = heap float64[4];
@@ -164,11 +164,11 @@ public class KernelRegressionTest {
         hs[3] = 8.0;
         int64[] ds = heap int64[1];
         ds[0] = 4;
-        dims[0] = Tensor.of<float64>(hs, ds);
-        SearchResult res = GridSearch.run(f, dims, x, y, fid, "r2");
+        dims[0] #= Tensor.of<float64>(hs, ds);
+        SearchResult res #= GridSearch.run(f, dims, x, y, fid, "r2");
         Assert.equals(res.count(), (int64) 4);
         Assert.equals(res.failures(), (int64) 0);
-        Tensor<float64> best = res.bestParams();
+        Tensor<float64> best #= res.bestParams();
         // The over-smoothed h=8 flattens to the mean and cannot win.
         Assert.isTrue(best.flatGet(0) < 8.0);
         Assert.isTrue(res.bestScore() > 0.5);
@@ -190,18 +190,18 @@ public class KernelRegressionTest {
         xs[1] = 1;
         int64[] ys = heap int64[1];
         ys[0] = 20;
-        Tensor<float64> x = Tensor.of<float64>(xd, xs);
-        Tensor<float64> y = Tensor.of<float64>(yd, ys);
+        Tensor<float64> x #= Tensor.of<float64>(xd, xs);
+        Tensor<float64> y #= Tensor.of<float64>(yd, ys);
 
         Transformer sc = heap StandardScaler();
         Predictor kr = heap KernelRegressor("gaussian", 0.3);
-        Pipeline pl = Pipeline.of(#sc, #kr);
+        Pipeline pl #= Pipeline.of(#sc, #kr);
         pl.fit(x, y);
         Assert.isTrue(pl.score(x, y) > 0.9);          // R² on the line
 
         Predictor kr2 = heap KernelRegressor("gaussian", 0.5);
         KFold kf = heap KFold((int64) 4, true, (uint64) 3);
-        Tensor<float64> scores = Split.crossValScore(kr2, x, y, kf);
+        Tensor<float64> scores #= Split.crossValScore(kr2, x, y, kf);
         int64 f = 0;
         while (f < 4) {
             Assert.isTrue(scores.flatGet(f) > 0.0);

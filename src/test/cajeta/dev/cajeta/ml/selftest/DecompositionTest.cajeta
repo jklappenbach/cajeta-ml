@@ -181,11 +181,11 @@ public class DecompositionTest {
     // is loud. Both contrasts work.
     @Test
     public void fastIcaUnmixesThreeSources() {
-        Tensor<float64> s = DecompositionTest.icaSources();
-        Tensor<float64> x = DecompositionTest.icaMix(s);
-        Tensor<float64> y = DecompositionTest.ignoredY((int64) 200);
+        Tensor<float64> s #= DecompositionTest.icaSources();
+        Tensor<float64> x #= DecompositionTest.icaMix(s);
+        Tensor<float64> y #= DecompositionTest.ignoredY((int64) 200);
         FastICA ica = heap FastICA((int64) 3, (uint64) 5);
-        Tensor<float64> r = ica.fitTransform(x, y);
+        Tensor<float64> r #= ica.fitTransform(x, y);
         Assert.equals((int64) 200, r.shapeAt(0));
         Assert.equals((int64) 3, r.shapeAt(1));
         boolean[] taken = heap boolean[3];
@@ -211,7 +211,7 @@ public class DecompositionTest {
         // exp contrast recovers as well.
         FastICA icaE = heap FastICA((int64) 3, (uint64) 5, "exp",
             (int64) 400, 0.0000001);
-        Tensor<float64> re = icaE.fitTransform(x, y);
+        Tensor<float64> re #= icaE.fitTransform(x, y);
         float64 bestAny = DecompositionTest.absCorr(s, (int64) 1, re,
             (int64) 0);
         float64 c1 = DecompositionTest.absCorr(s, (int64) 1, re, (int64) 1);
@@ -225,8 +225,8 @@ public class DecompositionTest {
         Assert.isTrue(bestAny > 0.97);
         // Non-convergence within maxIter is LOUD, never silent.
         Assert.assertThrows(() -> {
-            Tensor<float64> s2 = DecompositionTest.icaSources();
-            Tensor<float64> x2 = DecompositionTest.icaMix(s2);
+            Tensor<float64> s2 #= DecompositionTest.icaSources();
+            Tensor<float64> x2 #= DecompositionTest.icaMix(s2);
             FastICA bad = heap FastICA((int64) 3, (uint64) 5, "logcosh",
                 (int64) 1, 0.000000000001);
             bad.fit(x2, DecompositionTest.ignoredY((int64) 200));
@@ -239,12 +239,12 @@ public class DecompositionTest {
     // factors non-negative, negative input rejected NAMING the entry.
     @Test
     public void nmfMatchesSklearnOnRankTwoFixture() {
-        Tensor<float64> x = DecompositionTest.nmfX();
-        Tensor<float64> y = DecompositionTest.ignoredY((int64) 8);
+        Tensor<float64> x #= DecompositionTest.nmfX();
+        Tensor<float64> y #= DecompositionTest.ignoredY((int64) 8);
         NMF nmf = heap NMF((int64) 2);
         nmf.fit(x, y);
         Assert.isTrue(nmf.reconstructionError() < 0.00000001);
-        Tensor<float64> h = nmf.components();
+        Tensor<float64> h #= nmf.components();
         // Oracle rows (sklearn, nndsvd+cd): [1.342064·(1,.5,2,0,1)] and
         // [1.235698·(0,~.81,.5,2,1)] — identify by the zero column.
         int64 rA = 0;                 // row with h[·,3] == 0
@@ -258,7 +258,7 @@ public class DecompositionTest {
         Assert.isTrue(Fixtures.close(h.get2(rB, 0), 0.0, 0.002));
         Assert.isTrue(Fixtures.close(h.get2(rB, 3), 2.471397, 0.004));
         // Non-negativity of BOTH factors; reconstruction matches X.
-        Tensor<float64> w = nmf.transform(x);
+        Tensor<float64> w #= nmf.transform(x);
         int64 i = 0;
         while (i < w.size()) {
             Assert.isTrue(w.flatGet(i) >= 0.0);
@@ -269,7 +269,7 @@ public class DecompositionTest {
             Assert.isTrue(h.flatGet(i) >= 0.0);
             i = i + 1;
         }
-        Tensor<float64> back = nmf.inverseTransform(w);
+        Tensor<float64> back #= nmf.inverseTransform(w);
         i = 0;
         while (i < 8) {
             int64 j = 0;
@@ -290,7 +290,7 @@ public class DecompositionTest {
             int64[] sh = heap int64[2];
             sh[0] = 2;
             sh[1] = 2;
-            Tensor<float64> neg = Tensor.of<float64>(d, sh);
+            Tensor<float64> neg #= Tensor.of<float64>(d, sh);
             NMF bad = heap NMF((int64) 2);
             bad.fit(neg, DecompositionTest.ignoredY((int64) 2));
         });
@@ -301,11 +301,11 @@ public class DecompositionTest {
     // non-decreasing across EM iterations; the mean LL matches.
     @Test
     public void factorAnalysisRecoversModelMonotonically() {
-        Tensor<float64> x = DecompositionTest.faX();
-        Tensor<float64> y = DecompositionTest.ignoredY((int64) 300);
+        Tensor<float64> x #= DecompositionTest.faX();
+        Tensor<float64> y #= DecompositionTest.ignoredY((int64) 300);
         FactorAnalysis fa = heap FactorAnalysis((int64) 2);
         fa.fit(x, y);
-        Tensor<float64> lam = fa.loadings();
+        Tensor<float64> lam #= fa.loadings();
         // ΛΛᵀ — rotation-invariant. Oracle diag and row 0.
         float64[] llDiag = heap float64[5];
         llDiag[0] = 0.494456;
@@ -340,7 +340,7 @@ public class DecompositionTest {
         psiO[2] = 0.01985446;
         psiO[3] = 0.03138348;
         psiO[4] = 0.04501293;
-        Tensor<float64> psi = fa.noiseVariances();
+        Tensor<float64> psi #= fa.noiseVariances();
         a = 0;
         while (a < 5) {
             Assert.isTrue(Fixtures.close(psi.get1(a), psiO[a], 0.001));
@@ -349,7 +349,7 @@ public class DecompositionTest {
         Assert.isTrue(Fixtures.close(fa.meanLogLikelihood(x),
             0.0 - 1.2220484502587987, 0.001));
         // EM's defining property, asserted every iteration.
-        float64[] h = fa.logLikelihoodHistory();
+        float64[] h #= fa.logLikelihoodHistory();
         int64 n = (int64) h.count();
         Assert.isTrue(n >= 2);
         int64 i = 1;
@@ -364,13 +364,13 @@ public class DecompositionTest {
     // (ICA, NMF), and one composes in a Pipeline ahead of a predictor.
     @Test
     public void transformersConformAndCompose() {
-        Tensor<float64> s = DecompositionTest.icaSources();
-        Tensor<float64> x = DecompositionTest.icaMix(s);
-        Tensor<float64> y = DecompositionTest.ignoredY((int64) 200);
+        Tensor<float64> s #= DecompositionTest.icaSources();
+        Tensor<float64> x #= DecompositionTest.icaMix(s);
+        Tensor<float64> y #= DecompositionTest.ignoredY((int64) 200);
         // ICA round-trip: inverseTransform(transform(x)) ≈ x.
         FastICA ica = heap FastICA((int64) 3, (uint64) 5);
-        Tensor<float64> src = ica.fitTransform(x, y);
-        Tensor<float64> back = ica.inverseTransform(src);
+        Tensor<float64> src #= ica.fitTransform(x, y);
+        Tensor<float64> back #= ica.inverseTransform(src);
         int64 i = 0;
         while (i < 200) {
             Assert.isTrue(Fixtures.close(back.get2(i, 0), x.get2(i, 0),
@@ -380,7 +380,7 @@ public class DecompositionTest {
         // fitTransform == fit + transform.
         FastICA ica2 = heap FastICA((int64) 3, (uint64) 5);
         ica2.fit(x, y);
-        Tensor<float64> t2 = ica2.transform(x);
+        Tensor<float64> t2 #= ica2.transform(x);
         i = 0;
         while (i < t2.size()) {
             Assert.isTrue(Fixtures.close(src.flatGet(i), t2.flatGet(i),
@@ -389,7 +389,7 @@ public class DecompositionTest {
         }
         // Pipeline composition: FA features → linear regression on a
         // target that is itself linear in the factors.
-        Tensor<float64> xf = DecompositionTest.faX();
+        Tensor<float64> xf #= DecompositionTest.faX();
         float64[] yv = heap float64[300];
         i = 0;
         while (i < 300) {
@@ -399,10 +399,10 @@ public class DecompositionTest {
         }
         int64[] ys = heap int64[1];
         ys[0] = 300;
-        Tensor<float64> yt = Tensor.of<float64>(yv, ys);
+        Tensor<float64> yt #= Tensor.of<float64>(yv, ys);
         FactorAnalysis fa = heap FactorAnalysis((int64) 2);
         LinearRegression lr = heap LinearRegression(true);
-        Pipeline pl = Pipeline.of(#fa, #lr);
+        Pipeline pl #= Pipeline.of(#fa, #lr);
         pl.fit(xf, yt);
         float64 r2 = pl.score(xf, yt);
         Assert.isTrue(r2 > 0.95);

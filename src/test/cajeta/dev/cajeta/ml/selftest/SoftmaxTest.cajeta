@@ -61,13 +61,13 @@ public class SoftmaxTest {
 
     @Test
     public void threeClassProbabilitiesMatchSklearn() {
-        Tensor<float64> x = SoftmaxTest.fixX();
-        Tensor<float64> y = SoftmaxTest.fixY();
+        Tensor<float64> x #= SoftmaxTest.fixX();
+        Tensor<float64> y #= SoftmaxTest.fixY();
         LogisticRegression m = heap LogisticRegression(
             1.0, 0.0000000001, (int64) 200, true);
         m.fit(x, y);
         Assert.isTrue(m.converged());
-        Tensor<float64> pr = m.predictProba(x);
+        Tensor<float64> pr #= m.predictProba(x);
         Assert.equals((int64) 30, pr.shapeAt(0));
         Assert.equals((int64) 3, pr.shapeAt(1));
         // Rows sum to 1 exactly (softmax normalization).
@@ -93,7 +93,7 @@ public class SoftmaxTest {
 
     @Test
     public void binaryMultinomialTakesTheBinaryPath() {
-        Tensor<float64> x = SoftmaxTest.fixX();
+        Tensor<float64> x #= SoftmaxTest.fixX();
         int64 n = 30;
         float64[] yd = heap float64[n];
         int64 i = 0;
@@ -105,7 +105,7 @@ public class SoftmaxTest {
         }
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> yb = Tensor.of<float64>(yd, sh);
+        Tensor<float64> yb #= Tensor.of<float64>(yd, sh);
 
         LogisticRegression viaKnob = heap LogisticRegression(
             1.0, 0.0000000001, (int64) 200, true);
@@ -114,8 +114,8 @@ public class SoftmaxTest {
             1.0, 0.0000000001, (int64) 200);
         plain.fit(x, yb);
 
-        Tensor<float64> pa = viaKnob.predictProba(x);
-        Tensor<float64> pb = plain.predictProba(x);
+        Tensor<float64> pa #= viaKnob.predictProba(x);
+        Tensor<float64> pb #= plain.predictProba(x);
         i = 0;
         while (i < n) {
             Assert.isTrue(pa.get2(i, 1) == pb.get2(i, 1));
@@ -129,7 +129,7 @@ public class SoftmaxTest {
     public void summaryStaysPenalizedLabeled() {
         // summary() is binary-only; through the multinomial-knob instance on
         // a binary target it still carries the penalized labeling.
-        Tensor<float64> x = SoftmaxTest.fixX();
+        Tensor<float64> x #= SoftmaxTest.fixX();
         int64 n = 30;
         float64[] yd = heap float64[n];
         int64 i = 0;
@@ -141,7 +141,7 @@ public class SoftmaxTest {
         }
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> yb = Tensor.of<float64>(yd, sh);
+        Tensor<float64> yb #= Tensor.of<float64>(yd, sh);
         LogisticRegression m = heap LogisticRegression(
             1.0, 0.0000000001, (int64) 200, true);
         m.fit(x, yb);

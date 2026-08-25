@@ -26,7 +26,7 @@ public final class Gaussians {
         int64 n = y.size();
         int64[] sh = heap int64[1];
         sh[0] = k;
-        Tensor<float64> pr = Tensor.zeros<float64>(sh);
+        Tensor<float64> pr #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = (int64) y.flatGet(i);
@@ -72,10 +72,10 @@ public final class Gaussians {
         int64[] sh = heap int64[2];
         sh[0] = k;
         sh[1] = p;
-        Tensor<float64> mu = Tensor.zeros<float64>(sh);
+        Tensor<float64> mu #= Tensor.zeros<float64>(sh);
         int64[] cs = heap int64[1];
         cs[0] = k;
-        Tensor<float64> counts = Tensor.zeros<float64>(cs);
+        Tensor<float64> counts #= Tensor.zeros<float64>(cs);
         int64 i = 0;
         while (i < n) {
             int64 c = (int64) y.flatGet(i);
@@ -111,11 +111,11 @@ public final class Gaussians {
                                                     int64 k) {
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
-        Tensor<float64> mu = classMeans(x, y, k);
-        Tensor<float64> pr = priors(y, k);
+        Tensor<float64> mu #= classMeans(x, y, k);
+        Tensor<float64> pr #= priors(y, k);
         int64[] cs = heap int64[1];
         cs[0] = k;
-        Tensor<float64> counts = Tensor.zeros<float64>(cs);
+        Tensor<float64> counts #= Tensor.zeros<float64>(cs);
         int64 i = 0;
         while (i < n) {
             int64 c = (int64) y.flatGet(i);
@@ -125,7 +125,7 @@ public final class Gaussians {
         int64[] sh = heap int64[2];
         sh[0] = p;
         sh[1] = p;
-        Tensor<float64> cov = Tensor.zeros<float64>(sh);
+        Tensor<float64> cov #= Tensor.zeros<float64>(sh);
         int64 c3 = 0;
         while (c3 < k) {
             float64 cnt = counts.flatGet(c3);
@@ -181,7 +181,7 @@ public final class Gaussians {
         }
         int64[] ms = heap int64[1];
         ms[0] = p;
-        Tensor<float64> mean = Tensor.zeros<float64>(ms);
+        Tensor<float64> mean #= Tensor.zeros<float64>(ms);
         i = 0;
         while (i < n) {
             if ((int64) y.flatGet(i) == label) {
@@ -201,7 +201,7 @@ public final class Gaussians {
         int64[] sh = heap int64[2];
         sh[0] = p;
         sh[1] = p;
-        Tensor<float64> cov = Tensor.zeros<float64>(sh);
+        Tensor<float64> cov #= Tensor.zeros<float64>(sh);
         i = 0;
         while (i < n) {
             if ((int64) y.flatGet(i) == label) {
@@ -240,7 +240,7 @@ public final class Gaussians {
         // Center by column means.
         int64[] cs = heap int64[1];
         cs[0] = p;
-        Tensor<float64> colMean = Tensor.zeros<float64>(cs);
+        Tensor<float64> colMean #= Tensor.zeros<float64>(cs);
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
@@ -258,7 +258,7 @@ public final class Gaussians {
         int64[] xs = heap int64[2];
         xs[0] = n;
         xs[1] = p;
-        Tensor<float64> xc = Tensor.zeros<float64>(xs);
+        Tensor<float64> xc #= Tensor.zeros<float64>(xs);
         i = 0;
         while (i < n) {
             int64 j = 0;
@@ -272,7 +272,7 @@ public final class Gaussians {
         int64[] sh = heap int64[2];
         sh[0] = p;
         sh[1] = p;
-        Tensor<float64> emp = Tensor.zeros<float64>(sh);
+        Tensor<float64> emp #= Tensor.zeros<float64>(sh);
         int64 a = 0;
         while (a < p) {
             int64 b = 0;
@@ -332,10 +332,10 @@ public final class Gaussians {
             shrinkage = beta / delta;
         }
         Tensor<float64>[] out = heap Tensor<float64>[2];
-        out[0] = shrinkToward(emp, shrinkage);
+        out[0] #= shrinkToward(emp, shrinkage);
         int64[] ss = heap int64[1];
         ss[0] = 1;
-        out[1] = Tensor.zeros<float64>(ss);
+        out[1] #= Tensor.zeros<float64>(ss);
         out[1].flatSet(0, shrinkage);
         return #out;
     }
@@ -354,7 +354,7 @@ public final class Gaussians {
         int64[] sh = heap int64[2];
         sh[0] = p;
         sh[1] = p;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 a = 0;
         while (a < p) {
             int64 b = 0;
@@ -377,7 +377,7 @@ public final class Gaussians {
         int64 k = t.shapeAt(1);
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             float64 m = t.get2(i, 0);
@@ -408,7 +408,7 @@ public final class Gaussians {
      */
     public static #Tensor<float64> choleskyFactor(Tensor<float64> cov) {
         int64 p = cov.shapeAt(0);
-        Tensor<float64> l = LinAlg.cholesky<float64>(cov);
+        Tensor<float64> l #= LinAlg.cholesky<float64>(cov);
         int64 i = 0;
         while (i < p) {
             float64 d = l.get2(i, i);
@@ -453,7 +453,7 @@ public final class Gaussians {
         }
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         float64[] z = heap float64[p];
         int64 i = 0;
         while (i < n) {

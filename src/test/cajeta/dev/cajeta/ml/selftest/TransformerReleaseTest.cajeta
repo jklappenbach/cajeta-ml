@@ -38,7 +38,7 @@ public class TransformerReleaseTest {
     public void trainedTransformerMatchesTorchLoss() {
         TransformerDecoderLayer layer = heap TransformerDecoderLayer(
             (int64) 4, (int32) 2, (int64) 8, (uint64) 1);
-        Parameter[] ps = layer.parameters();
+        Parameter[] ps #= layer.parameters();
         DecoderTest.setAttention(ps, (int32) 0, (int64) 1, (int64) 4,
             (int64) 7, (int64) 10);
         DecoderTest.setAttention(ps, (int32) 8, (int64) 13, (int64) 16,
@@ -80,9 +80,9 @@ public class TransformerReleaseTest {
         ts[0] = 2;
         ts[1] = 3;
         ts[2] = 4;
-        Tensor<float32> tgt = Tensor.zeros<float32>(ts);
+        Tensor<float32> tgt #= Tensor.zeros<float32>(ts);
         DecoderTest.fill(tgt, (int64) 0);
-        Tensor<float32> target = Tensor.zeros<float32>(ts);
+        Tensor<float32> target #= Tensor.zeros<float32>(ts);
         int64 z = 0;
         while (z < target.size()) {
             target.flatSet(z, (float32) ((float64) DecoderTest.gv(z,
@@ -93,13 +93,13 @@ public class TransformerReleaseTest {
         ms[0] = 2;
         ms[1] = 4;
         ms[2] = 4;
-        Tensor<float32> mem = Tensor.zeros<float32>(ms);
+        Tensor<float32> mem #= Tensor.zeros<float32>(ms);
         DecoderTest.fill(mem, (int64) 2);
-        Tensor<float32> selfMask = Masks.causal((int64) 2, (int64) 3);
+        Tensor<float32> selfMask #= Masks.causal((int64) 2, (int64) 3);
         int64[] lens = heap int64[2];
         lens[0] = 4;
         lens[1] = 3;
-        Tensor<float32> memMask = Masks.keyPadding(lens, (int64) 3,
+        Tensor<float32> memMask #= Masks.keyPadding(lens, (int64) 3,
             (int64) 4);
 
         Adam opt = heap Adam(#layer.parameters(), 0.05f);
@@ -118,8 +118,8 @@ public class TransformerReleaseTest {
             lastLoss = (float64) tape.valueOf(loss).flatGet(0);
             if (s < 10) {
                 tape.backward(loss);
-                Parameter[] cur = layer.parameters();
-                Tensor<float32>[] gs = Nets.gradsOf(tape, cur);
+                Parameter[] cur #= layer.parameters();
+                Tensor<float32>[] gs #= Nets.gradsOf(tape, cur);
                 opt.step(gs);
             }
             layer.unbindParameters();
@@ -140,7 +140,7 @@ public class TransformerReleaseTest {
         sh[1] = 1;
         sh[2] = 4;
         sh[3] = 4;
-        Tensor<float32> imgs = Tensor.zeros<float32>(sh);
+        Tensor<float32> imgs #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < imgs.size()) {
             imgs.flatSet(i, TransferLearningTest.gv(i, (int64) 0, 0.25));
@@ -154,17 +154,17 @@ public class TransformerReleaseTest {
         Transform nm = heap Normalize(#mean, #std);
         pl.add(#nm);
         pl.eval();                       // deterministic path
-        Tensor<float32> pre = pl.apply(imgs);
+        Tensor<float32> pre #= pl.apply(imgs);
         int64[] fs = heap int64[2];
         fs[0] = 8;
         fs[1] = 16;
-        Tensor<float32> x = Tensor.zeros<float32>(fs);
+        Tensor<float32> x #= Tensor.zeros<float32>(fs);
         i = 0;
         while (i < 128) {
             x.flatSet(i, pre.flatGet(i));
             i = i + 1;
         }
-        Tensor<float32> y = TransferLearningTest.gridTensor((int64) 8,
+        Tensor<float32> y #= TransferLearningTest.gridTensor((int64) 8,
             (int64) 2, (int64) 3, 0.3);
 
         Sequential net = heap Sequential();

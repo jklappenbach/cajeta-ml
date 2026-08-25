@@ -124,7 +124,7 @@ public final class NMF implements Transformer {
         }
 
         // NNDSVD init (Boutsidis & Gallopoulos) — deterministic.
-        Tensor<float64>[] usv = LinAlg.svd<float64>(x);
+        Tensor<float64>[] usv #= LinAlg.svd<float64>(x);
         Tensor<float64> uM = usv[0];
         Tensor<float64> sV = usv[1];
         Tensor<float64> vt = usv[2];
@@ -300,7 +300,7 @@ public final class NMF implements Transformer {
         int64[] ws = heap int64[2];
         ws[0] = n;
         ws[1] = k;
-        Tensor<float64> wt = Tensor.of<float64>(w, ws);
+        Tensor<float64> wt #= Tensor.of<float64>(w, ws);
         this.wFit #= wt;
         this.fitted = true;
         return;

@@ -40,8 +40,8 @@ public final class AdamW implements Optimizer {
             Tensor<float32>[] vs = heap Tensor<float32>[n];
             int32 j = 0;
             while (j < n) {
-                ms[j] = Tensor.zerosLike<float32>(this.params[j].get());
-                vs[j] = Tensor.zerosLike<float32>(this.params[j].get());
+                ms[j] #= Tensor.zerosLike<float32>(this.params[j].get());
+                vs[j] #= Tensor.zerosLike<float32>(this.params[j].get());
                 j = j + 1;
             }
             float32[] b1 = heap float32[n];
@@ -88,7 +88,7 @@ public final class AdamW implements Optimizer {
     static void updateOne(Tensor<float32> p, Tensor<float32> g,
                           Tensor<float32> m, Tensor<float32> v,
                           float32 lr, float32 wd, float32 c1, float32 c2) {
-        int64[] shape = Tensor.shapeOf<float32>(p);
+        int64[] shape #= Tensor.shapeOf<float32>(p);
         int32 nd = (int32) shape.count();
         int64 total = Tensor.productOf(shape);
         int64[] idx = heap int64[nd];

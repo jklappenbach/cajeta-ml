@@ -60,9 +60,9 @@ public class SparseCdTest {
 
     @Test
     public void sparseEqualsDenseBitForBit() {
-        Tensor<float64> x = SparseCdTest.fixX();
-        Tensor<float64> y = SparseCdTest.fixY(x);
-        CsrMatrix xs = CsrMatrix.fromDense(x);
+        Tensor<float64> x #= SparseCdTest.fixX();
+        Tensor<float64> y #= SparseCdTest.fixY(x);
+        CsrMatrix xs #= CsrMatrix.fromDense(x);
         Assert.isTrue(xs.nnz() < 60);   // the zeros are really absent
 
         ElasticNet dense = heap ElasticNet(0.01, 0.7, false,
@@ -100,9 +100,9 @@ public class SparseCdTest {
 
     @Test
     public void sparseWithInterceptRefusedLoudly() {
-        Tensor<float64> x = SparseCdTest.fixX();
-        Tensor<float64> y = SparseCdTest.fixY(x);
-        CsrMatrix xs = CsrMatrix.fromDense(x);
+        Tensor<float64> x #= SparseCdTest.fixX();
+        Tensor<float64> y #= SparseCdTest.fixY(x);
+        CsrMatrix xs #= CsrMatrix.fromDense(x);
         ElasticNet m = heap ElasticNet(0.01, 0.5, true,
                                        0.0000000001, (int64) 100000);
         boolean threw = false;

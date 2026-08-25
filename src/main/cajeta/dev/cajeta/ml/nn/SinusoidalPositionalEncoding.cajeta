@@ -35,7 +35,7 @@ public class SinusoidalPositionalEncoding extends Module {
         int64[] sh = heap int64[2];
         sh[0] = maxLen;
         sh[1] = dim;
-        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        Tensor<float32> t #= Tensor.zeros<float32>(sh);
         float64 lnBase = Math.log(10000.0);
         int64 pos = 0;
         while (pos < maxLen) {
@@ -83,7 +83,7 @@ public class SinusoidalPositionalEncoding extends Module {
         sh[0] = b;
         sh[1] = t;
         sh[2] = this.dim;
-        Tensor<float32> tiled = Tensor.zeros<float32>(sh);
+        Tensor<float32> tiled #= Tensor.zeros<float32>(sh);
         int64 bi = 0;
         while (bi < b) {
             int64 p = 0;

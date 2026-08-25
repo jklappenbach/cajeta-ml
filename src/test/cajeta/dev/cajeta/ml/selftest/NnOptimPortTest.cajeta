@@ -34,22 +34,22 @@ public class NnOptimPortTest {
     static #Tensor<float32>[] onesGrads() {
         int64[] gs = [2];
         Tensor<float32>[] grads = heap Tensor<float32>[1];
-        grads[0] = Tensor.full<float32>(gs, 1.0f);
+        grads[0] #= Tensor.full<float32>(gs, 1.0f);
         return #grads;
     }
 
     @Test
     public void linearForwardMatchesReference() {
         Linear fc = heap Linear(2, 2, 7);
-        Parameter[] ps = fc.parameters();
+        Parameter[] ps #= fc.parameters();
         Tensor<float32> w = ps[0].get();
         w.set2(0, 0, 1.0f); w.set2(0, 1, 2.0f);
         w.set2(1, 0, 3.0f); w.set2(1, 1, 4.0f);
         Tensor<float32> b = ps[1].get();
         b.set1(0, 10.0f); b.set1(1, 20.0f);
         int64[] xs = [1, 2];
-        Tensor<float32> x = Tensor.full<float32>(xs, 1.0f);
-        Tensor<float32> y = fc.forward(x);
+        Tensor<float32> x #= Tensor.full<float32>(xs, 1.0f);
+        Tensor<float32> y #= fc.forward(x);
         Assert.isTrue(NnOptimPortTest.near(y.get2(0, 0), 14.0f, 0.0001f));
         Assert.isTrue(NnOptimPortTest.near(y.get2(0, 1), 26.0f, 0.0001f));
     }
@@ -81,7 +81,7 @@ public class NnOptimPortTest {
         // plain: p=1, g=1, lr=0.1 -> 0.9 -> 0.8
         WNet net = heap WNet(1.0f);
         Optimizer opt = heap SGD(net.parameters(), 0.1f, 0.0f);
-        Tensor<float32>[] grads = NnOptimPortTest.onesGrads();
+        Tensor<float32>[] grads #= NnOptimPortTest.onesGrads();
         opt.step(grads);
         Assert.isTrue(NnOptimPortTest.near(net.w.get().get1(0), 0.9f, 0.000001f));
         opt.step(grads);
@@ -90,7 +90,7 @@ public class NnOptimPortTest {
         // momentum 0.9: v1=1 -> p=0.9; v2=1.9 -> p=0.71
         WNet net2 = heap WNet(1.0f);
         Optimizer optM = heap SGD(net2.parameters(), 0.1f, 0.9f);
-        Tensor<float32>[] grads2 = NnOptimPortTest.onesGrads();
+        Tensor<float32>[] grads2 #= NnOptimPortTest.onesGrads();
         optM.step(grads2);
         optM.step(grads2);
         Assert.isTrue(NnOptimPortTest.near(net2.w.get().get1(0), 0.71f, 0.0001f));
@@ -102,7 +102,7 @@ public class NnOptimPortTest {
         // exactly lr: p = 0.9; step 2 ≈ 0.8 (state persists).
         WNet net = heap WNet(1.0f);
         Optimizer adam = heap Adam(net.parameters(), 0.1f);
-        Tensor<float32>[] grads = NnOptimPortTest.onesGrads();
+        Tensor<float32>[] grads #= NnOptimPortTest.onesGrads();
         adam.step(grads);
         Assert.isTrue(NnOptimPortTest.near(net.w.get().get1(0), 0.9f, 0.001f));
         adam.step(grads);
@@ -112,7 +112,7 @@ public class NnOptimPortTest {
         // (NOT Adam-plus-L2's 0.9 — the moments never see the decay).
         WNet net2 = heap WNet(1.0f);
         Optimizer adamw = heap AdamW(net2.parameters(), 0.1f, 0.1f);
-        Tensor<float32>[] grads2 = NnOptimPortTest.onesGrads();
+        Tensor<float32>[] grads2 #= NnOptimPortTest.onesGrads();
         adamw.step(grads2);
         Assert.isTrue(NnOptimPortTest.near(net2.w.get().get1(0), 0.89f, 0.001f));
     }
@@ -123,8 +123,8 @@ public class NnOptimPortTest {
         Optimizer opt = heap SGD(net.parameters(), 0.1f, 0.0f);
         int64[] gs = [2];
         Tensor<float32>[] wrongCount = heap Tensor<float32>[2];
-        wrongCount[0] = Tensor.full<float32>(gs, 1.0f);
-        wrongCount[1] = Tensor.full<float32>(gs, 1.0f);
+        wrongCount[0] #= Tensor.full<float32>(gs, 1.0f);
+        wrongCount[1] #= Tensor.full<float32>(gs, 1.0f);
         boolean threw = false;
         try {
             opt.step(wrongCount);
@@ -138,15 +138,15 @@ public class NnOptimPortTest {
     @Test
     public void moduleParameterWalkAndLosses() {
         Mlp2 net = heap Mlp2();
-        Parameter[] ps = net.parameters();
+        Parameter[] ps #= net.parameters();
         // fc1.w, fc1.b, fc2.w, fc2.b — stable order
         Assert.equals((int64) 4, (int64) ps.count());
         // Losses.mse: pred==target -> 0; off-by-1 everywhere -> 1
         int64[] s = [2, 1];
-        Tensor<float32> a = Tensor.full<float32>(s, 3.0f);
-        Tensor<float32> b = Tensor.full<float32>(s, 3.0f);
+        Tensor<float32> a #= Tensor.full<float32>(s, 3.0f);
+        Tensor<float32> b #= Tensor.full<float32>(s, 3.0f);
         Assert.isTrue(Losses.mse(a, b) == 0.0f);
-        Tensor<float32> c = Tensor.full<float32>(s, 4.0f);
+        Tensor<float32> c #= Tensor.full<float32>(s, 4.0f);
         Assert.isTrue(NnOptimPortTest.near(Losses.mse(c, b), 1.0f, 0.000001f));
     }
 }

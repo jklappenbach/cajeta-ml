@@ -30,8 +30,8 @@ public class RandomHorizontalFlip implements Transform {
         int64 c = x.shapeAt(1);
         int64 h = x.shapeAt(2);
         int64 w = x.shapeAt(3);
-        Tensor<float32> u = gen.uniform(n);
-        Tensor<float32> out = x.copy();
+        Tensor<float32> u #= gen.uniform(n);
+        Tensor<float32> out #= x.copy();
         int64 s = 0;
         while (s < n) {
             if ((float64) u.get1(s) < this.p) {

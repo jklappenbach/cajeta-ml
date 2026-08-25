@@ -33,8 +33,8 @@ public class RandomRotation implements Transform {
         int64 c = x.shapeAt(1);
         int64 h = x.shapeAt(2);
         int64 w = x.shapeAt(3);
-        Tensor<float32> u = gen.uniform(n);
-        Tensor<float32> out = Tensor.zeros<float32>(x.shape());
+        Tensor<float32> u #= gen.uniform(n);
+        Tensor<float32> out #= Tensor.zeros<float32>(x.shape());
         float64 cy = ((float64) h - 1.0) / 2.0;
         float64 cx = ((float64) w - 1.0) / 2.0;
         int64 s = 0;

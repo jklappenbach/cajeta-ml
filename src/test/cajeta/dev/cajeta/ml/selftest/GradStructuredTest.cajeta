@@ -43,7 +43,7 @@ public class GradStructuredTest {
     }
 
     static #Tensor<float32> filled(int64[] shape, int32 kind) {
-        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        Tensor<float32> t #= Tensor.zeros<float32>(shape);
         int64 n = GradStructuredTest.countOf(t);
         int64 f = 0;
         while (f < n) {
@@ -77,26 +77,26 @@ public class GradStructuredTest {
 
     /** x (2,2,4,4). */
     static #Tensor<float32> xIn() {
-        int64[] s = GradStructuredTest.sh4(2, 2, 4, 4);
+        int64[] s #= GradStructuredTest.sh4(2, 2, 4, 4);
         return GradStructuredTest.filled(s, 0);
     }
 
     /** w (3,2,3,3). */
     static #Tensor<float32> wIn() {
-        int64[] s = GradStructuredTest.sh4(3, 2, 3, 3);
+        int64[] s #= GradStructuredTest.sh4(3, 2, 3, 3);
         return GradStructuredTest.filled(s, 1);
     }
 
     /** b (3,). */
     static #Tensor<float32> bIn() {
-        int64[] s = GradStructuredTest.sh1(3);
+        int64[] s #= GradStructuredTest.sh1(3);
         return GradStructuredTest.filled(s, 2);
     }
 
     // ── harness ─────────────────────────────────────────────────────────
 
     static #Tensor<float32> kLike(Tensor<float32> src) {
-        Tensor<float32> out = src.copy();
+        Tensor<float32> out #= src.copy();
         int64 n = GradStructuredTest.countOf(out);
         int64 f = 0;
         while (f < n) {
@@ -108,7 +108,7 @@ public class GradStructuredTest {
 
     /** Backprop L = Σ(y ⊙ K) — the generator's weighted scalar. */
     static void wback(GradTape<float32> t, GradTensor y) {
-        Tensor<float32> kv = GradStructuredTest.kLike(t.valueOf(y));
+        Tensor<float32> kv #= GradStructuredTest.kLike(t.valueOf(y));
         GradTensor k = t.leaf(kv, false);
         GradTensor loss = t.sum(t.mul(y, k));
         t.backward(loss);
@@ -294,7 +294,7 @@ public class GradStructuredTest {
     @Test
     public void pinBatchNorm2dTrain() {
         GradTape<float32> t = heap GradTape<float32>();
-        int64[] cs = GradStructuredTest.sh1(2);
+        int64[] cs #= GradStructuredTest.sh1(2);
         GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
         GradTensor gam = t.leaf(GradStructuredTest.filled(cs, 3), true);
         GradTensor bet = t.leaf(GradStructuredTest.filled(cs, 2), true);
@@ -323,12 +323,12 @@ public class GradStructuredTest {
     /** The running-stat update: momentum blend, UNBIASED batch variance. */
     @Test
     public void pinBatchNormRunningStats() {
-        Tensor<float32> x = GradStructuredTest.xIn();
-        int64[] cs = GradStructuredTest.sh1(2);
-        Tensor<float32> rm = Tensor.zeros<float32>(cs);
-        Tensor<float32> rv = Tensor.full<float32>(cs, 1.0f);
-        Tensor<float32> mean = Ops.channelMean<float32>(x);
-        Tensor<float32> var = Ops.channelVar<float32>(x, mean);
+        Tensor<float32> x #= GradStructuredTest.xIn();
+        int64[] cs #= GradStructuredTest.sh1(2);
+        Tensor<float32> rm #= Tensor.zeros<float32>(cs);
+        Tensor<float32> rv #= Tensor.full<float32>(cs, 1.0f);
+        Tensor<float32> mean #= Ops.channelMean<float32>(x);
+        Tensor<float32> var #= Ops.channelVar<float32>(x, mean);
         int64 count = 2 * 4 * 4;
         Ops.updateRunningStats<float32>(rm, rv, mean, var, count, 0.1);
         float32[] prm = [-0.0015625f, -0.00078125f];
@@ -340,11 +340,11 @@ public class GradStructuredTest {
     @Test
     public void pinBatchNorm2dEval() {
         GradTape<float32> t = heap GradTape<float32>();
-        int64[] cs = GradStructuredTest.sh1(2);
-        Tensor<float32> rm = Tensor.zeros<float32>(cs);
+        int64[] cs #= GradStructuredTest.sh1(2);
+        Tensor<float32> rm #= Tensor.zeros<float32>(cs);
         rm.flatSet(0, -0.0015625f);
         rm.flatSet(1, -0.00078125f);
-        Tensor<float32> rv = Tensor.zeros<float32>(cs);
+        Tensor<float32> rv #= Tensor.zeros<float32>(cs);
         rv.flatSet(0, 0.92618448f);
         rv.flatSet(1, 0.92640495f);
         GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
@@ -371,7 +371,7 @@ public class GradStructuredTest {
         GradTape<float32> t = heap GradTape<float32>();
         int64[] xs = heap int64[3];
         xs[0] = 2; xs[1] = 3; xs[2] = 4;
-        int64[] ds = GradStructuredTest.sh1(4);
+        int64[] ds #= GradStructuredTest.sh1(4);
         GradTensor x = t.leaf(GradStructuredTest.filled(xs, 0), true);
         GradTensor gam = t.leaf(GradStructuredTest.filled(ds, 3), true);
         GradTensor bet = t.leaf(GradStructuredTest.filled(ds, 2), true);
@@ -405,8 +405,8 @@ public class GradStructuredTest {
         int64[] ws = heap int64[2];
         ws[0] = 5; ws[1] = 3;
         GradTensor w = t.leaf(GradStructuredTest.filled(ws, 0), true);
-        int64[] is = GradStructuredTest.sh1(5);
-        Tensor<float32> idx = Tensor.zeros<float32>(is);
+        int64[] is #= GradStructuredTest.sh1(5);
+        Tensor<float32> idx #= Tensor.zeros<float32>(is);
         idx.flatSet(0, 0.0f);
         idx.flatSet(1, 2.0f);
         idx.flatSet(2, 4.0f);
@@ -427,7 +427,7 @@ public class GradStructuredTest {
     @Test
     public void dropoutEvalIsIdentity() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> xv = GradStructuredTest.xIn();
+        Tensor<float32> xv #= GradStructuredTest.xIn();
         GradTensor x = t.leaf(xv, true);
         GradTensor y = t.dropout(x, 0.5, false, 7L);
         Tensor<float32> out = t.valueOf(y);
@@ -440,7 +440,7 @@ public class GradStructuredTest {
         GradStructuredTest.wback(t, y);
         // identity forward → the cotangent passes through untouched
         Tensor<float32> dx = t.gradOf(x);
-        Tensor<float32> k = GradStructuredTest.kLike(out);
+        Tensor<float32> k #= GradStructuredTest.kLike(out);
         f = 0;
         while (f < n) {
             Assert.isTrue(dx.flatGet(f) == k.flatGet(f));
@@ -451,7 +451,7 @@ public class GradStructuredTest {
     @Test
     public void dropoutTrainScalesSurvivorsAndZeroesTheRest() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> xv = GradStructuredTest.xIn();
+        Tensor<float32> xv #= GradStructuredTest.xIn();
         GradTensor x = t.leaf(xv, true);
         GradTensor y = t.dropout(x, 0.5, true, 12345L);
         Tensor<float32> out = t.valueOf(y);
@@ -517,8 +517,8 @@ public class GradStructuredTest {
         int64[] ls = heap int64[2];
         ls[0] = 4; ls[1] = 3;
         GradTensor logits = t.leaf(GradStructuredTest.filled(ls, 0), true);
-        int64[] ts = GradStructuredTest.sh1(4);
-        Tensor<float32> tgt = Tensor.zeros<float32>(ts);
+        int64[] ts #= GradStructuredTest.sh1(4);
+        Tensor<float32> tgt #= Tensor.zeros<float32>(ts);
         tgt.flatSet(0, 0.0f);
         tgt.flatSet(1, 2.0f);
         tgt.flatSet(2, 1.0f);
@@ -562,7 +562,7 @@ public class GradStructuredTest {
         float32[] pc = [0.87287152f, -0.34752405f, -0.6454972f];
         GradStructuredTest.checkFlat(t.valueOf(cos), pc, GradStructuredTest.TOL);
         Assert.isTrue(t.valueOf(cos).ndim() == 1);
-        int64[] os = GradStructuredTest.sh1(3);
+        int64[] os #= GradStructuredTest.sh1(3);
         GradTensor one = t.leaf(Tensor.full<float32>(os, 1.0f), false);
         GradTensor loss = t.mean(t.sub(one, cos));
         float32[] pl = [1.04004991f];
@@ -583,7 +583,7 @@ public class GradStructuredTest {
     @Test
     public void cnnBlockMatchesTorchEndToEnd() {
         GradTape<float32> t = heap GradTape<float32>();
-        int64[] cs = GradStructuredTest.sh1(3);
+        int64[] cs #= GradStructuredTest.sh1(3);
         GradTensor x = t.leaf(GradStructuredTest.xIn(), true);
         GradTensor w = t.leaf(GradStructuredTest.wIn(), true);
         GradTensor b = t.leaf(GradStructuredTest.bIn(), true);

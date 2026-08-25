@@ -94,7 +94,7 @@ public final class BaggingClassifier implements Predictor {
 
     /** Accuracy. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         int64 n = p.shapeAt(0);
         int64 hits = 0;
         int64 i = 0;

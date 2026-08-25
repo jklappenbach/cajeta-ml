@@ -71,10 +71,10 @@ public class ModelSelectionTest {
     // §7.1 — stratified folds preserve the class proportions exactly.
     @Test
     public void stratifiedKFoldPreservesProportions() {
-        Tensor<float64> y = imbY();
+        Tensor<float64> y #= imbY();
         StratifiedKFold sk = heap StratifiedKFold((int64) 5, true,
             (uint64) 11);
-        Tensor<int64> fid = sk.assignments(y);
+        Tensor<int64> fid #= sk.assignments(y);
         int64 f = 0;
         while (f < 5) {
             int64 pos = 0;
@@ -107,14 +107,14 @@ public class ModelSelectionTest {
             ys[0] = 10;
             StratifiedKFold sk = heap StratifiedKFold((int64) 5, false,
                 (uint64) 1);
-            Tensor<int64> fid = sk.assignments(Tensor.of<float64>(yd, ys));
+            Tensor<int64> fid #= sk.assignments(Tensor.of<float64>(yd, ys));
         });
     }
 
     // §7.1 — the stratified split preserves proportions in both parts.
     @Test
     public void stratifiedSplitPreservesProportions() {
-        Tensor<float64>[] parts = Split.trainTestSplitStratified(imbX(),
+        Tensor<float64>[] parts #= Split.trainTestSplitStratified(imbX(),
             imbY(), 0.2, (uint64) 5);
         // parts: [xTrain, xTest, yTrain, yTest]
         int64 posTr = 0;
@@ -143,12 +143,12 @@ public class ModelSelectionTest {
     // per-split scores plus mean and std, reproducible.
     @Test
     public void repeatedHoldoutScoresAndReproduces() {
-        Tensor<float64> x = imbX();
-        Tensor<float64> y = imbY();
+        Tensor<float64> x #= imbX();
+        Tensor<float64> y #= imbY();
         RepeatedHoldout rh = heap RepeatedHoldout((int64) 8, 0.25,
             (uint64) 21);
         Predictor lr = heap LogisticRegression(1.0, 0.0000001, (int64) 500);
-        HoldoutResult res = rh.run(lr, x, y, "accuracy");
+        HoldoutResult res #= rh.run(lr, x, y, "accuracy");
         Assert.equals(res.scores().size(), (int64) 8);
         float64 m = 0.0;
         int64 s = 0;
@@ -173,7 +173,7 @@ public class ModelSelectionTest {
         RepeatedHoldout rh2 = heap RepeatedHoldout((int64) 8, 0.25,
             (uint64) 21);
         Predictor lr2 = heap LogisticRegression(1.0, 0.0000001, (int64) 500);
-        HoldoutResult res2 = rh2.run(lr2, x, y, "accuracy");
+        HoldoutResult res2 #= rh2.run(lr2, x, y, "accuracy");
         s = 0;
         while (s < 8) {
             Assert.isTrue(near(res.scores().flatGet(s),
@@ -186,10 +186,10 @@ public class ModelSelectionTest {
     // reproducibly; the k-sweep IS the table, readable directly.
     @Test
     public void gridSearchTableAndKSweep() {
-        Tensor<float64> x = imbX();
-        Tensor<float64> y = imbY();
+        Tensor<float64> x #= imbX();
+        Tensor<float64> y #= imbY();
         KFold kf = heap KFold((int64) 5, true, (uint64) 3);
-        Tensor<int64> fid = kf.assignments((int64) 150);
+        Tensor<int64> fid #= kf.assignments((int64) 150);
         EstimatorFactory f = heap KnnFactory();
         Tensor<float64>[] dims = heap Tensor<float64>[1];
         float64[] ks = heap float64[4];
@@ -199,8 +199,8 @@ public class ModelSelectionTest {
         ks[3] = 7.0;
         int64[] ds = heap int64[1];
         ds[0] = 4;
-        dims[0] = Tensor.of<float64>(ks, ds);
-        SearchResult res = GridSearch.run(f, dims, x, y, fid, "accuracy");
+        dims[0] #= Tensor.of<float64>(ks, ds);
+        SearchResult res #= GridSearch.run(f, dims, x, y, fid, "accuracy");
         Assert.equals(res.count(), (int64) 4);
         Assert.equals(res.failures(), (int64) 0);
         int64 c = 0;
@@ -216,7 +216,7 @@ public class ModelSelectionTest {
         Assert.isTrue(res.bestScore() >= res.score(3));
 
         EstimatorFactory f2 = heap KnnFactory();
-        SearchResult res2 = GridSearch.run(f2, dims, x, y, fid, "accuracy");
+        SearchResult res2 #= GridSearch.run(f2, dims, x, y, fid, "accuracy");
         Assert.isTrue(near(res.bestScore(), res2.bestScore(),
             0.000000000001));
         c = 0;
@@ -231,10 +231,10 @@ public class ModelSelectionTest {
     // seed, reproducibly.
     @Test
     public void randomizedSearchBudgetAndSeed() {
-        Tensor<float64> x = imbX();
-        Tensor<float64> y = imbY();
+        Tensor<float64> x #= imbX();
+        Tensor<float64> y #= imbY();
         KFold kf = heap KFold((int64) 5, true, (uint64) 3);
-        Tensor<int64> fid = kf.assignments((int64) 150);
+        Tensor<int64> fid #= kf.assignments((int64) 150);
         EstimatorFactory f = heap LogisticCFactory();
         Tensor<float64>[] dims = heap Tensor<float64>[2];
         float64[] cs = heap float64[4];
@@ -244,19 +244,19 @@ public class ModelSelectionTest {
         cs[3] = 2.0;
         int64[] d4 = heap int64[1];
         d4[0] = 4;
-        dims[0] = Tensor.of<float64>(cs, d4);
+        dims[0] #= Tensor.of<float64>(cs, d4);
         float64[] ts = heap float64[3];
         ts[0] = 0.001;
         ts[1] = 0.0001;
         ts[2] = 0.00001;
         int64[] d3 = heap int64[1];
         d3[0] = 3;
-        dims[1] = Tensor.of<float64>(ts, d3);
+        dims[1] #= Tensor.of<float64>(ts, d3);
 
-        SearchResult res = RandomizedSearch.run(f, dims, (int64) 5,
+        SearchResult res #= RandomizedSearch.run(f, dims, (int64) 5,
             (uint64) 9, x, y, fid, "accuracy");
         Assert.equals(res.count(), (int64) 5);
-        SearchResult res2 = RandomizedSearch.run(f, dims, (int64) 5,
+        SearchResult res2 #= RandomizedSearch.run(f, dims, (int64) 5,
             (uint64) 9, x, y, fid, "accuracy");
         int64 c = 0;
         while (c < 5) {
@@ -274,8 +274,8 @@ public class ModelSelectionTest {
     // without probabilities is loud, as is an unknown metric name.
     @Test
     public void metricsSelectableByName() {
-        Tensor<float64> x = imbX();
-        Tensor<float64> y = imbY();
+        Tensor<float64> x #= imbX();
+        Tensor<float64> y #= imbY();
         LogisticRegression lr = heap LogisticRegression(1.0, 0.0000001,
             (int64) 500);
         lr.fit(x, y);
@@ -303,10 +303,10 @@ public class ModelSelectionTest {
     // §7.10 — a throwing combination is recorded; the sweep continues.
     @Test
     public void failingComboRecordedSweepContinues() {
-        Tensor<float64> x = imbX();
-        Tensor<float64> y = imbY();
+        Tensor<float64> x #= imbX();
+        Tensor<float64> y #= imbY();
         KFold kf = heap KFold((int64) 5, true, (uint64) 3);
-        Tensor<int64> fid = kf.assignments((int64) 150);
+        Tensor<int64> fid #= kf.assignments((int64) 150);
         EstimatorFactory f = heap FailingFactory();
         Tensor<float64>[] dims = heap Tensor<float64>[1];
         float64[] ks = heap float64[3];
@@ -315,8 +315,8 @@ public class ModelSelectionTest {
         ks[2] = 5.0;
         int64[] ds = heap int64[1];
         ds[0] = 3;
-        dims[0] = Tensor.of<float64>(ks, ds);
-        SearchResult res = GridSearch.run(f, dims, x, y, fid, "accuracy");
+        dims[0] #= Tensor.of<float64>(ks, ds);
+        SearchResult res #= GridSearch.run(f, dims, x, y, fid, "accuracy");
         Assert.equals(res.count(), (int64) 3);
         Assert.equals(res.failures(), (int64) 1);
         Assert.isTrue(res.ok((int64) 0));

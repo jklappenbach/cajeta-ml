@@ -50,11 +50,11 @@ public class KMeansTest {
 
     @Test
     public void separatedBlobsMatchSklearn() {
-        Tensor<float64> x = KMeansTest.blobs();
+        Tensor<float64> x #= KMeansTest.blobs();
         KMeans m = heap KMeans((int64) 3, (uint64) 7);
         int64[] esh = heap int64[1];
         esh[0] = 24;
-        Tensor<float64> yIgnored = Tensor.zeros<float64>(esh);
+        Tensor<float64> yIgnored #= Tensor.zeros<float64>(esh);
         m.fit(x, yIgnored);
         // Partition: each blob uniform, blobs pairwise distinct.
         Tensor<float64> lab = m.labels();
@@ -97,10 +97,10 @@ public class KMeansTest {
 
     @Test
     public void sameSeedSameCentersAndPredictIsNearest() {
-        Tensor<float64> x = KMeansTest.blobs();
+        Tensor<float64> x #= KMeansTest.blobs();
         int64[] esh = heap int64[1];
         esh[0] = 24;
-        Tensor<float64> yIgnored = Tensor.zeros<float64>(esh);
+        Tensor<float64> yIgnored #= Tensor.zeros<float64>(esh);
         KMeans a = heap KMeans((int64) 3, (uint64) 42);
         KMeans b = heap KMeans((int64) 3, (uint64) 42);
         a.fit(x, yIgnored);
@@ -114,7 +114,7 @@ public class KMeansTest {
             c = c + 1;
         }
         // predict on the training rows reproduces the fit labels.
-        Tensor<float64> pr = a.predict(x);
+        Tensor<float64> pr #= a.predict(x);
         Tensor<float64> lab = a.labels();
         int64 i = 0;
         while (i < 24) {

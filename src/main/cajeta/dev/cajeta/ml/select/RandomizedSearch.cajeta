@@ -38,20 +38,20 @@ public final class RandomizedSearch {
         int64[] cs = heap int64[2];
         cs[0] = budget;
         cs[1] = m;
-        Tensor<float64> combos = Tensor.zeros<float64>(cs);
+        Tensor<float64> combos #= Tensor.zeros<float64>(cs);
         int64[] vs = heap int64[1];
         vs[0] = budget;
-        Tensor<float64> scores = Tensor.zeros<float64>(vs);
-        Tensor<float64> okf = Tensor.zeros<float64>(vs);
+        Tensor<float64> scores #= Tensor.zeros<float64>(vs);
+        Tensor<float64> okf #= Tensor.zeros<float64>(vs);
         int64[] ps = heap int64[1];
         ps[0] = m;
 
         int64 c = 0;
         while (c < budget) {
-            Tensor<float64> params = Tensor.zeros<float64>(ps);
+            Tensor<float64> params #= Tensor.zeros<float64>(ps);
             int64 d = 0;
             while (d < m) {
-                Tensor<int64> pick = gen.integers((int64) 0,
+                Tensor<int64> pick #= gen.integers((int64) 0,
                     dims[d].size(), (int64) 1);
                 int64 ix = pick.get1(0);
                 params.set1(d, dims[d].flatGet(ix));

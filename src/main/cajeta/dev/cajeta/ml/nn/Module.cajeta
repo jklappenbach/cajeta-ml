@@ -99,7 +99,7 @@ public class Module {
     /** Bind every parameter in the tree to `tape` (declared order), so the
      *  handles a forward reads are nodes of THIS tape. */
     public void bindParameters(GradTape<float32> tape) {
-        Parameter[] ps = this.parameters();
+        Parameter[] ps #= this.parameters();
         int32 i = 0;
         while (i < (int32) ps.count()) {
             ps[i].bind(tape);
@@ -116,14 +116,14 @@ public class Module {
         this.bindParameters(tape);
         GradTensor xn = tape.leaf(x, false);
         GradTensor y = this.forward(tape, xn);
-        Tensor<float32> out = tape.valueOf(y).copy();
+        Tensor<float32> out #= tape.valueOf(y).copy();
         this.unbindParameters();
         return #out;
     }
 
     /** Drop every tape binding in the tree (the tape is going away). */
     public void unbindParameters() {
-        Parameter[] ps = this.parameters();
+        Parameter[] ps #= this.parameters();
         int32 i = 0;
         while (i < (int32) ps.count()) {
             ps[i].unbind();
@@ -174,7 +174,7 @@ public class Module {
 
     /** Freeze or unfreeze every parameter in the subtree. */
     public void setTrainable(boolean trainable) {
-        Parameter[] ps = this.parameters();
+        Parameter[] ps #= this.parameters();
         int32 i = 0;
         while (i < (int32) ps.count()) {
             ps[i].setTrainable(trainable);

@@ -75,10 +75,10 @@ public final class Split {
         int64[] shTeY = heap int64[1];
         shTeY[0] = nTest;
         Tensor<float64>[] out = heap Tensor<float64>[4];
-        out[0] = Tensor.zeros<float64>(shTrX);
-        out[1] = Tensor.zeros<float64>(shTeX);
-        out[2] = Tensor.zeros<float64>(shTrY);
-        out[3] = Tensor.zeros<float64>(shTeY);
+        out[0] #= Tensor.zeros<float64>(shTrX);
+        out[1] #= Tensor.zeros<float64>(shTeX);
+        out[2] #= Tensor.zeros<float64>(shTrY);
+        out[3] #= Tensor.zeros<float64>(shTeY);
         Generator gen = heap Generator(seed);
         int64 wTr = 0;
         int64 wTe = 0;
@@ -96,7 +96,7 @@ public final class Split {
                     }
                     i = i + 1;
                 }
-                Tensor<int64> perm = gen.permutation(nk);
+                Tensor<int64> perm #= gen.permutation(nk);
                 int64 s = 0;
                 while (s < nk) {
                     int64 ps = perm.get1(s);
@@ -147,7 +147,7 @@ public final class Split {
         }
         int64 nTrain = n - nTest;
         Generator gen = heap Generator(seed);
-        Tensor<int64> perm = gen.permutation(n);
+        Tensor<int64> perm #= gen.permutation(n);
         int64[] shTrX = heap int64[2];
         shTrX[0] = nTrain;
         shTrX[1] = p;
@@ -159,10 +159,10 @@ public final class Split {
         int64[] shTeY = heap int64[1];
         shTeY[0] = nTest;
         Tensor<float64>[] out = heap Tensor<float64>[4];
-        out[0] = Tensor.zeros<float64>(shTrX);
-        out[1] = Tensor.zeros<float64>(shTeX);
-        out[2] = Tensor.zeros<float64>(shTrY);
-        out[3] = Tensor.zeros<float64>(shTeY);
+        out[0] #= Tensor.zeros<float64>(shTrX);
+        out[1] #= Tensor.zeros<float64>(shTeX);
+        out[2] #= Tensor.zeros<float64>(shTrY);
+        out[3] #= Tensor.zeros<float64>(shTeY);
         int64 i = 0;
         while (i < nTrain) {
             int64 src = perm.get1(i);
@@ -203,10 +203,10 @@ public final class Split {
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
         int64 k = folds.folds();
-        Tensor<int64> fid = folds.assignments(n);
+        Tensor<int64> fid #= folds.assignments(n);
         int64[] shk = heap int64[1];
         shk[0] = k;
-        Tensor<float64> scores = Tensor.zeros<float64>(shk);
+        Tensor<float64> scores #= Tensor.zeros<float64>(shk);
         int64 f = 0;
         while (f < k) {
             int64 nTest = 0;
@@ -226,10 +226,10 @@ public final class Split {
             shTrY[0] = nTrain;
             int64[] shTeY = heap int64[1];
             shTeY[0] = nTest;
-            Tensor<float64> xTr = Tensor.zeros<float64>(shTrX);
-            Tensor<float64> xTe = Tensor.zeros<float64>(shTeX);
-            Tensor<float64> yTr = Tensor.zeros<float64>(shTrY);
-            Tensor<float64> yTe = Tensor.zeros<float64>(shTeY);
+            Tensor<float64> xTr #= Tensor.zeros<float64>(shTrX);
+            Tensor<float64> xTe #= Tensor.zeros<float64>(shTeX);
+            Tensor<float64> yTr #= Tensor.zeros<float64>(shTrY);
+            Tensor<float64> yTe #= Tensor.zeros<float64>(shTeY);
             int64 tr = 0;
             int64 te = 0;
             i = 0;

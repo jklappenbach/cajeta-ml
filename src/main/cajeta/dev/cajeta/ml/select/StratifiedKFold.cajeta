@@ -65,7 +65,7 @@ public final class StratifiedKFold {
 
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        Tensor<int64> out #= Tensor.zeros<int64>(sh);
         Generator gen = heap Generator(this.seedV);
         c2 = 0;
         while (c2 < kc) {
@@ -83,7 +83,7 @@ public final class StratifiedKFold {
                     i = i + 1;
                 }
                 if (this.shuffleV) {
-                    Tensor<int64> perm = gen.permutation(nk);
+                    Tensor<int64> perm #= gen.permutation(nk);
                     int64[] shuf = heap int64[nk];
                     int64 s = 0;
                     while (s < nk) {

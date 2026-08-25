@@ -82,7 +82,7 @@ public final class KMeans implements Predictor {
 
         // k-means++ (deterministic per seed): first center uniform, each
         // next sampled proportional to min squared distance.
-        Tensor<float32> u0 = gen.uniform(1);
+        Tensor<float32> u0 #= gen.uniform(1);
         int64 first = (int64) ((float64) u0.get1(0) * (float64) n);
         if (first >= n) { first = n - 1; }
         int64 j0 = 0;
@@ -107,7 +107,7 @@ public final class KMeans implements Predictor {
                 total = total + best;
                 i = i + 1;
             }
-            Tensor<float32> uu = gen.uniform(1);
+            Tensor<float32> uu #= gen.uniform(1);
             float64 target = (float64) uu.get1(0) * total;
             float64 cum = 0.0;
             int64 pick = n - 1;
@@ -218,10 +218,10 @@ public final class KMeans implements Predictor {
         int64[] cs = heap int64[2];
         cs[0] = k;
         cs[1] = p;
-        Tensor<float64> cm = Tensor.of<float64>(cen, cs);
+        Tensor<float64> cm #= Tensor.of<float64>(cen, cs);
         int64[] ls = heap int64[1];
         ls[0] = n;
-        Tensor<float64> lm = Tensor.of<float64>(lab, ls);
+        Tensor<float64> lm #= Tensor.of<float64>(lab, ls);
         this.centersM #= cm;
         this.labelsV #= lm;
         this.inertiaV = inert;

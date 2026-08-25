@@ -132,31 +132,31 @@ public class MultiheadAttention extends Module {
      *  the head axis next to the batch. */
     GradTensor splitHeads(GradTape<float32> tape, GradTensor flat, int64 b,
                           int64 t, int64 d) {
-        int64[] s4 = MultiheadAttention.shape4(b, t, (int64) this.heads, d);
+        int64[] s4 #= MultiheadAttention.shape4(b, t, (int64) this.heads, d);
         GradTensor r = tape.reshape(flat, s4);
         int32[] perm = heap int32[4];
         perm[0] = 0; perm[1] = 2; perm[2] = 1; perm[3] = 3;
         GradTensor p = tape.permute(r, perm);
-        int64[] s3 = MultiheadAttention.shape3(b * (int64) this.heads, t, d);
+        int64[] s3 #= MultiheadAttention.shape3(b * (int64) this.heads, t, d);
         return tape.reshape(p, s3);
     }
 
     /** The inverse of {@link #splitHeads}: `(B·H, T, D)` → `(B·T, E)`. */
     GradTensor mergeHeads(GradTape<float32> tape, GradTensor heads3, int64 b,
                           int64 t, int64 d) {
-        int64[] s4 = MultiheadAttention.shape4(b, (int64) this.heads, t, d);
+        int64[] s4 #= MultiheadAttention.shape4(b, (int64) this.heads, t, d);
         GradTensor r = tape.reshape(heads3, s4);
         int32[] perm = heap int32[4];
         perm[0] = 0; perm[1] = 2; perm[2] = 1; perm[3] = 3;
         GradTensor p = tape.permute(r, perm);
-        int64[] s2 = MultiheadAttention.shape2(b * t, this.embed);
+        int64[] s2 #= MultiheadAttention.shape2(b * t, this.embed);
         return tape.reshape(p, s2);
     }
 
     public GradTensor forward(GradTape<float32> tape, GradTensor x) {
         int64[] none = heap int64[1];
         none[0] = 1;
-        Tensor<float32> noMask = Tensor.zeros<float32>(none);
+        Tensor<float32> noMask #= Tensor.zeros<float32>(none);
         return this.attend(tape, x, x, false, noMask);
     }
 
@@ -213,9 +213,9 @@ public class MultiheadAttention extends Module {
 
         // Project on the flattened token axis: the projections are ordinary
         // rank-2 matmuls over (B·T, E).
-        int64[] qFlatS = MultiheadAttention.shape2(b * tq, this.embed);
+        int64[] qFlatS #= MultiheadAttention.shape2(b * tq, this.embed);
         GradTensor qFlat = tape.reshape(qIn, qFlatS);
-        int64[] kFlatS = MultiheadAttention.shape2(b * tk, this.embed);
+        int64[] kFlatS #= MultiheadAttention.shape2(b * tk, this.embed);
         GradTensor kFlat = tape.reshape(kvIn, kFlatS);
         GradTensor q = this.splitHeads(tape, this.wq.forward(tape, qFlat), b, tq, d);
         GradTensor k = this.splitHeads(tape, this.wk.forward(tape, kFlat), b, tk, d);
@@ -230,9 +230,9 @@ public class MultiheadAttention extends Module {
         GradTensor scaled = tape.mul(scores, scale);
         if (hasMask) {
             // Tile (B, Tq, Tk) per head: (B·H, Tq, Tk), a constant leaf.
-            int64[] ms = MultiheadAttention.shape3(
+            int64[] ms #= MultiheadAttention.shape3(
                 b * (int64) this.heads, tq, tk);
-            Tensor<float32> tiled = Tensor.zeros<float32>(ms);
+            Tensor<float32> tiled #= Tensor.zeros<float32>(ms);
             int64 bi = 0;
             while (bi < b) {
                 int64 h = 0;
@@ -256,7 +256,7 @@ public class MultiheadAttention extends Module {
         GradTensor ctx = tape.matmulBatched(attn, v);
         GradTensor merged = this.mergeHeads(tape, ctx, b, tq, d);
         GradTensor out = this.wo.forward(tape, merged);
-        int64[] s3 = MultiheadAttention.shape3(b, tq, this.embed);
+        int64[] s3 #= MultiheadAttention.shape3(b, tq, this.embed);
         return tape.reshape(out, s3);
     }
 }

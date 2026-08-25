@@ -102,7 +102,7 @@ public class DecoderTest {
     public void decoderLayerMatchesTorchEndToEnd() {
         TransformerDecoderLayer layer = heap TransformerDecoderLayer(
             (int64) 4, (int32) 2, (int64) 8, (uint64) 1);
-        Parameter[] ps = layer.parameters();
+        Parameter[] ps #= layer.parameters();
         Assert.equals((int64) 26, (int64) ps.count());
         // self_attn (fixture offsets 1/4/7/10), multihead_attn
         // (13/16/19/22).
@@ -150,21 +150,21 @@ public class DecoderTest {
         ts[0] = 2;
         ts[1] = 3;
         ts[2] = 4;
-        Tensor<float32> tgt = Tensor.zeros<float32>(ts);
+        Tensor<float32> tgt #= Tensor.zeros<float32>(ts);
         DecoderTest.fill(tgt, (int64) 0);
         int64[] ms = heap int64[3];
         ms[0] = 2;
         ms[1] = 4;
         ms[2] = 4;
-        Tensor<float32> mem = Tensor.zeros<float32>(ms);
+        Tensor<float32> mem #= Tensor.zeros<float32>(ms);
         DecoderTest.fill(mem, (int64) 2);
         GradTensor x = tape.leaf(tgt, false);
         GradTensor m = tape.leaf(mem, false);
-        Tensor<float32> selfMask = Masks.causal((int64) 2, (int64) 3);
+        Tensor<float32> selfMask #= Masks.causal((int64) 2, (int64) 3);
         int64[] lens = heap int64[2];
         lens[0] = 4;
         lens[1] = 3;
-        Tensor<float32> memMask = Masks.keyPadding(lens, (int64) 3,
+        Tensor<float32> memMask #= Masks.keyPadding(lens, (int64) 3,
             (int64) 4);
         GradTensor y = layer.decode(tape, x, m, true, selfMask, true,
             memMask);
@@ -216,7 +216,7 @@ public class DecoderTest {
         xs[0] = 1;
         xs[1] = 3;
         xs[2] = 4;
-        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        Tensor<float32> xv #= Tensor.zeros<float32>(xs);
         DecoderTest.fill(xv, (int64) 5);
         GradTensor x = tape.leaf(xv, false);
         at.forwardMasked(tape, x, Masks.causal((int64) 1, (int64) 3));
@@ -257,7 +257,7 @@ public class DecoderTest {
         xs[0] = 1;
         xs[1] = 4;
         xs[2] = 4;
-        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        Tensor<float32> xv #= Tensor.zeros<float32>(xs);
         DecoderTest.fill(xv, (int64) 6);
         GradTensor x = tape.leaf(xv, true);
         int64[] lens = heap int64[1];
@@ -266,7 +266,7 @@ public class DecoderTest {
             Masks.keyPadding(lens, (int64) 4, (int64) 4));
         // Loss over the VALID positions only: a constant 0/1 selector
         // (slice backward is rank-2-only in v3; 0·x keeps exact zeros).
-        Tensor<float32> sel = Tensor.zeros<float32>(xs);
+        Tensor<float32> sel #= Tensor.zeros<float32>(xs);
         int64 s = 0;
         while (s < 8) {
             sel.flatSet(s, 1.0f);
@@ -308,13 +308,13 @@ public class DecoderTest {
         xs[0] = 2;
         xs[1] = 3;
         xs[2] = 4;
-        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        Tensor<float32> xv #= Tensor.zeros<float32>(xs);
         DecoderTest.fill(xv, (int64) 7);
         GradTensor x = tape.leaf(xv, false);
         int64[] lens = heap int64[2];
         lens[0] = 3;
         lens[1] = 2;
-        Tensor<float32> combined = Masks.combine(
+        Tensor<float32> combined #= Masks.combine(
             Masks.causal((int64) 2, (int64) 3),
             Masks.keyPadding(lens, (int64) 3, (int64) 3));
         at.forwardMasked(tape, x, combined);
@@ -362,26 +362,26 @@ public class DecoderTest {
         xs[0] = 1;
         xs[1] = 3;
         xs[2] = 4;
-        Tensor<float32> tgt = Tensor.zeros<float32>(xs);
+        Tensor<float32> tgt #= Tensor.zeros<float32>(xs);
         DecoderTest.fill(tgt, (int64) 0);
         int64[] ms = heap int64[3];
         ms[0] = 1;
         ms[1] = 4;
         ms[2] = 4;
-        Tensor<float32> mem = Tensor.zeros<float32>(ms);
+        Tensor<float32> mem #= Tensor.zeros<float32>(ms);
         DecoderTest.fill(mem, (int64) 2);
-        Tensor<float32> selfMask = Masks.causal((int64) 1, (int64) 3);
+        Tensor<float32> selfMask #= Masks.causal((int64) 1, (int64) 3);
         int64[] zs = heap int64[3];
         zs[0] = 1;
         zs[1] = 3;
         zs[2] = 4;
-        Tensor<float32> noMem = Tensor.zeros<float32>(zs);
+        Tensor<float32> noMem #= Tensor.zeros<float32>(zs);
 
         GradTape<float32> t1 = heap GradTape<float32>();
         dec.bindParameters(t1);
         GradTensor y1 = dec.decode(t1, t1.leaf(tgt, false),
             t1.leaf(mem, false), true, selfMask, false, noMem);
-        Tensor<float32> v1 = t1.valueOf(y1).copy();
+        Tensor<float32> v1 #= t1.valueOf(y1).copy();
         dec.unbindParameters();
         Assert.equals((int64) 1, v1.shapeAt(0));
         Assert.equals((int64) 3, v1.shapeAt(1));

@@ -24,7 +24,7 @@ import dev.cajeta.ml.MlException;
 public final class StructKernels {
 
     static #int64[] shape4(int64 a, int64 b, int64 c, int64 d) {
-        int64[] sh = heap int64[4];
+        int64[] sh #= heap int64[4];
         sh[0] = a; sh[1] = b; sh[2] = c; sh[3] = d;
         return #sh;
     }
@@ -73,18 +73,18 @@ public final class StructKernels {
         }
         int64[] osh = heap int64[3];
         osh[0] = batch; osh[1] = m; osh[2] = n;
-        Tensor<E> out = Tensor.zeros<E>(osh);
+        Tensor<E> out #= Tensor.zeros<E>(osh);
         int64[] ash = heap int64[2];
         ash[0] = m; ash[1] = k;
         int64[] bsh = heap int64[2];
         bsh[0] = k; bsh[1] = n;
         int64 bt = 0;
         while (bt < batch) {
-            Tensor<E> asl = a.slice(0, bt, bt + 1);
-            Tensor<E> av = asl.reshape(ash);
-            Tensor<E> bsl = b.slice(0, bt, bt + 1);
-            Tensor<E> bv = bsl.reshape(bsh);
-            Tensor<E> prod = Tensor.matmul<E>(av, bv);
+            Tensor<E> asl #= a.slice(0, bt, bt + 1);
+            Tensor<E> av #= asl.reshape(ash);
+            Tensor<E> bsl #= b.slice(0, bt, bt + 1);
+            Tensor<E> bv #= bsl.reshape(bsh);
+            Tensor<E> prod #= Tensor.matmul<E>(av, bv);
             int64 base = bt * m * n;
             int64 i = 0;
             while (i < m * n) {
@@ -116,8 +116,8 @@ public final class StructKernels {
         }
         int64 oh = StructKernels.outExtent(h, (int32) kh, stride, pad);
         int64 ow = StructKernels.outExtent(wd, (int32) kw, stride, pad);
-        int64[] osh = StructKernels.shape4(n, oc, oh, ow);
-        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64[] osh #= StructKernels.shape4(n, oc, oh, ow);
+        Tensor<E> out #= Tensor.zeros<E>(osh);
         int64 bn = 0;
         while (bn < n) {
             int64 o = 0;
@@ -166,7 +166,7 @@ public final class StructKernels {
     static #Tensor<E> conv2dBackIn<E extends Floating>(Tensor<E> g, Tensor<E> x,
                                                        Tensor<E> w, int32 stride,
                                                        int32 pad) {
-        Tensor<E> dx = Tensor.zerosLike<E>(x);
+        Tensor<E> dx #= Tensor.zerosLike<E>(x);
         int64 n = x.shapeAt(0);
         int64 c = x.shapeAt(1);
         int64 h = x.shapeAt(2);
@@ -224,7 +224,7 @@ public final class StructKernels {
     static #Tensor<E> conv2dBackWeight<E extends Floating>(Tensor<E> g, Tensor<E> x,
                                                            Tensor<E> w, int32 stride,
                                                            int32 pad) {
-        Tensor<E> dw = Tensor.zerosLike<E>(w);
+        Tensor<E> dw #= Tensor.zerosLike<E>(w);
         int64 n = x.shapeAt(0);
         int64 c = x.shapeAt(1);
         int64 h = x.shapeAt(2);
@@ -284,8 +284,8 @@ public final class StructKernels {
         int64 oc = g.shapeAt(1);
         int64 oh = g.shapeAt(2);
         int64 ow = g.shapeAt(3);
-        int64[] bsh = StructKernels.shape1(oc);
-        Tensor<E> db = Tensor.zeros<E>(bsh);
+        int64[] bsh #= StructKernels.shape1(oc);
+        Tensor<E> db #= Tensor.zeros<E>(bsh);
         int64 o = 0;
         while (o < oc) {
             float64 acc = 0.0;
@@ -319,8 +319,8 @@ public final class StructKernels {
         int64 wd = x.shapeAt(3);
         int64 oh = StructKernels.outExtent(h, k, stride, pad);
         int64 ow = StructKernels.outExtent(wd, k, stride, pad);
-        int64[] osh = StructKernels.shape4(n, c, oh, ow);
-        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64[] osh #= StructKernels.shape4(n, c, oh, ow);
+        Tensor<E> out #= Tensor.zeros<E>(osh);
         int64 bn = 0;
         while (bn < n) {
             int64 ci = 0;
@@ -371,7 +371,7 @@ public final class StructKernels {
     /** maxPool2d backward: route each cotangent to its saved argmax. */
     static #Tensor<E> maxPool2dBack<E extends Floating>(Tensor<E> g, Tensor<E> x,
                                                         Tensor<E> argmax) {
-        Tensor<E> dx = Tensor.zerosLike<E>(x);
+        Tensor<E> dx #= Tensor.zerosLike<E>(x);
         int64 n = 1;
         int32 d = 0;
         while (d < g.ndim()) {
@@ -399,8 +399,8 @@ public final class StructKernels {
         int64 wd = x.shapeAt(3);
         int64 oh = StructKernels.outExtent(h, k, stride, pad);
         int64 ow = StructKernels.outExtent(wd, k, stride, pad);
-        int64[] osh = StructKernels.shape4(n, c, oh, ow);
-        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64[] osh #= StructKernels.shape4(n, c, oh, ow);
+        Tensor<E> out #= Tensor.zeros<E>(osh);
         float64 area = (float64) (k * k);
         int64 bn = 0;
         while (bn < n) {
@@ -444,7 +444,7 @@ public final class StructKernels {
     static #Tensor<E> avgPool2dBack<E extends Floating>(Tensor<E> g, Tensor<E> x,
                                                         int32 k, int32 stride,
                                                         int32 pad) {
-        Tensor<E> dx = Tensor.zerosLike<E>(x);
+        Tensor<E> dx #= Tensor.zerosLike<E>(x);
         int64 n = x.shapeAt(0);
         int64 c = x.shapeAt(1);
         int64 h = x.shapeAt(2);
@@ -508,8 +508,8 @@ public final class StructKernels {
         int64 wd = x.shapeAt(3);
         int64 oh = (int64) outH;
         int64 ow = (int64) outW;
-        int64[] osh = StructKernels.shape4(n, c, oh, ow);
-        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64[] osh #= StructKernels.shape4(n, c, oh, ow);
+        Tensor<E> out #= Tensor.zeros<E>(osh);
         int64 bn = 0;
         while (bn < n) {
             int64 ci = 0;
@@ -550,7 +550,7 @@ public final class StructKernels {
 
     static #Tensor<E> adaptiveAvgPool2dBack<E extends Floating>(Tensor<E> g,
                                                                 Tensor<E> x) {
-        Tensor<E> dx = Tensor.zerosLike<E>(x);
+        Tensor<E> dx #= Tensor.zerosLike<E>(x);
         int64 n = x.shapeAt(0);
         int64 c = x.shapeAt(1);
         int64 h = x.shapeAt(2);
@@ -601,8 +601,8 @@ public final class StructKernels {
         int64 n = x.shapeAt(0);
         int64 c = x.shapeAt(1);
         int64 hw = x.shapeAt(2) * x.shapeAt(3);
-        int64[] sh = StructKernels.shape1(c);
-        Tensor<E> mean = Tensor.zeros<E>(sh);
+        int64[] sh #= StructKernels.shape1(c);
+        Tensor<E> mean #= Tensor.zeros<E>(sh);
         float64 m = (float64) (n * hw);
         int64 ci = 0;
         while (ci < c) {
@@ -628,8 +628,8 @@ public final class StructKernels {
         int64 n = x.shapeAt(0);
         int64 c = x.shapeAt(1);
         int64 hw = x.shapeAt(2) * x.shapeAt(3);
-        int64[] sh = StructKernels.shape1(c);
-        Tensor<E> var = Tensor.zeros<E>(sh);
+        int64[] sh #= StructKernels.shape1(c);
+        Tensor<E> var #= Tensor.zeros<E>(sh);
         float64 m = (float64) (n * hw);
         int64 ci = 0;
         while (ci < c) {
@@ -663,7 +663,7 @@ public final class StructKernels {
         int64 n = x.shapeAt(0);
         int64 c = x.shapeAt(1);
         int64 hw = x.shapeAt(2) * x.shapeAt(3);
-        Tensor<E> out = Tensor.zerosLike<E>(x);
+        Tensor<E> out #= Tensor.zerosLike<E>(x);
         int64 ci = 0;
         while (ci < c) {
             float64 mu = (float64) mean.flatGet(ci);
@@ -694,8 +694,8 @@ public final class StructKernels {
         int64 n = g.shapeAt(0);
         int64 c = g.shapeAt(1);
         int64 hw = g.shapeAt(2) * g.shapeAt(3);
-        int64[] sh = StructKernels.shape1(c);
-        Tensor<E> dg = Tensor.zeros<E>(sh);
+        int64[] sh #= StructKernels.shape1(c);
+        Tensor<E> dg #= Tensor.zeros<E>(sh);
         int64 ci = 0;
         while (ci < c) {
             float64 acc = 0.0;
@@ -720,8 +720,8 @@ public final class StructKernels {
         int64 n = g.shapeAt(0);
         int64 c = g.shapeAt(1);
         int64 hw = g.shapeAt(2) * g.shapeAt(3);
-        int64[] sh = StructKernels.shape1(c);
-        Tensor<E> db = Tensor.zeros<E>(sh);
+        int64[] sh #= StructKernels.shape1(c);
+        Tensor<E> db #= Tensor.zeros<E>(sh);
         int64 ci = 0;
         while (ci < c) {
             float64 acc = 0.0;
@@ -748,7 +748,7 @@ public final class StructKernels {
                                                             Tensor<E> gamma,
                                                             Tensor<E> invstd,
                                                             boolean training) {
-        Tensor<E> dx = Tensor.zerosLike<E>(g);
+        Tensor<E> dx #= Tensor.zerosLike<E>(g);
         int64 n = g.shapeAt(0);
         int64 c = g.shapeAt(1);
         int64 hw = g.shapeAt(2) * g.shapeAt(3);
@@ -843,7 +843,7 @@ public final class StructKernels {
             rows = rows * x.shapeAt(k);
             k = k + 1;
         }
-        Tensor<E> out = Tensor.zerosLike<E>(x);
+        Tensor<E> out #= Tensor.zerosLike<E>(x);
         int64 r = 0;
         while (r < rows) {
             float64 acc = 0.0;
@@ -880,7 +880,7 @@ public final class StructKernels {
     static #Tensor<E> layerNormBackIn<E extends Floating>(Tensor<E> g, Tensor<E> xhat,
                                                           Tensor<E> gamma,
                                                           Tensor<E> invstd) {
-        Tensor<E> dx = Tensor.zerosLike<E>(g);
+        Tensor<E> dx #= Tensor.zerosLike<E>(g);
         int64 d = g.shapeAt(g.ndim() - 1);
         int64 rows = 1;
         int32 k = 0;
@@ -925,8 +925,8 @@ public final class StructKernels {
             rows = rows * g.shapeAt(k);
             k = k + 1;
         }
-        int64[] sh = StructKernels.shape1(d);
-        Tensor<E> dg = Tensor.zeros<E>(sh);
+        int64[] sh #= StructKernels.shape1(d);
+        Tensor<E> dg #= Tensor.zeros<E>(sh);
         int64 j = 0;
         while (j < d) {
             float64 acc = 0.0;
@@ -951,8 +951,8 @@ public final class StructKernels {
             rows = rows * g.shapeAt(k);
             k = k + 1;
         }
-        int64[] sh = StructKernels.shape1(d);
-        Tensor<E> db = Tensor.zeros<E>(sh);
+        int64[] sh #= StructKernels.shape1(d);
+        Tensor<E> db #= Tensor.zeros<E>(sh);
         int64 j = 0;
         while (j < d) {
             float64 acc = 0.0;
@@ -984,7 +984,7 @@ public final class StructKernels {
         int64[] osh = heap int64[2];
         osh[0] = rows;
         osh[1] = dim;
-        Tensor<E> out = Tensor.zeros<E>(osh);
+        Tensor<E> out #= Tensor.zeros<E>(osh);
         int64 i = 0;
         while (i < rows) {
             int64 row = (int64) (float64) idx.flatGet(i);
@@ -1005,7 +1005,7 @@ public final class StructKernels {
     /** Scatter-add back into the table — repeated ids ACCUMULATE. */
     static #Tensor<E> embeddingBack<E extends Floating>(Tensor<E> g, Tensor<E> w,
                                                         Tensor<E> idx) {
-        Tensor<E> dw = Tensor.zerosLike<E>(w);
+        Tensor<E> dw #= Tensor.zerosLike<E>(w);
         int64 dim = w.shapeAt(1);
         int64 rows = 1;
         int32 k = 0;
@@ -1049,7 +1049,7 @@ public final class StructKernels {
             n = n * x.shapeAt(d);
             d = d + 1;
         }
-        Tensor<E> out = Tensor.zerosLike<E>(x);
+        Tensor<E> out #= Tensor.zerosLike<E>(x);
         if (!training || p <= 0.0) {
             int64 i = 0;
             while (i < n) {
@@ -1064,7 +1064,7 @@ public final class StructKernels {
         }
         float64 scale = 1.0 / (1.0 - p);
         Generator gen = heap Generator(seed);
-        Tensor<float32> u = gen.uniform(n);
+        Tensor<float32> u #= gen.uniform(n);
         int64 i = 0;
         while (i < n) {
             if ((float64) u.get1(i) < p) {
@@ -1109,7 +1109,7 @@ public final class StructKernels {
             acc = acc + diff * diff;
             i = i + 1;
         }
-        int64[] sh = StructKernels.shape1(1);
+        int64[] sh #= StructKernels.shape1(1);
         float64 __c12 = acc / (float64) n;
         return Tensor.full<E>(sh, (E) __c12);
     }
@@ -1118,7 +1118,7 @@ public final class StructKernels {
     static #Tensor<E> mseLossBack<E extends Floating>(Tensor<E> g, Tensor<E> pred,
                                                       Tensor<E> target,
                                                       boolean wantPred) {
-        Tensor<E> out = Tensor.zerosLike<E>(pred);
+        Tensor<E> out #= Tensor.zerosLike<E>(pred);
         int64 n = 1;
         int32 d = 0;
         while (d < pred.ndim()) {
@@ -1184,7 +1184,7 @@ public final class StructKernels {
             total = total - Math.log((float64) probs.flatGet(r * cls + t));
             r = r + 1;
         }
-        int64[] sh = StructKernels.shape1(1);
+        int64[] sh #= StructKernels.shape1(1);
         float64 __c14 = total / (float64) rows;
         return Tensor.full<E>(sh, (E) __c14);
     }
@@ -1193,7 +1193,7 @@ public final class StructKernels {
     static #Tensor<E> crossEntropyBack<E extends Floating>(Tensor<E> g,
                                                            Tensor<E> probs,
                                                            Tensor<E> targets) {
-        Tensor<E> dx = Tensor.zerosLike<E>(probs);
+        Tensor<E> dx #= Tensor.zerosLike<E>(probs);
         int64 cls = probs.shapeAt(probs.ndim() - 1);
         int64 rows = 1;
         int32 k = 0;
@@ -1229,8 +1229,8 @@ public final class StructKernels {
             rows = rows * a.shapeAt(k);
             k = k + 1;
         }
-        int64[] osh = StructKernels.shape1(rows);
-        Tensor<E> out = Tensor.zeros<E>(osh);
+        int64[] osh #= StructKernels.shape1(rows);
+        Tensor<E> out #= Tensor.zeros<E>(osh);
         int64 r = 0;
         while (r < rows) {
             float64 dot = 0.0;
@@ -1269,7 +1269,7 @@ public final class StructKernels {
             src = b;
             other = a;
         }
-        Tensor<E> dsrc = Tensor.zerosLike<E>(src);
+        Tensor<E> dsrc #= Tensor.zerosLike<E>(src);
         int64 d = a.shapeAt(a.ndim() - 1);
         int64 rows = 1;
         int32 k = 0;

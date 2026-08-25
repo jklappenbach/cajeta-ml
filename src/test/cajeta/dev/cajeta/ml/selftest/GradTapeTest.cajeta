@@ -16,7 +16,7 @@ public class GradTapeTest {
 
     static #Tensor<float32> grid23() {
         int64[] sh = [2, 3];
-        Tensor<float32> t = Tensor.full<float32>(sh, 0.0f);
+        Tensor<float32> t #= Tensor.full<float32>(sh, 0.0f);
         int64 f = 0;
         while (f < 6) {
             t.flatSet(f, (float32) (f + 1) * 0.5f - 1.75f);
@@ -47,7 +47,7 @@ public class GradTapeTest {
     @Test
     public void reusedNodeAccumulatesGrad() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
         GradTensor x = t.leaf(av, true);
         GradTensor y = t.add(x, x);
         GradTensor s = t.sum(y);
@@ -58,7 +58,7 @@ public class GradTapeTest {
     @Test
     public void leafCopiesItsInput() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
         float32 orig = av.flatGet(0);
         GradTensor x = t.leaf(av, true);
         av.flatSet(0, 99.0f);
@@ -68,7 +68,7 @@ public class GradTapeTest {
     @Test
     public void gradOfBeforeBackwardThrows() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
         GradTensor x = t.leaf(av, true);
         boolean threw = false;
         try {
@@ -82,7 +82,7 @@ public class GradTapeTest {
     @Test
     public void secondBackwardThrows() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
         GradTensor x = t.leaf(av, true);
         GradTensor s = t.sum(x);
         t.backward(s);
@@ -98,7 +98,7 @@ public class GradTapeTest {
     @Test
     public void backwardOnNoGradOutputThrows() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
         GradTensor x = t.leaf(av, false);
         GradTensor s = t.sum(x);
         boolean threw = false;
@@ -113,8 +113,8 @@ public class GradTapeTest {
     @Test
     public void gradOfNonGradNodeThrows() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradTapeTest.grid23();
-        Tensor<float32> cv = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
+        Tensor<float32> cv #= GradTapeTest.grid23();
         GradTensor w = t.leaf(av, true);
         GradTensor c = t.leaf(cv, false);
         GradTensor s = t.sum(t.mul(w, c));
@@ -132,7 +132,7 @@ public class GradTapeTest {
     @Test
     public void noGradSuppressesRecording() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
         GradTensor w = t.leaf(av, true);
         t.noGradBegin();
         GradTensor y = t.mul(w, w);
@@ -147,7 +147,7 @@ public class GradTapeTest {
         Assert.isTrue(threw);
         // Outside the region the same graph differentiates normally.
         GradTape<float32> t2 = heap GradTape<float32>();
-        Tensor<float32> av2 = GradTapeTest.grid23();
+        Tensor<float32> av2 #= GradTapeTest.grid23();
         GradTensor w2 = t2.leaf(av2, true);
         GradTensor s2 = t2.sum(t2.mul(w2, w2));
         t2.backward(s2);
@@ -161,7 +161,7 @@ public class GradTapeTest {
     @Test
     public void detachCutsHistory() {
         GradTape<float32> t = heap GradTape<float32>();
-        Tensor<float32> av = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
         GradTensor w = t.leaf(av, true);
         GradTensor d = t.detached(w);
         GradTensor s = t.sum(t.mul(d, w));
@@ -189,7 +189,7 @@ public class GradTapeTest {
     public void countTracksNodes() {
         GradTape<float32> t = heap GradTape<float32>();
         Assert.isTrue(t.count() == 0);
-        Tensor<float32> av = GradTapeTest.grid23();
+        Tensor<float32> av #= GradTapeTest.grid23();
         GradTensor x = t.leaf(av, true);
         Assert.isTrue(t.count() == 1);
         GradTensor y = t.relu(x);

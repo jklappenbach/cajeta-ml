@@ -28,8 +28,8 @@ public final class MinMaxScaler implements Transformer {
         int64 p = x.shapeAt(1);
         int64[] sh = heap int64[1];
         sh[0] = p;
-        Tensor<float64> mn = Tensor.zeros<float64>(sh);
-        Tensor<float64> rg = Tensor.zeros<float64>(sh);
+        Tensor<float64> mn #= Tensor.zeros<float64>(sh);
+        Tensor<float64> rg #= Tensor.zeros<float64>(sh);
         int64 j = 0;
         while (j < p) {
             float64 vmin = x.get2(0, j);
@@ -63,7 +63,7 @@ public final class MinMaxScaler implements Transformer {
         }
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
-        Tensor<float64> out = x.copy();
+        Tensor<float64> out #= x.copy();
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
@@ -84,7 +84,7 @@ public final class MinMaxScaler implements Transformer {
         }
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
-        Tensor<float64> out = x.copy();
+        Tensor<float64> out #= x.copy();
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
@@ -100,7 +100,7 @@ public final class MinMaxScaler implements Transformer {
 
     public #Tensor<float64> fitTransform(Tensor<float64> x, Tensor<float64> y) {
         this.fit(x, y);
-        Tensor<float64> out = this.transform(x);
+        Tensor<float64> out #= this.transform(x);
         return #out;
     }
 }

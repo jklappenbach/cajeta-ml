@@ -65,7 +65,7 @@ public class GaussiansTest {
     // 1.1.1 + 1.1.2 — empirical priors; explicit-prior validation.
     @Test
     public void priorsAndValidation() {
-        Tensor<float64> pr = Gaussians.priors(fixtureY(), (int64) 3);
+        Tensor<float64> pr #= Gaussians.priors(fixtureY(), (int64) 3);
         int64 k = 0;
         while (k < 3) {
             Assert.isTrue(near(pr.flatGet(k), 0.3333333333333333, 0.000000001));
@@ -76,8 +76,8 @@ public class GaussiansTest {
         d[0] = 0.0; d[1] = 0.0; d[2] = 0.0; d[3] = 1.0;
         int64[] sh = heap int64[1];
         sh[0] = 4;
-        Tensor<float64> y2 = Tensor.of<float64>(d, sh);
-        Tensor<float64> pr2 = Gaussians.priors(y2, (int64) 2);
+        Tensor<float64> y2 #= Tensor.of<float64>(d, sh);
+        Tensor<float64> pr2 #= Gaussians.priors(y2, (int64) 2);
         Assert.isTrue(near(pr2.flatGet(0), 0.75, 0.000000001));
         Assert.isTrue(near(pr2.flatGet(1), 0.25, 0.000000001));
 
@@ -102,10 +102,10 @@ public class GaussiansTest {
     // 1.1.3 — pooled covariance and class means match sklearn LDA's.
     @Test
     public void pooledCovarianceMatchesSklearn() {
-        Tensor<float64> x = fixtureX();
-        Tensor<float64> y = fixtureY();
+        Tensor<float64> x #= fixtureX();
+        Tensor<float64> y #= fixtureY();
 
-        Tensor<float64> mu = Gaussians.classMeans(x, y, (int64) 3);
+        Tensor<float64> mu #= Gaussians.classMeans(x, y, (int64) 3);
         Assert.isTrue(near(mu.flatGet(0), 1.53, 0.000000001));
         Assert.isTrue(near(mu.flatGet(1), 1.38, 0.000000001));
         Assert.isTrue(near(mu.flatGet(2), 1.56, 0.000000001));
@@ -116,7 +116,7 @@ public class GaussiansTest {
         Assert.isTrue(near(mu.flatGet(7), -0.030000000000000027, 0.000000001));
         Assert.isTrue(near(mu.flatGet(8), 2.65, 0.000000001));
 
-        Tensor<float64> c = Gaussians.pooledCovariance(x, y, (int64) 3);
+        Tensor<float64> c #= Gaussians.pooledCovariance(x, y, (int64) 3);
         Assert.isTrue(near(c.flatGet(0), 0.9041999999999999, 0.000000001));
         Assert.isTrue(near(c.flatGet(1), -0.43889999999999996, 0.000000001));
         Assert.isTrue(near(c.flatGet(2), 0.40259999999999996, 0.000000001));
@@ -133,10 +133,10 @@ public class GaussiansTest {
     // small to estimate is reported clearly.
     @Test
     public void classCovarianceMatchesSklearn() {
-        Tensor<float64> x = fixtureX();
-        Tensor<float64> y = fixtureY();
+        Tensor<float64> x #= fixtureX();
+        Tensor<float64> y #= fixtureY();
 
-        Tensor<float64> c0 = Gaussians.classCovariance(x, y, (int64) 0);
+        Tensor<float64> c0 #= Gaussians.classCovariance(x, y, (int64) 0);
         Assert.isTrue(near(c0.flatGet(0), 1.0889999999999997, 0.000000001));
         Assert.isTrue(near(c0.flatGet(1), -0.5060000000000004, 0.000000001));
         Assert.isTrue(near(c0.flatGet(2), 0.5280000000000006, 0.000000001));
@@ -144,7 +144,7 @@ public class GaussiansTest {
         Assert.isTrue(near(c0.flatGet(5), -0.46199999999999913, 0.000000001));
         Assert.isTrue(near(c0.flatGet(8), 1.056000000000001, 0.000000001));
 
-        Tensor<float64> c2 = Gaussians.classCovariance(x, y, (int64) 2);
+        Tensor<float64> c2 #= Gaussians.classCovariance(x, y, (int64) 2);
         Assert.isTrue(near(c2.flatGet(0), 0.9240000000000007, 0.000000001));
         Assert.isTrue(near(c2.flatGet(4), 1.0890000000000006, 0.000000001));
         Assert.isTrue(near(c2.flatGet(8), 0.8250000000000004, 0.000000001));
@@ -170,7 +170,7 @@ public class GaussiansTest {
     // shrinkage coefficient is readable.
     @Test
     public void ledoitWolfMatchesSklearn() {
-        Tensor<float64>[] lw = Gaussians.ledoitWolf(fixtureX());
+        Tensor<float64>[] lw #= Gaussians.ledoitWolf(fixtureX());
         Tensor<float64> cov = lw[0];
         Tensor<float64> lam = lw[1];
         Assert.isTrue(near(lam.flatGet(0), 0.12783808399847038, 0.000000001));
@@ -192,8 +192,8 @@ public class GaussiansTest {
         int64[] sh = heap int64[2];
         sh[0] = 3;
         sh[1] = 3;
-        Tensor<float64> rows = Tensor.of<float64>(d, sh);
-        Tensor<float64> lse = Gaussians.logSumExp(rows);
+        Tensor<float64> rows #= Tensor.of<float64>(d, sh);
+        Tensor<float64> lse #= Gaussians.logSumExp(rows);
         Assert.isTrue(near(lse.flatGet(0), 1.301942848229244, 0.000000001));
         Assert.isTrue(near(lse.flatGet(1), -998.8197303293583, 0.000000001));
         Assert.isTrue(near(lse.flatGet(2), 5.313261687518223, 0.000000001));
@@ -204,11 +204,11 @@ public class GaussiansTest {
     // solve failure.
     @Test
     public void logDensityAndSingularity() {
-        Tensor<float64> x = fixtureX();
-        Tensor<float64> y = fixtureY();
-        Tensor<float64> mu = Gaussians.classMeans(x, y, (int64) 3);
-        Tensor<float64> c = Gaussians.pooledCovariance(x, y, (int64) 3);
-        Tensor<float64> lower = Gaussians.choleskyFactor(c);
+        Tensor<float64> x #= fixtureX();
+        Tensor<float64> y #= fixtureY();
+        Tensor<float64> mu #= Gaussians.classMeans(x, y, (int64) 3);
+        Tensor<float64> c #= Gaussians.pooledCovariance(x, y, (int64) 3);
+        Tensor<float64> lower #= Gaussians.choleskyFactor(c);
 
         float64[] m0 = heap float64[3];
         m0[0] = mu.flatGet(0);
@@ -216,7 +216,7 @@ public class GaussiansTest {
         m0[2] = mu.flatGet(2);
         int64[] ms = heap int64[1];
         ms[0] = 3;
-        Tensor<float64> mean0 = Tensor.of<float64>(m0, ms);
+        Tensor<float64> mean0 #= Tensor.of<float64>(m0, ms);
 
         float64[] q = heap float64[9];
         int64 i = 0;
@@ -227,9 +227,9 @@ public class GaussiansTest {
         int64[] qs = heap int64[2];
         qs[0] = 3;
         qs[1] = 3;
-        Tensor<float64> first3 = Tensor.of<float64>(q, qs);
+        Tensor<float64> first3 #= Tensor.of<float64>(q, qs);
 
-        Tensor<float64> lp = Gaussians.logDensity(first3, mean0, lower);
+        Tensor<float64> lp #= Gaussians.logDensity(first3, mean0, lower);
         Assert.isTrue(near(lp.flatGet(0), -6.790474570116049, 0.000000001));
         Assert.isTrue(near(lp.flatGet(1), -2.9971233607308148, 0.000000001));
         Assert.isTrue(near(lp.flatGet(2), -3.023998588130705, 0.000000001));
@@ -251,15 +251,15 @@ public class GaussiansTest {
     // input, intensity 1 is exactly (trace/p) * I.
     @Test
     public void shrinkTowardScaledIdentity() {
-        Tensor<float64> c = Gaussians.pooledCovariance(fixtureX(), fixtureY(),
+        Tensor<float64> c #= Gaussians.pooledCovariance(fixtureX(), fixtureY(),
             (int64) 3);
-        Tensor<float64> s0 = Gaussians.shrinkToward(c, 0.0);
+        Tensor<float64> s0 #= Gaussians.shrinkToward(c, 0.0);
         Assert.isTrue(near(s0.flatGet(1), c.flatGet(1), 0.000000000000001));
-        Tensor<float64> s1 = Gaussians.shrinkToward(c, 1.0);
+        Tensor<float64> s1 #= Gaussians.shrinkToward(c, 1.0);
         float64 muT = (c.flatGet(0) + c.flatGet(4) + c.flatGet(8)) / 3.0;
         Assert.isTrue(near(s1.flatGet(0), muT, 0.000000000000001));
         Assert.isTrue(near(s1.flatGet(1), 0.0, 0.000000000000001));
-        Tensor<float64> s5 = Gaussians.shrinkToward(c, 0.5);
+        Tensor<float64> s5 #= Gaussians.shrinkToward(c, 0.5);
         Assert.isTrue(near(s5.flatGet(1), c.flatGet(1) * 0.5,
             0.000000000000001));
     }

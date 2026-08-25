@@ -97,7 +97,7 @@ public class LogisticCostSparseTest {
         Assert.isTrue(near(lr.interceptVector().flatGet(0),
             1.030584458989167, 0.00001));
         float64[] q = heap float64[6];
-        Tensor<float64> x = fixtureX();
+        Tensor<float64> x #= fixtureX();
         int64 i = 0;
         while (i < 6) {
             q[i] = x.flatGet(i);
@@ -106,7 +106,7 @@ public class LogisticCostSparseTest {
         int64[] qs = heap int64[2];
         qs[0] = 3;
         qs[1] = 2;
-        Tensor<float64> pr = lr.predictProba(Tensor.of<float64>(q, qs));
+        Tensor<float64> pr #= lr.predictProba(Tensor.of<float64>(q, qs));
         Assert.isTrue(near(pr.get2(0, 1), 0.24587898597348543, 0.00001));
         Assert.isTrue(near(pr.get2(1, 1), 0.7883104128482471, 0.00001));
         Assert.isTrue(near(pr.get2(2, 1), 0.7856258535685195, 0.00001));
@@ -167,7 +167,7 @@ public class LogisticCostSparseTest {
             (int64) 10000, true, #w);
         lr.fit(fixtureX(), Tensor.of<float64>(yd, ys));
         float64[] q = heap float64[4];
-        Tensor<float64> x = fixtureX();
+        Tensor<float64> x #= fixtureX();
         int64 i = 0;
         while (i < 4) {
             q[i] = x.flatGet(i);
@@ -176,7 +176,7 @@ public class LogisticCostSparseTest {
         int64[] qs = heap int64[2];
         qs[0] = 2;
         qs[1] = 2;
-        Tensor<float64> pr = lr.predictProba(Tensor.of<float64>(q, qs));
+        Tensor<float64> pr #= lr.predictProba(Tensor.of<float64>(q, qs));
         Assert.isTrue(near(pr.get2(0, 0), 0.7016540803713854, 0.0001));
         Assert.isTrue(near(pr.get2(0, 1), 0.2519264857988911, 0.0001));
         Assert.isTrue(near(pr.get2(0, 2), 0.04641943382972346, 0.0001));
@@ -190,11 +190,11 @@ public class LogisticCostSparseTest {
         LogisticRegression lr = heap LogisticRegression(1.0, 0.0000000001,
             (int64) 1000);
         lr.fit(fixtureX(), fixtureY());
-        Tensor<float64> x = fixtureX();
-        Tensor<float64> pr = lr.predictProba(x);
-        Tensor<float64> base = lr.predict(x);
-        Tensor<float64> hi = lr.predict(x, 0.9);
-        Tensor<float64> lo = lr.predict(x, 0.1);
+        Tensor<float64> x #= fixtureX();
+        Tensor<float64> pr #= lr.predictProba(x);
+        Tensor<float64> base #= lr.predict(x);
+        Tensor<float64> hi #= lr.predict(x, 0.9);
+        Tensor<float64> lo #= lr.predict(x, 0.1);
         int64 i = 0;
         int64 nHi = 0;
         int64 nLo = 0;
@@ -224,7 +224,7 @@ public class LogisticCostSparseTest {
             LogisticRegression b = heap LogisticRegression(1.0, 0.0001,
                 (int64) 100);
             b.fit(fixtureX(), fixtureY());
-            Tensor<float64> bad = b.predict(fixtureX(), 1.5);
+            Tensor<float64> bad #= b.predict(fixtureX(), 1.5);
         });
         Assert.assertThrows(() -> {
             float64[] yd = heap float64[20];
@@ -238,7 +238,7 @@ public class LogisticCostSparseTest {
             LogisticRegression b = heap LogisticRegression(1.0, 0.0001,
                 (int64) 200);
             b.fit(fixtureX(), Tensor.of<float64>(yd, ys));
-            Tensor<float64> bad = b.predict(fixtureX(), 0.7);
+            Tensor<float64> bad #= b.predict(fixtureX(), 0.7);
         });
     }
 
@@ -355,7 +355,7 @@ public class LogisticCostSparseTest {
             LogisticRegression l1 = heap LogisticRegression(0.8,
                 0.000000000001, (int64) 100000, "l1");
             l1.fit(fixtureXw(), fixtureY());
-            SummaryResult s = l1.summary(fixtureXw(), fixtureY());
+            SummaryResult s #= l1.summary(fixtureXw(), fixtureY());
         });
     }
 

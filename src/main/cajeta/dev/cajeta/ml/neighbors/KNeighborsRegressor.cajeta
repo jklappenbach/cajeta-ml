@@ -63,8 +63,8 @@ public final class KNeighborsRegressor implements Predictor {
         if (n < this.kNeighbors) {
             throw heap MlException("KNeighborsRegressor.fit: n < k");
         }
-        Tensor<float64> cx = x.copy();
-        Tensor<float64> cy = y.copy();
+        Tensor<float64> cx #= x.copy();
+        Tensor<float64> cy #= y.copy();
         this.trainX #= cx;
         this.trainY #= cy;
         this.fitted = true;
@@ -87,8 +87,8 @@ public final class KNeighborsRegressor implements Predictor {
         int64 p = tx.shapeAt(1);
         int64[] vs = heap int64[1];
         vs[0] = p;
-        Tensor<float64> qv = Tensor.zeros<float64>(vs);
-        Tensor<float64> tv = Tensor.zeros<float64>(vs);
+        Tensor<float64> qv #= Tensor.zeros<float64>(vs);
+        Tensor<float64> tv #= Tensor.zeros<float64>(vs);
         int64 j = 0;
         while (j < p) {
             qv.flatSet(j, q.get2(qi, j));
@@ -245,7 +245,7 @@ public final class KNeighborsRegressor implements Predictor {
 
     /** R² (the sklearn regressor `score` convention). */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pr = this.predict(x);
+        Tensor<float64> pr #= this.predict(x);
         return Metrics.r2(y, pr);
     }
 }

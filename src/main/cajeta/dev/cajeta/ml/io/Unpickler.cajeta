@@ -154,7 +154,7 @@ public class Unpickler {
     }
 
     #String readAscii(int64 len) {
-        String s = PtReader.asciiOf(this.raw, this.pos, len);
+        String s #= PtReader.asciiOf(this.raw, this.pos, len);
         this.pos = this.pos + len;
         return #s;
     }
@@ -186,11 +186,11 @@ public class Unpickler {
                 this.memoGet((int32) this.readU32());
             } else if (op == PtReader.OP_BINUNICODE) {
                 int64 len = this.readU32();
-                String s = this.readAscii(len);
+                String s #= this.readAscii(len);
                 this.push(PtReader.T_STR, 0, s);
             } else if (op == PtReader.OP_SHORT_BINUNICODE) {
                 int64 len = (int64) this.nextByte();
-                String s = this.readAscii(len);
+                String s #= this.readAscii(len);
                 this.push(PtReader.T_STR, 0, s);
             } else if (op == PtReader.OP_BININT1) {
                 this.push(PtReader.T_INT, (int64) this.nextByte(), "");
@@ -308,11 +308,11 @@ public class Unpickler {
     void readGlobal() {
         int64 mstart = this.pos;
         while (this.raw[this.pos] != 10) { this.pos = this.pos + 1; }
-        String module = PtReader.asciiOf(this.raw, mstart, this.pos - mstart);
+        String module #= PtReader.asciiOf(this.raw, mstart, this.pos - mstart);
         this.pos = this.pos + 1;
         int64 nstart = this.pos;
         while (this.raw[this.pos] != 10) { this.pos = this.pos + 1; }
-        String name = PtReader.asciiOf(this.raw, nstart, this.pos - nstart);
+        String name #= PtReader.asciiOf(this.raw, nstart, this.pos - nstart);
         this.pos = this.pos + 1;
 
         String full = module + " " + name;
@@ -385,7 +385,7 @@ public class Unpickler {
         int64 storageOffset = this.poolInt.get(start + 1);
         int32 sizeTup = (int32) this.poolInt.get(start + 2);
 
-        Tensor<float32> t = this.materialize(storageTup, storageOffset, sizeTup);
+        Tensor<float32> t #= this.materialize(storageTup, storageOffset, sizeTup);
         this.tensors.add(#t);
         this.push(PtReader.T_TENSOR, (int64) (this.tensors.count() - 1), "");
         return;
@@ -437,7 +437,7 @@ public class Unpickler {
                 + "storage '" + key + "' but the entry holds " + avail);
         }
 
-        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        Tensor<float32> t #= Tensor.zeros<float32>(shape);
         int64 base = at + storageOffset * (int64) width;
         int64 e = 0;
         while (e < count) {
@@ -499,7 +499,7 @@ public class Unpickler {
             if (kTag == PtReader.T_STR && vTag == PtReader.T_TENSOR) {
                 String name = this.topStr(i);
                 int32 ti = (int32) this.topInt(i - 1);
-                Tensor<float32> copy = this.tensors.get(ti).copy();
+                Tensor<float32> copy #= this.tensors.get(ti).copy();
                 this.out.put(name, #copy);
             }
             i = i - 2;

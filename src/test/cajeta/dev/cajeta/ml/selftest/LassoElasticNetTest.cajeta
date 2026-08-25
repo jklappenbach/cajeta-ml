@@ -69,8 +69,8 @@ public class LassoElasticNetTest {
 
     @Test
     public void lassoMatchesSklearnPin() {
-        Tensor<float64> x = LassoElasticNetTest.fixX();
-        Tensor<float64> y = LassoElasticNetTest.fixY();
+        Tensor<float64> x #= LassoElasticNetTest.fixX();
+        Tensor<float64> y #= LassoElasticNetTest.fixY();
         Lasso m = heap Lasso(0.01, true, 0.0000000001, (int64) 100000);
         m.fit(x, y);
         Assert.isTrue(m.converged());
@@ -86,8 +86,8 @@ public class LassoElasticNetTest {
 
     @Test
     public void lassoSparsifiesLikeSklearn() {
-        Tensor<float64> x = LassoElasticNetTest.fixX();
-        Tensor<float64> y = LassoElasticNetTest.fixY();
+        Tensor<float64> x #= LassoElasticNetTest.fixX();
+        Tensor<float64> y #= LassoElasticNetTest.fixY();
         // alpha=0.5 zeroes EVERYTHING; intercept falls back to mean(y).
         Lasso m = heap Lasso(0.5, true, 0.0000000001, (int64) 100000);
         m.fit(x, y);
@@ -105,8 +105,8 @@ public class LassoElasticNetTest {
 
     @Test
     public void elasticNetPinAndLassoLimit() {
-        Tensor<float64> x = LassoElasticNetTest.fixX();
-        Tensor<float64> y = LassoElasticNetTest.fixY();
+        Tensor<float64> x #= LassoElasticNetTest.fixX();
+        Tensor<float64> y #= LassoElasticNetTest.fixY();
         ElasticNet en = heap ElasticNet(0.05, 0.5, true, 0.0000000001,
                                         (int64) 100000);
         en.fit(x, y);
@@ -134,13 +134,13 @@ public class LassoElasticNetTest {
 
     @Test
     public void nonConvergenceIsLoud() {
-        Tensor<float64> x = LassoElasticNetTest.fixX();
-        Tensor<float64> y = LassoElasticNetTest.fixY();
+        Tensor<float64> x #= LassoElasticNetTest.fixX();
+        Tensor<float64> y #= LassoElasticNetTest.fixY();
         // One iteration cannot converge at this tol; the fit stays usable.
         Lasso m = heap Lasso(0.01, true, 0.0000000001, (int64) 1);
         m.fit(x, y);
         Assert.isFalse(m.converged());
-        Tensor<float64> p = m.predict(x);
+        Tensor<float64> p #= m.predict(x);
         Assert.equals((int64) 20, p.shapeAt(0));
     }
 }

@@ -29,7 +29,7 @@ final class GiniImpurity implements Impurity {
     }
 
     public float64 weightedN(float64[] ys, float64[] ws, int64 lo, int64 hi) {
-        float64[] wc = this.wcounts(ys, ws, lo, hi);
+        float64[] wc #= this.wcounts(ys, ws, lo, hi);
         float64 s = 0.0;
         int64 c = 0;
         while (c < this.k) { s = s + wc[c]; c = c + 1; }
@@ -37,7 +37,7 @@ final class GiniImpurity implements Impurity {
     }
 
     public float64 weighted(float64[] ys, float64[] ws, int64 lo, int64 hi) {
-        float64[] wc = this.wcounts(ys, ws, lo, hi);
+        float64[] wc #= this.wcounts(ys, ws, lo, hi);
         float64 wn = 0.0;
         int64 c = 0;
         while (c < this.k) { wn = wn + wc[c]; c = c + 1; }
@@ -60,7 +60,7 @@ final class GiniImpurity implements Impurity {
     }
 
     public void leafInto(float64[] ys, float64[] ws, int64 lo, int64 hi, float64[] value, int64 off) {
-        float64[] wc = this.wcounts(ys, ws, lo, hi);
+        float64[] wc #= this.wcounts(ys, ws, lo, hi);
         float64 wn = 0.0;
         int64 c = 0;
         while (c < this.k) { wn = wn + wc[c]; c = c + 1; }

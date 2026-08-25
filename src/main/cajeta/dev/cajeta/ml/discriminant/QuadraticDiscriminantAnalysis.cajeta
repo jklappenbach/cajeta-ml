@@ -133,7 +133,7 @@ public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
             int64[] bs = heap int64[2];
             bs[0] = nk;
             bs[1] = p;
-            Tensor<float64> blk = Tensor.zeros<float64>(bs);
+            Tensor<float64> blk #= Tensor.zeros<float64>(bs);
             int64 w = 0;
             i = 0;
             while (i < n) {
@@ -148,7 +148,7 @@ public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
                 }
                 i = i + 1;
             }
-            Tensor<float64>[] usv = LinAlg.svd<float64>(blk);
+            Tensor<float64>[] usv #= LinAlg.svd<float64>(blk);
             Tensor<float64> s = usv[1];
             Tensor<float64> vt = usv[2];
             int64 r = s.size();
@@ -229,7 +229,7 @@ public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
         int64[] sh = heap int64[2];
         sh[0] = p;
         sh[1] = p;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 f = 0;
         while (f < p * p) {
             out.flatSet(f, this.covM.flatGet(label * p * p + f));
@@ -255,7 +255,7 @@ public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = k;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         float64[] xm = heap float64[p];
         int64 i = 0;
         while (i < n) {
@@ -294,14 +294,14 @@ public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
      * column `dec₁ - dec₀` `(n,)` for a binary fit.
      */
     public #Tensor<float64> decisionFunction(Tensor<float64> x) {
-        Tensor<float64> lp = this.logPosteriors(x);
+        Tensor<float64> lp #= this.logPosteriors(x);
         if (this.nClasses != 2) {
             return #lp;
         }
         int64 n = x.shapeAt(0);
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             out.flatSet(i, lp.get2(i, 1) - lp.get2(i, 0));
@@ -312,12 +312,12 @@ public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
 
     /** Argmax of the log posteriors; ties take the lowest label. */
     public #Tensor<float64> predict(Tensor<float64> x) {
-        Tensor<float64> lp = this.logPosteriors(x);
+        Tensor<float64> lp #= this.logPosteriors(x);
         int64 n = x.shapeAt(0);
         int64 k = this.nClasses;
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 best = 0;
@@ -339,14 +339,14 @@ public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
 
     /** Softmax-normalized posteriors over the K log posteriors. */
     public #Tensor<float64> predictProba(Tensor<float64> x) {
-        Tensor<float64> lp = this.logPosteriors(x);
+        Tensor<float64> lp #= this.logPosteriors(x);
         int64 n = x.shapeAt(0);
         int64 k = this.nClasses;
-        Tensor<float64> lse = Gaussians.logSumExp(lp);
+        Tensor<float64> lse #= Gaussians.logSumExp(lp);
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = k;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -362,7 +362,7 @@ public final class QuadraticDiscriminantAnalysis implements ProbClassifier {
 
     /** Accuracy — the classifier `score` convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pred = this.predict(x);
+        Tensor<float64> pred #= this.predict(x);
         return Metrics.accuracy(y, pred);
     }
 }

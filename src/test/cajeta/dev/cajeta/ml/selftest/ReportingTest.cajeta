@@ -57,9 +57,9 @@ public class ReportingTest {
     // so points() == thresholds() + 1.
     @Test
     public void prCurveMatchesSklearnIncludingEndpoints() {
-        Tensor<float64> y = curveY();
-        Tensor<float64> s = curveS();
-        PrCurve c = Metrics.precisionRecallCurve(y, s);
+        Tensor<float64> y #= curveY();
+        Tensor<float64> s #= curveS();
+        PrCurve c #= Metrics.precisionRecallCurve(y, s);
 
         Assert.equals(c.points(), (int64) 12);
         Assert.equals(c.thresholds(), (int64) 11);
@@ -93,9 +93,9 @@ public class ReportingTest {
 
         // Reading past the last threshold is loud, not silent.
         Assert.assertThrows(() -> {
-            Tensor<float64> y2 = curveY();
-            Tensor<float64> s2 = curveS();
-            PrCurve c2 = Metrics.precisionRecallCurve(y2, s2);
+            Tensor<float64> y2 #= curveY();
+            Tensor<float64> s2 #= curveS();
+            PrCurve c2 #= Metrics.precisionRecallCurve(y2, s2);
             float64 t = c2.thresholdAt((int64) 11);
         });
     }
@@ -104,8 +104,8 @@ public class ReportingTest {
     // sklearn `average_precision_score`.
     @Test
     public void averagePrecisionMatchesSklearn() {
-        Tensor<float64> y = curveY();
-        Tensor<float64> s = curveS();
+        Tensor<float64> y #= curveY();
+        Tensor<float64> s #= curveS();
         float64 ap = Metrics.averagePrecision(y, s);
         Assert.isTrue(near(ap, 0.8833333333333333, 0.000000001));
     }
@@ -136,9 +136,9 @@ public class ReportingTest {
     // sklearn's shape, matching `classification_report` numerically.
     @Test
     public void classificationReportMatchesSklearnShape() {
-        Tensor<float64> yt = repT();
-        Tensor<float64> yp = repP();
-        ClassificationReport r =
+        Tensor<float64> yt #= repT();
+        Tensor<float64> yp #= repP();
+        ClassificationReport r #=
             Metrics.classificationReport(yt, yp, (int64) 3);
 
         Assert.equals(r.classes(), (int64) 3);
@@ -197,7 +197,7 @@ public class ReportingTest {
     }
 
     static #Tensor<float64> latY() {
-        Tensor<float64> x = latX();
+        Tensor<float64> x #= latX();
         float64[] d = heap float64[30];
         int64 i = 0;
         while (i < 30) {
@@ -216,8 +216,8 @@ public class ReportingTest {
     // sklearn's SequentialFeatureSelector support {1, 3}.
     @Test
     public void forwardSelectionFindsInformativePair() {
-        Tensor<float64> x = latX();
-        Tensor<float64> y = latY();
+        Tensor<float64> x #= latX();
+        Tensor<float64> y #= latY();
         float64[] pd = heap float64[2];
         pd[0] = 1.0;
         pd[1] = 0.00000001;
@@ -242,16 +242,16 @@ public class ReportingTest {
         pd[1] = 0.00000001;
         int64[] ps = heap int64[1];
         ps[0] = 2;
-        Tensor<float64> params = Tensor.of<float64>(pd, ps);
+        Tensor<float64> params #= Tensor.of<float64>(pd, ps);
 
-        Tensor<float64> x1 = latX();
-        Tensor<float64> y1 = latY();
+        Tensor<float64> x1 #= latX();
+        Tensor<float64> y1 #= latY();
         ForwardSelector a = heap ForwardSelector(heap LogisticCFactory(),
             params.copy(), (int64) 2, (int64) 3, "accuracy", (uint64) 42);
         a.fit(x1, y1);
 
-        Tensor<float64> x2 = latX();
-        Tensor<float64> y2 = latY();
+        Tensor<float64> x2 #= latX();
+        Tensor<float64> y2 #= latY();
         ForwardSelector b = heap ForwardSelector(heap LogisticCFactory(),
             params.copy(), (int64) 2, (int64) 3, "accuracy", (uint64) 42);
         b.fit(x2, y2);
@@ -303,8 +303,8 @@ public class ReportingTest {
     // count rather than padding with noise features.
     @Test
     public void forwardSelectionStopsWithoutImprovement() {
-        Tensor<float64> x = sepX();
-        Tensor<float64> y = sepY();
+        Tensor<float64> x #= sepX();
+        Tensor<float64> y #= sepY();
         float64[] pd = heap float64[2];
         pd[0] = 1.0;
         pd[1] = 0.00000001;
@@ -323,21 +323,21 @@ public class ReportingTest {
     // fit-then-transform, and the selector composes in a Pipeline.
     @Test
     public void forwardSelectorComposesAsTransformer() {
-        Tensor<float64> x = latX();
-        Tensor<float64> y = latY();
+        Tensor<float64> x #= latX();
+        Tensor<float64> y #= latY();
         float64[] pd = heap float64[2];
         pd[0] = 1.0;
         pd[1] = 0.00000001;
         int64[] ps = heap int64[1];
         ps[0] = 2;
-        Tensor<float64> params = Tensor.of<float64>(pd, ps);
+        Tensor<float64> params #= Tensor.of<float64>(pd, ps);
 
         ForwardSelector fs = heap ForwardSelector(heap LogisticCFactory(),
             params.copy(), (int64) 2, (int64) 3, "accuracy", (uint64) 7);
-        Tensor<float64> ft = fs.fitTransform(x, y);
+        Tensor<float64> ft #= fs.fitTransform(x, y);
         Assert.equals(ft.shapeAt(0), (int64) 30);
         Assert.equals(ft.shapeAt(1), (int64) 2);
-        Tensor<float64> tx = fs.transform(x);
+        Tensor<float64> tx #= fs.transform(x);
         int64 i = 0;
         while (i < 30) {
             Assert.isTrue(ft.get2(i, 0) == tx.get2(i, 0));
@@ -353,9 +353,9 @@ public class ReportingTest {
         ForwardSelector st = heap ForwardSelector(heap LogisticCFactory(),
             params.copy(), (int64) 2, (int64) 3, "accuracy", (uint64) 7);
         Predictor lr = heap LogisticRegression(1.0, 0.00000001, (int64) 500);
-        Pipeline pl = Pipeline.of(#st, #lr);
+        Pipeline pl #= Pipeline.of(#st, #lr);
         pl.fit(x, y);
-        Tensor<float64> pred = pl.predict(x);
+        Tensor<float64> pred #= pl.predict(x);
         float64 acc = Metrics.accuracy(y, pred);
         Assert.isTrue(acc > 0.9);
     }
@@ -374,7 +374,7 @@ public class ReportingTest {
                 (int64) 0, (int64) 3, "accuracy", (uint64) 1);
         });
         Assert.assertThrows(() -> {
-            Tensor<float64> x = latX();
+            Tensor<float64> x #= latX();
             float64[] pd = heap float64[2];
             pd[0] = 1.0;
             pd[1] = 0.00000001;
@@ -383,12 +383,12 @@ public class ReportingTest {
             ForwardSelector un = heap ForwardSelector(
                 heap LogisticCFactory(), Tensor.of<float64>(pd, ps),
                 (int64) 2, (int64) 3, "accuracy", (uint64) 1);
-            Tensor<float64> t = un.transform(x);
+            Tensor<float64> t #= un.transform(x);
         });
         // Target count beyond the feature count is rejected at fit.
         Assert.assertThrows(() -> {
-            Tensor<float64> x = sepX();
-            Tensor<float64> y = sepY();
+            Tensor<float64> x #= sepX();
+            Tensor<float64> y #= sepY();
             float64[] pd = heap float64[2];
             pd[0] = 1.0;
             pd[1] = 0.00000001;

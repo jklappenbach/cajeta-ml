@@ -43,10 +43,10 @@ public class NetRegressor implements Predictor {
     }
 
     public void fit(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float32> xf = Nets.toF32(x);
-        Tensor<float32> yf32 = Nets.toF32(y);
-        Tensor<float32> yf = Nets.asColumn(yf32);
-        Parameter[] ps = this.net.parameters();
+        Tensor<float32> xf #= Nets.toF32(x);
+        Tensor<float32> yf32 #= Nets.toF32(y);
+        Tensor<float32> yf #= Nets.asColumn(yf32);
+        Parameter[] ps #= this.net.parameters();
         Optimizer opt = heap SGD(this.net.parameters(), this.lr, 0.0f);
         this.net.train();
         int32 e = 0;
@@ -58,7 +58,7 @@ public class NetRegressor implements Predictor {
             GradTensor pred = this.net.forward(tape, xn);
             GradTensor loss = tape.mseLoss(pred, tn);
             tape.backward(loss);
-            Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+            Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
             opt.step(gs);
             this.net.unbindParameters();
             e = e + 1;
@@ -76,14 +76,14 @@ public class NetRegressor implements Predictor {
             throw heap MlException("NetRegressor.predict: not fitted");
         }
         this.net.eval();
-        Tensor<float32> xf = Nets.toF32(x);
-        Tensor<float32> out = this.net.predict(xf);
+        Tensor<float32> xf #= Nets.toF32(x);
+        Tensor<float32> out #= this.net.predict(xf);
         // A single-output head emits (n, 1); the protocol wants (n,).
         if (out.ndim() == 2 && out.shapeAt(1) == 1) {
             int64[] sh = heap int64[1];
             sh[0] = out.shapeAt(0);
-            Tensor<float32> vw = out.reshape(sh);
-            Tensor<float32> flat = vw.copy();
+            Tensor<float32> vw #= out.reshape(sh);
+            Tensor<float32> flat #= vw.copy();
             return Nets.toF64(flat);
         }
         return Nets.toF64(out);
@@ -91,7 +91,7 @@ public class NetRegressor implements Predictor {
 
     /** R², the sklearn regressor convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         int64 n = y.shapeAt(0);
         float64 mean = 0.0;
         int64 i = 0;

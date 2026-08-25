@@ -190,7 +190,7 @@ public final class LogisticRegression implements ProbClassifier {
         int64 d = p + 1;
         int64[] dm = heap int64[1];
         dm[0] = d;
-        Tensor<float64> theta = Tensor.zeros<float64>(dm);
+        Tensor<float64> theta #= Tensor.zeros<float64>(dm);
         int64[] hs = heap int64[2];
         hs[0] = d;
         hs[1] = d;
@@ -198,13 +198,13 @@ public final class LogisticRegression implements ProbClassifier {
         int64 it = 0;
         while (it < this.maxIter) {
             // p_i = expit(x_i·w + b); grad = [w;0] + C·Xdᵀ(p−y)
-            Tensor<float64> grad = Tensor.zeros<float64>(dm);
+            Tensor<float64> grad #= Tensor.zeros<float64>(dm);
             int64 j = 0;
             while (j < p) {
                 grad.set1(j, theta.get1(j));
                 j = j + 1;
             }
-            Tensor<float64> h = Tensor.zeros<float64>(hs);
+            Tensor<float64> h #= Tensor.zeros<float64>(hs);
             j = 0;
             while (j < p) {
                 h.flatSet(j * d + j, 1.0);
@@ -250,8 +250,8 @@ public final class LogisticRegression implements ProbClassifier {
                 ok = true;
                 break;
             }
-            Tensor<float64> l = LinAlg.cholesky<float64>(h);
-            Tensor<float64> step = LinAlg.choSolve<float64>(l, grad);
+            Tensor<float64> l #= LinAlg.cholesky<float64>(h);
+            Tensor<float64> step #= LinAlg.choSolve<float64>(l, grad);
             int64 j3 = 0;
             while (j3 < d) {
                 theta.set1(j3, theta.get1(j3) - step.get1(j3));
@@ -273,7 +273,7 @@ public final class LogisticRegression implements ProbClassifier {
     public void fit(Tensor<float64> x, Tensor<float64> y) {
         int64[] zs = heap int64[1];
         zs[0] = 0;
-        Tensor<float64> none = Tensor.zeros<float64>(zs);
+        Tensor<float64> none #= Tensor.zeros<float64>(zs);
         this.fitW(x, y, none);
         return;
     }
@@ -320,7 +320,7 @@ public final class LogisticRegression implements ProbClassifier {
         // Effective observation weights: sample × class (spec §6.1–§6.3).
         int64[] wm = heap int64[1];
         wm[0] = n;
-        Tensor<float64> obsW = Tensor.zeros<float64>(wm);
+        Tensor<float64> obsW #= Tensor.zeros<float64>(wm);
         i = 0;
         while (i < n) {
             float64 base = 1.0;
@@ -374,14 +374,14 @@ public final class LogisticRegression implements ProbClassifier {
         cs[1] = kcols;
         int64[] im = heap int64[1];
         im[0] = kcols;
-        Tensor<float64> cm = Tensor.zeros<float64>(cs);
-        Tensor<float64> ic = Tensor.zeros<float64>(im);
+        Tensor<float64> cm #= Tensor.zeros<float64>(cs);
+        Tensor<float64> ic #= Tensor.zeros<float64>(im);
         int64[] nm = heap int64[1];
         nm[0] = n;
         int64 col = 0;
         while (col < kcols) {
             // binary: the target itself; OvR: the class-col indicator
-            Tensor<float64> yb = Tensor.zeros<float64>(nm);
+            Tensor<float64> yb #= Tensor.zeros<float64>(nm);
             int64 i2 = 0;
             while (i2 < n) {
                 float64 lab = y.get1(i2);
@@ -392,7 +392,7 @@ public final class LogisticRegression implements ProbClassifier {
                 }
                 i2 = i2 + 1;
             }
-            Tensor<float64> theta = this.fitColumn(x, yb, obsW);
+            Tensor<float64> theta #= this.fitColumn(x, yb, obsW);
             int64 j = 0;
             while (j < p) {
                 cm.flatSet(j * kcols + col, theta.get1(j));
@@ -411,10 +411,10 @@ public final class LogisticRegression implements ProbClassifier {
     #Tensor<float64> fitColumn(Tensor<float64> x, Tensor<float64> yb,
                                Tensor<float64> obsW) {
         if (this.penaltyC == (int32) 0) {
-            Tensor<float64> t = this.newtonBinary(x, yb, obsW);
+            Tensor<float64> t #= this.newtonBinary(x, yb, obsW);
             return #t;
         }
-        Tensor<float64> t = this.cdBinary(x, yb, obsW);
+        Tensor<float64> t #= this.cdBinary(x, yb, obsW);
         return #t;
     }
 
@@ -431,7 +431,7 @@ public final class LogisticRegression implements ProbClassifier {
         int64 p = x.shapeAt(1);
         int64[] dm = heap int64[1];
         dm[0] = p + 1;
-        Tensor<float64> theta = Tensor.zeros<float64>(dm);   // [w, b]
+        Tensor<float64> theta #= Tensor.zeros<float64>(dm);   // [w, b]
         float64 rho = this.l1Ratio;
         float64[] eta = heap float64[n];
         float64[] wq = heap float64[n];
@@ -562,7 +562,7 @@ public final class LogisticRegression implements ProbClassifier {
         int64 dim = kcls * blk;
         int64[] dm = heap int64[1];
         dm[0] = dim;
-        Tensor<float64> theta = Tensor.zeros<float64>(dm);
+        Tensor<float64> theta #= Tensor.zeros<float64>(dm);
         int64[] hs = heap int64[2];
         hs[0] = dim;
         hs[1] = dim;
@@ -571,7 +571,7 @@ public final class LogisticRegression implements ProbClassifier {
         int64 it = 0;
         while (it < this.maxIter) {
             // grad: penalty on weights, then C·Σ (p_ik − y_ik)·xd
-            Tensor<float64> grad = Tensor.zeros<float64>(dm);
+            Tensor<float64> grad #= Tensor.zeros<float64>(dm);
             int64 c = 0;
             while (c < kcls) {
                 int64 j = 0;
@@ -581,7 +581,7 @@ public final class LogisticRegression implements ProbClassifier {
                 }
                 c = c + 1;
             }
-            Tensor<float64> h = Tensor.zeros<float64>(hs);
+            Tensor<float64> h #= Tensor.zeros<float64>(hs);
             int64 a0 = 0;
             while (a0 < dim) {
                 // penalty diag on weight coords; damping everywhere (the
@@ -672,8 +672,8 @@ public final class LogisticRegression implements ProbClassifier {
                 ok = true;
                 break;
             }
-            Tensor<float64> l = LinAlg.cholesky<float64>(h);
-            Tensor<float64> step = LinAlg.choSolve<float64>(l, grad);
+            Tensor<float64> l #= LinAlg.cholesky<float64>(h);
+            Tensor<float64> step #= LinAlg.choSolve<float64>(l, grad);
             int64 t2 = 0;
             while (t2 < dim) {
                 theta.set1(t2, theta.get1(t2) - step.get1(t2));
@@ -702,8 +702,8 @@ public final class LogisticRegression implements ProbClassifier {
         cs2[1] = kcls;
         int64[] im2 = heap int64[1];
         im2[0] = kcls;
-        Tensor<float64> cm2 = Tensor.zeros<float64>(cs2);
-        Tensor<float64> ic2 = Tensor.zeros<float64>(im2);
+        Tensor<float64> cm2 #= Tensor.zeros<float64>(cs2);
+        Tensor<float64> ic2 #= Tensor.zeros<float64>(im2);
         c3 = 0;
         while (c3 < kcls) {
             int64 j = 0;
@@ -756,7 +756,7 @@ public final class LogisticRegression implements ProbClassifier {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = kcols;
-        Tensor<float64> z = Tensor.zeros<float64>(sh);
+        Tensor<float64> z #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -783,14 +783,14 @@ public final class LogisticRegression implements ProbClassifier {
         if (!this.fitted) {
             throw heap MlException("LogisticRegression.predictProba: fit first");
         }
-        Tensor<float64> z = this.decision(x);
+        Tensor<float64> z #= this.decision(x);
         int64 n = z.shapeAt(0);
         int64 kcols = z.shapeAt(1);
         int64 kout = this.nClasses;
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = kout;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             if (kcols == 1) {
@@ -843,12 +843,12 @@ public final class LogisticRegression implements ProbClassifier {
         if (!this.fitted) {
             throw heap MlException("LogisticRegression.predict: fit first");
         }
-        Tensor<float64> z = this.decision(x);
+        Tensor<float64> z #= this.decision(x);
         int64 n = z.shapeAt(0);
         int64 kcols = z.shapeAt(1);
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             if (kcols == 1) {
@@ -887,11 +887,11 @@ public final class LogisticRegression implements ProbClassifier {
                 + "threshold applies to BINARY fits only — multiclass "
                 + "predictions are the posterior argmax");
         }
-        Tensor<float64> pr = this.predictProba(x);
+        Tensor<float64> pr #= this.predictProba(x);
         int64 n = pr.shapeAt(0);
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             if (pr.get2(i, 1) > threshold) {
@@ -904,7 +904,7 @@ public final class LogisticRegression implements ProbClassifier {
 
     /** Accuracy — the classifier `score` convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pred = this.predict(x);
+        Tensor<float64> pred #= this.predict(x);
         int64 n = y.shapeAt(0);
         int64 hit = 0;
         int64 i = 0;
@@ -942,7 +942,7 @@ public final class LogisticRegression implements ProbClassifier {
         // theta in summary order: intercept first, then features
         int64[] dm = heap int64[1];
         dm[0] = d;
-        Tensor<float64> beta = Tensor.zeros<float64>(dm);
+        Tensor<float64> beta #= Tensor.zeros<float64>(dm);
         beta.set1(0, this.iceptV.get1(0));
         int64 j = 0;
         while (j < p) {
@@ -953,7 +953,7 @@ public final class LogisticRegression implements ProbClassifier {
         int64[] hs = heap int64[2];
         hs[0] = d;
         hs[1] = d;
-        Tensor<float64> h = Tensor.zeros<float64>(hs);
+        Tensor<float64> h #= Tensor.zeros<float64>(hs);
         j = 1;
         while (j < d) {
             h.flatSet(j * d + j, 1.0);
@@ -984,10 +984,10 @@ public final class LogisticRegression implements ProbClassifier {
             }
             i = i + 1;
         }
-        Tensor<float64> hinv = LinAlg.inv<float64>(h);
-        Tensor<float64> se = Tensor.zeros<float64>(dm);
-        Tensor<float64> zs = Tensor.zeros<float64>(dm);
-        Tensor<float64> pv = Tensor.zeros<float64>(dm);
+        Tensor<float64> hinv #= LinAlg.inv<float64>(h);
+        Tensor<float64> se #= Tensor.zeros<float64>(dm);
+        Tensor<float64> zs #= Tensor.zeros<float64>(dm);
+        Tensor<float64> pv #= Tensor.zeros<float64>(dm);
         int64 j3 = 0;
         while (j3 < d) {
             float64 s = Math.sqrt(hinv.get2(j3, j3));
@@ -1003,7 +1003,7 @@ public final class LogisticRegression implements ProbClassifier {
         int64[] dsh = heap int64[2];
         dsh[0] = n;
         dsh[1] = d;
-        Tensor<float64> xd = Tensor.zeros<float64>(dsh);
+        Tensor<float64> xd #= Tensor.zeros<float64>(dsh);
         i = 0;
         while (i < n) {
             xd.flatSet(i * d, 1.0);

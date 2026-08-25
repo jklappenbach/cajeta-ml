@@ -45,10 +45,10 @@ public final class GridSearch {
             trY[0] = nTrain;
             int64[] teY = heap int64[1];
             teY[0] = nTest;
-            Tensor<float64> xTr = Tensor.zeros<float64>(trX);
-            Tensor<float64> xTe = Tensor.zeros<float64>(teX);
-            Tensor<float64> yTr = Tensor.zeros<float64>(trY);
-            Tensor<float64> yTe = Tensor.zeros<float64>(teY);
+            Tensor<float64> xTr #= Tensor.zeros<float64>(trX);
+            Tensor<float64> xTe #= Tensor.zeros<float64>(teX);
+            Tensor<float64> yTr #= Tensor.zeros<float64>(trY);
+            Tensor<float64> yTe #= Tensor.zeros<float64>(teY);
             int64 a = 0;
             int64 b = 0;
             i = 0;
@@ -72,7 +72,7 @@ public final class GridSearch {
                 }
                 i = i + 1;
             }
-            Predictor est = f.create(params);
+            Predictor est #= f.create(params);
             est.fit(xTr, yTr);
             acc = acc + Scorers.score(metric, est, xTe, yTe);
             fold = fold + 1;
@@ -106,18 +106,18 @@ public final class GridSearch {
         int64[] cs = heap int64[2];
         cs[0] = total;
         cs[1] = m;
-        Tensor<float64> combos = Tensor.zeros<float64>(cs);
+        Tensor<float64> combos #= Tensor.zeros<float64>(cs);
         int64[] vs = heap int64[1];
         vs[0] = total;
-        Tensor<float64> scores = Tensor.zeros<float64>(vs);
-        Tensor<float64> okf = Tensor.zeros<float64>(vs);
+        Tensor<float64> scores #= Tensor.zeros<float64>(vs);
+        Tensor<float64> okf #= Tensor.zeros<float64>(vs);
         int64[] ps = heap int64[1];
         ps[0] = m;
 
         int64 c = 0;
         while (c < total) {
             // Decode combination c into one value per dimension.
-            Tensor<float64> params = Tensor.zeros<float64>(ps);
+            Tensor<float64> params #= Tensor.zeros<float64>(ps);
             int64 rem = c;
             d = m - 1;
             boolean run2 = true;

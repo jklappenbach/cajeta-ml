@@ -103,7 +103,7 @@ public final class TSNE {
 
         // Squared Euclidean distances.
         Metric eu = heap Euclidean();
-        Tensor<float64> dm = Distance.pdist(x, eu);
+        Tensor<float64> dm #= Distance.pdist(x, eu);
         float64[] d2 = heap float64[n * n];
         int64 i = 0;
         while (i < n) {
@@ -199,7 +199,7 @@ public final class TSNE {
 
         // Seeded random init, sigma 1e-4 (the sklearn convention).
         Generator gen = heap Generator(this.seed);
-        Tensor<float32> r = gen.normal(n * k);
+        Tensor<float32> r #= gen.normal(n * k);
         float64[] y = heap float64[n * k];
         i = 0;
         while (i < n * k) {
@@ -335,10 +335,10 @@ public final class TSNE {
         }
         int64[] fs = heap int64[1];
         fs[0] = n * n;
-        Tensor<float64> pt = Tensor.of<float64>(pFlat, fs);
+        Tensor<float64> pt #= Tensor.of<float64>(pFlat, fs);
         int64[] fs2 = heap int64[1];
         fs2[0] = n * n;
-        Tensor<float64> qt = Tensor.of<float64>(qFlat, fs2);
+        Tensor<float64> qt #= Tensor.of<float64>(qFlat, fs2);
         this.klV = Information.klDivergence(pt, qt);
         this.fitted = true;
 

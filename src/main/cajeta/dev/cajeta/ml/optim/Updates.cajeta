@@ -20,8 +20,8 @@ final class Updates {
         }
         int32 i = 0;
         while (i < (int32) params.count()) {
-            int64[] ps = Tensor.shapeOf<float32>(params[i].get());
-            int64[] gs = Tensor.shapeOf<float32>(grads[i]);
+            int64[] ps #= Tensor.shapeOf<float32>(params[i].get());
+            int64[] gs #= Tensor.shapeOf<float32>(grads[i]);
             if (ps.count() != gs.count()) {
                 throw heap OptimizerException(
                     "step: grad rank does not match its parameter");
@@ -50,7 +50,7 @@ final class Updates {
     }
 
     static void axpyInto(Tensor<float32> p, Tensor<float32> g, float32 scale) {
-        int64[] shape = Tensor.shapeOf<float32>(p);
+        int64[] shape #= Tensor.shapeOf<float32>(p);
         int32 nd = (int32) shape.count();
         int64 n = Tensor.productOf(shape);
         int64[] idx = heap int64[nd];

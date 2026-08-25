@@ -19,20 +19,20 @@ public class LogisticSummaryTest {
     @Test
     public void logisticBinaryMatchesSklearn() {
         LogisticRegression lg = heap LogisticRegression(1.0, 0.0000000001, (int64) 200);
-        Tensor<float64> x = Fixtures.x20();
-        Tensor<float64> y = Fixtures.yBinary();
+        Tensor<float64> x #= Fixtures.x20();
+        Tensor<float64> y #= Fixtures.yBinary();
         lg.fit(x, y);
         Assert.isTrue(lg.converged());
         Assert.isTrue(Fixtures.close(lg.coefMatrix().get2(0, 0), 0.4490574023977388, 0.000001));
         Assert.isTrue(Fixtures.close(lg.coefMatrix().get2(1, 0), 0.30792004087428027, 0.000001));
         Assert.isTrue(Fixtures.close(lg.interceptVector().get1(0), -0.581868448872528, 0.000001));
         // probabilities and labels on rows 0 / 10 / 19
-        Tensor<float64> proba = lg.predictProba(x);
+        Tensor<float64> proba #= lg.predictProba(x);
         Assert.isTrue(Fixtures.close(proba.get2(0, 1), 0.3585027770190751, 0.000001));
         Assert.isTrue(Fixtures.close(proba.get2(10, 1), 0.5436657281464559, 0.000001));
         Assert.isTrue(Fixtures.close(proba.get2(19, 1), 0.7994614736244957, 0.000001));
         Assert.isTrue(Fixtures.close(proba.get2(0, 0) + proba.get2(0, 1), 1.0, 0.000000000001));
-        Tensor<float64> pred = lg.predict(x);
+        Tensor<float64> pred #= lg.predict(x);
         Assert.isTrue(pred.get1(0) == 0.0);
         Assert.isTrue(pred.get1(10) == 1.0);
         Assert.isTrue(pred.get1(19) == 1.0);
@@ -47,8 +47,8 @@ public class LogisticSummaryTest {
     @Test
     public void logisticOvrThreeClassMatchesSklearn() {
         LogisticRegression lg = heap LogisticRegression(1.0, 0.0000000001, (int64) 200);
-        Tensor<float64> x = Fixtures.x20();
-        Tensor<float64> y3 = Fixtures.yThree();
+        Tensor<float64> x #= Fixtures.x20();
+        Tensor<float64> y3 #= Fixtures.yThree();
         lg.fit(x, y3);
         // per-class one-vs-rest coefficients
         Tensor<float64> cm = lg.coefMatrix();
@@ -65,14 +65,14 @@ public class LogisticSummaryTest {
         // predictions match sklearn OvR argmax on every row
         float64[] want = [ 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
                            2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0 ];
-        Tensor<float64> pred = lg.predict(x);
+        Tensor<float64> pred #= lg.predict(x);
         int64 i = 0;
         while (i < 20) {
             Assert.isTrue(pred.get1(i) == want[(int32) i]);
             i = i + 1;
         }
         // probabilities normalize
-        Tensor<float64> proba = lg.predictProba(x);
+        Tensor<float64> proba #= lg.predictProba(x);
         float64 rowSum = proba.get2(5, 0) + proba.get2(5, 1) + proba.get2(5, 2);
         Assert.isTrue(Fixtures.close(rowSum, 1.0, 0.000000000001));
     }
@@ -83,14 +83,14 @@ public class LogisticSummaryTest {
         // the LOUD warning fires, converged() is false, the iterate predicts
         int64[] sh = heap int64[1];
         sh[0] = 20;
-        Tensor<float64> ysep = Tensor.zeros<float64>(sh);
+        Tensor<float64> ysep #= Tensor.zeros<float64>(sh);
         int64 i = 10;
         while (i < 20) {
             ysep.set1(i, 1.0);
             i = i + 1;
         }
         LogisticRegression lg = heap LogisticRegression(1000000.0, 0.0000000001, (int64) 30);
-        Tensor<float64> x = Fixtures.x20();
+        Tensor<float64> x #= Fixtures.x20();
         lg.fit(x, ysep);
         Assert.isFalse(lg.converged());
         Assert.isTrue(lg.score(x, ysep) == 1.0);
@@ -99,10 +99,10 @@ public class LogisticSummaryTest {
     @Test
     public void summaryMatchesClosedFormOls() {
         LinearRegression lr = heap LinearRegression(true);
-        Tensor<float64> x = Fixtures.x20();
-        Tensor<float64> y = Fixtures.y1();
+        Tensor<float64> x #= Fixtures.x20();
+        Tensor<float64> y #= Fixtures.y1();
         lr.fit(x, y);
-        SummaryResult s = lr.summary(x, y);
+        SummaryResult s #= lr.summary(x, y);
         // beta (intercept first)
         Assert.isTrue(Fixtures.close(s.coef.get1(0), 2.0014285714285713, 0.000000001));
         Assert.isTrue(Fixtures.close(s.coef.get1(1), 0.4984962406015036, 0.000000001));
@@ -132,10 +132,10 @@ public class LogisticSummaryTest {
     @Test
     public void summaryJunkFeatureHasHonestPValue() {
         LinearRegression lr = heap LinearRegression(true);
-        Tensor<float64> x = Fixtures.x20Junk();
-        Tensor<float64> y = Fixtures.y1();
+        Tensor<float64> x #= Fixtures.x20Junk();
+        Tensor<float64> y #= Fixtures.y1();
         lr.fit(x, y);
-        SummaryResult s = lr.summary(x, y);
+        SummaryResult s #= lr.summary(x, y);
         // the junk column: tiny coefficient, honest mid-range p-value
         Assert.isTrue(Fixtures.close(s.coef.get1(3), 0.00015276009721201897, 0.000000001));
         Assert.isTrue(Fixtures.close(s.stderr.get1(3), 0.00354982387477872, 0.000000001));
@@ -146,20 +146,20 @@ public class LogisticSummaryTest {
     @Test
     public void summaryCondWarningOnCollinearDesign() {
         LinearRegression lr = heap LinearRegression(false);
-        Tensor<float64> a = Fixtures.a5();
-        Tensor<float64> b = Fixtures.b5();
+        Tensor<float64> a #= Fixtures.a5();
+        Tensor<float64> b #= Fixtures.b5();
         lr.fit(a, b);
-        SummaryResult s = lr.summary(a, b);
+        SummaryResult s #= lr.summary(a, b);
         Assert.isTrue(s.condWarning);
     }
 
     @Test
     public void summaryPenalizedLogisticCarriesTheWarning() {
         LogisticRegression lg = heap LogisticRegression(1.0, 0.0000000001, (int64) 200);
-        Tensor<float64> x = Fixtures.x20();
-        Tensor<float64> y = Fixtures.yBinary();
+        Tensor<float64> x #= Fixtures.x20();
+        Tensor<float64> y #= Fixtures.yBinary();
         lg.fit(x, y);
-        SummaryResult s = lg.summary(x, y);
+        SummaryResult s #= lg.summary(x, y);
         Assert.isTrue(s.penalized);
         // Wald pieces are sane: positive stderr, p-values in [0,1]
         int64 j = 0;

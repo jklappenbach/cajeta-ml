@@ -103,16 +103,16 @@ public class KnnMetricTest {
     // 3.1.1 — each stdlib metric matches sklearn on both estimators.
     @Test
     public void metricsMatchSklearn() {
-        Tensor<float64> x = trainX();
-        Tensor<float64> yc = classY();
-        Tensor<float64> yr = regY();
-        Tensor<float64> q = queryQ();
-        Tensor<float64> q2 = queryQ2();
+        Tensor<float64> x #= trainX();
+        Tensor<float64> yc #= classY();
+        Tensor<float64> yr #= regY();
+        Tensor<float64> q #= queryQ();
+        Tensor<float64> q2 #= queryQ2();
 
         Metric man = heap Manhattan();
         KNeighborsClassifier cm = heap KNeighborsClassifier((int64) 3, #man);
         cm.fit(x, yc);
-        Tensor<float64> pm = cm.predictProba(q);
+        Tensor<float64> pm #= cm.predictProba(q);
         Assert.isTrue(near(pm.get2(0, 0), 0.3333333333333333, 0.000001));
         Assert.isTrue(near(pm.get2(0, 1), 0.6666666666666666, 0.000001));
         Assert.isTrue(near(cm.predict(q).flatGet(0), 1.0, 0.0000001));
@@ -121,7 +121,7 @@ public class KnnMetricTest {
         KNeighborsRegressor rm = heap KNeighborsRegressor((int64) 3, false,
             #man2);
         rm.fit(x, yr);
-        Tensor<float64> vr = rm.predict(q2);
+        Tensor<float64> vr #= rm.predict(q2);
         Assert.isTrue(near(vr.flatGet(0), 2.1199999999999997, 0.000001));
         Assert.isTrue(near(vr.flatGet(1), 10.623333333333333, 0.000001));
         Assert.isTrue(near(vr.flatGet(2), 13.216666666666667, 0.000001));
@@ -130,7 +130,7 @@ public class KnnMetricTest {
         KNeighborsRegressor rc = heap KNeighborsRegressor((int64) 3, false,
             #che);
         rc.fit(x, yr);
-        Tensor<float64> vc = rc.predict(q2);
+        Tensor<float64> vc #= rc.predict(q2);
         Assert.isTrue(near(vc.flatGet(0), 0.8233333333333333, 0.000001));
         Assert.isTrue(near(vc.flatGet(1), 9.95, 0.000001));
 
@@ -138,7 +138,7 @@ public class KnnMetricTest {
         KNeighborsRegressor rk = heap KNeighborsRegressor((int64) 3, false,
             #mink);
         rk.fit(x, yr);
-        Tensor<float64> vk = rk.predict(q2);
+        Tensor<float64> vk #= rk.predict(q2);
         Assert.isTrue(near(vk.flatGet(0), 0.8233333333333333, 0.000001));
         Assert.isTrue(near(vk.flatGet(2), 13.216666666666667, 0.000001));
 
@@ -149,8 +149,8 @@ public class KnnMetricTest {
         ce.fit(x, yc);
         KNeighborsClassifier cd = heap KNeighborsClassifier((int64) 3);
         cd.fit(x, yc);
-        Tensor<float64> pe = ce.predictProba(q);
-        Tensor<float64> pd = cd.predictProba(q);
+        Tensor<float64> pe #= ce.predictProba(q);
+        Tensor<float64> pd #= cd.predictProba(q);
         int64 f = 0;
         while (f < 6) {
             Assert.isTrue(near(pe.flatGet(f), pd.flatGet(f),
@@ -163,13 +163,13 @@ public class KnnMetricTest {
     // `weights='distance'`, euclidean and manhattan.
     @Test
     public void classifierDistanceWeights() {
-        Tensor<float64> x = trainX();
-        Tensor<float64> yc = classY();
-        Tensor<float64> q = queryQ();
+        Tensor<float64> x #= trainX();
+        Tensor<float64> yc #= classY();
+        Tensor<float64> q #= queryQ();
 
         KNeighborsClassifier ce = heap KNeighborsClassifier((int64) 3, true);
         ce.fit(x, yc);
-        Tensor<float64> pe = ce.predictProba(q);
+        Tensor<float64> pe #= ce.predictProba(q);
         Assert.isTrue(near(pe.get2(0, 0), 0.3160545122723284, 0.000001));
         Assert.isTrue(near(pe.get2(0, 1), 0.6839454877276716, 0.000001));
         Assert.isTrue(near(pe.get2(1, 0), 0.37581317608598475, 0.000001));
@@ -180,7 +180,7 @@ public class KnnMetricTest {
         KNeighborsClassifier cm = heap KNeighborsClassifier((int64) 3, #man,
             true);
         cm.fit(x, yc);
-        Tensor<float64> pm = cm.predictProba(q);
+        Tensor<float64> pm #= cm.predictProba(q);
         Assert.isTrue(near(pm.get2(0, 0), 0.31088082901554387, 0.000001));
         Assert.isTrue(near(pm.get2(1, 0), 0.3632429970393989, 0.000001));
         Assert.isTrue(near(pm.get2(2, 1), 0.6524938675388391, 0.000001));
@@ -190,8 +190,8 @@ public class KnnMetricTest {
     // zero.
     @Test
     public void exactMatchTakesAllWeight() {
-        Tensor<float64> x = trainX();
-        Tensor<float64> yc = classY();
+        Tensor<float64> x #= trainX();
+        Tensor<float64> yc #= classY();
         KNeighborsClassifier c = heap KNeighborsClassifier((int64) 3, true);
         c.fit(x, yc);
         float64[] qd = heap float64[4];
@@ -202,7 +202,7 @@ public class KnnMetricTest {
         int64[] qs = heap int64[2];
         qs[0] = 2;
         qs[1] = 2;
-        Tensor<float64> pr = c.predictProba(Tensor.of<float64>(qd, qs));
+        Tensor<float64> pr #= c.predictProba(Tensor.of<float64>(qd, qs));
         Assert.isTrue(near(pr.get2(0, 0), 0.0, 0.000000001));
         Assert.isTrue(near(pr.get2(0, 1), 1.0, 0.000000001));
         Assert.isTrue(near(pr.get2(1, 0), 1.0, 0.000000001));
@@ -234,7 +234,7 @@ public class KnnMetricTest {
         int64[] qs = heap int64[2];
         qs[0] = 1;
         qs[1] = 2;
-        Tensor<float64> lab = c.predict(Tensor.of<float64>(qd, qs));
+        Tensor<float64> lab #= c.predict(Tensor.of<float64>(qd, qs));
         Assert.isTrue(near(lab.flatGet(0), 0.0, 0.0000001));
     }
 
@@ -243,8 +243,8 @@ public class KnnMetricTest {
     // x1 irrelevant, which flips a neighbourhood.
     @Test
     public void customMetricThroughTheSeam() {
-        Tensor<float64> x = trainX();
-        Tensor<float64> yc = classY();
+        Tensor<float64> x #= trainX();
+        Tensor<float64> yc #= classY();
         Metric ax = heap Axis0Metric();
         KNeighborsClassifier c = heap KNeighborsClassifier((int64) 3, #ax);
         c.fit(x, yc);
@@ -254,7 +254,7 @@ public class KnnMetricTest {
         int64[] qs = heap int64[2];
         qs[0] = 1;
         qs[1] = 2;
-        Tensor<float64> pr = c.predictProba(Tensor.of<float64>(qd, qs));
+        Tensor<float64> pr #= c.predictProba(Tensor.of<float64>(qd, qs));
         // Neighbours by x0 alone around 3.9: rows 6 (4.2), 5 (3.5),
         // 7 (4.9) -> votes 2/3 class 1, x1's magnitude never enters.
         Assert.isTrue(near(pr.get2(0, 0), 0.3333333333333333, 0.000001));
@@ -265,12 +265,12 @@ public class KnnMetricTest {
     // 3.1.6 + §5.7 — StandardScaler + k-NN composes with any metric.
     @Test
     public void scaledPipelineComposes() {
-        Tensor<float64> x = trainX();
-        Tensor<float64> yc = classY();
+        Tensor<float64> x #= trainX();
+        Tensor<float64> yc #= classY();
         Transformer sc = heap StandardScaler();
         Metric man = heap Manhattan();
         Predictor kn = heap KNeighborsClassifier((int64) 3, #man);
-        Pipeline pl = Pipeline.of(#sc, #kn);
+        Pipeline pl #= Pipeline.of(#sc, #kn);
         pl.fit(x, yc);
         Assert.isTrue(pl.score(x, yc) > 0.9);
     }

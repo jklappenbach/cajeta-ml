@@ -39,8 +39,8 @@ public class PruneTest {
     // minSamplesSplit 6 -> (3, 4). All pinned against sklearn.
     @Test
     public void sizeLimitsMatchSklearn() {
-        Tensor<float64> x = PruneTest.u3X();
-        Tensor<float64> y = PruneTest.u3Y();
+        Tensor<float64> x #= PruneTest.u3X();
+        Tensor<float64> y #= PruneTest.u3Y();
 
         DecisionTreeClassifier full = heap DecisionTreeClassifier("gini");
         full.fit(x, y);
@@ -81,15 +81,15 @@ public class PruneTest {
     // impure frontier leaves carry sklearn's exact fractions.
     @Test
     public void maxLeafNodesGrowsBestFirst() {
-        Tensor<float64> x = PruneTest.u3X();
-        Tensor<float64> y = PruneTest.u3Y();
+        Tensor<float64> x #= PruneTest.u3X();
+        Tensor<float64> y #= PruneTest.u3Y();
 
         DecisionTreeClassifier m3 = heap DecisionTreeClassifier("gini");
         m3.setMaxLeafNodes((int64) 3);
         m3.fit(x, y);
         Assert.equals(m3.leafCount(), (int64) 3);
         Assert.equals(m3.depth(), (int64) 2);
-        String dump = m3.exportText();
+        String dump #= m3.exportText();
         Assert.isTrue(dump.indexOf("f0 <= 10.5") >= (int64) 0);
         Assert.isTrue(dump.indexOf("f0 <= 6.5") >= (int64) 0);
 
@@ -97,7 +97,7 @@ public class PruneTest {
         float64[] qa = heap float64[2];
         qa[0] = 0.0; qa[1] = 12.0;
         int64[] qs = heap int64[2]; qs[0] = 2; qs[1] = 1;
-        Tensor<float64> p = m3.predictProba(Tensor.of<float64>(qa, qs));
+        Tensor<float64> p #= m3.predictProba(Tensor.of<float64>(qa, qs));
         Assert.isTrue(p.flatGet((int64) 0) == 3.0 / 7.0);
         Assert.isTrue(p.flatGet((int64) 1) == 4.0 / 7.0);
         Assert.isTrue(p.flatGet((int64) 2) == 0.2);
@@ -130,11 +130,11 @@ public class PruneTest {
     // implied and asserted: leaf count never increases along the path.
     @Test
     public void costComplexityPathMatchesSklearn() {
-        Tensor<float64> x = PruneTest.u3X();
-        Tensor<float64> y = PruneTest.u3Y();
+        Tensor<float64> x #= PruneTest.u3X();
+        Tensor<float64> y #= PruneTest.u3Y();
 
         DecisionTreeClassifier c = heap DecisionTreeClassifier("gini");
-        PruningPath path = c.costComplexityPruningPath(x, y);
+        PruningPath path #= c.costComplexityPruningPath(x, y);
         Assert.equals(path.alphas.shapeAt(0), (int64) 4);
         Assert.isTrue(PruneTest.near(path.alphas.flatGet((int64) 0), 0.0));
         Assert.isTrue(PruneTest.near(path.alphas.flatGet((int64) 1), 0.046875));
@@ -173,7 +173,7 @@ public class PruneTest {
         float64[] qa = heap float64[1];
         qa[0] = 3.0;
         int64[] qs = heap int64[2]; qs[0] = 1; qs[1] = 1;
-        Tensor<float64> p = a3.predictProba(Tensor.of<float64>(qa, qs));
+        Tensor<float64> p #= a3.predictProba(Tensor.of<float64>(qa, qs));
         Assert.isTrue(p.flatGet((int64) 0) == 0.5);
         Assert.isTrue(p.flatGet((int64) 1) == 0.5);
         return;
@@ -189,15 +189,15 @@ public class PruneTest {
         int64 i = 0;
         while (i < 8) { xa[i] = (float64) i; i = i + 1; }
         int64[] xs = heap int64[2]; xs[0] = 8; xs[1] = 1;
-        Tensor<float64> x = Tensor.of<float64>(xa, xs);
+        Tensor<float64> x #= Tensor.of<float64>(xa, xs);
         float64[] ya = heap float64[8];
         ya[2] = 1.0; ya[5] = 1.0; ya[6] = 1.0;
         int64[] ys = heap int64[1]; ys[0] = 8;
-        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+        Tensor<float64> y #= Tensor.of<float64>(ya, ys);
 
         DecisionTreeClassifier u = heap DecisionTreeClassifier("gini", (int64) 1);
         u.fit(x, y);
-        String du = u.exportText();
+        String du #= u.exportText();
         Assert.isTrue(du.indexOf("f0 <= 4.5") >= (int64) 0);
 
         float64[] wa = heap float64[2];
@@ -206,13 +206,13 @@ public class PruneTest {
         DecisionTreeClassifier w = heap DecisionTreeClassifier("gini", (int64) 1);
         w.setClassWeight(Tensor.of<float64>(wa, ws));
         w.fit(x, y);
-        String dw = w.exportText();
+        String dw #= w.exportText();
         Assert.isTrue(dw.indexOf("f0 <= 1.5") >= (int64) 0);
 
         float64[] qa = heap float64[2];
         qa[0] = 0.0; qa[1] = 5.0;
         int64[] qs = heap int64[2]; qs[0] = 2; qs[1] = 1;
-        Tensor<float64> p = w.predictProba(Tensor.of<float64>(qa, qs));
+        Tensor<float64> p #= w.predictProba(Tensor.of<float64>(qa, qs));
         Assert.isTrue(p.flatGet((int64) 0) == 1.0);
         Assert.isTrue(p.flatGet((int64) 1) == 0.0);
         Assert.isTrue(p.flatGet((int64) 2) == 0.2);

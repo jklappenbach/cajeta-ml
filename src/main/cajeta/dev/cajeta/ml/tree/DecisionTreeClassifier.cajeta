@@ -140,7 +140,7 @@ public final class DecisionTreeClassifier implements ProbClassifier {
         if (w.ndim() != 1) {
             throw heap MlException("DecisionTreeClassifier: classWeight must be (K,)");
         }
-        Tensor<float64> cw = w.copy();
+        Tensor<float64> cw #= w.copy();
         this.classWeight #= cw;
         return;
     }
@@ -298,7 +298,7 @@ public final class DecisionTreeClassifier implements ProbClassifier {
 
     /** Accuracy — the classifier `score` convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         int64 n = p.shapeAt(0);
         int64 hits = 0;
         int64 i = 0;
@@ -332,7 +332,7 @@ public final class DecisionTreeClassifier implements ProbClassifier {
      */
     public #Tensor<float64> featureImportances() {
         this.requireFitted("DecisionTreeClassifier.featureImportances");
-        float64[] imp = this.tree.importances();
+        float64[] imp #= this.tree.importances();
         int64[] sh = heap int64[1]; sh[0] = this.nFeatures;
         return Tensor.of<float64>(imp, sh);
     }

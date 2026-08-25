@@ -99,7 +99,7 @@ public final class LLE implements Transformer {
         int64[] cs = heap int64[2];
         cs[0] = k;
         cs[1] = k;
-        Tensor<float64> cM = Tensor.zeros<float64>(cs);
+        Tensor<float64> cM #= Tensor.zeros<float64>(cs);
         float64 trace = 0.0;
         int64 a = 0;
         while (a < k) {
@@ -132,13 +132,13 @@ public final class LLE implements Transformer {
         int64[] os = heap int64[2];
         os[0] = k;
         os[1] = 1;
-        Tensor<float64> ones = Tensor.zeros<float64>(os);
+        Tensor<float64> ones #= Tensor.zeros<float64>(os);
         a = 0;
         while (a < k) {
             ones.flatSet(a, 1.0);
             a = a + 1;
         }
-        Tensor<float64> sol = LinAlg.solve<float64>(cM, ones);
+        Tensor<float64> sol #= LinAlg.solve<float64>(cM, ones);
         float64 sum = 0.0;
         a = 0;
         while (a < k) {
@@ -166,7 +166,7 @@ public final class LLE implements Transformer {
         }
         this.nTrain = n;
         this.pFeat = p;
-        Tensor<float64> xc = x.copy();
+        Tensor<float64> xc #= x.copy();
         this.xTrain #= xc;
 
         // W row per point.
@@ -187,7 +187,7 @@ public final class LLE implements Transformer {
         int64[] ms = heap int64[2];
         ms[0] = n;
         ms[1] = n;
-        Tensor<float64> mM = Tensor.zeros<float64>(ms);
+        Tensor<float64> mM #= Tensor.zeros<float64>(ms);
         int64 a = 0;
         while (a < n) {
             int64 b = 0;
@@ -211,7 +211,7 @@ public final class LLE implements Transformer {
             }
             a = a + 1;
         }
-        Tensor<float64>[] ev = LinAlg.eigh<float64>(mM);
+        Tensor<float64>[] ev #= LinAlg.eigh<float64>(mM);
         Tensor<float64> w = ev[0];
         Tensor<float64> v = ev[1];
         // Identify the trivial eigenvector among the bottom d+3 BY ITS
@@ -264,7 +264,7 @@ public final class LLE implements Transformer {
         int64[] es = heap int64[2];
         es[0] = n;
         es[1] = d;
-        Tensor<float64> et = Tensor.of<float64>(emb, es);
+        Tensor<float64> et #= Tensor.of<float64>(emb, es);
         this.embV #= et;
         this.fitted = true;
         return;

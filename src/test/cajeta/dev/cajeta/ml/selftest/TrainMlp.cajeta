@@ -46,7 +46,7 @@ public class TrainMlp extends Module {
         int64[] s = heap int64[2];
         s[0] = 4;
         s[1] = 3;
-        Tensor<float32> t = Tensor.zeros<float32>(s);
+        Tensor<float32> t #= Tensor.zeros<float32>(s);
         int64 f = 0;
         while (f < 12) {
             t.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
@@ -60,7 +60,7 @@ public class TrainMlp extends Module {
         int64[] s = heap int64[2];
         s[0] = 4;
         s[1] = 2;
-        Tensor<float32> t = Tensor.zeros<float32>(s);
+        Tensor<float32> t #= Tensor.zeros<float32>(s);
         int64 f = 0;
         while (f < 8) {
             t.flatSet(f, (float32) (f % 3) * 0.5f - 0.5f);

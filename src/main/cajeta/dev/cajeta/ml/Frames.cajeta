@@ -130,10 +130,10 @@ public final class Frames {
         int64[] xsh = heap int64[2];
         xsh[0] = rows;
         xsh[1] = (int64) p;
-        Tensor<float64> x = Tensor.of<float64>(xd, xsh);
+        Tensor<float64> x #= Tensor.of<float64>(xd, xsh);
         int64[] ysh = heap int64[1];
         ysh[0] = rows;
-        Tensor<float64> y = Tensor.of<float64>(yd, ysh);
+        Tensor<float64> y #= Tensor.of<float64>(yd, ysh);
 
         // Own the recorded names (the caller's array stays the caller's).
         String[] names = heap String[p];

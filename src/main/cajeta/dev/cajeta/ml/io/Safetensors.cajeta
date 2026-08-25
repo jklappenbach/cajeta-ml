@@ -49,21 +49,21 @@ public final class Safetensors {
             hdrBytes[i] = raw[8 + i];
             i = i + 1;
         }
-        JsonValue hv = Json.parse(hdrBytes, headerLen);
-        JsonObject hdr = hv.asObject();
+        JsonValue hv #= Json.parse(hdrBytes, headerLen);
+        JsonObject hdr = hv.object();
         int64 dataStart = 8 + headerLen;
 
         StateDict out = heap StateDict();
         int32 k = 0;
         while (k < hdr.count()) {
-            ArrayList<String> keys = hdr.keys();
+            ArrayList<String> keys #= hdr.keys();
             String name = keys.get(k);
             // `__metadata__` is free-form provenance, not a tensor.
             if (name != "__metadata__") {
-                JsonObject entry = hdr.get(name).asObject();
-                String dtype = Safetensors.stringOf(entry, "dtype");
-                JsonArray shapeArr = entry.get("shape").asArray();
-                JsonArray offs = entry.get("data_offsets").asArray();
+                JsonObject entry = hdr.get(name).object();
+                String dtype #= Safetensors.stringOf(entry, "dtype");
+                JsonArray shapeArr = entry.get("shape").array();
+                JsonArray offs = entry.get("data_offsets").array();
                 int64 begin = offs.get(0).asInt64();
                 int64 end = offs.get(1).asInt64();
                 int32 nd = shapeArr.count();
@@ -80,7 +80,7 @@ public final class Safetensors {
                         + "bytes [" + begin + ", " + end + ") which fall "
                         + "outside the file");
                 }
-                Tensor<float32> t = Safetensors.readTensor(raw,
+                Tensor<float32> t #= Safetensors.readTensor(raw,
                     dataStart + begin, end - begin, shape, count, dtype, name);
                 out.put(name, #t);
             }
@@ -91,7 +91,7 @@ public final class Safetensors {
 
     /** Write a checkpoint as F32. */
     public static void write(String path, StateDict sd) {
-        int8[] image = Safetensors.encode(sd);
+        int8[] image #= Safetensors.encode(sd);
         File.writeAllBytes(path, image, (int32) image.count());
         return;
     }
@@ -103,7 +103,7 @@ public final class Safetensors {
      */
     public static #int8[] encode(StateDict sd) {
         int32 n = sd.count();
-        int32[] order = Safetensors.sortedOrder(sd);
+        int32[] order #= Safetensors.sortedOrder(sd);
 
         // header first, so the offsets are known before any bytes move
         String hdr = "{";
@@ -130,7 +130,7 @@ public final class Safetensors {
         }
         hdr = hdr + "}";
 
-        int8[] hb = hdr.toBytes();
+        int8[] hb #= hdr.toBytes();
         int64 hlen = (int64) hb.count();
         int64 total = 8 + hlen + offset;
         int8[] outBytes = heap int8[total];
@@ -161,7 +161,7 @@ public final class Safetensors {
     static #Tensor<float32> readTensor(int8[] raw, int64 at, int64 byteLen,
                                        int64[] shape, int64 count,
                                        String dtype, String name) {
-        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        Tensor<float32> t #= Tensor.zeros<float32>(shape);
         if (dtype == "F32") {
             Safetensors.requireBytes(name, byteLen, count * 4);
             int64 e = 0;

@@ -102,8 +102,8 @@ public final class KNeighborsClassifier implements ProbClassifier {
         }
         this.nClasses = kmax + 1;
         if (this.nClasses < 2) { this.nClasses = 2; }
-        Tensor<float64> cx = x.copy();
-        Tensor<float64> cy = y.copy();
+        Tensor<float64> cx #= x.copy();
+        Tensor<float64> cy #= y.copy();
         this.trainX #= cx;
         this.trainY #= cy;
         this.fitted = true;
@@ -133,7 +133,7 @@ public final class KNeighborsClassifier implements ProbClassifier {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = kc;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             if (this.hasMetric) {
@@ -199,7 +199,7 @@ public final class KNeighborsClassifier implements ProbClassifier {
 
     /** Vote argmax per row (lowest label on ties). */
     public #Tensor<float64> predict(Tensor<float64> x) {
-        Tensor<float64> pr = this.predictProba(x);
+        Tensor<float64> pr #= this.predictProba(x);
         int64 n = pr.shapeAt(0);
         int64 kc = pr.shapeAt(1);
         float64[] out = heap float64[n];
@@ -222,7 +222,7 @@ public final class KNeighborsClassifier implements ProbClassifier {
 
     /** Accuracy — the classifier `score` convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pred = this.predict(x);
+        Tensor<float64> pred #= this.predict(x);
         return Metrics.accuracy(y, pred);
     }
 }

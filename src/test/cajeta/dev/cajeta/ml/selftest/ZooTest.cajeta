@@ -56,7 +56,7 @@ public class ZooTest {
     static #Tensor<float32> seq234() {
         int64[] s = heap int64[3];
         s[0] = 2; s[1] = 3; s[2] = 4;
-        Tensor<float32> t = Tensor.zeros<float32>(s);
+        Tensor<float32> t #= Tensor.zeros<float32>(s);
         int64 f = 0;
         while (f < 24) {
             t.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
@@ -73,7 +73,7 @@ public class ZooTest {
         // Replace the seeded init with the generator's explicit weights.
         // The attention's parameters(): wq.w, wq.b, wk.w, wk.b, wv.w,
         // wv.b, wo.w, wo.b — biases stay zero, matching the torch pin.
-        Parameter[] ap = blk.attention().parameters();
+        Parameter[] ap #= blk.attention().parameters();
         ZooTest.fillW(ap[0].get(), 0, 16);
         ZooTest.fillW(ap[2].get(), 1, 16);
         ZooTest.fillW(ap[4].get(), 2, 16);
@@ -95,7 +95,7 @@ public class ZooTest {
                         -3.79429913f, -0.13997924f, 5.67489338f, 1.93716609f];
         ZooTest.checkFlat(tape.valueOf(y), po, 0.002f);
 
-        Tensor<float32> kv = tape.valueOf(y).copy();
+        Tensor<float32> kv #= tape.valueOf(y).copy();
         int64 i = 0;
         while (i < 24) {
             kv.flatSet(i, (float32) (i % 3 + 1) * 0.5f);
@@ -118,7 +118,7 @@ public class ZooTest {
     public void encoderStackPreservesShapeAndNamesByIndex() {
         EncoderStack st = heap EncoderStack(4L, 2, 8L, 2, 3L);
         Assert.isTrue(st.depth() == 2);
-        Tensor<float32> out = st.predict(ZooTest.seq234());
+        Tensor<float32> out #= st.predict(ZooTest.seq234());
         // a stack maps (B,T,E) to (B,T,E) — that invariance is what lets
         // blocks compose to any depth
         Assert.isTrue(out.ndim() == 3);
@@ -126,7 +126,7 @@ public class ZooTest {
         Assert.isTrue(out.shapeAt(1) == 3);
         Assert.isTrue(out.shapeAt(2) == 4);
 
-        ArrayList<String> names = st.parameterNames();
+        ArrayList<String> names #= st.parameterNames();
         // container children are indexed, matching a torch ModuleList
         // field name THEN index, exactly as torch names a ModuleList
         Assert.equals("blocks.0.norm1.weight", names.get(0));
@@ -152,7 +152,7 @@ public class ZooTest {
         int64[] xs = heap int64[2];
         xs[0] = 3;
         xs[1] = 64;
-        Tensor<float32> out = net.predict(Tensor.full<float32>(xs, 0.5f));
+        Tensor<float32> out #= net.predict(Tensor.full<float32>(xs, 0.5f));
         Assert.isTrue(out.ndim() == 2);
         Assert.isTrue(out.shapeAt(0) == 3);
         Assert.isTrue(out.shapeAt(1) == 4);
@@ -167,12 +167,12 @@ public class ZooTest {
         SmallCnn net = heap SmallCnn(1L, 4L, 4L, 7L);
         int64[] a = heap int64[4];
         a[0] = 2; a[1] = 1; a[2] = 8; a[3] = 8;
-        Tensor<float32> oa = net.predict(Tensor.full<float32>(a, 0.25f));
+        Tensor<float32> oa #= net.predict(Tensor.full<float32>(a, 0.25f));
         Assert.isTrue(oa.shapeAt(0) == 2);
         Assert.isTrue(oa.shapeAt(1) == 4);
         int64[] b = heap int64[4];
         b[0] = 2; b[1] = 1; b[2] = 16; b[3] = 16;
-        Tensor<float32> ob = net.predict(Tensor.full<float32>(b, 0.25f));
+        Tensor<float32> ob #= net.predict(Tensor.full<float32>(b, 0.25f));
         Assert.isTrue(ob.shapeAt(0) == 2);
         Assert.isTrue(ob.shapeAt(1) == 4);
     }
@@ -187,10 +187,10 @@ public class ZooTest {
         Optimizer opt = heap Adam(net.parameters(), 0.01f);
         BackpropTrainer tr = heap BackpropTrainer(net, #opt,
                                                   Loss.CROSS_ENTROPY, 1.0f);
-        Tensor<float32> x = Digits.images(12, 4, 0.25f, 5L);
-        Tensor<float32> y = Digits.labels(12, 4);
+        Tensor<float32> x #= Digits.images(12, 4, 0.25f, 5L);
+        Tensor<float32> y #= Digits.labels(12, 4);
         Batches data = heap Batches(x, y, 8, 13L);
-        TrainHistory hist = tr.fit(data, 12);
+        TrainHistory hist #= tr.fit(data, 12);
         Assert.isTrue(hist.finalLoss() < hist.lossAt(0) * 0.5);
         Assert.isTrue(ZooTest.accuracy(net, x, y, 48L) >= 45);
     }
@@ -202,14 +202,14 @@ public class ZooTest {
         BackpropTrainer tr = heap BackpropTrainer(net, #opt,
                                                   Loss.CROSS_ENTROPY, 1.0f);
         // the fixture as (n, 1, 8, 8) images
-        Tensor<float32> flatX = Digits.images(6, 4, 0.2f, 23L);
+        Tensor<float32> flatX #= Digits.images(6, 4, 0.2f, 23L);
         int64[] is = heap int64[4];
         is[0] = 24; is[1] = 1; is[2] = 8; is[3] = 8;
-        Tensor<float32> vw = flatX.reshape(is);
-        Tensor<float32> x = vw.copy();
-        Tensor<float32> y = Digits.labels(6, 4);
+        Tensor<float32> vw #= flatX.reshape(is);
+        Tensor<float32> x #= vw.copy();
+        Tensor<float32> y #= Digits.labels(6, 4);
         Batches data = heap Batches(x, y, 8, 29L);
-        TrainHistory hist = tr.fit(data, 10);
+        TrainHistory hist #= tr.fit(data, 10);
         Assert.isTrue(hist.epochs() == 10);
         Assert.isTrue(hist.finalLoss() < hist.lossAt(0) * 0.6);
     }
@@ -222,10 +222,10 @@ public class ZooTest {
         Optimizer opt = heap Adam(net.parameters(), 0.02f);
         BackpropTrainer tr = heap BackpropTrainer(net, #opt,
                                                   Loss.CROSS_ENTROPY, 1.0f);
-        Tensor<float32> x = SeqClassifier.inputs();
-        Tensor<float32> y = SeqClassifier.labels();
+        Tensor<float32> x #= SeqClassifier.inputs();
+        Tensor<float32> y #= SeqClassifier.labels();
         Batches data = heap Batches(x, y, 4, 41L);
-        TrainHistory hist = tr.fit(data, 25);
+        TrainHistory hist #= tr.fit(data, 25);
         Assert.isTrue(hist.epochs() == 25);
         Assert.isTrue(hist.finalLoss() < hist.lossAt(0) * 0.5);
     }
@@ -233,7 +233,7 @@ public class ZooTest {
     static int64 accuracy(Module net, Tensor<float32> x, Tensor<float32> y,
                           int64 rows) {
         net.eval();
-        Tensor<float32> logits = net.predict(x);
+        Tensor<float32> logits #= net.predict(x);
         int64 cls = logits.shapeAt(1);
         int64 hits = 0;
         int64 r = 0;

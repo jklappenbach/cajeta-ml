@@ -51,13 +51,13 @@ public final class DummyRegressor implements Predictor {
         int64 n = x.shapeAt(0);
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.full<float64>(sh, this.mean);
+        Tensor<float64> out #= Tensor.full<float64>(sh, this.mean);
         return #out;
     }
 
     /** R² (the sklearn regressor `score` convention): 0 for the mean predictor itself. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         int64 n = y.shapeAt(0);
         float64 ymean = 0.0;
         int64 i = 0;

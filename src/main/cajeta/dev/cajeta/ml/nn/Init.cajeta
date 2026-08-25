@@ -27,10 +27,10 @@ public final class Init {
     /** Uniform over [lo, hi). */
     public static #Tensor<float32> uniform(int64[] shape, float32 lo, float32 hi,
                                            uint64 seed) {
-        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        Tensor<float32> t #= Tensor.zeros<float32>(shape);
         int64 n = Init.countOf(t);
         Generator g = heap Generator(seed);
-        Tensor<float32> u = g.uniform(n);
+        Tensor<float32> u #= g.uniform(n);
         float32 span = hi - lo;
         int64 i = 0;
         while (i < n) {
@@ -42,10 +42,10 @@ public final class Init {
 
     /** Zero-mean normal with the given standard deviation. */
     public static #Tensor<float32> normal(int64[] shape, float32 std, uint64 seed) {
-        Tensor<float32> t = Tensor.zeros<float32>(shape);
+        Tensor<float32> t #= Tensor.zeros<float32>(shape);
         int64 n = Init.countOf(t);
         Generator g = heap Generator(seed);
-        Tensor<float32> z = g.normal(n);
+        Tensor<float32> z #= g.normal(n);
         int64 i = 0;
         while (i < n) {
             t.flatSet(i, z.get1(i) * std);

@@ -88,7 +88,7 @@ public final class RandomForestRegressor implements Predictor {
         while (e < this.nEstimators) {
             uint64 se = this.seed + (uint64) e;
             Generator g = heap Generator(se);
-            Tensor<int64> rows = g.integers(0, n, n);
+            Tensor<int64> rows #= g.integers(0, n, n);
             float64[] xa = heap float64[n * nf];
             float64[] ya = heap float64[n];
             int64 r = 0;
@@ -132,7 +132,7 @@ public final class RandomForestRegressor implements Predictor {
         int64 e = 0;
         while (e < this.nEstimators) {
             DecisionTreeRegressor t = this.members.get((int32) e);
-            Tensor<float64> pe = t.predict(x);
+            Tensor<float64> pe #= t.predict(x);
             int64 r = 0;
             while (r < n) { acc[r] = acc[r] + pe.flatGet(r); r = r + 1; }
             e = e + 1;
@@ -145,7 +145,7 @@ public final class RandomForestRegressor implements Predictor {
 
     /** R². */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         return Metrics.r2(y, p);
     }
 
@@ -156,7 +156,7 @@ public final class RandomForestRegressor implements Predictor {
         int64 e = 0;
         while (e < this.nEstimators) {
             DecisionTreeRegressor t = this.members.get((int32) e);
-            Tensor<float64> pe = t.predict(x);
+            Tensor<float64> pe #= t.predict(x);
             int64 r = 0;
             while (r < n) {
                 if (!this.inBag[e * n + r]) {
@@ -209,7 +209,7 @@ public final class RandomForestRegressor implements Predictor {
         int64 e = 0;
         while (e < this.nEstimators) {
             DecisionTreeRegressor t = this.members.get((int32) e);
-            Tensor<float64> imp = t.featureImportances();
+            Tensor<float64> imp #= t.featureImportances();
             int64 f = 0;
             while (f < this.nFeatures) { acc[f] = acc[f] + imp.flatGet(f); f = f + 1; }
             e = e + 1;

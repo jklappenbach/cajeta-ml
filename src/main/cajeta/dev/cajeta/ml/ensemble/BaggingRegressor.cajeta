@@ -83,7 +83,7 @@ public final class BaggingRegressor implements Predictor {
 
     /** R². */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         return Metrics.r2(y, p);
     }
 

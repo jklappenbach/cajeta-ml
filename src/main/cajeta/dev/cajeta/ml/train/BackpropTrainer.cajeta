@@ -65,7 +65,7 @@ public class BackpropTrainer {
      */
     public #TrainHistory fit(Batches data, int32 epochs) {
         TrainHistory hist = heap TrainHistory();
-        Parameter[] ps = this.net.parameters();
+        Parameter[] ps #= this.net.parameters();
         this.net.train();
         int32 e = 0;
         while (e < epochs) {
@@ -74,8 +74,8 @@ public class BackpropTrainer {
             int64 nb = data.batchCount();
             int64 b = 0;
             while (b < nb) {
-                Tensor<float32> xb = data.batchX(b);
-                Tensor<float32> yb = data.batchY(b);
+                Tensor<float32> xb #= data.batchX(b);
+                Tensor<float32> yb #= data.batchY(b);
                 sum = sum + this.stepOn(xb, yb, ps);
                 b = b + 1;
             }
@@ -109,7 +109,7 @@ public class BackpropTrainer {
         }
         float64 value = (float64) tape.valueOf(loss).flatGet(0);
         tape.backward(loss);
-        Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+        Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
         if (this.clipNorm > 0.0f) {
             BackpropTrainer.clipByGlobalNorm(gs, this.clipNorm);
         }

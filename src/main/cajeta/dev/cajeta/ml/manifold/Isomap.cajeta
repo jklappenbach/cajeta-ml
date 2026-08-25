@@ -187,7 +187,7 @@ public final class Isomap implements Transformer {
         int64[] ks = heap int64[2];
         ks[0] = n;
         ks[1] = n;
-        Tensor<float64> kM = Tensor.zeros<float64>(ks);
+        Tensor<float64> kM #= Tensor.zeros<float64>(ks);
         i = 0;
         while (i < n) {
             int64 j = 0;
@@ -199,7 +199,7 @@ public final class Isomap implements Transformer {
             }
             i = i + 1;
         }
-        Tensor<float64>[] ev = LinAlg.eigh<float64>(kM);
+        Tensor<float64>[] ev #= LinAlg.eigh<float64>(kM);
         Tensor<float64> evw = ev[0];
         Tensor<float64> evv = ev[1];
         float64[] lam = heap float64[d];
@@ -222,7 +222,7 @@ public final class Isomap implements Transformer {
             }
             c = c + 1;
         }
-        Tensor<float64> xc = x.copy();
+        Tensor<float64> xc #= x.copy();
         this.xTrain #= xc;
         this.dGeo #= geo;
         this.rowMean2 #= rm;
@@ -232,7 +232,7 @@ public final class Isomap implements Transformer {
         int64[] es = heap int64[2];
         es[0] = n;
         es[1] = d;
-        Tensor<float64> et = Tensor.of<float64>(emb, es);
+        Tensor<float64> et #= Tensor.of<float64>(emb, es);
         this.embV #= et;
         this.fitted = true;
         return;

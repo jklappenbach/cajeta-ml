@@ -48,8 +48,8 @@ public final class Nets {
 
     /** Narrow a protocol tensor to the network's working precision. */
     public static #Tensor<float32> toF32(Tensor<float64> t) {
-        int64[] sh = Nets.shapeOf64(t);
-        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        int64[] sh #= Nets.shapeOf64(t);
+        Tensor<float32> out #= Tensor.zeros<float32>(sh);
         int64 n = Nets.countOf64(t);
         int64 i = 0;
         while (i < n) {
@@ -68,7 +68,7 @@ public final class Nets {
             sh[d] = t.shapeAt(d);
             d = d + 1;
         }
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 n = Nets.countOf32(t);
         int64 i = 0;
         while (i < n) {
@@ -86,8 +86,8 @@ public final class Nets {
         int64[] sh = heap int64[2];
         sh[0] = y.shapeAt(0);
         sh[1] = 1;
-        Tensor<float32> vw = y.reshape(sh);
-        Tensor<float32> out = vw.copy();
+        Tensor<float32> vw #= y.reshape(sh);
+        Tensor<float32> out #= vw.copy();
         return #out;
     }
 
@@ -108,9 +108,9 @@ public final class Nets {
         int32 i = 0;
         while (i < n) {
             if (ps[i].isTrainable()) {
-                gs[i] = tape.gradOf(ps[i].node()).copy();
+                gs[i] #= tape.gradOf(ps[i].node()).copy();
             } else {
-                gs[i] = Tensor.zerosLike<float32>(ps[i].get());
+                gs[i] #= Tensor.zerosLike<float32>(ps[i].get());
             }
             i = i + 1;
         }

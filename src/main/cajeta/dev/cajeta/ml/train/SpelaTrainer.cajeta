@@ -89,7 +89,7 @@ public class SpelaTrainer {
             // be bound to a local and moved in with `#` — passing the
             // constructor call directly stores a pointer to something that
             // drops at the end of the statement.
-            Tensor<float32> placeholder = Tensor.zeros<float32>(one);
+            Tensor<float32> placeholder #= Tensor.zeros<float32>(one);
             this.classVectors.add(#placeholder);
             this.sized[i] = false;
             // Built INLINE rather than through a `#Optimizer`-returning
@@ -123,10 +123,10 @@ public class SpelaTrainer {
     void snapshotAnchors() {
         int32 i = 0;
         while (i < this.layers.count()) {
-            Parameter[] ps = this.layers.get(i).parameters();
+            Parameter[] ps #= this.layers.get(i).parameters();
             int32 k = 0;
             while (k < (int32) ps.count()) {
-                Tensor<float32> snap = ps[k].get().copy();
+                Tensor<float32> snap #= ps[k].get().copy();
                 this.anchors.add(#snap);
                 k = k + 1;
             }
@@ -211,7 +211,7 @@ public class SpelaTrainer {
     public float64 trainBatch(Tensor<float32> x, Tensor<float32> y) {
         int32 lcount = this.layers.count();
         float32 lr = this.currentLr();
-        Tensor<float32> h = x.copy();
+        Tensor<float32> h #= x.copy();
         float64 total = 0.0;
         int32 i = 0;
         while (i < lcount) {
@@ -219,7 +219,7 @@ public class SpelaTrainer {
             // ONE owned local. Binding a borrow of `h` in one branch and a
             // fresh tensor in the other lets the scope-exit drop free `h`
             // itself on the borrow path — copy once, normalize in place.
-            Tensor<float32> hIn = h.copy();
+            Tensor<float32> hIn #= h.copy();
             if (this.cfg.normalizeLayerInputs && hIn.ndim() == 2) {
                 Embeddings.normalizeRows(hIn);
             }
@@ -227,7 +227,7 @@ public class SpelaTrainer {
             // gradient can reach anything upstream.
             GradTape<float32> tape = heap GradTape<float32>();
             layer.bindParameters(tape);
-            Parameter[] ps = layer.parameters();
+            Parameter[] ps #= layer.parameters();
             GradTensor xn = tape.leaf(hIn, false);
             GradTensor hOut = layer.forward(tape, xn);
             GradTensor flatOut = this.flattenIfNeeded(tape, hOut);
@@ -269,7 +269,7 @@ public class SpelaTrainer {
                 }
                 float64 value = (float64) tape.valueOf(loss).flatGet(0);
                 tape.backward(loss);
-                Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+                Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
                 if (this.cfg.gradClipNorm > 0.0f) {
                     BackpropTrainer.clipByGlobalNorm(gs, this.cfg.gradClipNorm);
                 }
@@ -278,7 +278,7 @@ public class SpelaTrainer {
                 total = total + value;
             }
             // The handoff: a COPY of the forward value, with no history.
-            h = tape.valueOf(flatOut).copy();
+            h #= tape.valueOf(flatOut).copy();
             layer.unbindParameters();
             i = i + 1;
         }
@@ -333,7 +333,7 @@ public class SpelaTrainer {
             return;
         }
         int64 dim = hOut.shapeAt(hOut.ndim() - 1);
-        Tensor<float32> vecs = Embeddings.symmetricVectors(
+        Tensor<float32> vecs #= Embeddings.symmetricVectors(
             this.cfg.numClasses, dim, this.cfg.embeddingsMethod,
             this.cfg.embeddingsCandidates, this.cfg.seed);
         this.classVectors.set(layer, #vecs);
@@ -355,23 +355,23 @@ public class SpelaTrainer {
                          Tensor<float32> labels) {
         Tensor<float32> vecs = this.classVectors.get(layer);
         if (this.cfg.lossType == SpelaConfig.COSINE) {
-            Tensor<float32> targets = SpelaTrainer.gatherRows(vecs, labels);
+            Tensor<float32> targets #= SpelaTrainer.gatherRows(vecs, labels);
             GradTensor tn = tape.leaf(targets, false);
             return tape.neg(tape.mean(tape.cosineSim(h, tn)));
         }
         if (this.cfg.lossType == SpelaConfig.COSFACE) {
             GradTensor hn = tape.rowNorm(h);
-            Tensor<float32> vt = SpelaTrainer.transposed(vecs);
+            Tensor<float32> vt #= SpelaTrainer.transposed(vecs);
             GradTensor vtn = tape.leaf(vt, false);
             GradTensor cosAll = tape.matmul(hn, vtn);
             if (this.cfg.cosineMargin > 0.0) {
-                Tensor<float32> marg = SpelaTrainer.marginMask(
+                Tensor<float32> marg #= SpelaTrainer.marginMask(
                     labels, this.cfg.numClasses, this.cfg.cosineMargin);
                 cosAll = tape.sub(cosAll, tape.leaf(marg, false));
             }
             int64[] one = heap int64[1];
             one[0] = 1;
-            Tensor<float32> sc = Tensor.full<float32>(one,
+            Tensor<float32> sc #= Tensor.full<float32>(one,
                 (float32) this.cfg.cosineScale);
             GradTensor logits = tape.mul(cosAll, tape.leaf(sc, false));
             return tape.crossEntropy(logits, labels);
@@ -402,7 +402,7 @@ public class SpelaTrainer {
                 GradTensor sq = tape.sum(tape.mul(diff, diff));
                 int64[] one = heap int64[1];
                 one[0] = 1;
-                Tensor<float32> lam = Tensor.full<float32>(one,
+                Tensor<float32> lam #= Tensor.full<float32>(one,
                     (float32) this.cfg.anchorLambda);
                 GradTensor scaled = tape.mul(sq, tape.leaf(lam, false));
                 acc = tape.add(acc, scaled);
@@ -424,7 +424,7 @@ public class SpelaTrainer {
      * update a batch of one.
      */
     public boolean observe(Tensor<float32> x, float64 label) {
-        Tensor<float32> row = SpelaTrainer.flatten2d(x);
+        Tensor<float32> row #= SpelaTrainer.flatten2d(x);
         this.bufX.add(#row);
         this.bufY.add(label);
         this.observed = this.observed + 1;
@@ -458,7 +458,7 @@ public class SpelaTrainer {
             this.skipped = this.skipped + 1;
             return false;
         }
-        Tensor<float32> pred = this.predictFromLayer(x, -1);
+        Tensor<float32> pred #= this.predictFromLayer(x, -1);
         this.observe(x, (float64) pred.flatGet(0));
         return true;
     }
@@ -474,10 +474,10 @@ public class SpelaTrainer {
         int64[] xs = heap int64[2];
         xs[0] = (int64) n;
         xs[1] = cols;
-        Tensor<float32> bx = Tensor.zeros<float32>(xs);
+        Tensor<float32> bx #= Tensor.zeros<float32>(xs);
         int64[] ys = heap int64[1];
         ys[0] = (int64) n;
-        Tensor<float32> by = Tensor.zeros<float32>(ys);
+        Tensor<float32> by #= Tensor.zeros<float32>(ys);
         int32 r = 0;
         while (r < n) {
             Tensor<float32> row = this.bufX.get(r);
@@ -514,16 +514,16 @@ public class SpelaTrainer {
     /** Top-1 cosine at the last layer — how sure the model is. */
     public float64 confidenceOf(Tensor<float32> x) {
         int32 target = this.layers.count() - 1;
-        Tensor<float32> h = x.copy();
+        Tensor<float32> h #= x.copy();
         int32 i = 0;
         while (i <= target) {
             Module layer = this.layers.get(i);
-            Tensor<float32> hIn = h.copy();
+            Tensor<float32> hIn #= h.copy();
             if (this.cfg.normalizeLayerInputs && hIn.ndim() == 2) {
                 Embeddings.normalizeRows(hIn);
             }
-            Tensor<float32> raw = layer.predict(hIn);
-            h = SpelaTrainer.flatten2d(raw);
+            Tensor<float32> raw #= layer.predict(hIn);
+            h #= SpelaTrainer.flatten2d(raw);
             this.sizeEmbeddings(i, h);
             i = i + 1;
         }
@@ -561,7 +561,7 @@ public class SpelaTrainer {
     }
 
     public boolean isLayerTrainable(int32 layer) {
-        Parameter[] ps = this.layers.get(layer).parameters();
+        Parameter[] ps #= this.layers.get(layer).parameters();
         int32 k = 0;
         while (k < (int32) ps.count()) {
             if (ps[k].isTrainable()) { return true; }
@@ -584,19 +584,19 @@ public class SpelaTrainer {
             throw heap MlException("SpelaTrainer.predictFromLayer: layer "
                 + target + " is beyond the stack (" + this.layers.count() + ")");
         }
-        Tensor<float32> h = x.copy();
+        Tensor<float32> h #= x.copy();
         int32 i = 0;
         while (i <= target) {
             Module layer = this.layers.get(i);
             // ONE owned local. Binding a borrow of `h` in one branch and a
             // fresh tensor in the other lets the scope-exit drop free `h`
             // itself on the borrow path — copy once, normalize in place.
-            Tensor<float32> hIn = h.copy();
+            Tensor<float32> hIn #= h.copy();
             if (this.cfg.normalizeLayerInputs && hIn.ndim() == 2) {
                 Embeddings.normalizeRows(hIn);
             }
-            Tensor<float32> raw = layer.predict(hIn);
-            h = SpelaTrainer.flatten2d(raw);
+            Tensor<float32> raw #= layer.predict(hIn);
+            h #= SpelaTrainer.flatten2d(raw);
             this.sizeEmbeddings(i, h);
             i = i + 1;
         }
@@ -607,7 +607,7 @@ public class SpelaTrainer {
     /** Accuracy of the early exit at `fromLayer`. */
     public float64 accuracyFromLayer(Tensor<float32> x, Tensor<float32> y,
                                      int32 fromLayer) {
-        Tensor<float32> p = this.predictFromLayer(x, fromLayer);
+        Tensor<float32> p #= this.predictFromLayer(x, fromLayer);
         int64 n = y.shapeAt(0);
         int64 hits = 0;
         int64 i = 0;
@@ -635,8 +635,8 @@ public class SpelaTrainer {
         int64[] sh = heap int64[2];
         sh[0] = rows;
         sh[1] = rest;
-        Tensor<float32> vw = t.reshape(sh);
-        Tensor<float32> out = vw.copy();
+        Tensor<float32> vw #= t.reshape(sh);
+        Tensor<float32> out #= vw.copy();
         return #out;
     }
 
@@ -648,7 +648,7 @@ public class SpelaTrainer {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = dim;
-        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        Tensor<float32> out #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = (int64) (float64) labels.flatGet(i);
@@ -663,8 +663,8 @@ public class SpelaTrainer {
     }
 
     static #Tensor<float32> transposed(Tensor<float32> t) {
-        Tensor<float32> vw = t.transpose();
-        Tensor<float32> out = vw.copy();
+        Tensor<float32> vw #= t.transpose();
+        Tensor<float32> out #= vw.copy();
         return #out;
     }
 
@@ -675,7 +675,7 @@ public class SpelaTrainer {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = classes;
-        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        Tensor<float32> out #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = (int64) (float64) labels.flatGet(i);
@@ -724,7 +724,7 @@ public class SpelaTrainer {
         int64 classes = vecs.shapeAt(0);
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        Tensor<float32> out #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
             float64 hn = 0.0;

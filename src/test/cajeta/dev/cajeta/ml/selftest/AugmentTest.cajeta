@@ -28,7 +28,7 @@ public class AugmentTest {
         sh[1] = 1;
         sh[2] = 2;
         sh[3] = 3;
-        Tensor<float32> x = Tensor.zeros<float32>(sh);
+        Tensor<float32> x #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < 6) {
             x.flatSet(i, (float32) (i + (int64) 1));
@@ -43,16 +43,16 @@ public class AugmentTest {
     // seeded.
     @Test
     public void transformsAreCorrectAndKeepNchw() {
-        Tensor<float32> x = AugmentTest.tiny();
+        Tensor<float32> x #= AugmentTest.tiny();
         Generator g = heap Generator((uint64) 1);
         RandomHorizontalFlip always = heap RandomHorizontalFlip(1.0);
-        Tensor<float32> f = always.apply(x, g);
+        Tensor<float32> f #= always.apply(x, g);
         // Rows [1,2,3],[4,5,6] -> [3,2,1],[6,5,4].
         Assert.isTrue(f.flatGet(0) == 3.0f && f.flatGet(1) == 2.0f
             && f.flatGet(2) == 1.0f && f.flatGet(3) == 6.0f
             && f.flatGet(4) == 5.0f && f.flatGet(5) == 4.0f);
         RandomHorizontalFlip never = heap RandomHorizontalFlip(0.0);
-        Tensor<float32> nf = never.apply(x, g);
+        Tensor<float32> nf #= never.apply(x, g);
         int64 i = 0;
         while (i < 6) {
             Assert.isTrue(nf.flatGet(i) == x.flatGet(i));
@@ -64,7 +64,7 @@ public class AugmentTest {
         float32[] std = heap float32[1];
         std[0] = 2.0f;
         Normalize nm = heap Normalize(#mean, #std);
-        Tensor<float32> nz = nm.apply(x, g);
+        Tensor<float32> nz #= nm.apply(x, g);
         i = 0;
         while (i < 6) {
             float32 want = (x.flatGet(i) - 2.0f) / 2.0f;
@@ -74,11 +74,11 @@ public class AugmentTest {
         Assert.isFalse(nm.stochastic());
         // Crop and rotation: NCHW shape preserved.
         RandomCrop cr = heap RandomCrop((int64) 1);
-        Tensor<float32> cc = cr.apply(x, g);
+        Tensor<float32> cc #= cr.apply(x, g);
         Assert.isTrue(cc.ndim() == 4 && cc.shapeAt(2) == 2
             && cc.shapeAt(3) == 3);
         RandomRotation rt = heap RandomRotation(30.0);
-        Tensor<float32> rr = rt.apply(x, g);
+        Tensor<float32> rr #= rt.apply(x, g);
         Assert.isTrue(rr.ndim() == 4 && rr.shapeAt(2) == 2
             && rr.shapeAt(3) == 3);
         Assert.isTrue(cr.stochastic() && rt.stochastic()
@@ -89,7 +89,7 @@ public class AugmentTest {
     // flip(p=1) then normalize equals the hand-applied sequence.
     @Test
     public void pipelineAppliesInOrder() {
-        Tensor<float32> x = AugmentTest.tiny();
+        Tensor<float32> x #= AugmentTest.tiny();
         AugmentPipeline pl = heap AugmentPipeline((uint64) 5);
         Transform t1 = heap RandomHorizontalFlip(1.0);
         pl.add(#t1);
@@ -99,7 +99,7 @@ public class AugmentTest {
         std[0] = 2.0f;
         Transform t2 = heap Normalize(#mean, #std);
         pl.add(#t2);
-        Tensor<float32> y = pl.apply(x);
+        Tensor<float32> y #= pl.apply(x);
         // flip first: [3,2,1,6,5,4]; then (v-1)/2.
         float32[] want = heap float32[6];
         want[0] = 1.0f;
@@ -120,7 +120,7 @@ public class AugmentTest {
     // bit-identical.
     @Test
     public void evalModeIsInertAndDeterministic() {
-        Tensor<float32> x = AugmentTest.tiny();
+        Tensor<float32> x #= AugmentTest.tiny();
         AugmentPipeline pl = heap AugmentPipeline((uint64) 7);
         Transform t1 = heap RandomHorizontalFlip(1.0);
         pl.add(#t1);
@@ -136,8 +136,8 @@ public class AugmentTest {
         pl.add(#t4);
         pl.eval();
         Assert.isFalse(pl.isTraining());
-        Tensor<float32> a = pl.apply(x);
-        Tensor<float32> b = pl.apply(x);
+        Tensor<float32> a #= pl.apply(x);
+        Tensor<float32> b #= pl.apply(x);
         int64 i = 0;
         while (i < 6) {
             // Untransformed by augmentation (normalize here is identity).
@@ -147,7 +147,7 @@ public class AugmentTest {
         }
         // Back in training mode the same pipeline DOES transform.
         pl.train();
-        Tensor<float32> t = pl.apply(x);
+        Tensor<float32> t #= pl.apply(x);
         boolean changed = false;
         i = 0;
         while (i < 6) {
@@ -168,7 +168,7 @@ public class AugmentTest {
         sh[1] = 1;
         sh[2] = 5;
         sh[3] = 5;
-        Tensor<float32> x = Tensor.zeros<float32>(sh);
+        Tensor<float32> x #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < x.size()) {
             x.flatSet(i, (float32) (i - (i / (int64) 9) * (int64) 9));
@@ -181,7 +181,7 @@ public class AugmentTest {
         p1.add(#a2);
         Transform a3 = heap RandomRotation(60.0);
         p1.add(#a3);
-        Tensor<float32> y1 = p1.apply(x);
+        Tensor<float32> y1 #= p1.apply(x);
         AugmentPipeline p2 = heap AugmentPipeline((uint64) 11);
         Transform b1 = heap RandomHorizontalFlip(0.5);
         p2.add(#b1);
@@ -189,7 +189,7 @@ public class AugmentTest {
         p2.add(#b2);
         Transform b3 = heap RandomRotation(60.0);
         p2.add(#b3);
-        Tensor<float32> y2 = p2.apply(x);
+        Tensor<float32> y2 #= p2.apply(x);
         i = 0;
         while (i < y1.size()) {
             Assert.isTrue(y1.flatGet(i) == y2.flatGet(i));
@@ -202,7 +202,7 @@ public class AugmentTest {
         p3.add(#c2);
         Transform c3 = heap RandomRotation(60.0);
         p3.add(#c3);
-        Tensor<float32> y3 = p3.apply(x);
+        Tensor<float32> y3 #= p3.apply(x);
         boolean differs = false;
         i = 0;
         while (i < y1.size()) {
@@ -226,7 +226,7 @@ public class AugmentTest {
             std[0] = 1.0f;
             std[1] = 1.0f;
             Normalize nm = heap Normalize(#mean, #std);
-            Tensor<float32> x = AugmentTest.tiny();   // 1 channel, stats say 2
+            Tensor<float32> x #= AugmentTest.tiny();   // 1 channel, stats say 2
             Generator g = heap Generator((uint64) 1);
             nm.apply(x, g);
         });

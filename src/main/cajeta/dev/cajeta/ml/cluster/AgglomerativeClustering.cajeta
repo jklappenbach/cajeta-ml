@@ -117,7 +117,7 @@ public final class AgglomerativeClustering implements Estimator {
         }
         this.nPoints = n;
 
-        Tensor<float64> dm = Distance.pdist(x, this.metricM);
+        Tensor<float64> dm #= Distance.pdist(x, this.metricM);
         float64[] d = heap float64[n * n];      // working cluster distances
         float64[] orig = heap float64[n * n];   // original point distances
         float64[] coph = heap float64[n * n];   // cophenetic distances
@@ -243,7 +243,7 @@ public final class AgglomerativeClustering implements Estimator {
         int64[] zs = heap int64[2];
         zs[0] = n - (int64) 1;
         zs[1] = 4;
-        Tensor<float64> zt = Tensor.of<float64>(z, zs);
+        Tensor<float64> zt #= Tensor.of<float64>(z, zs);
         this.zM #= zt;
 
         // Cophenetic correlation: Pearson over the condensed pairs.
@@ -282,7 +282,7 @@ public final class AgglomerativeClustering implements Estimator {
         this.cophV = sab / Math.sqrt(saa * sbb);
 
         this.fitted = true;
-        Tensor<float64> lv = this.cutByCount(this.kClusters);
+        Tensor<float64> lv #= this.cutByCount(this.kClusters);
         this.labelsV #= lv;
         return;
     }

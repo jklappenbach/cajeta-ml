@@ -30,8 +30,8 @@ public class BatchNorm2d extends Module {
         s[0] = channels;
         this.weight = heap Parameter(Tensor.full<float32>(s, 1.0f));
         this.bias = heap Parameter(Tensor.zeros<float32>(s));
-        this.runningMean = Tensor.zeros<float32>(s);
-        this.runningVar = Tensor.full<float32>(s, 1.0f);
+        this.runningMean #= Tensor.zeros<float32>(s);
+        this.runningVar #= Tensor.full<float32>(s, 1.0f);
         this.eps = eps;
         this.momentum = momentum;
         return;
@@ -54,8 +54,8 @@ public class BatchNorm2d extends Module {
         // Update the running statistics from THIS batch before normalizing;
         // the update is module state, never a tape node.
         Tensor<float32> xv = tape.valueOf(x);
-        Tensor<float32> bm = Ops.channelMean<float32>(xv);
-        Tensor<float32> bv = Ops.channelVar<float32>(xv, bm);
+        Tensor<float32> bm #= Ops.channelMean<float32>(xv);
+        Tensor<float32> bv #= Ops.channelVar<float32>(xv, bm);
         int64 count = xv.shapeAt(0) * xv.shapeAt(2) * xv.shapeAt(3);
         Ops.updateRunningStats<float32>(this.runningMean, this.runningVar,
                                         bm, bv, count, this.momentum);

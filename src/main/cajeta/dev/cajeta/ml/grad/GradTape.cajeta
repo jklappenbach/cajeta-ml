@@ -184,7 +184,7 @@ public final class GradTape<E extends Floating> {
 
     /** Record `value` as a leaf. `requiresGrad` marks a trainable input. */
     public GradTensor leaf(Tensor<E> value, boolean requiresGrad) {
-        Tensor<E> own = value.copy();
+        Tensor<E> own #= value.copy();
         GradTensor t = this.push(Op.LEAF, -1, -1, 0, 0.0, #own);
         this.needsGrad[t.idx] = requiresGrad && this.noGradDepth == 0;
         this.isLeafGrad[t.idx] = this.needsGrad[t.idx];
@@ -225,7 +225,7 @@ public final class GradTape<E extends Floating> {
      *  `view` are reserved words, hence the spelling. */
     public GradTensor detached(GradTensor t) {
         Tensor<E> v = this.values.get(t.idx);
-        Tensor<E> own = v.copy();
+        Tensor<E> own #= v.copy();
         return this.push(Op.LEAF, -1, -1, 0, 0.0, #own);
     }
 
@@ -252,7 +252,7 @@ public final class GradTape<E extends Floating> {
             throw heap MlException("GradTape.permute: rank " + rank
                 + " exceeds the tape's payload width (" + this.payStride + ")");
         }
-        Tensor<E> v = Ops.permute<E>(this.values.get(a.idx), perm);
+        Tensor<E> v #= Ops.permute<E>(this.values.get(a.idx), perm);
         GradTensor t = this.push(Op.PERMUTE, a.idx, -1, rank, 0.0, #v);
         int32 k = 0;
         while (k < rank) {
@@ -263,7 +263,7 @@ public final class GradTape<E extends Floating> {
     }
 
     GradTensor bin2(int32 op, GradTensor a, GradTensor b) {
-        Tensor<E> v = Ops.run2<E>(op, this.values.get(a.idx), this.values.get(b.idx));
+        Tensor<E> v #= Ops.run2<E>(op, this.values.get(a.idx), this.values.get(b.idx));
         return this.push(op, a.idx, b.idx, 0, 0.0, #v);
     }
 
@@ -288,23 +288,23 @@ public final class GradTape<E extends Floating> {
     public GradTensor rowNorm(GradTensor a) { return this.una(Op.ROWNORM, a, 0, (E) 0); }
 
     GradTensor una(int32 op, GradTensor a, int32 axis, E c) {
-        Tensor<E> v = Ops.run1<E>(op, this.values.get(a.idx), axis, c);
+        Tensor<E> v #= Ops.run1<E>(op, this.values.get(a.idx), axis, c);
         return this.push(op, a.idx, -1, axis, (float64) c, #v);
     }
 
     /** Reshape (records the input shape for the backward). */
     public GradTensor reshape(GradTensor a, int64[] newShape) {
         Tensor<E> src = this.values.get(a.idx);
-        Tensor<E> vw = src.reshape(newShape);
-        Tensor<E> v = vw.copy();
+        Tensor<E> vw #= src.reshape(newShape);
+        Tensor<E> v #= vw.copy();
         return this.push(Op.RESHAPE, a.idx, -1, 0, 0.0, #v);
     }
 
     /** Slice one axis, [start, stop). */
     public GradTensor slice(GradTensor a, int32 axis, int64 start, int64 stop) {
         Tensor<E> src = this.values.get(a.idx);
-        Tensor<E> vw = src.slice(axis, start, stop);
-        Tensor<E> v = vw.copy();
+        Tensor<E> vw #= src.slice(axis, start, stop);
+        Tensor<E> v #= vw.copy();
         GradTensor t = this.push(Op.SLICE, a.idx, -1, axis, 0.0, #v);
         // start rides the scalar payload (stop derives from the shapes).
         this.cs[t.idx] = (float64) start;
@@ -316,7 +316,7 @@ public final class GradTape<E extends Floating> {
         Tensor<E>[] parts = heap Tensor<E>[2];
         parts[0] = this.values.get(a.idx);
         parts[1] = this.values.get(b.idx);
-        Tensor<E> v = Tensor.concatenate<E>(parts, axis);
+        Tensor<E> v #= Tensor.concatenate<E>(parts, axis);
         return this.push(Op.CONCAT, a.idx, b.idx, axis, 0.0, #v);
     }
 
@@ -325,7 +325,7 @@ public final class GradTape<E extends Floating> {
     /** 2-D convolution over NCHW input with an (O,C,KH,KW) kernel. */
     public GradTensor conv2d(GradTensor x, GradTensor w, GradTensor b,
                              int32 stride, int32 pad) {
-        Tensor<E> v = Ops.conv2d<E>(this.values.get(x.idx), this.values.get(w.idx),
+        Tensor<E> v #= Ops.conv2d<E>(this.values.get(x.idx), this.values.get(w.idx),
                                     this.values.get(b.idx), stride, pad);
         GradTensor t = this.push(Op.CONV2D, x.idx, w.idx, 0, 0.0, #v);
         this.linkThird(t.idx, b.idx);
@@ -338,9 +338,9 @@ public final class GradTape<E extends Floating> {
         Tensor<E> xv = this.values.get(x.idx);
         int64 oh = StructKernels.outExtent(xv.shapeAt(2), k, stride, pad);
         int64 ow = StructKernels.outExtent(xv.shapeAt(3), k, stride, pad);
-        int64[] osh = StructKernels.shape4(xv.shapeAt(0), xv.shapeAt(1), oh, ow);
-        Tensor<E> argmax = Tensor.zeros<E>(osh);
-        Tensor<E> v = Ops.maxPool2d<E>(xv, k, stride, pad, argmax);
+        int64[] osh #= StructKernels.shape4(xv.shapeAt(0), xv.shapeAt(1), oh, ow);
+        Tensor<E> argmax #= Tensor.zeros<E>(osh);
+        Tensor<E> v #= Ops.maxPool2d<E>(xv, k, stride, pad, argmax);
         GradTensor t = this.push(Op.MAXPOOL2D, x.idx, -1, 0, 0.0, #v);
         this.setPay(t.idx, 0, k);
         this.setPay(t.idx, 1, stride);
@@ -350,7 +350,7 @@ public final class GradTape<E extends Floating> {
     }
 
     public GradTensor avgPool2d(GradTensor x, int32 k, int32 stride, int32 pad) {
-        Tensor<E> v = Ops.avgPool2d<E>(this.values.get(x.idx), k, stride, pad);
+        Tensor<E> v #= Ops.avgPool2d<E>(this.values.get(x.idx), k, stride, pad);
         GradTensor t = this.push(Op.AVGPOOL2D, x.idx, -1, 0, 0.0, #v);
         this.setPay(t.idx, 0, k);
         this.setPay(t.idx, 1, stride);
@@ -359,7 +359,7 @@ public final class GradTape<E extends Floating> {
     }
 
     public GradTensor adaptiveAvgPool2d(GradTensor x, int32 outH, int32 outW) {
-        Tensor<E> v = Ops.adaptiveAvgPool2d<E>(this.values.get(x.idx), outH, outW);
+        Tensor<E> v #= Ops.adaptiveAvgPool2d<E>(this.values.get(x.idx), outH, outW);
         GradTensor t = this.push(Op.ADAPTAVGPOOL2D, x.idx, -1, 0, 0.0, #v);
         this.setPay(t.idx, 0, outH);
         this.setPay(t.idx, 1, outW);
@@ -372,8 +372,8 @@ public final class GradTape<E extends Floating> {
     public GradTensor batchNorm2dTrain(GradTensor x, GradTensor gamma,
                                        GradTensor beta, float64 eps) {
         Tensor<E> xv = this.values.get(x.idx);
-        Tensor<E> mean = Ops.channelMean<E>(xv);
-        Tensor<E> var = Ops.channelVar<E>(xv, mean);
+        Tensor<E> mean #= Ops.channelMean<E>(xv);
+        Tensor<E> var #= Ops.channelVar<E>(xv, mean);
         return this.bnCommon(x, gamma, beta, mean, var, eps, true);
     }
 
@@ -388,10 +388,10 @@ public final class GradTape<E extends Floating> {
                         Tensor<E> mean, Tensor<E> var, float64 eps,
                         boolean training) {
         Tensor<E> xv = this.values.get(x.idx);
-        Tensor<E> xhat = Tensor.zerosLike<E>(xv);
-        int64[] csh = StructKernels.shape1(xv.shapeAt(1));
-        Tensor<E> invstd = Tensor.zeros<E>(csh);
-        Tensor<E> v = Ops.batchNorm2d<E>(xv, this.values.get(gamma.idx),
+        Tensor<E> xhat #= Tensor.zerosLike<E>(xv);
+        int64[] csh #= StructKernels.shape1(xv.shapeAt(1));
+        Tensor<E> invstd #= Tensor.zeros<E>(csh);
+        Tensor<E> v #= Ops.batchNorm2d<E>(xv, this.values.get(gamma.idx),
                                          this.values.get(beta.idx), mean, var,
                                          eps, xhat, invstd);
         GradTensor t = this.push(Op.BATCHNORM2D, x.idx, gamma.idx, 0, eps, #v);
@@ -406,16 +406,16 @@ public final class GradTape<E extends Floating> {
     public GradTensor layerNorm(GradTensor x, GradTensor gamma, GradTensor beta,
                                 float64 eps) {
         Tensor<E> xv = this.values.get(x.idx);
-        Tensor<E> xhat = Tensor.zerosLike<E>(xv);
+        Tensor<E> xhat #= Tensor.zerosLike<E>(xv);
         int64 rows = 1;
         int32 k = 0;
         while (k < xv.ndim() - 1) {
             rows = rows * xv.shapeAt(k);
             k = k + 1;
         }
-        int64[] rsh = StructKernels.shape1(rows);
-        Tensor<E> invstd = Tensor.zeros<E>(rsh);
-        Tensor<E> v = Ops.layerNorm<E>(xv, this.values.get(gamma.idx),
+        int64[] rsh #= StructKernels.shape1(rows);
+        Tensor<E> invstd #= Tensor.zeros<E>(rsh);
+        Tensor<E> v #= Ops.layerNorm<E>(xv, this.values.get(gamma.idx),
                                        this.values.get(beta.idx), eps, xhat, invstd);
         GradTensor t = this.push(Op.LAYERNORM, x.idx, gamma.idx, 0, eps, #v);
         this.linkThird(t.idx, beta.idx);
@@ -428,9 +428,9 @@ public final class GradTape<E extends Floating> {
      *  values (exact in both float widths below 2²⁴) and is not
      *  differentiable — only the table receives gradient. */
     public GradTensor embedding(GradTensor table, Tensor<E> indices) {
-        Tensor<E> v = Ops.embedding<E>(this.values.get(table.idx), indices);
+        Tensor<E> v #= Ops.embedding<E>(this.values.get(table.idx), indices);
         GradTensor t = this.push(Op.EMBEDDING, table.idx, -1, 0, 0.0, #v);
-        Tensor<E> own = indices.copy();
+        Tensor<E> own #= indices.copy();
         this.aux0[t.idx] = this.addAux(#own);
         return t;
     }
@@ -439,8 +439,8 @@ public final class GradTape<E extends Floating> {
     public GradTensor dropout(GradTensor x, float64 p, boolean training,
                               uint64 seed) {
         Tensor<E> xv = this.values.get(x.idx);
-        Tensor<E> mask = Tensor.zerosLike<E>(xv);
-        Tensor<E> v = Ops.dropout<E>(xv, p, training, seed, mask);
+        Tensor<E> mask #= Tensor.zerosLike<E>(xv);
+        Tensor<E> v #= Ops.dropout<E>(xv, p, training, seed, mask);
         GradTensor t = this.push(Op.DROPOUT, x.idx, -1, 0, p, #v);
         if (training) { this.setPay(t.idx, 0, 1); }
         this.aux0[t.idx] = this.addAux(#mask);
@@ -450,18 +450,18 @@ public final class GradTape<E extends Floating> {
     /** Softmax cross-entropy against class ids, mean reduction → (1,). */
     public GradTensor crossEntropy(GradTensor logits, Tensor<E> targets) {
         Tensor<E> lv = this.values.get(logits.idx);
-        Tensor<E> probs = Tensor.zerosLike<E>(lv);
-        Tensor<E> v = Ops.crossEntropy<E>(lv, targets, probs);
+        Tensor<E> probs #= Tensor.zerosLike<E>(lv);
+        Tensor<E> v #= Ops.crossEntropy<E>(lv, targets, probs);
         GradTensor t = this.push(Op.CROSSENTROPY, logits.idx, -1, 0, 0.0, #v);
         this.aux0[t.idx] = this.addAux(#probs);
-        Tensor<E> own = targets.copy();
+        Tensor<E> own #= targets.copy();
         this.aux1[t.idx] = this.addAux(#own);
         return t;
     }
 
     /** Mean squared error → (1,). Both inputs receive gradient. */
     public GradTensor mseLoss(GradTensor pred, GradTensor target) {
-        Tensor<E> v = Ops.mseLoss<E>(this.values.get(pred.idx),
+        Tensor<E> v #= Ops.mseLoss<E>(this.values.get(pred.idx),
                                      this.values.get(target.idx));
         return this.push(Op.MSELOSS, pred.idx, target.idx, 0, 0.0, #v);
     }
@@ -476,10 +476,10 @@ public final class GradTape<E extends Floating> {
             rows = rows * av.shapeAt(k);
             k = k + 1;
         }
-        int64[] csh = StructKernels.shape1(rows * 3);
-        Tensor<E> cache = Tensor.zeros<E>(csh);
+        int64[] csh #= StructKernels.shape1(rows * 3);
+        Tensor<E> cache #= Tensor.zeros<E>(csh);
         float64 eps = 0.00000001;
-        Tensor<E> v = Ops.cosineSim<E>(av, this.values.get(b.idx), eps, cache);
+        Tensor<E> v #= Ops.cosineSim<E>(av, this.values.get(b.idx), eps, cache);
         GradTensor t = this.push(Op.COSINESIM, a.idx, b.idx, 0, eps, #v);
         this.aux0[t.idx] = this.addAux(#cache);
         return t;
@@ -489,7 +489,7 @@ public final class GradTape<E extends Floating> {
 
     void accum(int32 node, #Tensor<E> contrib) {
         Tensor<E> cur = this.grads.get(node);
-        Tensor<E> next = Tensor.add<E>(cur, contrib);
+        Tensor<E> next #= Tensor.add<E>(cur, contrib);
         this.grads.set(node, #next);
         return;
     }
@@ -497,7 +497,7 @@ public final class GradTape<E extends Floating> {
     /** Shape-restoring accumulate (broadcast backward). */
     void accumTo(int32 node, Tensor<E> contrib) {
         Tensor<E> like = this.values.get(node);
-        Tensor<E> fit = Tensor.sumTo<E>(contrib, like);
+        Tensor<E> fit #= Tensor.sumTo<E>(contrib, like);
         this.accum(node, #fit);
         return;
     }
@@ -516,13 +516,13 @@ public final class GradTape<E extends Floating> {
         int32 i = 0;
         while (i < this.n) {
             Tensor<E> v = this.values.get(i);
-            Tensor<E> z = Tensor.zerosLike<E>(v);
+            Tensor<E> z #= Tensor.zerosLike<E>(v);
             this.grads.add(#z);
             i = i + 1;
         }
         // Seed d(out)/d(out) = 1.
         Tensor<E> seedSrc = this.values.get(out.idx);
-        Tensor<E> seed = Tensor.onesLike<E>(seedSrc);
+        Tensor<E> seed #= Tensor.onesLike<E>(seedSrc);
         this.grads.set(out.idx, #seed);
 
         int32 k = out.idx;
@@ -551,18 +551,18 @@ public final class GradTape<E extends Floating> {
         if (op == Op.SUB) {
             if (this.needsGrad[a]) { this.accumTo(a, g); }
             if (this.needsGrad[b]) {
-                Tensor<E> ng = Tensor.neg<E>(g);
+                Tensor<E> ng #= Tensor.neg<E>(g);
                 this.accumTo(b, ng);
             }
             return;
         }
         if (op == Op.MUL) {
             if (this.needsGrad[a]) {
-                Tensor<E> ga = Tensor.mul<E>(g, this.values.get(b));
+                Tensor<E> ga #= Tensor.mul<E>(g, this.values.get(b));
                 this.accumTo(a, ga);
             }
             if (this.needsGrad[b]) {
-                Tensor<E> gb = Tensor.mul<E>(g, va);
+                Tensor<E> gb #= Tensor.mul<E>(g, va);
                 this.accumTo(b, gb);
             }
             return;
@@ -570,14 +570,14 @@ public final class GradTape<E extends Floating> {
         if (op == Op.DIV) {
             Tensor<E> vb = this.values.get(b);
             if (this.needsGrad[a]) {
-                Tensor<E> ga = Ops.divK<E>(g, vb);
+                Tensor<E> ga #= Ops.divK<E>(g, vb);
                 this.accumTo(a, ga);
             }
             if (this.needsGrad[b]) {
                 // d/db (a/b) = -a/b² → -out/b
-                Tensor<E> t1 = Ops.divK<E>(vo, vb);
-                Tensor<E> t2 = Tensor.mul<E>(g, t1);
-                Tensor<E> gb = Tensor.neg<E>(t2);
+                Tensor<E> t1 #= Ops.divK<E>(vo, vb);
+                Tensor<E> t2 #= Tensor.mul<E>(g, t1);
+                Tensor<E> gb #= Tensor.neg<E>(t2);
                 this.accumTo(b, gb);
             }
             return;
@@ -585,13 +585,13 @@ public final class GradTape<E extends Floating> {
         if (op == Op.MATMUL) {
             Tensor<E> vb = this.values.get(b);
             if (this.needsGrad[a]) {
-                Tensor<E> bt = vb.transpose();
-                Tensor<E> ga = Tensor.matmul<E>(g, bt);
+                Tensor<E> bt #= vb.transpose();
+                Tensor<E> ga #= Tensor.matmul<E>(g, bt);
                 this.accum(a, #ga);
             }
             if (this.needsGrad[b]) {
-                Tensor<E> at = va.transpose();
-                Tensor<E> gb = Tensor.matmul<E>(at, g);
+                Tensor<E> at #= va.transpose();
+                Tensor<E> gb #= Tensor.matmul<E>(at, g);
                 this.accum(b, #gb);
             }
             return;
@@ -599,11 +599,11 @@ public final class GradTape<E extends Floating> {
         if (op == Op.MATMULB) {
             Tensor<E> vb = this.values.get(b);
             if (this.needsGrad[a]) {
-                Tensor<E> bt = Ops.transposeLast2<E>(vb);
+                Tensor<E> bt #= Ops.transposeLast2<E>(vb);
                 this.accum(a, Ops.run2<E>(Op.MATMULB, g, bt));
             }
             if (this.needsGrad[b]) {
-                Tensor<E> at = Ops.transposeLast2<E>(va);
+                Tensor<E> at #= Ops.transposeLast2<E>(va);
                 this.accum(b, Ops.run2<E>(Op.MATMULB, at, g));
             }
             return;
@@ -630,48 +630,48 @@ public final class GradTape<E extends Floating> {
             return;
         }
         if (op == Op.RELU) {
-            Tensor<E> m = Tensor.reluMask<E>(va);
-            Tensor<E> ga = Tensor.mul<E>(g, m);
+            Tensor<E> m #= Tensor.reluMask<E>(va);
+            Tensor<E> ga #= Tensor.mul<E>(g, m);
             this.accum(a, #ga);
             return;
         }
         if (op == Op.NEG) {
-            Tensor<E> ga = Tensor.neg<E>(g);
+            Tensor<E> ga #= Tensor.neg<E>(g);
             this.accum(a, #ga);
             return;
         }
         if (op == Op.EXP) {
-            Tensor<E> ga = Tensor.mul<E>(g, vo);
+            Tensor<E> ga #= Tensor.mul<E>(g, vo);
             this.accum(a, #ga);
             return;
         }
         if (op == Op.LOG) {
-            Tensor<E> ga = Ops.divK<E>(g, va);
+            Tensor<E> ga #= Ops.divK<E>(g, va);
             this.accum(a, #ga);
             return;
         }
         if (op == Op.SQRT) {
             // 1/(2·out)
-            Tensor<E> two = Tensor.mulScalar<E>(vo, (E) 2);
-            Tensor<E> ga = Ops.divK<E>(g, two);
+            Tensor<E> two #= Tensor.mulScalar<E>(vo, (E) 2);
+            Tensor<E> ga #= Ops.divK<E>(g, two);
             this.accum(a, #ga);
             return;
         }
         if (op == Op.TANH) {
             // 1 − out²
-            Tensor<E> o2 = Tensor.mul<E>(vo, vo);
-            Tensor<E> one = Tensor.onesLike<E>(vo);
-            Tensor<E> d = Tensor.sub<E>(one, o2);
-            Tensor<E> ga = Tensor.mul<E>(g, d);
+            Tensor<E> o2 #= Tensor.mul<E>(vo, vo);
+            Tensor<E> one #= Tensor.onesLike<E>(vo);
+            Tensor<E> d #= Tensor.sub<E>(one, o2);
+            Tensor<E> ga #= Tensor.mul<E>(g, d);
             this.accum(a, #ga);
             return;
         }
         if (op == Op.SIGMOID) {
             // out·(1−out)
-            Tensor<E> one = Tensor.onesLike<E>(vo);
-            Tensor<E> om = Tensor.sub<E>(one, vo);
-            Tensor<E> d = Tensor.mul<E>(vo, om);
-            Tensor<E> ga = Tensor.mul<E>(g, d);
+            Tensor<E> one #= Tensor.onesLike<E>(vo);
+            Tensor<E> om #= Tensor.sub<E>(one, vo);
+            Tensor<E> d #= Tensor.mul<E>(vo, om);
+            Tensor<E> ga #= Tensor.mul<E>(g, d);
             this.accum(a, #ga);
             return;
         }
@@ -682,9 +682,9 @@ public final class GradTape<E extends Floating> {
         if (op == Op.POWS) {
             // c·x^(c−1)
             E c = (E) this.cs[i];
-            Tensor<E> pm1 = Ops.powScalarK<E>(va, c - (E) 1);
-            Tensor<E> d = Tensor.mulScalar<E>(pm1, c);
-            Tensor<E> ga = Tensor.mul<E>(g, d);
+            Tensor<E> pm1 #= Ops.powScalarK<E>(va, c - (E) 1);
+            Tensor<E> d #= Tensor.mulScalar<E>(pm1, c);
+            Tensor<E> ga #= Tensor.mul<E>(g, d);
             this.accum(a, #ga);
             return;
         }
@@ -699,29 +699,29 @@ public final class GradTape<E extends Floating> {
         if (op == Op.SUM) {
             // broadcast the (1,) cotangent to the input shape
             E gv = g.flatGet(0);
-            Tensor<E> ones = Tensor.onesLike<E>(va);
-            Tensor<E> ga = Tensor.mulScalar<E>(ones, gv);
+            Tensor<E> ones #= Tensor.onesLike<E>(va);
+            Tensor<E> ga #= Tensor.mulScalar<E>(ones, gv);
             this.accum(a, #ga);
             return;
         }
         if (op == Op.MEAN) {
             E gv = g.flatGet(0) / (E) Ops.countOf<E>(va);
-            Tensor<E> ones = Tensor.onesLike<E>(va);
-            Tensor<E> ga = Tensor.mulScalar<E>(ones, gv);
+            Tensor<E> ones #= Tensor.onesLike<E>(va);
+            Tensor<E> ga #= Tensor.mulScalar<E>(ones, gv);
             this.accum(a, #ga);
             return;
         }
         if (op == Op.SUMAXIS) {
-            Tensor<E> gb = g.broadcastTo(GradTape.shapeOf<E>(va));
-            Tensor<E> ga = gb.copy();
+            Tensor<E> gb #= g.broadcastTo(GradTape.shapeOf<E>(va));
+            Tensor<E> ga #= gb.copy();
             this.accum(a, #ga);
             return;
         }
         if (op == Op.MEANAXIS) {
             int32 axis = this.axes[i];
             E inv = (E) 1 / (E) va.shapeAt(axis);
-            Tensor<E> gb = g.broadcastTo(GradTape.shapeOf<E>(va));
-            Tensor<E> ga = Tensor.mulScalar<E>(gb, inv);
+            Tensor<E> gb #= g.broadcastTo(GradTape.shapeOf<E>(va));
+            Tensor<E> ga #= Tensor.mulScalar<E>(gb, inv);
             this.accum(a, #ga);
             return;
         }
@@ -733,11 +733,11 @@ public final class GradTape<E extends Floating> {
         if (op == Op.RESHAPE || op == Op.TRANSPOSE) {
             Tensor<E> ga;
             if (op == Op.RESHAPE) {
-                Tensor<E> vw = g.reshape(GradTape.shapeOf<E>(va));
-                ga = vw.copy();
+                Tensor<E> vw #= g.reshape(GradTape.shapeOf<E>(va));
+                ga #= vw.copy();
             } else {
-                Tensor<E> vw = g.transpose();
-                ga = vw.copy();
+                Tensor<E> vw #= g.transpose();
+                ga #= vw.copy();
             }
             this.accum(a, #ga);
             return;
@@ -752,14 +752,14 @@ public final class GradTape<E extends Floating> {
             int32 axis = this.axes[i];
             int64 na = va.shapeAt(axis);
             if (this.needsGrad[a]) {
-                Tensor<E> vw = g.slice(axis, 0, na);
-                Tensor<E> ga = vw.copy();
+                Tensor<E> vw #= g.slice(axis, 0, na);
+                Tensor<E> ga #= vw.copy();
                 this.accum(a, #ga);
             }
             if (this.needsGrad[b]) {
                 Tensor<E> vb = this.values.get(b);
-                Tensor<E> vw = g.slice(axis, na, na + vb.shapeAt(axis));
-                Tensor<E> gb = vw.copy();
+                Tensor<E> vw #= g.slice(axis, na, na + vb.shapeAt(axis));
+                Tensor<E> gb #= vw.copy();
                 this.accum(b, #gb);
             }
             return;
@@ -834,7 +834,7 @@ public final class GradTape<E extends Floating> {
         }
         if (op == Op.DROPOUT) {
             Tensor<E> mask = this.auxT.get(this.aux0[i]);
-            Tensor<E> ga = Tensor.mul<E>(g, mask);
+            Tensor<E> ga #= Tensor.mul<E>(g, mask);
             this.accum(a, #ga);
             return;
         }
@@ -882,7 +882,7 @@ public final class GradTape<E extends Floating> {
 
     /** GELU'(x) = Φ(x) + x·φ(x), Φ the standard-normal CDF. */
     static #Tensor<E> geluBack<E extends Floating>(Tensor<E> x, Tensor<E> g) {
-        Tensor<E> out = x.copy();
+        Tensor<E> out #= x.copy();
         int64 n = Ops.countOf<E>(out);
         int64 i = 0;
         while (i < n) {
@@ -898,7 +898,7 @@ public final class GradTape<E extends Floating> {
 
     /** softmax VJP per row: s ⊙ (g − ⟨g, s⟩). */
     static #Tensor<E> softmaxBack<E extends Floating>(Tensor<E> s, Tensor<E> g) {
-        Tensor<E> out = s.copy();
+        Tensor<E> out #= s.copy();
         int64 cols = s.shapeAt(s.ndim() - 1);
         int64 rows = Ops.countOf<E>(s) / cols;
         int64 r = 0;
@@ -925,7 +925,7 @@ public final class GradTape<E extends Floating> {
 
     /** logSoftmax VJP per row: g − softmax ⊙ Σg. */
     static #Tensor<E> logSoftmaxBack<E extends Floating>(Tensor<E> ls, Tensor<E> g) {
-        Tensor<E> out = ls.copy();
+        Tensor<E> out #= ls.copy();
         int64 cols = ls.shapeAt(ls.ndim() - 1);
         int64 rows = Ops.countOf<E>(ls) / cols;
         int64 r = 0;
@@ -954,7 +954,7 @@ public final class GradTape<E extends Floating> {
      *  flattened index space treating `axis` as the varying dim. */
     static #Tensor<E> maxAxisBack<E extends Floating>(Tensor<E> x, Tensor<E> mx,
                                                       Tensor<E> g) {
-        Tensor<E> out = Tensor.zerosLike<E>(x);
+        Tensor<E> out #= Tensor.zerosLike<E>(x);
         int32 nd = x.ndim();
         // Only the 2-D cases are exercised in v3 (axis 0 or 1); generalize
         // when a consumer needs rank > 2.
@@ -1002,7 +1002,7 @@ public final class GradTape<E extends Floating> {
     /** slice backward: cotangent scattered into a zeros-of-input. */
     static #Tensor<E> sliceBack<E extends Floating>(Tensor<E> x, Tensor<E> g,
                                                     int32 axis, int64 start) {
-        Tensor<E> out = Tensor.zerosLike<E>(x);
+        Tensor<E> out #= Tensor.zerosLike<E>(x);
         if (x.ndim() != 2) {
             throw heap MlException("GradTape.slice backward: rank-2 only in v3");
         }

@@ -84,7 +84,7 @@ public final class SearchResult {
         int64 m = this.combosM.shapeAt(1);
         int64[] sh = heap int64[1];
         sh[0] = m;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 j = 0;
         while (j < m) {
             out.set1(j, this.combosM.get2(this.bestI, j));

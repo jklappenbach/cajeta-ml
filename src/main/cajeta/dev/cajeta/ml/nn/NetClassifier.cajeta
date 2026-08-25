@@ -39,9 +39,9 @@ public class NetClassifier implements Predictor {
     }
 
     public void fit(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float32> xf = Nets.toF32(x);
-        Tensor<float32> yf = Nets.toF32(y);      // class ids, one per row
-        Parameter[] ps = this.net.parameters();
+        Tensor<float32> xf #= Nets.toF32(x);
+        Tensor<float32> yf #= Nets.toF32(y);      // class ids, one per row
+        Parameter[] ps #= this.net.parameters();
         Optimizer opt = heap SGD(this.net.parameters(), this.lr, 0.0f);
         this.net.train();
         int32 e = 0;
@@ -52,7 +52,7 @@ public class NetClassifier implements Predictor {
             GradTensor logits = this.net.forward(tape, xn);
             GradTensor loss = tape.crossEntropy(logits, yf);
             tape.backward(loss);
-            Tensor<float32>[] gs = Nets.gradsOf(tape, ps);
+            Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
             opt.step(gs);
             this.net.unbindParameters();
             e = e + 1;
@@ -71,12 +71,12 @@ public class NetClassifier implements Predictor {
             throw heap MlException("NetClassifier.predict: not fitted");
         }
         this.net.eval();
-        Tensor<float32> logits = this.net.predict(Nets.toF32(x));
+        Tensor<float32> logits #= this.net.predict(Nets.toF32(x));
         int64 n = logits.shapeAt(0);
         int64 c = logits.shapeAt(1);
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 r = 0;
         while (r < n) {
             int64 best = 0;
@@ -98,7 +98,7 @@ public class NetClassifier implements Predictor {
 
     /** Accuracy, the sklearn classifier convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         int64 n = y.shapeAt(0);
         int64 hit = 0;
         int64 i = 0;

@@ -33,19 +33,19 @@ public class BoostTest {
         ya[2] = 1.0; ya[5] = 1.0; ya[6] = 1.0;
         int64[] xs = heap int64[2]; xs[0] = 8; xs[1] = 1;
         int64[] ys = heap int64[1]; ys[0] = 8;
-        Tensor<float64> x = Tensor.of<float64>(xa, xs);
-        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+        Tensor<float64> x #= Tensor.of<float64>(xa, xs);
+        Tensor<float64> y #= Tensor.of<float64>(ya, ys);
 
         AdaBoostClassifier ab = heap AdaBoostClassifier((int64) 4, 1.0);
         ab.fit(x, y);
-        Tensor<float64> al = ab.estimatorWeights();
+        Tensor<float64> al #= ab.estimatorWeights();
         Assert.equals(al.shapeAt(0), (int64) 4);
         Assert.isTrue(BoostTest.near(al.flatGet((int64) 0), 1.0986122886681098));
         Assert.isTrue(BoostTest.near(al.flatGet((int64) 1), 0.6931471805599455));
         Assert.isTrue(BoostTest.near(al.flatGet((int64) 2), 0.7884573603642703));
         Assert.isTrue(BoostTest.near(al.flatGet((int64) 3), 0.7621400520468969));
 
-        Tensor<float64> p = ab.predict(x);
+        Tensor<float64> p #= ab.predict(x);
         float64[] expect = heap float64[8];
         expect[5] = 1.0; expect[6] = 1.0; expect[7] = 1.0;
         i = 0;
@@ -69,14 +69,14 @@ public class BoostTest {
         ya[5] = 8.0; ya[6] = 8.5; ya[7] = 9.0; ya[8] = 9.5; ya[9] = 10.0;
         int64[] xs = heap int64[2]; xs[0] = 10; xs[1] = 1;
         int64[] ys = heap int64[1]; ys[0] = 10;
-        Tensor<float64> x = Tensor.of<float64>(xa, xs);
-        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+        Tensor<float64> x #= Tensor.of<float64>(xa, xs);
+        Tensor<float64> y #= Tensor.of<float64>(ya, ys);
 
         GradientBoostingRegressor gb = heap GradientBoostingRegressor(
             (int64) 3, 0.5, (int64) 2);
         gb.fit(x, y);
 
-        Tensor<float64> st = gb.stagedPredict(x);
+        Tensor<float64> st #= gb.stagedPredict(x);
         // Stage 0: 5.5 + 0.5 * t0 -> [3.375 x2, 4.0 x3, 6.875 x2, 7.5 x3].
         Assert.isTrue(st.flatGet((int64) 0) == 3.375);
         Assert.isTrue(st.flatGet((int64) 2) == 4.0);
@@ -87,7 +87,7 @@ public class BoostTest {
         Assert.isTrue(BoostTest.near(st.flatGet((int64) 13), 3.375));
         Assert.isTrue(BoostTest.near(st.flatGet((int64) 18), 8.625));
         // Final prediction pins (stage 2 == predict()).
-        Tensor<float64> p = gb.predict(x);
+        Tensor<float64> p #= gb.predict(x);
         Assert.isTrue(BoostTest.near(p.flatGet((int64) 0), 1.833333333333333));
         Assert.isTrue(BoostTest.near(p.flatGet((int64) 4), 3.1875));
         Assert.isTrue(BoostTest.near(p.flatGet((int64) 7), 8.583333333333334));

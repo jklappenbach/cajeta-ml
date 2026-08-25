@@ -40,11 +40,11 @@ public class EncoderTest {
     @Test
     public void oneHotMatchesSklearn() {
         OneHotEncoder oh = heap OneHotEncoder();
-        Tensor<float64> x = catX();
+        Tensor<float64> x #= catX();
         int64[] ys = heap int64[1];
         ys[0] = 6;
-        Tensor<float64> yDummy = Tensor.zeros<float64>(ys);
-        Tensor<float64> t = oh.fitTransform(x, yDummy);
+        Tensor<float64> yDummy #= Tensor.zeros<float64>(ys);
+        Tensor<float64> t #= oh.fitTransform(x, yDummy);
         Assert.equals(t.shapeAt(0), (int64) 6);
         Assert.equals(t.shapeAt(1), (int64) 5);
         // Row 0: [2,5] -> [0,0,1, 1,0]; row 1: [0,7] -> [1,0,0, 0,1].
@@ -66,10 +66,10 @@ public class EncoderTest {
     @Test
     public void dropFirstMatchesSklearn() {
         OneHotEncoder oh = heap OneHotEncoder(true);
-        Tensor<float64> x = catX();
+        Tensor<float64> x #= catX();
         int64[] ys = heap int64[1];
         ys[0] = 6;
-        Tensor<float64> t = oh.fitTransform(x, Tensor.zeros<float64>(ys));
+        Tensor<float64> t #= oh.fitTransform(x, Tensor.zeros<float64>(ys));
         Assert.equals(t.shapeAt(1), (int64) 3);
         // sklearn drop='first': rows [[0,1,0],[0,0,1],[1,0,0],[0,1,1],
         // [0,0,0],[1,0,1]].
@@ -95,7 +95,7 @@ public class EncoderTest {
             OneHotEncoder oh = heap OneHotEncoder();
             int64[] ys = heap int64[1];
             ys[0] = 6;
-            Tensor<float64> t0 = oh.fitTransform(catX(),
+            Tensor<float64> t0 #= oh.fitTransform(catX(),
                 Tensor.zeros<float64>(ys));
             float64[] q = heap float64[2];
             q[0] = 3.0;
@@ -103,13 +103,13 @@ public class EncoderTest {
             int64[] qs = heap int64[2];
             qs[0] = 1;
             qs[1] = 2;
-            Tensor<float64> bad = oh.transform(Tensor.of<float64>(q, qs));
+            Tensor<float64> bad #= oh.transform(Tensor.of<float64>(q, qs));
         });
 
         OneHotEncoder ig = heap OneHotEncoder(false, true);
         int64[] ys = heap int64[1];
         ys[0] = 6;
-        Tensor<float64> t0 = ig.fitTransform(catX(),
+        Tensor<float64> t0 #= ig.fitTransform(catX(),
             Tensor.zeros<float64>(ys));
         float64[] q = heap float64[2];
         q[0] = 3.0;
@@ -117,7 +117,7 @@ public class EncoderTest {
         int64[] qs = heap int64[2];
         qs[0] = 1;
         qs[1] = 2;
-        Tensor<float64> t = ig.transform(Tensor.of<float64>(q, qs));
+        Tensor<float64> t #= ig.transform(Tensor.of<float64>(q, qs));
         Assert.isTrue(t.flatGet(0) == 0.0);
         Assert.isTrue(t.flatGet(1) == 0.0);
         Assert.isTrue(t.flatGet(2) == 0.0);
@@ -131,7 +131,7 @@ public class EncoderTest {
         OrdinalEncoder oe = heap OrdinalEncoder();
         int64[] ys = heap int64[1];
         ys[0] = 6;
-        Tensor<float64> t = oe.fitTransform(catX(),
+        Tensor<float64> t #= oe.fitTransform(catX(),
             Tensor.zeros<float64>(ys));
         // sklearn: [[2,0],[0,1],[1,0],[2,1],[0,0],[1,1]].
         float64[] want = heap float64[12];
@@ -156,15 +156,15 @@ public class EncoderTest {
         o0[2] = 0.0;
         int64[] s3 = heap int64[1];
         s3[0] = 3;
-        ords[0] = Tensor.of<float64>(o0, s3);
+        ords[0] #= Tensor.of<float64>(o0, s3);
         float64[] o1 = heap float64[2];
         o1[0] = 7.0;
         o1[1] = 5.0;
         int64[] s2 = heap int64[1];
         s2[0] = 2;
-        ords[1] = Tensor.of<float64>(o1, s2);
+        ords[1] #= Tensor.of<float64>(o1, s2);
         OrdinalEncoder oe2 = heap OrdinalEncoder(#ords);
-        Tensor<float64> t2 = oe2.fitTransform(catX(),
+        Tensor<float64> t2 #= oe2.fitTransform(catX(),
             Tensor.zeros<float64>(ys));
         // [2,5]->[0,1]; [0,7]->[2,0]; [1,5]->[1,1]; [2,7]->[0,0];
         // [0,5]->[2,1]; [1,7]->[1,0].
@@ -188,16 +188,16 @@ public class EncoderTest {
     @Test
     public void pipelineAndNoLeakage() {
         // One-hot -> logistic on a target correlated with col0.
-        Tensor<float64> x = catX();
+        Tensor<float64> x #= catX();
         float64[] yd = heap float64[6];
         yd[0] = 1.0;
         yd[3] = 1.0;                       // category 2 -> positive
         int64[] ys = heap int64[1];
         ys[0] = 6;
-        Tensor<float64> y = Tensor.of<float64>(yd, ys);
+        Tensor<float64> y #= Tensor.of<float64>(yd, ys);
         Transformer oh = heap OneHotEncoder();
         Predictor lr = heap LogisticRegression(1.0, 0.0000001, (int64) 500);
-        Pipeline pl = Pipeline.of(#oh, #lr);
+        Pipeline pl #= Pipeline.of(#oh, #lr);
         pl.fit(x, y);
         Assert.isTrue(pl.score(x, y) > 0.9);
 
@@ -215,7 +215,7 @@ public class EncoderTest {
             int64[] y4 = heap int64[1];
             y4[0] = 4;
             OneHotEncoder enc = heap OneHotEncoder();
-            Tensor<float64> t0 = enc.fitTransform(
+            Tensor<float64> t0 #= enc.fitTransform(
                 Tensor.of<float64>(tr, trs), Tensor.zeros<float64>(y4));
             float64[] te = heap float64[2];
             te[0] = 2.0;                   // unseen in the training fold
@@ -223,7 +223,7 @@ public class EncoderTest {
             int64[] tes = heap int64[2];
             tes[0] = 1;
             tes[1] = 2;
-            Tensor<float64> bad = enc.transform(Tensor.of<float64>(te, tes));
+            Tensor<float64> bad #= enc.transform(Tensor.of<float64>(te, tes));
         });
     }
 }

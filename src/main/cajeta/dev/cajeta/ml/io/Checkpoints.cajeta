@@ -29,8 +29,8 @@ public final class Checkpoints {
      */
     public static #ArrayList<String> loadStateDict(Module model, StateDict sd,
                                                    boolean strict) {
-        Parameter[] ps = model.parameters();
-        ArrayList<String> names = model.parameterNames();
+        Parameter[] ps #= model.parameters();
+        ArrayList<String> names #= model.parameterNames();
         ArrayList<String> missing #= heap ArrayList<String>();
         int32 applied = 0;
         int32 i = 0;
@@ -63,12 +63,12 @@ public final class Checkpoints {
 
     /** Snapshot `model`'s parameters into a fresh checkpoint. */
     public static #StateDict saveStateDict(Module model) {
-        Parameter[] ps = model.parameters();
-        ArrayList<String> names = model.parameterNames();
+        Parameter[] ps #= model.parameters();
+        ArrayList<String> names #= model.parameterNames();
         StateDict sd = heap StateDict();
         int32 i = 0;
         while (i < names.count()) {
-            Tensor<float32> copy = ps[i].get().copy();
+            Tensor<float32> copy #= ps[i].get().copy();
             sd.put(names.get(i), #copy);
             i = i + 1;
         }
@@ -78,13 +78,13 @@ public final class Checkpoints {
     /** Read a safetensors file straight into a module. */
     public static #ArrayList<String> load(Module model, String path,
                                           boolean strict) {
-        StateDict sd = Safetensors.read(path);
+        StateDict sd #= Safetensors.read(path);
         return Checkpoints.loadStateDict(model, sd, strict);
     }
 
     /** Write a module's parameters to a safetensors file. */
     public static void save(Module model, String path) {
-        StateDict sd = Checkpoints.saveStateDict(model);
+        StateDict sd #= Checkpoints.saveStateDict(model);
         Safetensors.write(path, sd);
         return;
     }
@@ -134,8 +134,8 @@ public final class Checkpoints {
      */
     public static #ImportReport importStateDict(Module model, StateDict sd,
                                                 boolean strict) {
-        Parameter[] ps = model.parameters();
-        ArrayList<String> names = model.parameterNames();
+        Parameter[] ps #= model.parameters();
+        ArrayList<String> names #= model.parameterNames();
         ArrayList<String> missing #= heap ArrayList<String>();
         ArrayList<String> unexpected #= heap ArrayList<String>();
         boolean[] used = heap boolean[(int64) sd.count()];
@@ -190,9 +190,9 @@ public final class Checkpoints {
         int32 i = 0;
         while (i < sd.count()) {
             String name = sd.nameAt(i);
-            Tensor<float32> copy = sd.valueAt(i).copy();
+            Tensor<float32> copy #= sd.valueAt(i).copy();
             if (Checkpoints.startsWith(name, from)) {
-                String rest = name.substring(from.byteLength(),
+                String rest #= name.substring(from.byteLength(),
                     name.byteLength());
                 String renamed #= to + rest;
                 out.put(renamed, #copy);
@@ -221,14 +221,14 @@ public final class Checkpoints {
             Tensor<float32> t = sd.valueAt(i);
             if (Checkpoints.endsWith(name, ".in_proj_weight")) {
                 int64 e = t.shapeAt(1);
-                String prefix = name.substring(0,
+                String prefix #= name.substring(0,
                     name.byteLength() - (int32) 15);
                 int32 proj = 0;
                 while (proj < 3) {
                     int64[] sh = heap int64[2];
                     sh[0] = e;
                     sh[1] = e;
-                    Tensor<float32> w = Tensor.zeros<float32>(sh);
+                    Tensor<float32> w #= Tensor.zeros<float32>(sh);
                     int64 r = 0;
                     while (r < e) {
                         int64 c = 0;
@@ -248,13 +248,13 @@ public final class Checkpoints {
             } else if (Checkpoints.endsWith(name, ".in_proj_bias")) {
                 int64 e3 = t.shapeAt(0);
                 int64 e = e3 / (int64) 3;
-                String prefix = name.substring(0,
+                String prefix #= name.substring(0,
                     name.byteLength() - (int32) 13);
                 int32 proj = 0;
                 while (proj < 3) {
                     int64[] sh = heap int64[1];
                     sh[0] = e;
-                    Tensor<float32> b = Tensor.zeros<float32>(sh);
+                    Tensor<float32> b #= Tensor.zeros<float32>(sh);
                     int64 o = 0;
                     while (o < e) {
                         b.set1(o, t.get1((int64) proj * e + o));
@@ -266,25 +266,25 @@ public final class Checkpoints {
                     proj = proj + 1;
                 }
             } else if (Checkpoints.endsWith(name, ".out_proj.weight")) {
-                String prefix = name.substring(0,
+                String prefix #= name.substring(0,
                     name.byteLength() - (int32) 16);
-                Tensor<float32> vw = t.transpose();
-                Tensor<float32> copy = vw.copy();
+                Tensor<float32> vw #= t.transpose();
+                Tensor<float32> copy #= vw.copy();
                 String pn #= prefix + ".wo.weight";
                 out.put(pn, #copy);
             } else if (Checkpoints.endsWith(name, ".out_proj.bias")) {
-                String prefix = name.substring(0,
+                String prefix #= name.substring(0,
                     name.byteLength() - (int32) 14);
-                Tensor<float32> copy = t.copy();
+                Tensor<float32> copy #= t.copy();
                 String pn #= prefix + ".wo.bias";
                 out.put(pn, #copy);
             } else if (t.ndim() == 2
                        && Checkpoints.endsWith(name, ".weight")) {
-                Tensor<float32> vw = t.transpose();
-                Tensor<float32> copy = vw.copy();
+                Tensor<float32> vw #= t.transpose();
+                Tensor<float32> copy #= vw.copy();
                 out.put(name, #copy);
             } else {
-                Tensor<float32> copy = t.copy();
+                Tensor<float32> copy #= t.copy();
                 out.put(name, #copy);
             }
             i = i + 1;
@@ -338,11 +338,11 @@ public final class Checkpoints {
             String name = sd.nameAt(i);
             Tensor<float32> t = sd.valueAt(i);
             if (t.ndim() == 2 && Checkpoints.endsWith(name, ".weight")) {
-                Tensor<float32> vw = t.transpose();
-                Tensor<float32> copy = vw.copy();
+                Tensor<float32> vw #= t.transpose();
+                Tensor<float32> copy #= vw.copy();
                 out.put(name, #copy);
             } else {
-                Tensor<float32> copy = t.copy();
+                Tensor<float32> copy #= t.copy();
                 out.put(name, #copy);
             }
             i = i + 1;

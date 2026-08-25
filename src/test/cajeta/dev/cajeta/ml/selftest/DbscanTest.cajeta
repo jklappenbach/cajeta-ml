@@ -75,11 +75,11 @@ public class DbscanTest {
     // partition matches the fixture's truth exactly.
     @Test
     public void noiseIsLabelledAndCountIsDiscovered() {
-        Tensor<float64> x = Shapes.noisyBlobs((uint64) 19);
+        Tensor<float64> x #= Shapes.noisyBlobs((uint64) 19);
         DBSCAN db = heap DBSCAN(1.5, (int64) 4);
         db.fit(x, DbscanTest.ignoredY((int64) 45));
         Assert.equals((int64) 2, db.nClusters());
-        int64[] l = DbscanTest.intLabels(db.labels(), (int64) 45);
+        int64[] l #= DbscanTest.intLabels(db.labels(), (int64) 45);
         int64 i = 40;
         while (i < 45) {
             Assert.equals((int64) (0 - (int64) 1), l[i]);
@@ -93,9 +93,9 @@ public class DbscanTest {
     // K-means cannot. This is the fixture that justifies the algorithm.
     @Test
     public void recoversNestedRingsWhereKMeansFails() {
-        Tensor<float64> x = Shapes.denseCircles((uint64) 31);
-        Tensor<float64> y = DbscanTest.ignoredY((int64) 160);
-        int64[] truth = Shapes.denseCircleLabels();
+        Tensor<float64> x #= Shapes.denseCircles((uint64) 31);
+        Tensor<float64> y #= DbscanTest.ignoredY((int64) 160);
+        int64[] truth #= Shapes.denseCircleLabels();
         DBSCAN db = heap DBSCAN(0.45, (int64) 3);
         db.fit(x, y);
         Assert.equals((int64) 2, db.nClusters());
@@ -118,11 +118,11 @@ public class DbscanTest {
     // noise (unlabelled, not core).
     @Test
     public void coreBorderNoiseAreDistinguishable() {
-        Tensor<float64> x = DbscanTest.parityFixture();
+        Tensor<float64> x #= DbscanTest.parityFixture();
         DBSCAN db = heap DBSCAN(0.95, (int64) 4);
         db.fit(x, DbscanTest.ignoredY((int64) 10));
-        boolean[] core = db.coreMask();
-        int64[] l = DbscanTest.intLabels(db.labels(), (int64) 10);
+        boolean[] core #= db.coreMask();
+        int64[] l #= DbscanTest.intLabels(db.labels(), (int64) 10);
         // sklearn core set: {1, 2, 3, 5, 6, 7}.
         Assert.isFalse(core[0]);
         Assert.isTrue(core[1] && core[2] && core[3]);
@@ -142,17 +142,17 @@ public class DbscanTest {
     // k-distance curve separates the noise tail for choosing eps.
     @Test
     public void epsMinSamplesAndKDistanceBehave() {
-        Tensor<float64> x = DbscanTest.parityFixture();
-        Tensor<float64> y = DbscanTest.ignoredY((int64) 10);
+        Tensor<float64> x #= DbscanTest.parityFixture();
+        Tensor<float64> y #= DbscanTest.ignoredY((int64) 10);
         DBSCAN wide = heap DBSCAN(2.0, (int64) 2);
         wide.fit(x, y);
         Assert.equals((int64) 1, wide.nClusters());
-        int64[] lw = DbscanTest.intLabels(wide.labels(), (int64) 10);
+        int64[] lw #= DbscanTest.intLabels(wide.labels(), (int64) 10);
         Assert.equals((int64) (0 - (int64) 1), lw[9]);
         DBSCAN tight = heap DBSCAN(0.3, (int64) 2);
         tight.fit(x, y);
         Assert.equals((int64) 0, tight.nClusters());
-        int64[] lt = DbscanTest.intLabels(tight.labels(), (int64) 10);
+        int64[] lt #= DbscanTest.intLabels(tight.labels(), (int64) 10);
         int64 i = 0;
         while (i < 10) {
             Assert.equals((int64) (0 - (int64) 1), lt[i]);
@@ -160,8 +160,8 @@ public class DbscanTest {
         }
         // k-distance plot data (sorted ascending): dense points sit low,
         // the 5 noise points form the high tail — the elbow that picks eps.
-        Tensor<float64> nb = Shapes.noisyBlobs((uint64) 19);
-        float64[] kd = DBSCAN.kDistances(nb, (int64) 4);
+        Tensor<float64> nb #= Shapes.noisyBlobs((uint64) 19);
+        float64[] kd #= DBSCAN.kDistances(nb, (int64) 4);
         Assert.equals((int64) 45, (int64) kd.count());
         i = 1;
         while (i < 45) {
@@ -177,15 +177,15 @@ public class DbscanTest {
     // rejects everything under Manhattan (spacing 1.4). Oracle-confirmed.
     @Test
     public void anyMetricWorksThroughTheSeam() {
-        Tensor<float64> x = DbscanTest.diagonalFixture();
-        Tensor<float64> y = DbscanTest.ignoredY((int64) 4);
+        Tensor<float64> x #= DbscanTest.diagonalFixture();
+        Tensor<float64> y #= DbscanTest.ignoredY((int64) 4);
         DBSCAN eu = heap DBSCAN(1.0, (int64) 2);
         eu.fit(x, y);
         Assert.equals((int64) 1, eu.nClusters());
         DBSCAN ma = heap DBSCAN(1.0, (int64) 2, heap Manhattan());
         ma.fit(x, y);
         Assert.equals((int64) 0, ma.nClusters());
-        int64[] l = DbscanTest.intLabels(ma.labels(), (int64) 4);
+        int64[] l #= DbscanTest.intLabels(ma.labels(), (int64) 4);
         int64 i = 0;
         while (i < 4) {
             Assert.equals((int64) (0 - (int64) 1), l[i]);
@@ -200,10 +200,10 @@ public class DbscanTest {
     // documented sklearn behaviour, replicated rather than approximated.
     @Test
     public void matchesSklearnLabelsExactly() {
-        Tensor<float64> x = DbscanTest.parityFixture();
+        Tensor<float64> x #= DbscanTest.parityFixture();
         DBSCAN db = heap DBSCAN(0.95, (int64) 4);
         db.fit(x, DbscanTest.ignoredY((int64) 10));
-        int64[] l = DbscanTest.intLabels(db.labels(), (int64) 10);
+        int64[] l #= DbscanTest.intLabels(db.labels(), (int64) 10);
         // sklearn: [0, 0, 0, 0, 0, 1, 1, 1, 1, -1]
         int64 i = 0;
         while (i < 5) {

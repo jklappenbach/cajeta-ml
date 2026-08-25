@@ -120,7 +120,7 @@ public final class GaussianMixture implements Predictor {
                 int64[] sh = heap int64[2];
                 sh[0] = p;
                 sh[1] = p;
-                Tensor<float64> sig = Tensor.zeros<float64>(sh);
+                Tensor<float64> sig #= Tensor.zeros<float64>(sh);
                 int64 a = 0;
                 while (a < p) {
                     int64 b = 0;
@@ -136,7 +136,7 @@ public final class GaussianMixture implements Predictor {
                     }
                     a = a + 1;
                 }
-                Tensor<float64> l = LinAlg.cholesky<float64>(sig);
+                Tensor<float64> l #= LinAlg.cholesky<float64>(sig);
                 float64 ld = 0.0;
                 a = 0;
                 while (a < p) {
@@ -433,7 +433,7 @@ public final class GaussianMixture implements Predictor {
         float64[] resp = heap float64[n * k];
         if (this.initRandom) {
             Generator gen = heap Generator(this.seed);
-            Tensor<float32> u = gen.uniform(n * k);
+            Tensor<float32> u #= gen.uniform(n * k);
             int64 i = 0;
             while (i < n) {
                 float64 s = 0.0;

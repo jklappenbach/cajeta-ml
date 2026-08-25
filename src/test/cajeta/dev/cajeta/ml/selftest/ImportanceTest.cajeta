@@ -38,12 +38,12 @@ public class ImportanceTest {
         }
         int64[] xs = heap int64[2]; xs[0] = 12; xs[1] = 3;
         int64[] ys = heap int64[1]; ys[0] = 12;
-        Tensor<float64> x = Tensor.of<float64>(xa, xs);
-        Tensor<float64> y = Tensor.of<float64>(ya, ys);
+        Tensor<float64> x #= Tensor.of<float64>(xa, xs);
+        Tensor<float64> y #= Tensor.of<float64>(ya, ys);
 
         DecisionTreeClassifier c = heap DecisionTreeClassifier("gini");
         c.fit(x, y);
-        Tensor<float64> imp = c.featureImportances();
+        Tensor<float64> imp #= c.featureImportances();
         Assert.equals(imp.shapeAt(0), (int64) 3);
         Assert.isTrue(ImportanceTest.near(imp.flatGet((int64) 0), 8.0 / 11.0));
         Assert.isTrue(ImportanceTest.near(imp.flatGet((int64) 1), 3.0 / 11.0));
@@ -61,7 +61,7 @@ public class ImportanceTest {
         int64[] rys = heap int64[1]; rys[0] = 8;
         DecisionTreeRegressor r = heap DecisionTreeRegressor((int64) 2);
         r.fit(Tensor.of<float64>(ra, rs), Tensor.of<float64>(rya, rys));
-        Tensor<float64> rimp = r.featureImportances();
+        Tensor<float64> rimp #= r.featureImportances();
         Assert.isTrue(rimp.flatGet((int64) 0) == 1.0);
         return;
     }

@@ -106,7 +106,7 @@ public final class Metrics {
         int64[] sh = heap int64[2];
         sh[0] = nClasses;
         sh[1] = nClasses;
-        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        Tensor<int64> out #= Tensor.zeros<int64>(sh);
         int64 n = yTrue.shapeAt(0);
         int64 i = 0;
         while (i < n) {
@@ -147,13 +147,13 @@ public final class Metrics {
 
     /** Binary precision, positive class = 1.0 (sklearn `precision_score`). */
     public static float64 precision(Tensor<float64> yTrue, Tensor<float64> yPred) {
-        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, (int64) 2);
+        Tensor<int64> cm #= Metrics.confusionMatrix(yTrue, yPred, (int64) 2);
         return Metrics.precisionOf(cm, (int64) 1, (int64) 2);
     }
 
     /** Binary recall, positive class = 1.0 (sklearn `recall_score`). */
     public static float64 recall(Tensor<float64> yTrue, Tensor<float64> yPred) {
-        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, (int64) 2);
+        Tensor<int64> cm #= Metrics.confusionMatrix(yTrue, yPred, (int64) 2);
         return Metrics.recallOf(cm, (int64) 1, (int64) 2);
     }
 
@@ -168,7 +168,7 @@ public final class Metrics {
     /** Macro-averaged precision over `nClasses` (sklearn `average="macro"`). */
     public static float64 precisionMacro(
             Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
-        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, nClasses);
+        Tensor<int64> cm #= Metrics.confusionMatrix(yTrue, yPred, nClasses);
         float64 acc = 0.0;
         int64 c = 0;
         while (c < nClasses) {
@@ -181,7 +181,7 @@ public final class Metrics {
     /** Macro-averaged recall over `nClasses`. */
     public static float64 recallMacro(
             Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
-        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, nClasses);
+        Tensor<int64> cm #= Metrics.confusionMatrix(yTrue, yPred, nClasses);
         float64 acc = 0.0;
         int64 c = 0;
         while (c < nClasses) {
@@ -194,7 +194,7 @@ public final class Metrics {
     /** Macro-averaged F1 over `nClasses` (per-class F1s averaged, sklearn's definition). */
     public static float64 f1Macro(
             Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
-        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, nClasses);
+        Tensor<int64> cm #= Metrics.confusionMatrix(yTrue, yPred, nClasses);
         float64 acc = 0.0;
         int64 c = 0;
         while (c < nClasses) {
@@ -315,7 +315,7 @@ public final class Metrics {
                 + "1 cluster or n clusters (need 2 <= k <= n-1)");
         }
         Metric eu = heap Euclidean();
-        Tensor<float64> dm = Distance.pdist(x, eu);
+        Tensor<float64> dm #= Distance.pdist(x, eu);
         int64[] size = heap int64[k];
         int64 i = 0;
         while (i < n) {
@@ -372,7 +372,7 @@ public final class Metrics {
     /** Mean silhouette (§8.1); throws on the §8.2 degenerate cases. */
     public static float64 silhouetteScore(Tensor<float64> x,
                                           Tensor<float64> labels) {
-        Tensor<float64> s = Metrics.silhouetteSamples(x, labels);
+        Tensor<float64> s #= Metrics.silhouetteSamples(x, labels);
         int64 n = s.shapeAt(0);
         float64 acc = 0.0;
         int64 i = 0;
@@ -694,9 +694,9 @@ public final class Metrics {
         cs[0] = m + 1;
         int64[] ts = heap int64[1];
         ts[0] = m;
-        Tensor<float64> prec = Tensor.zeros<float64>(cs);
-        Tensor<float64> rec = Tensor.zeros<float64>(cs);
-        Tensor<float64> thr = Tensor.zeros<float64>(ts);
+        Tensor<float64> prec #= Tensor.zeros<float64>(cs);
+        Tensor<float64> rec #= Tensor.zeros<float64>(cs);
+        Tensor<float64> thr #= Tensor.zeros<float64>(ts);
         int64 t = 0;
         while (t < m) {
             int64 tp = 0;
@@ -730,7 +730,7 @@ public final class Metrics {
      */
     public static float64 averagePrecision(Tensor<float64> yTrue,
                                            Tensor<float64> scores) {
-        PrCurve c = Metrics.precisionRecallCurve(yTrue, scores);
+        PrCurve c #= Metrics.precisionRecallCurve(yTrue, scores);
         float64 acc = 0.0;
         int64 i = 0;
         while (i < c.points() - 1) {
@@ -748,13 +748,13 @@ public final class Metrics {
      */
     public static #ClassificationReport classificationReport(
             Tensor<float64> yTrue, Tensor<float64> yPred, int64 nClasses) {
-        Tensor<int64> cm = Metrics.confusionMatrix(yTrue, yPred, nClasses);
+        Tensor<int64> cm #= Metrics.confusionMatrix(yTrue, yPred, nClasses);
         int64[] ks = heap int64[1];
         ks[0] = nClasses;
-        Tensor<float64> prec = Tensor.zeros<float64>(ks);
-        Tensor<float64> rec = Tensor.zeros<float64>(ks);
-        Tensor<float64> f1 = Tensor.zeros<float64>(ks);
-        Tensor<int64> sup = Tensor.zeros<int64>(ks);
+        Tensor<float64> prec #= Tensor.zeros<float64>(ks);
+        Tensor<float64> rec #= Tensor.zeros<float64>(ks);
+        Tensor<float64> f1 #= Tensor.zeros<float64>(ks);
+        Tensor<int64> sup #= Tensor.zeros<int64>(ks);
         int64 total = 0;
         int64 c = 0;
         while (c < nClasses) {
@@ -790,7 +790,7 @@ public final class Metrics {
         int64 n = x.shapeAt(0);
         int64[] ys = heap int64[1];
         ys[0] = n;
-        Tensor<float64> y = Tensor.zeros<float64>(ys);
+        Tensor<float64> y #= Tensor.zeros<float64>(ys);
         float64[] out = heap float64[kMax];
         int64 k = 1;
         while (k <= kMax) {

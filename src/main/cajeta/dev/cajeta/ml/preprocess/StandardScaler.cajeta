@@ -29,8 +29,8 @@ public final class StandardScaler implements Transformer {
         int64 p = x.shapeAt(1);
         int64[] sh = heap int64[1];
         sh[0] = p;
-        Tensor<float64> mu = Tensor.zeros<float64>(sh);
-        Tensor<float64> sc = Tensor.zeros<float64>(sh);
+        Tensor<float64> mu #= Tensor.zeros<float64>(sh);
+        Tensor<float64> sc #= Tensor.zeros<float64>(sh);
         int64 j = 0;
         while (j < p) {
             float64 acc = 0.0;
@@ -69,7 +69,7 @@ public final class StandardScaler implements Transformer {
         }
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
-        Tensor<float64> out = x.copy();
+        Tensor<float64> out #= x.copy();
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
@@ -90,7 +90,7 @@ public final class StandardScaler implements Transformer {
         }
         int64 n = x.shapeAt(0);
         int64 p = x.shapeAt(1);
-        Tensor<float64> out = x.copy();
+        Tensor<float64> out #= x.copy();
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
@@ -106,7 +106,7 @@ public final class StandardScaler implements Transformer {
 
     public #Tensor<float64> fitTransform(Tensor<float64> x, Tensor<float64> y) {
         this.fit(x, y);
-        Tensor<float64> out = this.transform(x);
+        Tensor<float64> out #= this.transform(x);
         return #out;
     }
 }

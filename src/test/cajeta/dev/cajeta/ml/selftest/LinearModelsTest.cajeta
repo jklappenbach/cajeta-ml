@@ -16,8 +16,8 @@ public class LinearModelsTest {
     @Test
     public void linearRegressionMatchesSklearn() {
         LinearRegression lr = heap LinearRegression(true);
-        Tensor<float64> x = Fixtures.x20();
-        Tensor<float64> y = Fixtures.y1();
+        Tensor<float64> x #= Fixtures.x20();
+        Tensor<float64> y #= Fixtures.y1();
         lr.fit(x, y);
         Tensor<float64> cm = lr.coefMatrix();
         Assert.isTrue(Fixtures.close(cm.get2(0, 0), 0.4984962406015034, 0.000000001));
@@ -39,8 +39,8 @@ public class LinearModelsTest {
     @Test
     public void linearRegressionMultiOutput() {
         LinearRegression lr = heap LinearRegression(true);
-        Tensor<float64> x = Fixtures.x20();
-        Tensor<float64> ym = Fixtures.yPair();
+        Tensor<float64> x #= Fixtures.x20();
+        Tensor<float64> ym #= Fixtures.yPair();
         lr.fit(x, ym);
         Tensor<float64> cm = lr.coefMatrix();
         Assert.isTrue(Fixtures.close(cm.get2(0, 0), 0.4984962406015034, 0.000000001));
@@ -50,7 +50,7 @@ public class LinearModelsTest {
         Tensor<float64> ic = lr.interceptVector();
         Assert.isTrue(Fixtures.close(ic.get1(0), 2.001428571428572, 0.000000001));
         Assert.isTrue(Fixtures.close(ic.get1(1), -1.0014285714285716, 0.000000001));
-        Tensor<float64> pred = lr.predict(x);
+        Tensor<float64> pred #= lr.predict(x);
         Assert.equals((int64) 2, (int64) pred.ndim());
         Assert.equals((int64) 20, pred.shapeAt(0));
         Assert.equals((int64) 2, pred.shapeAt(1));
@@ -59,12 +59,12 @@ public class LinearModelsTest {
     @Test
     public void linearRegressionHeldOutPredictScore() {
         LinearRegression lr = heap LinearRegression(true);
-        Tensor<float64> xtr = Fixtures.x20Head((int64) 15);
-        Tensor<float64> ytr = Fixtures.y1Head((int64) 15);
+        Tensor<float64> xtr #= Fixtures.x20Head((int64) 15);
+        Tensor<float64> ytr #= Fixtures.y1Head((int64) 15);
         lr.fit(xtr, ytr);
-        Tensor<float64> xte = Fixtures.x20Tail((int64) 15);
-        Tensor<float64> yte = Fixtures.y1Tail((int64) 15);
-        Tensor<float64> pred = lr.predict(xte);
+        Tensor<float64> xte #= Fixtures.x20Tail((int64) 15);
+        Tensor<float64> yte #= Fixtures.y1Tail((int64) 15);
+        Tensor<float64> pred #= lr.predict(xte);
         Assert.isTrue(Fixtures.close(pred.get1(0), -0.6202307692307696, 0.000000001));
         Assert.isTrue(Fixtures.close(pred.get1(1), -1.0336923076923088, 0.000000001));
         Assert.isTrue(Fixtures.close(pred.get1(2), -1.4769728506787332, 0.000000001));
@@ -76,8 +76,8 @@ public class LinearModelsTest {
     @Test
     public void linearRegressionRankDeficientMinNorm() {
         LinearRegression lr = heap LinearRegression(false);
-        Tensor<float64> a = Fixtures.a5();
-        Tensor<float64> b = Fixtures.b5();
+        Tensor<float64> a #= Fixtures.a5();
+        Tensor<float64> b #= Fixtures.b5();
         lr.fit(a, b);
         Tensor<float64> cm = lr.coefMatrix();
         Assert.isTrue(Fixtures.close(cm.get2(0, 0), 0.19272727272727275, 0.000000001));
@@ -87,8 +87,8 @@ public class LinearModelsTest {
 
     @Test
     public void ridgeCholeskyMatchesSklearnAcrossAlphas() {
-        Tensor<float64> x = Fixtures.x20();
-        Tensor<float64> y = Fixtures.y1();
+        Tensor<float64> x #= Fixtures.x20();
+        Tensor<float64> y #= Fixtures.y1();
         Ridge r1 = heap Ridge(0.1, true, false);
         r1.fit(x, y);
         Assert.isTrue(Fixtures.close(r1.coefMatrix().get2(0, 0), 0.28514526713542043, 0.000000001));
@@ -108,8 +108,8 @@ public class LinearModelsTest {
 
     @Test
     public void ridgeAlphaZeroAgreesWithOlsAndSolversAgree() {
-        Tensor<float64> x = Fixtures.x20();
-        Tensor<float64> y = Fixtures.y1();
+        Tensor<float64> x #= Fixtures.x20();
+        Tensor<float64> y #= Fixtures.y1();
         Ridge r0 = heap Ridge(0.0, true, false);
         r0.fit(x, y);
         LinearRegression lr = heap LinearRegression(true);
@@ -129,8 +129,8 @@ public class LinearModelsTest {
     public void ridgeSvdSurvivesRankDeficientGram() {
         // the near-singular Gram case the svd solver exists for
         Ridge r = heap Ridge(1.0, false, true);
-        Tensor<float64> a = Fixtures.a5();
-        Tensor<float64> b = Fixtures.b5();
+        Tensor<float64> a #= Fixtures.a5();
+        Tensor<float64> b #= Fixtures.b5();
         r.fit(a, b);
         Assert.isTrue(Fixtures.close(r.coefMatrix().get2(0, 0), 0.19202898550724642, 0.000000001));
         Assert.isTrue(Fixtures.close(r.coefMatrix().get2(1, 0), 0.3840579710144928, 0.000000001));

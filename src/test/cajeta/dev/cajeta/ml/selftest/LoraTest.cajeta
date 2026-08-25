@@ -74,7 +74,7 @@ public class LoraTest {
         int64[] xs = heap int64[2];
         xs[0] = 2;
         xs[1] = 4;
-        Tensor<float32> x = Tensor.zeros<float32>(xs);
+        Tensor<float32> x #= Tensor.zeros<float32>(xs);
         int64 f = 0;
         while (f < 8) {
             x.flatSet(f, LoraTest.xAt(f));
@@ -103,8 +103,8 @@ public class LoraTest {
      */
     @Test
     public void zeroInitMakesTheAdapterANoOp() {
-        LoraLinear l = LoraTest.pinnedLayer();
-        Tensor<float32> out = l.predict(LoraTest.pinnedInput());
+        LoraLinear l #= LoraTest.pinnedLayer();
+        Tensor<float32> out #= l.predict(LoraTest.pinnedInput());
         float32[] base = [0.72500002f, -0.32499999f, 0.67500001f,
                           -1.02499998f, 0.92500001f, 0.55000001f];
         LoraTest.checkFlat(out, base, 0.0002f);
@@ -112,10 +112,10 @@ public class LoraTest {
 
     @Test
     public void adaptedForwardMatchesTorch() {
-        LoraLinear l = LoraTest.pinnedLayer();
+        LoraLinear l #= LoraTest.pinnedLayer();
         LoraTest.fillB(l);
         Assert.isTrue(l.scaling() == 2.0f);          // alpha 4 / rank 2
-        Tensor<float32> out = l.predict(LoraTest.pinnedInput());
+        Tensor<float32> out #= l.predict(LoraTest.pinnedInput());
         float32[] want = [0.78750002f, -0.38749999f, 0.73750001f,
                           -1.14999998f, 0.86250001f, 0.80000001f];
         LoraTest.checkFlat(out, want, 0.0002f);
@@ -125,10 +125,10 @@ public class LoraTest {
      *  layer computes the SAME function with no adapter cost. */
     @Test
     public void mergeEqualsTheAdaptedForward() {
-        LoraLinear l = LoraTest.pinnedLayer();
+        LoraLinear l #= LoraTest.pinnedLayer();
         LoraTest.fillB(l);
-        Tensor<float32> x = LoraTest.pinnedInput();
-        Tensor<float32> before = l.predict(x);
+        Tensor<float32> x #= LoraTest.pinnedInput();
+        Tensor<float32> before #= l.predict(x);
 
         Assert.isFalse(l.isMerged());
         l.merge();
@@ -140,7 +140,7 @@ public class LoraTest {
         LoraTest.checkFlat(l.weightParam().get(), mergedW, 0.0002f);
 
         // and the forward is unchanged by merging
-        Tensor<float32> after = l.predict(x);
+        Tensor<float32> after #= l.predict(x);
         int64 f = 0;
         while (f < 6) {
             float32 d = after.flatGet(f) - before.flatGet(f);
@@ -154,7 +154,7 @@ public class LoraTest {
      *  silently repeated. */
     @Test
     public void doubleMergeIsRefused() {
-        LoraLinear l = LoraTest.pinnedLayer();
+        LoraLinear l #= LoraTest.pinnedLayer();
         LoraTest.fillB(l);
         l.merge();
         boolean threw = false;
@@ -170,7 +170,7 @@ public class LoraTest {
      *  none — the two halves of "train the adapter only". */
     @Test
     public void adapterGradientsMatchTorchAndBaseIsFrozen() {
-        LoraLinear l = LoraTest.pinnedLayer();
+        LoraLinear l #= LoraTest.pinnedLayer();
         LoraTest.fillB(l);
         l.freezeBase();
 
@@ -179,7 +179,7 @@ public class LoraTest {
         GradTensor x = tape.leaf(LoraTest.pinnedInput(), false);
         GradTensor y = l.forward(tape, x);
         // the generator's weighted scalar
-        Tensor<float32> kv = tape.valueOf(y).copy();
+        Tensor<float32> kv #= tape.valueOf(y).copy();
         int64 i = 0;
         while (i < 6) {
             kv.flatSet(i, (float32) (i % 3 + 1) * 0.5f);
@@ -208,7 +208,7 @@ public class LoraTest {
     @Test
     public void adapterIsSmallerThanTheWeightItAdapts() {
         LoraLinear l = heap LoraLinear(64, 64, 2, 8.0f, 3L);
-        Parameter[] ps = l.parameters();
+        Parameter[] ps #= l.parameters();
         // weight, bias, loraA, loraB — inherited fields are collected too
         Assert.equals(4, (int64) ps.count());
         int64 baseCount = 64 * 64;
@@ -221,7 +221,7 @@ public class LoraTest {
     @Test
     public void attentionProjectionsCarryAdapters() {
         MultiheadAttention att = heap MultiheadAttention(4, 2, 2, 4.0f, 9L);
-        ArrayList<String> names = att.parameterNames();
+        ArrayList<String> names #= att.parameterNames();
         // the wrapper adds a level: the frozen projection is
         // `wq.base.weight`, the adapter `wq.loraA`
         boolean sawBase = false;
@@ -240,8 +240,8 @@ public class LoraTest {
 
         // freezing leaves only the adapters trainable
         att.freezeBaseProjections();
-        Parameter[] ps = att.parameters();
-        ArrayList<String> pn = att.parameterNames();
+        Parameter[] ps #= att.parameters();
+        ArrayList<String> pn #= att.parameterNames();
         i = 0;
         while (i < pn.count()) {
             String n = pn.get(i);
@@ -262,14 +262,14 @@ public class LoraTest {
         MultiheadAttention lora = heap MultiheadAttention(4, 2, 2, 4.0f, 9L);
         int64[] xs = heap int64[3];
         xs[0] = 2; xs[1] = 3; xs[2] = 4;
-        Tensor<float32> x = Tensor.zeros<float32>(xs);
+        Tensor<float32> x #= Tensor.zeros<float32>(xs);
         int64 f = 0;
         while (f < 24) {
             x.flatSet(f, LoraTest.xAt(f));
             f = f + 1;
         }
-        Tensor<float32> a = plain.predict(x);
-        Tensor<float32> b = lora.predict(x);
+        Tensor<float32> a #= plain.predict(x);
+        Tensor<float32> b #= lora.predict(x);
         f = 0;
         while (f < 24) {
             float32 d = a.flatGet(f) - b.flatGet(f);
@@ -294,14 +294,14 @@ public class LoraTest {
         net.add(#head);
 
         // load layers.0.* from the torch checkpoint into this layer
-        StateDict sd = PtReader.read(
+        StateDict sd #= PtReader.read(
             "src/test/resources/checkpoints/mlp_state.pt");
         StateDict mapped = heap StateDict();
-        Tensor<float32> w = sd.get("layers.0.weight").copy();
+        Tensor<float32> w #= sd.get("layers.0.weight").copy();
         mapped.put("0.base.weight", #w);
-        Tensor<float32> b = sd.get("layers.0.bias").copy();
+        Tensor<float32> b #= sd.get("layers.0.bias").copy();
         mapped.put("0.base.bias", #b);
-        ArrayList<String> missing = Checkpoints.loadStateDict(net, mapped, false);
+        ArrayList<String> missing #= Checkpoints.loadStateDict(net, mapped, false);
         // the adapters are legitimately absent from a base checkpoint
         Assert.equals(2, (int64) missing.count());
         Assert.equals("0.loraA", missing.get(0));
@@ -311,14 +311,14 @@ public class LoraTest {
         if (m instanceof LoraLinear ll) { wrapped = ll; }
         Assert.isTrue(wrapped != null);
         wrapped.freezeBase();
-        Tensor<float32> baseBefore = wrapped.weightParam().get().copy();
+        Tensor<float32> baseBefore #= wrapped.weightParam().get().copy();
 
         Optimizer opt = heap SGD(net.parameters(), 0.05f, 0.0f);
         BackpropTrainer tr = heap BackpropTrainer(net, #opt, Loss.MSE, 0.0f);
         int64[] xs = heap int64[2];
         xs[0] = 4;
         xs[1] = 3;
-        Tensor<float32> x = Tensor.zeros<float32>(xs);
+        Tensor<float32> x #= Tensor.zeros<float32>(xs);
         int64 f = 0;
         while (f < 12) {
             x.flatSet(f, LoraTest.xAt(f));
@@ -327,8 +327,8 @@ public class LoraTest {
         int64[] ys = heap int64[2];
         ys[0] = 4;
         ys[1] = 4;
-        Tensor<float32> y = Tensor.full<float32>(ys, 0.25f);
-        Parameter[] ps = net.parameters();
+        Tensor<float32> y #= Tensor.full<float32>(ys, 0.25f);
+        Parameter[] ps #= net.parameters();
         float64 first = tr.stepOn(x, y, ps);
         int32 s = 0;
         float64 last = first;
@@ -349,9 +349,9 @@ public class LoraTest {
         Assert.isTrue(wrapped.bParam().get().flatGet(0) != 0.0f);
 
         // and merging preserves the fine-tuned function
-        Tensor<float32> beforeMerge = net.predict(x);
+        Tensor<float32> beforeMerge #= net.predict(x);
         wrapped.merge();
-        Tensor<float32> afterMerge = net.predict(x);
+        Tensor<float32> afterMerge #= net.predict(x);
         f = 0;
         while (f < 16) {
             float32 d = afterMerge.flatGet(f) - beforeMerge.flatGet(f);

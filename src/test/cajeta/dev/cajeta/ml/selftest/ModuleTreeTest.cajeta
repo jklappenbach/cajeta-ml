@@ -60,7 +60,7 @@ public class ModuleTreeTest {
     @Test
     public void namedParametersMatchTorchStateDictKeys() {
         Net net = heap Net();
-        ArrayList<String> names = net.parameterNames();
+        ArrayList<String> names #= net.parameterNames();
         // torch state_dict() key order for the same tree — named fields in
         // declaration order, container children by INDEX.
         Assert.equals(12, (int64) names.count());
@@ -81,8 +81,8 @@ public class ModuleTreeTest {
     @Test
     public void parameterNamesAlignWithParameterOrder() {
         Net net = heap Net();
-        Parameter[] ps = net.parameters();
-        ArrayList<String> names = net.parameterNames();
+        Parameter[] ps #= net.parameters();
+        ArrayList<String> names #= net.parameterNames();
         Assert.equals((int64) ps.count(), (int64) names.count());
         // names.get(i) describes ps[i]: stem.weight is (3,4), stem.bias (4,)
         Assert.isTrue(ps[0].get().ndim() == 2);
@@ -98,7 +98,7 @@ public class ModuleTreeTest {
         BatchNorm2d bn = heap BatchNorm2d(3, 0.00001, 0.1);
         Assert.equals(2, (int64) bn.parameters().count());   // weight, bias
         Assert.equals(2, (int64) bn.buffers().count());      // mean, var
-        ArrayList<String> names = bn.parameterNames();
+        ArrayList<String> names #= bn.parameterNames();
         Assert.equals("weight", names.get(0));
         Assert.equals("bias", names.get(1));
     }
@@ -128,10 +128,10 @@ public class ModuleTreeTest {
         int64[] s = heap int64[2];
         s[0] = 4;
         s[1] = 8;
-        Tensor<float32> x = Tensor.full<float32>(s, 1.0f);
+        Tensor<float32> x #= Tensor.full<float32>(s, 1.0f);
 
         d.eval();
-        Tensor<float32> ev = d.predict(x);
+        Tensor<float32> ev #= d.predict(x);
         int64 i = 0;
         while (i < 32) {
             Assert.isTrue(ev.flatGet(i) == 1.0f);
@@ -140,7 +140,7 @@ public class ModuleTreeTest {
 
         d.train();
         d.resetStream();
-        Tensor<float32> tr = d.predict(x);
+        Tensor<float32> tr #= d.predict(x);
         int64 zeros = 0;
         i = 0;
         while (i < 32) {
@@ -161,9 +161,9 @@ public class ModuleTreeTest {
         int64[] s = heap int64[2];
         s[0] = 4;
         s[1] = 8;
-        Tensor<float32> x = Tensor.full<float32>(s, 1.0f);
-        Tensor<float32> a = d.predict(x);
-        Tensor<float32> b = d.predict(x);
+        Tensor<float32> x #= Tensor.full<float32>(s, 1.0f);
+        Tensor<float32> a #= d.predict(x);
+        Tensor<float32> b #= d.predict(x);
         boolean differs = false;
         int64 i = 0;
         while (i < 32) {
@@ -172,7 +172,7 @@ public class ModuleTreeTest {
         }
         Assert.isTrue(differs);
         d.resetStream();
-        Tensor<float32> again = d.predict(x);
+        Tensor<float32> again #= d.predict(x);
         i = 0;
         while (i < 32) {
             Assert.isTrue(again.flatGet(i) == a.flatGet(i));
@@ -237,7 +237,7 @@ public class ModuleTreeTest {
         s[1] = 40;
         // kaiming normal: std = sqrt(2/fanIn); check the sample std is in
         // the right neighbourhood (1600 draws)
-        Tensor<float32> k = Init.kaimingNormal(s, 8, 11L);
+        Tensor<float32> k #= Init.kaimingNormal(s, 8, 11L);
         float64 sum = 0.0;
         float64 sq = 0.0;
         int64 n = 1600;
@@ -255,7 +255,7 @@ public class ModuleTreeTest {
         Assert.isTrue(std > want * 0.85 && std < want * 1.15);
 
         // xavier uniform: bounded by sqrt(6/(fanIn+fanOut))
-        Tensor<float32> x = Init.xavierUniform(s, 8, 4, 12L);
+        Tensor<float32> x #= Init.xavierUniform(s, 8, 4, 12L);
         float32 bound = Math.sqrt(6.0f / 12.0f);
         i = 0;
         while (i < n) {
@@ -300,7 +300,7 @@ public class ModuleTreeTest {
         int64[] s = heap int64[2];
         s[0] = 2;
         s[1] = 3;
-        Tensor<float32> t = Tensor.zeros<float32>(s);
+        Tensor<float32> t #= Tensor.zeros<float32>(s);
         int64 f = 0;
         while (f < 6) {
             t.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
@@ -313,7 +313,7 @@ public class ModuleTreeTest {
         int64[] s = heap int64[2];
         s[0] = 2;
         s[1] = 2;
-        Tensor<float32> t = Tensor.zeros<float32>(s);
+        Tensor<float32> t #= Tensor.zeros<float32>(s);
         t.flatSet(0, 0.5f);
         t.flatSet(1, -0.5f);
         t.flatSet(2, -0.25f);
@@ -330,7 +330,7 @@ public class ModuleTreeTest {
         net.bindParameters(tape);
         int64[] xs = heap int64[4];
         xs[0] = 2; xs[1] = 2; xs[2] = 4; xs[3] = 4;
-        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        Tensor<float32> xv #= Tensor.zeros<float32>(xs);
         int64 f = 0;
         while (f < 64) {
             xv.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
@@ -345,7 +345,7 @@ public class ModuleTreeTest {
         GradTensor loss = tape.sum(y);
         tape.backward(loss);
         // every parameter in the stack received a gradient of its own shape
-        Parameter[] ps = net.parameters();
+        Parameter[] ps #= net.parameters();
         int32 i = 0;
         while (i < (int32) ps.count()) {
             Tensor<float32> g = tape.gradOf(ps[i].node());
@@ -361,7 +361,7 @@ public class ModuleTreeTest {
     public void attentionMatchesTorchEndToEnd() {
         MultiheadAttention att = heap MultiheadAttention(4, 2, 9L);
         // overwrite the seeded init with the generator's explicit weights
-        Parameter[] ps = att.parameters();
+        Parameter[] ps #= att.parameters();
         // parameters(): wq.weight, wq.bias, wk.*, wv.*, wo.*
         ModuleTreeTest.fillW(ps[0].get(), 0);
         ModuleTreeTest.fillW(ps[2].get(), 1);
@@ -372,7 +372,7 @@ public class ModuleTreeTest {
         att.bindParameters(tape);
         int64[] xs = heap int64[3];
         xs[0] = 2; xs[1] = 3; xs[2] = 4;
-        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        Tensor<float32> xv #= Tensor.zeros<float32>(xs);
         int64 f = 0;
         while (f < 24) {
             xv.flatSet(f, (float32) (f % 7) * 0.25f - 0.75f);
@@ -390,7 +390,7 @@ public class ModuleTreeTest {
         ModuleTreeTest.checkFlat(tape.valueOf(y), po, 0.0005f);
 
         // weighted backward, the generator's K
-        Tensor<float32> kv = tape.valueOf(y).copy();
+        Tensor<float32> kv #= tape.valueOf(y).copy();
         int64 i = 0;
         while (i < 24) {
             kv.flatSet(i, (float32) (i % 3 + 1) * 0.5f);
@@ -436,10 +436,10 @@ public class ModuleTreeTest {
         int64[] xs = heap int64[2];
         xs[0] = 10;
         xs[1] = 1;
-        Tensor<float64> x = Tensor.zeros<float64>(xs);
+        Tensor<float64> x #= Tensor.zeros<float64>(xs);
         int64[] ys = heap int64[1];
         ys[0] = 10;
-        Tensor<float64> y = Tensor.zeros<float64>(ys);
+        Tensor<float64> y #= Tensor.zeros<float64>(ys);
         int64 i = 0;
         while (i < 10) {
             float64 v = (float64) i * 0.1;
@@ -450,7 +450,7 @@ public class ModuleTreeTest {
         Assert.isFalse(reg.isFitted());
         reg.fit(x, y);
         Assert.isTrue(reg.isFitted());
-        Tensor<float64> p = reg.predict(x);
+        Tensor<float64> p #= reg.predict(x);
         Assert.isTrue(p.ndim() == 1);
         Assert.isTrue(p.shapeAt(0) == 10);
         // a relationship this simple should fit well
@@ -468,10 +468,10 @@ public class ModuleTreeTest {
         int64[] xs = heap int64[2];
         xs[0] = 8;
         xs[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(xs);
+        Tensor<float64> x #= Tensor.zeros<float64>(xs);
         int64[] ys = heap int64[1];
         ys[0] = 8;
-        Tensor<float64> y = Tensor.zeros<float64>(ys);
+        Tensor<float64> y #= Tensor.zeros<float64>(ys);
         // class 0 near (-1,-1), class 1 near (1,1)
         int64 i = 0;
         while (i < 8) {
@@ -484,7 +484,7 @@ public class ModuleTreeTest {
         }
         clf.fit(x, y);
         Assert.isTrue(clf.score(x, y) > 0.99);
-        Tensor<float64> p = clf.predict(x);
+        Tensor<float64> p #= clf.predict(x);
         Assert.isTrue(p.flatGet(0) == 0.0);
         Assert.isTrue(p.flatGet(7) == 1.0);
     }

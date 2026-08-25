@@ -34,9 +34,9 @@ public final class Digits {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = Digits.PIXELS;
-        Tensor<float32> x = Tensor.zeros<float32>(sh);
+        Tensor<float32> x #= Tensor.zeros<float32>(sh);
         Generator g = heap Generator(seed);
-        Tensor<float32> u = g.uniform(n * Digits.PIXELS);
+        Tensor<float32> u #= g.uniform(n * Digits.PIXELS);
         int64 i = 0;
         while (i < n) {
             int64 cls = i / nPerClass;
@@ -59,7 +59,7 @@ public final class Digits {
         int64 n = nPerClass * classes;
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float32> y = Tensor.zeros<float32>(sh);
+        Tensor<float32> y #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
             y.flatSet(i, (float32) (i / nPerClass));

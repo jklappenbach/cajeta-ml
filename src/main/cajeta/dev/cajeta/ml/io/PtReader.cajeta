@@ -134,7 +134,7 @@ public final class PtReader {
                     + "method " + method + "; this reader accepts STORED "
                     + "entries only (torch does not emit compressed ones)");
             }
-            String name = PtReader.asciiOf(raw, p + 46, nameLen);
+            String name #= PtReader.asciiOf(raw, p + 46, nameLen);
             // the local header's own name/extra lengths locate the data
             int64 lNameLen = PtReader.u16(raw, localAt + 26);
             int64 lExtraLen = PtReader.u16(raw, localAt + 28);

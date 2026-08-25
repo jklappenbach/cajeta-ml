@@ -44,7 +44,7 @@ final class Bagging {
     Bagging(#EstimatorFactory factory, Tensor<float64> baseParams,
             int64 nEstimators, uint64 seed) {
         this.factory #= factory;
-        Tensor<float64> bp = baseParams.copy();
+        Tensor<float64> bp #= baseParams.copy();
         this.baseParams #= bp;
         this.nEstimators = nEstimators;
         this.seed = seed;
@@ -79,16 +79,16 @@ final class Bagging {
         int64 e = 0;
         while (e < this.nEstimators) {
             Generator g = heap Generator(this.seed + (uint64) e);
-            Tensor<int64> rows = g.integers(0, n, nSamp);
+            Tensor<int64> rows #= g.integers(0, n, nSamp);
             Tensor<int64> feats;
             if (this.kf == nf && !this.bootstrapFeatures) {
                 int64[] ida = heap int64[nf];
                 int64 fi = 0;
                 while (fi < nf) { ida[fi] = fi; fi = fi + 1; }
                 int64[] idsh = heap int64[1]; idsh[0] = nf;
-                feats = Tensor.of<int64>(ida, idsh);
+                feats #= Tensor.of<int64>(ida, idsh);
             } else {
-                feats = g.choice(nf, this.kf, this.bootstrapFeatures);
+                feats #= g.choice(nf, this.kf, this.bootstrapFeatures);
             }
             int64 fi2 = 0;
             while (fi2 < this.kf) {
@@ -112,10 +112,10 @@ final class Bagging {
             }
             int64[] xsh = heap int64[2]; xsh[0] = nSamp; xsh[1] = this.kf;
             int64[] ysh = heap int64[1]; ysh[0] = nSamp;
-            Tensor<float64> xm = Tensor.of<float64>(xa, xsh);
-            Tensor<float64> ym = Tensor.of<float64>(ya, ysh);
+            Tensor<float64> xm #= Tensor.of<float64>(xa, xsh);
+            Tensor<float64> ym #= Tensor.of<float64>(ya, ysh);
 
-            Predictor p = this.factory.create(this.baseParams);
+            Predictor p #= this.factory.create(this.baseParams);
             p.fit(xm, ym);
             ms.add(heap BagMember(#p));
             e = e + 1;
@@ -144,7 +144,7 @@ final class Bagging {
             r = r + 1;
         }
         int64[] sh = heap int64[2]; sh[0] = n; sh[1] = this.kf;
-        Tensor<float64> xm = Tensor.of<float64>(xa, sh);
+        Tensor<float64> xm #= Tensor.of<float64>(xa, sh);
         BagMember mb = this.members.get((int32) e);
         return mb.est.predict(xm);
     }
@@ -162,7 +162,7 @@ final class Bagging {
             int64 kmax = 0;
             int64 e = 0;
             while (e < this.nEstimators) {
-                Tensor<float64> pe = this.memberPredict(e, x);
+                Tensor<float64> pe #= this.memberPredict(e, x);
                 int64 r = 0;
                 while (r < n) {
                     preds[e * n + r] = pe.flatGet(r);
@@ -193,7 +193,7 @@ final class Bagging {
         } else {
             int64 e = 0;
             while (e < this.nEstimators) {
-                Tensor<float64> pe = this.memberPredict(e, x);
+                Tensor<float64> pe #= this.memberPredict(e, x);
                 int64 r = 0;
                 while (r < n) { acc[r] = acc[r] + pe.flatGet(r); r = r + 1; }
                 e = e + 1;
@@ -217,7 +217,7 @@ final class Bagging {
         int64 kmax = 1;
         int64 e = 0;
         while (e < this.nEstimators) {
-            Tensor<float64> pe = this.memberPredict(e, x);
+            Tensor<float64> pe #= this.memberPredict(e, x);
             int64 r = 0;
             while (r < n) {
                 preds[e * n + r] = pe.flatGet(r);

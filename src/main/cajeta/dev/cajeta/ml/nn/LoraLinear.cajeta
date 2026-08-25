@@ -120,7 +120,7 @@ public class LoraLinear extends Module {
                                      this.loraB.node());
         int64[] one = heap int64[1];
         one[0] = 1;
-        Tensor<float32> s = Tensor.full<float32>(one, this.scale);
+        Tensor<float32> s #= Tensor.full<float32>(one, this.scale);
         return tape.add(base, tape.mul(low, tape.leaf(s, false)));
     }
 

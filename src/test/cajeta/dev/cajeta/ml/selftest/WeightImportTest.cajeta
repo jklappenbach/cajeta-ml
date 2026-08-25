@@ -35,7 +35,7 @@ public class WeightImportTest {
         int64[] sh = heap int64[2];
         sh[0] = r;
         sh[1] = c;
-        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        Tensor<float32> t #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < r * c) {
             t.flatSet(i, DecoderTest.gv(i, off));
@@ -47,7 +47,7 @@ public class WeightImportTest {
     static #Tensor<float32> torchVec(int64 n, int64 off) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        Tensor<float32> t #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
             t.flatSet(i, DecoderTest.gv(i, off));
@@ -59,58 +59,58 @@ public class WeightImportTest {
     /** The gen_decoder.py fixture as a RAW torch-layout state_dict. */
     static #StateDict torchDecoderSd() {
         StateDict sd = heap StateDict();
-        Tensor<float32> a = WeightImportTest.torchGrid((int64) 12,
+        Tensor<float32> a #= WeightImportTest.torchGrid((int64) 12,
             (int64) 4, (int64) 1);
         sd.put("self_attn.in_proj_weight", #a);
-        Tensor<float32> b = WeightImportTest.torchVec((int64) 12,
+        Tensor<float32> b #= WeightImportTest.torchVec((int64) 12,
             (int64) 4);
         sd.put("self_attn.in_proj_bias", #b);
-        Tensor<float32> c = WeightImportTest.torchGrid((int64) 4,
+        Tensor<float32> c #= WeightImportTest.torchGrid((int64) 4,
             (int64) 4, (int64) 7);
         sd.put("self_attn.out_proj.weight", #c);
-        Tensor<float32> d = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> d #= WeightImportTest.torchVec((int64) 4,
             (int64) 10);
         sd.put("self_attn.out_proj.bias", #d);
-        Tensor<float32> e = WeightImportTest.torchGrid((int64) 12,
+        Tensor<float32> e #= WeightImportTest.torchGrid((int64) 12,
             (int64) 4, (int64) 13);
         sd.put("multihead_attn.in_proj_weight", #e);
-        Tensor<float32> f = WeightImportTest.torchVec((int64) 12,
+        Tensor<float32> f #= WeightImportTest.torchVec((int64) 12,
             (int64) 16);
         sd.put("multihead_attn.in_proj_bias", #f);
-        Tensor<float32> g = WeightImportTest.torchGrid((int64) 4,
+        Tensor<float32> g #= WeightImportTest.torchGrid((int64) 4,
             (int64) 4, (int64) 19);
         sd.put("multihead_attn.out_proj.weight", #g);
-        Tensor<float32> h = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> h #= WeightImportTest.torchVec((int64) 4,
             (int64) 22);
         sd.put("multihead_attn.out_proj.bias", #h);
-        Tensor<float32> l1w = WeightImportTest.torchGrid((int64) 8,
+        Tensor<float32> l1w #= WeightImportTest.torchGrid((int64) 8,
             (int64) 4, (int64) 25);
         sd.put("linear1.weight", #l1w);
-        Tensor<float32> l1b = WeightImportTest.torchVec((int64) 8,
+        Tensor<float32> l1b #= WeightImportTest.torchVec((int64) 8,
             (int64) 28);
         sd.put("linear1.bias", #l1b);
-        Tensor<float32> l2w = WeightImportTest.torchGrid((int64) 4,
+        Tensor<float32> l2w #= WeightImportTest.torchGrid((int64) 4,
             (int64) 8, (int64) 31);
         sd.put("linear2.weight", #l2w);
-        Tensor<float32> l2b = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> l2b #= WeightImportTest.torchVec((int64) 4,
             (int64) 34);
         sd.put("linear2.bias", #l2b);
-        Tensor<float32> n1w = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> n1w #= WeightImportTest.torchVec((int64) 4,
             (int64) 37);
         sd.put("norm1.weight", #n1w);
-        Tensor<float32> n1b = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> n1b #= WeightImportTest.torchVec((int64) 4,
             (int64) 40);
         sd.put("norm1.bias", #n1b);
-        Tensor<float32> n2w = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> n2w #= WeightImportTest.torchVec((int64) 4,
             (int64) 43);
         sd.put("norm2.weight", #n2w);
-        Tensor<float32> n2b = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> n2b #= WeightImportTest.torchVec((int64) 4,
             (int64) 46);
         sd.put("norm2.bias", #n2b);
-        Tensor<float32> n3w = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> n3w #= WeightImportTest.torchVec((int64) 4,
             (int64) 49);
         sd.put("norm3.weight", #n3w);
-        Tensor<float32> n3b = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> n3b #= WeightImportTest.torchVec((int64) 4,
             (int64) 52);
         sd.put("norm3.bias", #n3b);
         return #sd;
@@ -121,11 +121,11 @@ public class WeightImportTest {
     // forward pins from U2 — import correctness, not mere completeness.
     @Test
     public void importedDecoderMatchesTorchForward() {
-        StateDict raw = WeightImportTest.torchDecoderSd();
-        StateDict mapped = Checkpoints.torchToCajeta(raw);
+        StateDict raw #= WeightImportTest.torchDecoderSd();
+        StateDict mapped #= Checkpoints.torchToCajeta(raw);
         TransformerDecoderLayer layer = heap TransformerDecoderLayer(
             (int64) 4, (int32) 2, (int64) 8, (uint64) 77);
-        ImportReport rep = Checkpoints.importTorch(layer, mapped);
+        ImportReport rep #= Checkpoints.importTorch(layer, mapped);
         Assert.isTrue(rep.clean());
         Assert.equals((int64) 26, (int64) rep.applied());
 
@@ -135,13 +135,13 @@ public class WeightImportTest {
         ts[0] = 2;
         ts[1] = 3;
         ts[2] = 4;
-        Tensor<float32> tgt = Tensor.zeros<float32>(ts);
+        Tensor<float32> tgt #= Tensor.zeros<float32>(ts);
         DecoderTest.fill(tgt, (int64) 0);
         int64[] ms = heap int64[3];
         ms[0] = 2;
         ms[1] = 4;
         ms[2] = 4;
-        Tensor<float32> mem = Tensor.zeros<float32>(ms);
+        Tensor<float32> mem #= Tensor.zeros<float32>(ms);
         DecoderTest.fill(mem, (int64) 2);
         int64[] lens = heap int64[2];
         lens[0] = 4;
@@ -174,16 +174,16 @@ public class WeightImportTest {
         net.add(#l2);
         // Provide 0.weight/0.bias only, plus a bogus key.
         StateDict sd = heap StateDict();
-        Tensor<float32> w = WeightImportTest.torchGrid((int64) 3,
+        Tensor<float32> w #= WeightImportTest.torchGrid((int64) 3,
             (int64) 4, (int64) 1);
         sd.put("0.weight", #w);
-        Tensor<float32> b = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> b #= WeightImportTest.torchVec((int64) 4,
             (int64) 4);
         sd.put("0.bias", #b);
-        Tensor<float32> bogus = WeightImportTest.torchVec((int64) 7,
+        Tensor<float32> bogus #= WeightImportTest.torchVec((int64) 7,
             (int64) 9);
         sd.put("no.such.param", #bogus);
-        ImportReport rep = Checkpoints.importStateDict(net, sd, false);
+        ImportReport rep #= Checkpoints.importStateDict(net, sd, false);
         Assert.equals((int64) 2, (int64) rep.applied());
         Assert.equals((int64) 2, (int64) rep.missing().count());
         Assert.equals((int64) 1, (int64) rep.unexpected().count());
@@ -200,13 +200,13 @@ public class WeightImportTest {
             Module l1 = heap Linear((int64) 3, (int64) 4, (uint64) 1);
             net.add(#l1);
             StateDict sd = heap StateDict();
-            Tensor<float32> w = WeightImportTest.torchGrid((int64) 3,
+            Tensor<float32> w #= WeightImportTest.torchGrid((int64) 3,
                 (int64) 4, (int64) 1);
             sd.put("0.weight", #w);
-            Tensor<float32> b = WeightImportTest.torchVec((int64) 4,
+            Tensor<float32> b #= WeightImportTest.torchVec((int64) 4,
                 (int64) 4);
             sd.put("0.bias", #b);
-            Tensor<float32> extra = WeightImportTest.torchVec((int64) 3,
+            Tensor<float32> extra #= WeightImportTest.torchVec((int64) 3,
                 (int64) 5);
             sd.put("ghost.bias", #extra);
             Checkpoints.importTorch(net, sd);      // strict: ghost key
@@ -216,10 +216,10 @@ public class WeightImportTest {
             Module l1 = heap Linear((int64) 3, (int64) 4, (uint64) 1);
             net.add(#l1);
             StateDict sd = heap StateDict();
-            Tensor<float32> w = WeightImportTest.torchGrid((int64) 5,
+            Tensor<float32> w #= WeightImportTest.torchGrid((int64) 5,
                 (int64) 5, (int64) 1);          // wrong shape
             sd.put("0.weight", #w);
-            Tensor<float32> b = WeightImportTest.torchVec((int64) 4,
+            Tensor<float32> b #= WeightImportTest.torchVec((int64) 4,
                 (int64) 4);
             sd.put("0.bias", #b);
             Checkpoints.importStateDict(net, sd, false);   // permissive
@@ -239,28 +239,28 @@ public class WeightImportTest {
         net.add(#l2);
         // Torch-layout weights for the whole net; import them.
         StateDict sd = heap StateDict();
-        Tensor<float32> w0 = WeightImportTest.torchGrid((int64) 4,
+        Tensor<float32> w0 #= WeightImportTest.torchGrid((int64) 4,
             (int64) 3, (int64) 1);
         sd.put("0.weight", #w0);
-        Tensor<float32> b0 = WeightImportTest.torchVec((int64) 4,
+        Tensor<float32> b0 #= WeightImportTest.torchVec((int64) 4,
             (int64) 4);
         sd.put("0.bias", #b0);
-        Tensor<float32> w2 = WeightImportTest.torchGrid((int64) 2,
+        Tensor<float32> w2 #= WeightImportTest.torchGrid((int64) 2,
             (int64) 4, (int64) 7);
         sd.put("2.weight", #w2);
-        Tensor<float32> b2 = WeightImportTest.torchVec((int64) 2,
+        Tensor<float32> b2 #= WeightImportTest.torchVec((int64) 2,
             (int64) 10);
         sd.put("2.bias", #b2);
-        StateDict mapped = Checkpoints.torchToCajeta(sd);
-        ImportReport rep = Checkpoints.importTorch(net, mapped);
+        StateDict mapped #= Checkpoints.torchToCajeta(sd);
+        ImportReport rep #= Checkpoints.importTorch(net, mapped);
         Assert.isTrue(rep.clean());
         // Freeze the imported backbone, replace the head, train.
         net.at((int32) 0).setTrainable(false);
         Module newHead = heap Linear((int64) 4, (int64) 2, (uint64) 32);
         net.replace((int32) 2, #newHead);
-        Tensor<float32> x = TransferLearningTest.gridTensor((int64) 8,
+        Tensor<float32> x #= TransferLearningTest.gridTensor((int64) 8,
             (int64) 3, (int64) 0, 0.25);
-        Tensor<float32> y = TransferLearningTest.gridTensor((int64) 8,
+        Tensor<float32> y #= TransferLearningTest.gridTensor((int64) 8,
             (int64) 2, (int64) 3, 0.3);
         float64 before = TransferLearningTest.phase(net, x, y, (int64) 0);
         float64 after = TransferLearningTest.phase(net, x, y, (int64) 5);
@@ -273,8 +273,8 @@ public class WeightImportTest {
     // reader, never reaching the importer.
     @Test
     public void ptRouteUsesConstrainedReader() {
-        StateDict sd = PtReader.read(CheckpointTest.fixture("mlp_state.pt"));
-        StateDict renamed = Checkpoints.renamePrefix(sd, "layers.", "");
+        StateDict sd #= PtReader.read(CheckpointTest.fixture("mlp_state.pt"));
+        StateDict renamed #= Checkpoints.renamePrefix(sd, "layers.", "");
         Sequential net = heap Sequential();
         Module l1 = heap Linear((int64) 3, (int64) 4, (uint64) 40);
         net.add(#l1);
@@ -286,14 +286,14 @@ public class WeightImportTest {
         // torchToCajeta here — mapping steps stay explicit and composable.
         // Names are 0./2. under a bare Sequential root; the fixture's
         // "layers." prefix maps away.
-        ArrayList<String> names = net.parameterNames();
+        ArrayList<String> names #= net.parameterNames();
         Assert.isTrue(names.get(0).equals("0.weight"));
-        ImportReport rep = Checkpoints.importTorch(net, renamed);
+        ImportReport rep #= Checkpoints.importTorch(net, renamed);
         Assert.isTrue(rep.clean());
         Assert.equals((int64) 4, (int64) rep.applied());
         // The malicious pickle dies in the reader.
         Assert.assertThrows(() -> {
-            StateDict bad = PtReader.read(CheckpointTest.fixture("evil.pt"));
+            StateDict bad #= PtReader.read(CheckpointTest.fixture("evil.pt"));
             bad.count();
         });
     }

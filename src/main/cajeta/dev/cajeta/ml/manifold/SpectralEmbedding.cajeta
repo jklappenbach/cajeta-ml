@@ -66,7 +66,7 @@ public final class SpectralEmbedding {
         int64 n = x.shapeAt(0);
         int64 d = this.kComp;
         Metric eu = heap Euclidean();
-        Tensor<float64> dm = Distance.pdist(x, eu);
+        Tensor<float64> dm #= Distance.pdist(x, eu);
 
         float64[] aM = heap float64[n * n];
         if (this.affinity == (int64) 0) {
@@ -134,7 +134,7 @@ public final class SpectralEmbedding {
         int64[] ls = heap int64[2];
         ls[0] = n;
         ls[1] = n;
-        Tensor<float64> lM = Tensor.zeros<float64>(ls);
+        Tensor<float64> lM #= Tensor.zeros<float64>(ls);
         i2 = 0;
         while (i2 < n) {
             int64 j = 0;
@@ -148,7 +148,7 @@ public final class SpectralEmbedding {
             }
             i2 = i2 + 1;
         }
-        Tensor<float64>[] ev = LinAlg.eigh<float64>(lM);
+        Tensor<float64>[] ev #= LinAlg.eigh<float64>(lM);
         Tensor<float64> w = ev[0];
         Tensor<float64> v = ev[1];
         // Ascending: index 0 is the trivial λ≈0 (D^(1/2)·1) — dropped by

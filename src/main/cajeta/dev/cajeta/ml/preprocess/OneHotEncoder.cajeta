@@ -55,7 +55,7 @@ public final class OneHotEncoder implements Transformer {
         // Per column: sorted unique values.
         int64[] os = heap int64[1];
         os[0] = p + 1;
-        Tensor<int64> offs = Tensor.zeros<int64>(os);
+        Tensor<int64> offs #= Tensor.zeros<int64>(os);
         float64[] all = heap float64[n * p];
         int64 total = 0;
         int64 j = 0;
@@ -101,7 +101,7 @@ public final class OneHotEncoder implements Transformer {
         }
         int64[] cs = heap int64[1];
         cs[0] = total;
-        Tensor<float64> cats = Tensor.zeros<float64>(cs);
+        Tensor<float64> cats #= Tensor.zeros<float64>(cs);
         int64 t = 0;
         while (t < total) {
             cats.set1(t, all[t]);
@@ -139,7 +139,7 @@ public final class OneHotEncoder implements Transformer {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = w;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 base = 0;
@@ -186,7 +186,7 @@ public final class OneHotEncoder implements Transformer {
     public #Tensor<float64> fitTransform(Tensor<float64> x,
                                          Tensor<float64> y) {
         this.fit(x, y);
-        Tensor<float64> out = this.transform(x);
+        Tensor<float64> out #= this.transform(x);
         return #out;
     }
 }

@@ -73,7 +73,7 @@ public class PositionalEncodingTest {
         Tensor<float32> t = pe.table();
         Assert.equals((int64) 4, t.shapeAt(0));
         Assert.equals((int64) 6, t.shapeAt(1));
-        float64[] ref = PositionalEncodingTest.torchD6();
+        float64[] ref #= PositionalEncodingTest.torchD6();
         int64 i = 0;
         while (i < 24) {
             Assert.isTrue(PositionalEncodingTest.near(t.flatGet(i), ref[i]));
@@ -88,7 +88,7 @@ public class PositionalEncodingTest {
         SinusoidalPositionalEncoding pe =
             heap SinusoidalPositionalEncoding((int64) 4, (int64) 7);
         Tensor<float32> t = pe.table();
-        float64[] ref = PositionalEncodingTest.torchD7();
+        float64[] ref #= PositionalEncodingTest.torchD7();
         int64 i = 0;
         while (i < 28) {
             Assert.isTrue(PositionalEncodingTest.near(t.flatGet(i), ref[i]));
@@ -117,7 +117,7 @@ public class PositionalEncodingTest {
         pe.bindParameters(tape);
         int64[] is = heap int64[1];
         is[0] = 3;
-        Tensor<float32> ids = Tensor.zeros<float32>(is);
+        Tensor<float32> ids #= Tensor.zeros<float32>(is);
         ids.set1(0, 3.0f);
         ids.set1(1, 1.0f);
         ids.set1(2, 4.0f);
@@ -170,7 +170,7 @@ public class PositionalEncodingTest {
         xs[0] = 2;
         xs[1] = 3;
         xs[2] = 6;
-        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        Tensor<float32> xv #= Tensor.zeros<float32>(xs);
         int64 i = 0;
         while (i < 36) {
             xv.flatSet(i,

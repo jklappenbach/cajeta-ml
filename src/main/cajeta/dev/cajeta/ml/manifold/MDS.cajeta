@@ -86,7 +86,7 @@ public final class MDS {
             throw heap MlException("MDS.fitTransform: x must be 2-D (n, p)");
         }
         Metric eu = heap Euclidean();
-        Tensor<float64> d = Distance.pdist(x, eu);
+        Tensor<float64> d #= Distance.pdist(x, eu);
         return this.fitTransformDissimilarity(d);
     }
 
@@ -150,7 +150,7 @@ public final class MDS {
 
         int64 run = 0;
         while (run < this.nInit) {
-            Tensor<float32> u = gen.uniform(n * k);
+            Tensor<float32> u #= gen.uniform(n * k);
             i = 0;
             while (i < n * k) {
                 xE[i] = (float64) u.get1(i);

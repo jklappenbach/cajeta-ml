@@ -45,8 +45,8 @@ public class FramesTest {
 
     @Test
     public void defaultSelectionShapesOrderAndNames() {
-        Table<Obs> t = FramesTest.fixture();
-        Design d = Frames.design<Obs>(t, "target");
+        Table<Obs> t #= FramesTest.fixture();
+        Design d #= Frames.design<Obs>(t, "target");
         // Features: the float64 columns in schema order minus the target —
         // a, b. The int64 `count` column is not float64-physical: skipped.
         Assert.equals((int64) 2, (int64) d.x.ndim());
@@ -65,9 +65,9 @@ public class FramesTest {
 
     @Test
     public void explicitFeaturesSubsetAndReorder() {
-        Table<Obs> t = FramesTest.fixture();
+        Table<Obs> t #= FramesTest.fixture();
         String[] feats = [ "b", "a" ];
-        Design d = Frames.design<Obs>(t, feats, "target");
+        Design d #= Frames.design<Obs>(t, feats, "target");
         Assert.equals((int64) 2, d.x.shapeAt(1));
         Assert.isTrue(d.featureNames[0].equals("b"));
         Assert.isTrue(d.featureNames[1].equals("a"));
@@ -78,18 +78,18 @@ public class FramesTest {
 
     @Test
     public void loudFailures() {
-        Table<Obs> t = FramesTest.fixture();
+        Table<Obs> t #= FramesTest.fixture();
 
         boolean threw = false;
         try {
-            Design d = Frames.design<Obs>(t, "nope");
+            Design d #= Frames.design<Obs>(t, "nope");
         } catch (MlException ex) { threw = true; }
         Assert.isTrue(threw);
 
         // Non-float64 target.
         threw = false;
         try {
-            Design d = Frames.design<Obs>(t, "count");
+            Design d #= Frames.design<Obs>(t, "count");
         } catch (MlException ex) { threw = true; }
         Assert.isTrue(threw);
 
@@ -97,7 +97,7 @@ public class FramesTest {
         threw = false;
         try {
             String[] feats = [ "a", "ghost" ];
-            Design d = Frames.design<Obs>(t, feats, "target");
+            Design d #= Frames.design<Obs>(t, feats, "target");
         } catch (MlException ex) { threw = true; }
         Assert.isTrue(threw);
 
@@ -105,7 +105,7 @@ public class FramesTest {
         threw = false;
         try {
             String[] feats = [ "count" ];
-            Design d = Frames.design<Obs>(t, feats, "target");
+            Design d #= Frames.design<Obs>(t, feats, "target");
         } catch (MlException ex) { threw = true; }
         Assert.isTrue(threw);
 
@@ -113,17 +113,17 @@ public class FramesTest {
         threw = false;
         try {
             String[] feats = [ "a", "target" ];
-            Design d = Frames.design<Obs>(t, feats, "target");
+            Design d #= Frames.design<Obs>(t, feats, "target");
         } catch (MlException ex) { threw = true; }
         Assert.isTrue(threw);
     }
 
     @Test
     public void twoLinerMatchesHandBuiltFit() {
-        Table<Obs> t = FramesTest.fixture();
+        Table<Obs> t #= FramesTest.fixture();
 
         // The two lines.
-        Design d = Frames.design<Obs>(t, "target");
+        Design d #= Frames.design<Obs>(t, "target");
         LinearRegression viaFrame = heap LinearRegression(true);
         viaFrame.fit(d.x, d.y);
 
@@ -143,10 +143,10 @@ public class FramesTest {
         int64[] xsh = heap int64[2];
         xsh[0] = n;
         xsh[1] = 2;
-        Tensor<float64> hx = Tensor.of<float64>(xd, xsh);
+        Tensor<float64> hx #= Tensor.of<float64>(xd, xsh);
         int64[] ysh = heap int64[1];
         ysh[0] = n;
-        Tensor<float64> hy = Tensor.of<float64>(yd, ysh);
+        Tensor<float64> hy #= Tensor.of<float64>(yd, ysh);
         LinearRegression viaHand = heap LinearRegression(true);
         viaHand.fit(hx, hy);
 

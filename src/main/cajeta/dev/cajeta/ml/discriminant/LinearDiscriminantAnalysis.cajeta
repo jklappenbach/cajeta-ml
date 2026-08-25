@@ -155,8 +155,8 @@ public final class LinearDiscriminantAnalysis
             this.maxComp = p;
         }
 
-        Tensor<float64> pri = this.resolvePriors(y, k);
-        Tensor<float64> means = Gaussians.classMeans(x, y, k);
+        Tensor<float64> pri #= this.resolvePriors(y, k);
+        Tensor<float64> means #= Gaussians.classMeans(x, y, k);
 
         if (this.solverC == (int32) 0) {
             this.fitSvd(x, y, n, p, k, pri, means);
@@ -171,7 +171,7 @@ public final class LinearDiscriminantAnalysis
             int64[] cs = heap int64[2];
             cs[0] = 1;
             cs[1] = p;
-            Tensor<float64> c1 = Tensor.zeros<float64>(cs);
+            Tensor<float64> c1 #= Tensor.zeros<float64>(cs);
             int64 j = 0;
             while (j < p) {
                 c1.flatSet(j, this.coefM.get2(1, j) - this.coefM.get2(0, j));
@@ -179,7 +179,7 @@ public final class LinearDiscriminantAnalysis
             }
             int64[] is = heap int64[1];
             is[0] = 1;
-            Tensor<float64> i1 = Tensor.zeros<float64>(is);
+            Tensor<float64> i1 #= Tensor.zeros<float64>(is);
             i1.flatSet(0, this.iceptV.flatGet(1) - this.iceptV.flatGet(0));
             this.coefM #= c1;
             this.iceptV #= i1;
@@ -196,7 +196,7 @@ public final class LinearDiscriminantAnalysis
             }
             int64[] sh = heap int64[1];
             sh[0] = k;
-            Tensor<float64> pr = Tensor.zeros<float64>(sh);
+            Tensor<float64> pr #= Tensor.zeros<float64>(sh);
             int64 i = 0;
             while (i < k) {
                 pr.flatSet(i, this.priorsA[i]);
@@ -205,7 +205,7 @@ public final class LinearDiscriminantAnalysis
             Gaussians.validatePriors(pr);
             return #pr;
         }
-        Tensor<float64> pr = Gaussians.priors(y, k);
+        Tensor<float64> pr #= Gaussians.priors(y, k);
         return #pr;
     }
 
@@ -215,7 +215,7 @@ public final class LinearDiscriminantAnalysis
         // xbar = priors @ means.
         int64[] ps = heap int64[1];
         ps[0] = p;
-        Tensor<float64> xbar = Tensor.zeros<float64>(ps);
+        Tensor<float64> xbar #= Tensor.zeros<float64>(ps);
         int64 j = 0;
         while (j < p) {
             float64 s = 0.0;
@@ -232,7 +232,7 @@ public final class LinearDiscriminantAnalysis
         int64[] xs = heap int64[2];
         xs[0] = n;
         xs[1] = p;
-        Tensor<float64> xc = Tensor.zeros<float64>(xs);
+        Tensor<float64> xc #= Tensor.zeros<float64>(xs);
         int64 i = 0;
         while (i < n) {
             int64 c = (int64) y.flatGet(i);
@@ -270,7 +270,7 @@ public final class LinearDiscriminantAnalysis
         }
 
         float64 fac = Math.sqrt(1.0 / (float64) (n - k));
-        Tensor<float64> xsc = Tensor.zeros<float64>(xs);
+        Tensor<float64> xsc #= Tensor.zeros<float64>(xs);
         i = 0;
         while (i < n) {
             j = 0;
@@ -281,7 +281,7 @@ public final class LinearDiscriminantAnalysis
             i = i + 1;
         }
 
-        Tensor<float64>[] usv = LinAlg.svd<float64>(xsc);
+        Tensor<float64>[] usv #= LinAlg.svd<float64>(xsc);
         Tensor<float64> s1 = usv[1];
         Tensor<float64> vt1 = usv[2];
         int64 r1 = s1.size();
@@ -302,7 +302,7 @@ public final class LinearDiscriminantAnalysis
         int64[] s0s = heap int64[2];
         s0s[0] = p;
         s0s[1] = rank;
-        Tensor<float64> scal0 = Tensor.zeros<float64>(s0s);
+        Tensor<float64> scal0 #= Tensor.zeros<float64>(s0s);
         j = 0;
         while (j < p) {
             i = 0;
@@ -322,7 +322,7 @@ public final class LinearDiscriminantAnalysis
         int64[] bs = heap int64[2];
         bs[0] = k;
         bs[1] = rank;
-        Tensor<float64> xb = Tensor.zeros<float64>(bs);
+        Tensor<float64> xb #= Tensor.zeros<float64>(bs);
         int64 c2 = 0;
         while (c2 < k) {
             float64 w = Math.sqrt((float64) n * pri.flatGet(c2) * fac2);
@@ -341,7 +341,7 @@ public final class LinearDiscriminantAnalysis
             c2 = c2 + 1;
         }
 
-        Tensor<float64>[] usv2 = LinAlg.svd<float64>(xb);
+        Tensor<float64>[] usv2 #= LinAlg.svd<float64>(xb);
         Tensor<float64> s2 = usv2[1];
         Tensor<float64> vt2 = usv2[2];
         int64 r2 = s2.size();
@@ -354,7 +354,7 @@ public final class LinearDiscriminantAnalysis
         }
         int64[] es = heap int64[1];
         es[0] = this.maxComp;
-        Tensor<float64> evr = Tensor.zeros<float64>(es);
+        Tensor<float64> evr #= Tensor.zeros<float64>(es);
         i = 0;
         while (i < this.maxComp && i < r2) {
             evr.flatSet(i, s2.flatGet(i) * s2.flatGet(i) / sumSq);
@@ -375,7 +375,7 @@ public final class LinearDiscriminantAnalysis
         int64[] ss = heap int64[2];
         ss[0] = p;
         ss[1] = rank2;
-        Tensor<float64> scal = Tensor.zeros<float64>(ss);
+        Tensor<float64> scal #= Tensor.zeros<float64>(ss);
         j = 0;
         while (j < p) {
             int64 c3 = 0;
@@ -396,10 +396,10 @@ public final class LinearDiscriminantAnalysis
         int64[] cs = heap int64[2];
         cs[0] = k;
         cs[1] = p;
-        Tensor<float64> coef = Tensor.zeros<float64>(cs);
+        Tensor<float64> coef #= Tensor.zeros<float64>(cs);
         int64[] is = heap int64[1];
         is[0] = k;
-        Tensor<float64> icept = Tensor.zeros<float64>(is);
+        Tensor<float64> icept #= Tensor.zeros<float64>(is);
         c2 = 0;
         while (c2 < k) {
             float64[] c0 = heap float64[rank2];
@@ -456,7 +456,7 @@ public final class LinearDiscriminantAnalysis
         int64[] bs = heap int64[2];
         bs[0] = count;
         bs[1] = p;
-        Tensor<float64> blk = Tensor.zeros<float64>(bs);
+        Tensor<float64> blk #= Tensor.zeros<float64>(bs);
         int64 w = 0;
         int64 i = 0;
         while (i < rows.size()) {
@@ -496,7 +496,7 @@ public final class LinearDiscriminantAnalysis
                 }
                 j0 = j0 + 1;
             }
-            Tensor<float64> blkS = Tensor.zeros<float64>(bs);
+            Tensor<float64> blkS #= Tensor.zeros<float64>(bs);
             int64 r1 = 0;
             while (r1 < count) {
                 j0 = 0;
@@ -507,8 +507,8 @@ public final class LinearDiscriminantAnalysis
                 }
                 r1 = r1 + 1;
             }
-            Tensor<float64>[] lw = Gaussians.ledoitWolf(blkS);
-            Tensor<float64> cov = lw[0].copy();
+            Tensor<float64>[] lw #= Gaussians.ledoitWolf(blkS);
+            Tensor<float64> cov #= lw[0].copy();
             int64 a0 = 0;
             while (a0 < p) {
                 int64 b0 = 0;
@@ -537,7 +537,7 @@ public final class LinearDiscriminantAnalysis
         int64[] cs = heap int64[2];
         cs[0] = p;
         cs[1] = p;
-        Tensor<float64> cov = Tensor.zeros<float64>(cs);
+        Tensor<float64> cov #= Tensor.zeros<float64>(cs);
         int64 a = 0;
         while (a < p) {
             int64 b = 0;
@@ -555,7 +555,7 @@ public final class LinearDiscriminantAnalysis
             a = a + 1;
         }
         if (this.shrinkV >= 0.0) {
-            Tensor<float64> sh = Gaussians.shrinkToward(cov, this.shrinkV);
+            Tensor<float64> sh #= Gaussians.shrinkToward(cov, this.shrinkV);
             return #sh;
         }
         return #cov;
@@ -569,7 +569,7 @@ public final class LinearDiscriminantAnalysis
         int64[] cs = heap int64[2];
         cs[0] = p;
         cs[1] = p;
-        Tensor<float64> acc = Tensor.zeros<float64>(cs);
+        Tensor<float64> acc #= Tensor.zeros<float64>(cs);
         int64 c = 0;
         while (c < k) {
             int64 cnt = 0;
@@ -582,7 +582,7 @@ public final class LinearDiscriminantAnalysis
             }
             int64[] rs = heap int64[1];
             rs[0] = cnt;
-            Tensor<float64> rows = Tensor.zeros<float64>(rs);
+            Tensor<float64> rows #= Tensor.zeros<float64>(rs);
             int64 w = 0;
             i = 0;
             while (i < n) {
@@ -592,7 +592,7 @@ public final class LinearDiscriminantAnalysis
                 }
                 i = i + 1;
             }
-            Tensor<float64> ck = this.covOf(x, rows, cnt);
+            Tensor<float64> ck #= this.covOf(x, rows, cnt);
             float64 pw = pri.flatGet(c);
             int64 f = 0;
             while (f < p * p) {
@@ -607,11 +607,11 @@ public final class LinearDiscriminantAnalysis
     /** sklearn `_solve_lstsq`: coef from lstsq(Sw, means'), no transform. */
     void fitLsqr(Tensor<float64> x, Tensor<float64> y, int64 n, int64 p,
                  int64 k, Tensor<float64> pri, Tensor<float64> means) {
-        Tensor<float64> cov = this.classCovShrunk(x, y, k, pri);
+        Tensor<float64> cov #= this.classCovShrunk(x, y, k, pri);
         int64[] ms = heap int64[2];
         ms[0] = p;
         ms[1] = k;
-        Tensor<float64> mt = Tensor.zeros<float64>(ms);
+        Tensor<float64> mt #= Tensor.zeros<float64>(ms);
         int64 j = 0;
         while (j < p) {
             int64 c = 0;
@@ -621,11 +621,11 @@ public final class LinearDiscriminantAnalysis
             }
             j = j + 1;
         }
-        Tensor<float64> sol = LinAlg.lstsq<float64>(cov, mt);   // (p, k)
+        Tensor<float64> sol #= LinAlg.lstsq<float64>(cov, mt);   // (p, k)
         int64[] cs = heap int64[2];
         cs[0] = k;
         cs[1] = p;
-        Tensor<float64> coef = Tensor.zeros<float64>(cs);
+        Tensor<float64> coef #= Tensor.zeros<float64>(cs);
         int64 c2 = 0;
         while (c2 < k) {
             j = 0;
@@ -644,20 +644,20 @@ public final class LinearDiscriminantAnalysis
     /** sklearn `_solve_eigen`: generalized eigh(Sb, Sw) via Cholesky. */
     void fitEigen(Tensor<float64> x, Tensor<float64> y, int64 n, int64 p,
                   int64 k, Tensor<float64> pri, Tensor<float64> means) {
-        Tensor<float64> sw = this.classCovShrunk(x, y, k, pri);
+        Tensor<float64> sw #= this.classCovShrunk(x, y, k, pri);
         int64[] all = heap int64[1];
         all[0] = n;
-        Tensor<float64> rows = Tensor.zeros<float64>(all);
+        Tensor<float64> rows #= Tensor.zeros<float64>(all);
         int64 i = 0;
         while (i < n) {
             rows.flatSet(i, (float64) i);
             i = i + 1;
         }
-        Tensor<float64> st = this.covOf(x, rows, n);
+        Tensor<float64> st #= this.covOf(x, rows, n);
         int64[] bs = heap int64[2];
         bs[0] = p;
         bs[1] = p;
-        Tensor<float64> sb = Tensor.zeros<float64>(bs);
+        Tensor<float64> sb #= Tensor.zeros<float64>(bs);
         int64 f = 0;
         while (f < p * p) {
             sb.flatSet(f, st.flatGet(f) - sw.flatGet(f));
@@ -665,13 +665,13 @@ public final class LinearDiscriminantAnalysis
         }
 
         // A = L^-1 Sb L^-T via two forward substitutions.
-        Tensor<float64> l = Gaussians.choleskyFactor(sw);
-        Tensor<float64> y1 = forwardSolveMatrix(l, sb);        // L Y = Sb
-        Tensor<float64> yt = transposeSquare(y1, p);
-        Tensor<float64> w1 = forwardSolveMatrix(l, yt);        // L W = Y'
-        Tensor<float64> a = transposeSquare(w1, p);            // A = W'
+        Tensor<float64> l #= Gaussians.choleskyFactor(sw);
+        Tensor<float64> y1 #= forwardSolveMatrix(l, sb);        // L Y = Sb
+        Tensor<float64> yt #= transposeSquare(y1, p);
+        Tensor<float64> w1 #= forwardSolveMatrix(l, yt);        // L W = Y'
+        Tensor<float64> a #= transposeSquare(w1, p);            // A = W'
 
-        Tensor<float64>[] ev = LinAlg.eigh<float64>(a);
+        Tensor<float64>[] ev #= LinAlg.eigh<float64>(a);
         Tensor<float64> evals = ev[0];                          // ascending
         Tensor<float64> evecs = ev[1];                          // columns
 
@@ -679,7 +679,7 @@ public final class LinearDiscriminantAnalysis
         int64[] ss = heap int64[2];
         ss[0] = p;
         ss[1] = p;
-        Tensor<float64> scal = Tensor.zeros<float64>(ss);
+        Tensor<float64> scal #= Tensor.zeros<float64>(ss);
         float64 evSum = 0.0;
         i = 0;
         while (i < p) {
@@ -688,7 +688,7 @@ public final class LinearDiscriminantAnalysis
         }
         int64[] es = heap int64[1];
         es[0] = this.maxComp;
-        Tensor<float64> evr = Tensor.zeros<float64>(es);
+        Tensor<float64> evr #= Tensor.zeros<float64>(es);
         float64[] u = heap float64[p];
         float64[] v = heap float64[p];
         int64 c = 0;
@@ -734,7 +734,7 @@ public final class LinearDiscriminantAnalysis
         int64[] cs = heap int64[2];
         cs[0] = k;
         cs[1] = p;
-        Tensor<float64> coef = Tensor.zeros<float64>(cs);
+        Tensor<float64> coef #= Tensor.zeros<float64>(cs);
         int64 c2 = 0;
         while (c2 < k) {
             float64[] m2 = heap float64[p];
@@ -772,7 +772,7 @@ public final class LinearDiscriminantAnalysis
                          Tensor<float64> pri, int64 k, int64 p) {
         int64[] is = heap int64[1];
         is[0] = k;
-        Tensor<float64> icept = Tensor.zeros<float64>(is);
+        Tensor<float64> icept #= Tensor.zeros<float64>(is);
         int64 c = 0;
         while (c < k) {
             float64 s = 0.0;
@@ -794,7 +794,7 @@ public final class LinearDiscriminantAnalysis
         int64[] sh = heap int64[2];
         sh[0] = p;
         sh[1] = p;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 col = 0;
         while (col < p) {
             int64 r = 0;
@@ -817,7 +817,7 @@ public final class LinearDiscriminantAnalysis
         int64[] sh = heap int64[2];
         sh[0] = p;
         sh[1] = p;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < p) {
             int64 j = 0;
@@ -877,7 +877,7 @@ public final class LinearDiscriminantAnalysis
         if (kk == 1) {
             int64[] sh = heap int64[1];
             sh[0] = n;
-            Tensor<float64> out = Tensor.zeros<float64>(sh);
+            Tensor<float64> out #= Tensor.zeros<float64>(sh);
             int64 i = 0;
             while (i < n) {
                 float64 s = this.iceptV.flatGet(0);
@@ -894,7 +894,7 @@ public final class LinearDiscriminantAnalysis
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = kk;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -915,11 +915,11 @@ public final class LinearDiscriminantAnalysis
 
     /** Class labels by the log-posterior rule (§2.3); ties take the lowest. */
     public #Tensor<float64> predict(Tensor<float64> x) {
-        Tensor<float64> dec = this.decisionFunction(x);
+        Tensor<float64> dec #= this.decisionFunction(x);
         int64 n = x.shapeAt(0);
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         if (this.nClasses == 2) {
             int64 i = 0;
             while (i < n) {
@@ -952,13 +952,13 @@ public final class LinearDiscriminantAnalysis
 
     /** Normalized posteriors (§2.4): sigmoid (binary) / softmax (multi). */
     public #Tensor<float64> predictProba(Tensor<float64> x) {
-        Tensor<float64> dec = this.decisionFunction(x);
+        Tensor<float64> dec #= this.decisionFunction(x);
         int64 n = x.shapeAt(0);
         if (this.nClasses == 2) {
             int64[] sh = heap int64[2];
             sh[0] = n;
             sh[1] = 2;
-            Tensor<float64> out = Tensor.zeros<float64>(sh);
+            Tensor<float64> out #= Tensor.zeros<float64>(sh);
             int64 i = 0;
             while (i < n) {
                 float64 p1 = 1.0 / (1.0 + Math.exp(-dec.flatGet(i)));
@@ -969,11 +969,11 @@ public final class LinearDiscriminantAnalysis
             return #out;
         }
         int64 kk = this.nClasses;
-        Tensor<float64> lse = Gaussians.logSumExp(dec);
+        Tensor<float64> lse #= Gaussians.logSumExp(dec);
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = kk;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -1003,7 +1003,7 @@ public final class LinearDiscriminantAnalysis
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = cols;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         boolean center = this.solverC == (int32) 0;
         int64 i = 0;
         while (i < n) {
@@ -1030,13 +1030,13 @@ public final class LinearDiscriminantAnalysis
     public #Tensor<float64> fitTransform(Tensor<float64> x,
                                          Tensor<float64> y) {
         this.fit(x, y);
-        Tensor<float64> out = this.transform(x);
+        Tensor<float64> out #= this.transform(x);
         return #out;
     }
 
     /** Accuracy — the classifier `score` convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pred = this.predict(x);
+        Tensor<float64> pred #= this.predict(x);
         return Metrics.accuracy(y, pred);
     }
 }

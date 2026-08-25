@@ -131,10 +131,10 @@ public class AgglomerativeTest {
     // at the requested count on both parity fixtures.
     @Test
     public void wardDefaultMatchesSklearnLabels() {
-        Tensor<float64> p = AgglomerativeTest.fixtureP();
+        Tensor<float64> p #= AgglomerativeTest.fixtureP();
         AgglomerativeClustering a2 = heap AgglomerativeClustering((int64) 2);
         a2.fit(p, AgglomerativeTest.ignoredY((int64) 10));
-        int64[] l2 = AgglomerativeTest.intLabels(a2.labels(), (int64) 10);
+        int64[] l2 #= AgglomerativeTest.intLabels(a2.labels(), (int64) 10);
         // Oracle ward k2: {0..5} vs {6..9}.
         int64[] o2 = heap int64[10];
         int64 i = 6;
@@ -145,10 +145,10 @@ public class AgglomerativeTest {
         Assert.isTrue(Harness.randIndex(l2, o2) == 1.0);
         AgglomerativeClustering a3 = heap AgglomerativeClustering((int64) 3);
         a3.fit(p, AgglomerativeTest.ignoredY((int64) 10));
-        int64[] l3 = AgglomerativeTest.intLabels(a3.labels(), (int64) 10);
+        int64[] l3 #= AgglomerativeTest.intLabels(a3.labels(), (int64) 10);
         Assert.isTrue(Harness.randIndex(l3,
             AgglomerativeTest.oracleP3()) == 1.0);
-        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        Tensor<float64> b #= AgglomerativeTest.fixtureB();
         AgglomerativeClustering b3 = heap AgglomerativeClustering((int64) 3);
         b3.fit(b, AgglomerativeTest.ignoredY((int64) 12));
         Assert.isTrue(Harness.randIndex(
@@ -159,8 +159,8 @@ public class AgglomerativeTest {
     // 5.1.2 — complete, average, and single all match sklearn.
     @Test
     public void allFourLinkagesMatchSklearn() {
-        Tensor<float64> p = AgglomerativeTest.fixtureP();
-        Tensor<float64> y = AgglomerativeTest.ignoredY((int64) 10);
+        Tensor<float64> p #= AgglomerativeTest.fixtureP();
+        Tensor<float64> y #= AgglomerativeTest.ignoredY((int64) 10);
         AgglomerativeClustering co = heap AgglomerativeClustering((int64) 3,
             "complete");
         co.fit(p, y);
@@ -179,7 +179,7 @@ public class AgglomerativeTest {
         Assert.isTrue(Harness.randIndex(
             AgglomerativeTest.intLabels(si.labels(), (int64) 10),
             AgglomerativeTest.oraclePSingle2()) == 1.0);
-        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        Tensor<float64> b #= AgglomerativeTest.fixtureB();
         AgglomerativeClustering sb = heap AgglomerativeClustering((int64) 3,
             "single");
         sb.fit(b, AgglomerativeTest.ignoredY((int64) 12));
@@ -199,12 +199,12 @@ public class AgglomerativeTest {
             bad.isFitted();
         });
         // average + Manhattan is legitimate and fits.
-        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        Tensor<float64> b #= AgglomerativeTest.fixtureB();
         AgglomerativeClustering ok = heap AgglomerativeClustering((int64) 2,
             "average", heap Manhattan());
         ok.fit(b, AgglomerativeTest.ignoredY((int64) 12));
         Assert.isTrue(ok.isFitted());
-        int64[] l = AgglomerativeTest.intLabels(ok.labels(), (int64) 12);
+        int64[] l #= AgglomerativeTest.intLabels(ok.labels(), (int64) 12);
         Assert.equals((int64) 2, AgglomerativeTest.distinctCount(l));
     }
 
@@ -213,7 +213,7 @@ public class AgglomerativeTest {
     // ward tail on fixture B to 1e-9, monotone, ending in one cluster.
     @Test
     public void linkageMatrixIsFullMergeHistory() {
-        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        Tensor<float64> b #= AgglomerativeTest.fixtureB();
         AgglomerativeClustering a = heap AgglomerativeClustering((int64) 2);
         a.fit(b, AgglomerativeTest.ignoredY((int64) 12));
         Tensor<float64> z = a.linkageMatrix();
@@ -246,10 +246,10 @@ public class AgglomerativeTest {
     // needs, with nothing drawn here (5.3.2).
     @Test
     public void dendrogramDataIsDerivable() {
-        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        Tensor<float64> b #= AgglomerativeTest.fixtureB();
         AgglomerativeClustering a = heap AgglomerativeClustering((int64) 3);
         a.fit(b, AgglomerativeTest.ignoredY((int64) 12));
-        int64[] order = a.leafOrder();
+        int64[] order #= a.leafOrder();
         Assert.equals((int64) 12, (int64) order.count());
         boolean[] seen = heap boolean[12];
         int64 i = 0;
@@ -260,7 +260,7 @@ public class AgglomerativeTest {
             i = i + 1;
         }
         // Positions of each cluster's members are contiguous.
-        int64[] lab = AgglomerativeTest.intLabels(a.labels(), (int64) 12);
+        int64[] lab #= AgglomerativeTest.intLabels(a.labels(), (int64) 12);
         int64[] pos = heap int64[12];
         i = 0;
         while (i < 12) {
@@ -293,8 +293,8 @@ public class AgglomerativeTest {
     // 5.1.6 / §6.6 — cophenetic correlation matches scipy's `cophenet`.
     @Test
     public void copheneticCorrelationMatchesScipy() {
-        Tensor<float64> p = AgglomerativeTest.fixtureP();
-        Tensor<float64> y = AgglomerativeTest.ignoredY((int64) 10);
+        Tensor<float64> p #= AgglomerativeTest.fixtureP();
+        Tensor<float64> y #= AgglomerativeTest.ignoredY((int64) 10);
         AgglomerativeClustering w = heap AgglomerativeClustering((int64) 2);
         w.fit(p, y);
         Assert.isTrue(Fixtures.close(w.copheneticCorrelation(),
@@ -309,7 +309,7 @@ public class AgglomerativeTest {
         si.fit(p, y);
         Assert.isTrue(Fixtures.close(si.copheneticCorrelation(),
             0.9267689740568886, 0.000000001));
-        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        Tensor<float64> b #= AgglomerativeTest.fixtureB();
         AgglomerativeClustering wb = heap AgglomerativeClustering((int64) 2);
         wb.fit(b, AgglomerativeTest.ignoredY((int64) 12));
         Assert.isTrue(Fixtures.close(wb.copheneticCorrelation(),
@@ -320,15 +320,15 @@ public class AgglomerativeTest {
     // yields flat labels without refitting.
     @Test
     public void treeCuttingAnswersManyK() {
-        Tensor<float64> b = AgglomerativeTest.fixtureB();
+        Tensor<float64> b #= AgglomerativeTest.fixtureB();
         AgglomerativeClustering a = heap AgglomerativeClustering((int64) 2);
         a.fit(b, AgglomerativeTest.ignoredY((int64) 12));
-        Tensor<float64> c3 = a.cutByCount((int64) 3);
+        Tensor<float64> c3 #= a.cutByCount((int64) 3);
         Assert.isTrue(Harness.randIndex(
             AgglomerativeTest.intLabels(c3, (int64) 12),
             AgglomerativeTest.oracleB3()) == 1.0);
         // Cut by count 2 equals the fitted labels.
-        Tensor<float64> c2 = a.cutByCount((int64) 2);
+        Tensor<float64> c2 #= a.cutByCount((int64) 2);
         Tensor<float64> fl = a.labels();
         int64 i = 0;
         while (i < 12) {
@@ -337,13 +337,13 @@ public class AgglomerativeTest {
         }
         // Cut by height: between B's ward merge heights 0.476 / 13.82 /
         // 18.07, heights 5, 15, and 20 give 3, 2, and 1 clusters.
-        int64[] h5 = AgglomerativeTest.intLabels(
+        int64[] h5 #= AgglomerativeTest.intLabels(
             a.cutByHeight(5.0), (int64) 12);
         Assert.equals((int64) 3, AgglomerativeTest.distinctCount(h5));
-        int64[] h15 = AgglomerativeTest.intLabels(
+        int64[] h15 #= AgglomerativeTest.intLabels(
             a.cutByHeight(15.0), (int64) 12);
         Assert.equals((int64) 2, AgglomerativeTest.distinctCount(h15));
-        int64[] h20 = AgglomerativeTest.intLabels(
+        int64[] h20 #= AgglomerativeTest.intLabels(
             a.cutByHeight(20.0), (int64) 12);
         Assert.equals((int64) 1, AgglomerativeTest.distinctCount(h20));
     }
@@ -352,9 +352,9 @@ public class AgglomerativeTest {
     // fails: the chaining behaviour that makes linkage choice matter.
     @Test
     public void singleSucceedsWhereWardFailsOnRings() {
-        Tensor<float64> x = Shapes.denseCircles((uint64) 31);
-        Tensor<float64> y = AgglomerativeTest.ignoredY((int64) 160);
-        int64[] truth = Shapes.denseCircleLabels();
+        Tensor<float64> x #= Shapes.denseCircles((uint64) 31);
+        Tensor<float64> y #= AgglomerativeTest.ignoredY((int64) 160);
+        int64[] truth #= Shapes.denseCircleLabels();
         AgglomerativeClustering si = heap AgglomerativeClustering((int64) 2,
             "single");
         si.fit(x, y);

@@ -128,11 +128,11 @@ public class KMedoidsTest {
     // baseline holds while its sibling lands.
     @Test
     public void kMeansStillWorksUnchanged() {
-        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        Tensor<float64> x #= Shapes.blobs((uint64) 7);
         KMeans km = heap KMeans((int64) 3, (uint64) 1);
         km.fit(x, KMedoidsTest.ignoredY((int64) 60));
-        int64[] a = KMedoidsTest.labelsOf(km.labels(), (int64) 60);
-        int64[] truth = Shapes.blobLabels();
+        int64[] a #= KMedoidsTest.labelsOf(km.labels(), (int64) 60);
+        int64[] truth #= Shapes.blobLabels();
         Assert.isTrue(Harness.randIndex(a, truth) == 1.0);
     }
 
@@ -140,11 +140,11 @@ public class KMedoidsTest {
     // against the input rows (not proximity), with the indices agreeing.
     @Test
     public void medoidsAreActualDataRows() {
-        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        Tensor<float64> x #= Shapes.blobs((uint64) 7);
         KMedoids km = heap KMedoids((int64) 3);
         km.fit(x, KMedoidsTest.ignoredY((int64) 60));
         Tensor<float64> m = km.medoids();
-        int64[] idx = km.medoidIndices();
+        int64[] idx #= km.medoidIndices();
         Assert.equals((int64) 3, (int64) idx.count());
         int64 c = 0;
         while (c < 3) {
@@ -155,7 +155,7 @@ public class KMedoidsTest {
         }
         // Indices are sorted ascending (documented determinism) — distinct.
         Assert.isTrue(idx[0] < idx[1] && idx[1] < idx[2]);
-        int64[] a = KMedoidsTest.labelsOf(km.labels(), (int64) 60);
+        int64[] a #= KMedoidsTest.labelsOf(km.labels(), (int64) 60);
         Assert.isTrue(Harness.randIndex(a, Shapes.blobLabels()) == 1.0);
     }
 
@@ -164,8 +164,8 @@ public class KMedoidsTest {
     // still inside its group. The robustness that justifies the algorithm.
     @Test
     public void outlierDragsKMeansCentroidButNotMedoid() {
-        Tensor<float64> x = KMedoidsTest.outlierFixture();
-        Tensor<float64> y = KMedoidsTest.ignoredY((int64) 9);
+        Tensor<float64> x #= KMedoidsTest.outlierFixture();
+        Tensor<float64> y #= KMedoidsTest.ignoredY((int64) 9);
         KMeans kme = heap KMeans((int64) 2, (uint64) 3);
         kme.fit(x, y);
         Tensor<float64> cen = kme.centers();
@@ -179,7 +179,7 @@ public class KMedoidsTest {
         KMedoids kmd = heap KMedoids((int64) 2);
         kmd.fit(x, y);
         Tensor<float64> med = kmd.medoids();
-        int64[] idx = kmd.medoidIndices();
+        int64[] idx #= kmd.medoidIndices();
         int64 c = 0;
         while (c < 2) {
             Assert.isTrue(KMedoidsTest.rowIdentical(x, idx[c], med, c,
@@ -196,8 +196,8 @@ public class KMedoidsTest {
     // constructor is Euclidean.
     @Test
     public void metricFlowsIntoTheObjective() {
-        Tensor<float64> x = KMedoidsTest.fixtureC();
-        Tensor<float64> y = KMedoidsTest.ignoredY((int64) 3);
+        Tensor<float64> x #= KMedoidsTest.fixtureC();
+        Tensor<float64> y #= KMedoidsTest.ignoredY((int64) 3);
         KMedoids ke = heap KMedoids((int64) 1, heap Euclidean());
         ke.fit(x, y);
         Assert.equals((int64) 2, ke.medoidIndices()[0]);
@@ -218,11 +218,11 @@ public class KMedoidsTest {
     // (sum of metric distances), and partitions match the recorded oracle.
     @Test
     public void parityWithPinnedSklearnExtra() {
-        Tensor<float64> a = KMedoidsTest.fixtureA();
-        Tensor<float64> ya = KMedoidsTest.ignoredY((int64) 7);
+        Tensor<float64> a #= KMedoidsTest.fixtureA();
+        Tensor<float64> ya #= KMedoidsTest.ignoredY((int64) 7);
         KMedoids k1 = heap KMedoids((int64) 2);
         k1.fit(a, ya);
-        int64[] i1 = k1.medoidIndices();
+        int64[] i1 #= k1.medoidIndices();
         Assert.equals((int64) 1, i1[0]);
         Assert.equals((int64) 4, i1[1]);
         Assert.isTrue(Fixtures.close(k1.inertia(),
@@ -231,13 +231,13 @@ public class KMedoidsTest {
         int64[] oa = heap int64[7];
         oa[0] = 1; oa[1] = 1; oa[2] = 1;
         oa[3] = 0; oa[4] = 0; oa[5] = 0; oa[6] = 0;
-        int64[] la = KMedoidsTest.labelsOf(k1.labels(), (int64) 7);
+        int64[] la #= KMedoidsTest.labelsOf(k1.labels(), (int64) 7);
         Assert.isTrue(Harness.randIndex(la, oa) == 1.0);
 
-        Tensor<float64> b = KMedoidsTest.fixtureB();
+        Tensor<float64> b #= KMedoidsTest.fixtureB();
         KMedoids k2 = heap KMedoids((int64) 3);
         k2.fit(b, KMedoidsTest.ignoredY((int64) 12));
-        int64[] i2 = k2.medoidIndices();
+        int64[] i2 #= k2.medoidIndices();
         Assert.equals((int64) 3, i2[0]);
         Assert.equals((int64) 4, i2[1]);
         Assert.equals((int64) 11, i2[2]);
@@ -246,7 +246,7 @@ public class KMedoidsTest {
 
         KMedoids k3 = heap KMedoids((int64) 2, heap Manhattan());
         k3.fit(a, ya);
-        int64[] i3 = k3.medoidIndices();
+        int64[] i3 #= k3.medoidIndices();
         Assert.equals((int64) 1, i3[0]);
         Assert.equals((int64) 3, i3[1]);
         Assert.isTrue(Fixtures.close(k3.inertia(),
@@ -258,21 +258,21 @@ public class KMedoidsTest {
     // vary, which is stronger than seeded reproduction.
     @Test
     public void deterministicFitReproduces() {
-        Tensor<float64> x = Shapes.blobs((uint64) 7);
-        Tensor<float64> y = KMedoidsTest.ignoredY((int64) 60);
+        Tensor<float64> x #= Shapes.blobs((uint64) 7);
+        Tensor<float64> y #= KMedoidsTest.ignoredY((int64) 60);
         KMedoids k1 = heap KMedoids((int64) 3);
         k1.fit(x, y);
         KMedoids k2 = heap KMedoids((int64) 3);
         k2.fit(x, y);
-        int64[] i1 = k1.medoidIndices();
-        int64[] i2 = k2.medoidIndices();
+        int64[] i1 #= k1.medoidIndices();
+        int64[] i2 #= k2.medoidIndices();
         int64 c = 0;
         while (c < 3) {
             Assert.equals(i1[c], i2[c]);
             c = c + 1;
         }
-        int64[] l1 = KMedoidsTest.labelsOf(k1.labels(), (int64) 60);
-        int64[] l2 = KMedoidsTest.labelsOf(k2.labels(), (int64) 60);
+        int64[] l1 #= KMedoidsTest.labelsOf(k1.labels(), (int64) 60);
+        int64[] l2 #= KMedoidsTest.labelsOf(k2.labels(), (int64) 60);
         int64 i = 0;
         while (i < 60) {
             Assert.equals(l1[i], l2[i]);
@@ -289,16 +289,16 @@ public class KMedoidsTest {
         KMedoids km = heap KMedoids((int64) 2);
         Assert.isFalse(km.isFitted());
         Assert.assertThrows(() -> {
-            Tensor<float64> xa = KMedoidsTest.fixtureA();
+            Tensor<float64> xa #= KMedoidsTest.fixtureA();
             KMedoids bad = heap KMedoids((int64) 2);
             bad.predict(xa);
         });
-        Tensor<float64> x = KMedoidsTest.fixtureA();
-        Tensor<float64> y = KMedoidsTest.ignoredY((int64) 7);
+        Tensor<float64> x #= KMedoidsTest.fixtureA();
+        Tensor<float64> y #= KMedoidsTest.ignoredY((int64) 7);
         km.fit(x, y);
         Assert.isTrue(km.isFitted());
         // Training rows predict their own fitted labels.
-        Tensor<float64> pl = km.predict(x);
+        Tensor<float64> pl #= km.predict(x);
         Tensor<float64> fl = km.labels();
         int64 i = 0;
         while (i < 7) {
@@ -314,22 +314,22 @@ public class KMedoidsTest {
     // DBSCAN's reason to exist); moons partially confound it.
     @Test
     public void scoredAgainstSeparatingShapes() {
-        Tensor<float64> xb = Shapes.blobs((uint64) 7);
+        Tensor<float64> xb #= Shapes.blobs((uint64) 7);
         KMedoids kb = heap KMedoids((int64) 3);
         kb.fit(xb, KMedoidsTest.ignoredY((int64) 60));
-        int64[] lb = KMedoidsTest.labelsOf(kb.labels(), (int64) 60);
+        int64[] lb #= KMedoidsTest.labelsOf(kb.labels(), (int64) 60);
         Assert.isTrue(Harness.randIndex(lb, Shapes.blobLabels()) == 1.0);
 
-        Tensor<float64> xc = Shapes.circles((uint64) 11);
+        Tensor<float64> xc #= Shapes.circles((uint64) 11);
         KMedoids kc = heap KMedoids((int64) 2);
         kc.fit(xc, KMedoidsTest.ignoredY((int64) 80));
-        int64[] lc = KMedoidsTest.labelsOf(kc.labels(), (int64) 80);
+        int64[] lc #= KMedoidsTest.labelsOf(kc.labels(), (int64) 80);
         Assert.isTrue(Harness.randIndex(lc, Shapes.circleLabels()) < 0.8);
 
-        Tensor<float64> xm = Shapes.moons((uint64) 13);
+        Tensor<float64> xm #= Shapes.moons((uint64) 13);
         KMedoids kmn = heap KMedoids((int64) 2);
         kmn.fit(xm, KMedoidsTest.ignoredY((int64) 80));
-        int64[] lm = KMedoidsTest.labelsOf(kmn.labels(), (int64) 80);
+        int64[] lm #= KMedoidsTest.labelsOf(kmn.labels(), (int64) 80);
         Assert.isTrue(Harness.randIndex(lm, Shapes.moonLabels()) < 0.95);
     }
 }

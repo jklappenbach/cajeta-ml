@@ -35,13 +35,13 @@ public final class IdentityTransformer implements Transformer {
         if (!this.fitted) {
             throw heap MlException("IdentityTransformer.transform: fit first");
         }
-        Tensor<float64> out = x.copy();
+        Tensor<float64> out #= x.copy();
         return #out;
     }
 
     public #Tensor<float64> fitTransform(Tensor<float64> x, Tensor<float64> y) {
         this.fit(x, y);
-        Tensor<float64> out = this.transform(x);
+        Tensor<float64> out #= this.transform(x);
         return #out;
     }
 }

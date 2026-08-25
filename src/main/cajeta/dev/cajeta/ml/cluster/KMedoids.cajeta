@@ -86,7 +86,7 @@ public final class KMedoids implements Predictor {
             throw heap MlException("KMedoids.fit: n < k");
         }
 
-        Tensor<float64> dm = Distance.pdist(x, this.metricM);
+        Tensor<float64> dm #= Distance.pdist(x, this.metricM);
 
         int64[] med = heap int64[k];
         boolean[] isMed = heap boolean[n];
@@ -272,10 +272,10 @@ public final class KMedoids implements Predictor {
         int64[] ms = heap int64[2];
         ms[0] = k;
         ms[1] = p;
-        Tensor<float64> mm = Tensor.of<float64>(mrows, ms);
+        Tensor<float64> mm #= Tensor.of<float64>(mrows, ms);
         int64[] ls = heap int64[1];
         ls[0] = n;
-        Tensor<float64> lm = Tensor.of<float64>(lab, ls);
+        Tensor<float64> lm #= Tensor.of<float64>(lab, ls);
         this.medoidsM #= mm;
         this.medIdx #= med;
         this.labelsV #= lm;
@@ -345,7 +345,7 @@ public final class KMedoids implements Predictor {
         }
         int64 n = x.shapeAt(0);
         int64 k = this.medoidsM.shapeAt(0);
-        Tensor<float64> dm = Distance.cdist(x, this.medoidsM, this.metricM);
+        Tensor<float64> dm #= Distance.cdist(x, this.medoidsM, this.metricM);
         float64[] out = heap float64[n];
         int64 i = 0;
         while (i < n) {
@@ -376,7 +376,7 @@ public final class KMedoids implements Predictor {
         }
         int64 n = x.shapeAt(0);
         int64 k = this.medoidsM.shapeAt(0);
-        Tensor<float64> dm = Distance.cdist(x, this.medoidsM, this.metricM);
+        Tensor<float64> dm #= Distance.cdist(x, this.medoidsM, this.metricM);
         float64 tot = 0.0;
         int64 i = 0;
         while (i < n) {

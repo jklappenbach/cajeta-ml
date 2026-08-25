@@ -39,9 +39,9 @@ public class ProtocolTest {
         DummyRegressor d = heap DummyRegressor();
         Assert.isFalse(d.isFitted());
         boolean threw = false;
-        Tensor<float64> x = ProtocolTest.xFix();
+        Tensor<float64> x #= ProtocolTest.xFix();
         try {
-            Tensor<float64> p = d.predict(x);
+            Tensor<float64> p #= d.predict(x);
         } catch (MlException ex) {
             threw = true;
         }
@@ -51,11 +51,11 @@ public class ProtocolTest {
     @Test
     public void fitPredictScoreLifecycle() {
         DummyRegressor d = heap DummyRegressor();
-        Tensor<float64> x = ProtocolTest.xFix();
-        Tensor<float64> y = ProtocolTest.yFix();
+        Tensor<float64> x #= ProtocolTest.xFix();
+        Tensor<float64> y #= ProtocolTest.yFix();
         d.fit(x, y);
         Assert.isTrue(d.isFitted());
-        Tensor<float64> p = d.predict(x);
+        Tensor<float64> p #= d.predict(x);
         Assert.equals((int64) 1, (int64) p.ndim());
         Assert.equals((int64) 4, p.shapeAt(0));
         // mean of [1,3,5,7] = 4, predicted for every row
@@ -74,11 +74,11 @@ public class ProtocolTest {
     @Test
     public void fitRejectsShapeMismatch() {
         DummyRegressor d = heap DummyRegressor();
-        Tensor<float64> x = ProtocolTest.xFix();
+        Tensor<float64> x #= ProtocolTest.xFix();
         float64[] dy = [ 1.0, 2.0 ];
         int64[] sh = heap int64[1];
         sh[0] = 2;
-        Tensor<float64> yShort = Tensor.of<float64>(dy, sh);
+        Tensor<float64> yShort #= Tensor.of<float64>(dy, sh);
         boolean threw = false;
         try {
             d.fit(x, yShort);
@@ -99,10 +99,10 @@ public class ProtocolTest {
     public void predictorIsUsableThroughTheInterface() {
         // the protocol's point: model-selection code sees only `Predictor`
         Predictor p = heap DummyRegressor();
-        Tensor<float64> x = ProtocolTest.xFix();
-        Tensor<float64> y = ProtocolTest.yFix();
+        Tensor<float64> x #= ProtocolTest.xFix();
+        Tensor<float64> y #= ProtocolTest.yFix();
         p.fit(x, y);
-        Tensor<float64> out = p.predict(x);
+        Tensor<float64> out #= p.predict(x);
         Assert.equals((int64) 4, out.shapeAt(0));
         Assert.isTrue(out.get1(0) == 4.0);
     }
@@ -110,21 +110,21 @@ public class ProtocolTest {
     @Test
     public void transformerLifecycleAndFitTransform() {
         IdentityTransformer t = heap IdentityTransformer();
-        Tensor<float64> x = ProtocolTest.xFix();
-        Tensor<float64> y = ProtocolTest.yFix();
+        Tensor<float64> x #= ProtocolTest.xFix();
+        Tensor<float64> y #= ProtocolTest.yFix();
         boolean threw = false;
         try {
-            Tensor<float64> bad = t.transform(x);
+            Tensor<float64> bad #= t.transform(x);
         } catch (MlException ex) {
             threw = true;
         }
         Assert.isTrue(threw);
         // fitTransform == fit-then-transform, elementwise
-        Tensor<float64> a = t.fitTransform(x, y);
+        Tensor<float64> a #= t.fitTransform(x, y);
         Assert.isTrue(t.isFitted());
         IdentityTransformer t2 = heap IdentityTransformer();
         t2.fit(x, y);
-        Tensor<float64> b = t2.transform(x);
+        Tensor<float64> b #= t2.transform(x);
         int64 i = 0;
         while (i < 4) {
             int64 j = 0;

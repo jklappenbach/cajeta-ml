@@ -83,8 +83,8 @@ public final class KernelRegressor implements Predictor {
             throw heap MlException(
                 "KernelRegressor.fit: y must be (n,) matching x rows");
         }
-        Tensor<float64> cx = x.copy();
-        Tensor<float64> cy = y.copy();
+        Tensor<float64> cx #= x.copy();
+        Tensor<float64> cy #= y.copy();
         this.trainX #= cx;
         this.trainY #= cy;
         this.fitted = true;
@@ -125,12 +125,12 @@ public final class KernelRegressor implements Predictor {
         int64 m = this.trainX.shapeAt(0);
         int64[] vs = heap int64[1];
         vs[0] = p;
-        Tensor<float64> qv = Tensor.zeros<float64>(vs);
-        Tensor<float64> tv = Tensor.zeros<float64>(vs);
+        Tensor<float64> qv #= Tensor.zeros<float64>(vs);
+        Tensor<float64> tv #= Tensor.zeros<float64>(vs);
         Metric fallbackE = heap Euclidean();
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             float64 num = 0.0;
@@ -177,7 +177,7 @@ public final class KernelRegressor implements Predictor {
 
     /** R² — the regressor `score` convention. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pr = this.predict(x);
+        Tensor<float64> pr #= this.predict(x);
         return Metrics.r2(y, pr);
     }
 }

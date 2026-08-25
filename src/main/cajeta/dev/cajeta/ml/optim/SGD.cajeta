@@ -54,7 +54,7 @@ public final class SGD implements Optimizer {
             Tensor<float32>[] vel = heap Tensor<float32>[n];
             int32 j = 0;
             while (j < n) {
-                vel[j] = Tensor.zerosLike<float32>(this.params[j].get());
+                vel[j] #= Tensor.zerosLike<float32>(this.params[j].get());
                 j = j + 1;
             }
             boolean[] ac = heap boolean[n];

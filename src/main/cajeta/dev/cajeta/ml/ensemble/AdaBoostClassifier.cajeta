@@ -90,7 +90,7 @@ public final class AdaBoostClassifier implements Predictor {
             while (i < n) { wc[i] = w[i]; i = i + 1; }
             DecisionTreeClassifier t = heap DecisionTreeClassifier("gini", this.baseDepth);
             t.fitWeighted(x, y, Tensor.of<float64>(wc, wsh));
-            Tensor<float64> p = t.predict(x);
+            Tensor<float64> p #= t.predict(x);
 
             float64 err = 0.0;
             float64 wsum = 0.0;
@@ -173,7 +173,7 @@ public final class AdaBoostClassifier implements Predictor {
         int64 e = 0;
         while (e < this.nUsed) {
             DecisionTreeClassifier t = this.members.get((int32) e);
-            Tensor<float64> p = t.predict(x);
+            Tensor<float64> p #= t.predict(x);
             int64 r = 0;
             while (r < n) {
                 int64 lb = (int64) p.flatGet(r);
@@ -200,7 +200,7 @@ public final class AdaBoostClassifier implements Predictor {
 
     /** Accuracy. */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         int64 n = p.shapeAt(0);
         int64 hits = 0;
         int64 i = 0;

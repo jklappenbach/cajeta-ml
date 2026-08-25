@@ -75,7 +75,7 @@ public final class GradientBoostingRegressor implements Predictor {
             DecisionTreeRegressor t = heap DecisionTreeRegressor(
                 "squared_error", this.maxDepth);
             t.fit(x, Tensor.of<float64>(res, rsh));
-            Tensor<float64> p = t.predict(x);
+            Tensor<float64> p #= t.predict(x);
             i = 0;
             while (i < n) {
                 fcur[i] = fcur[i] + this.learningRate * p.flatGet(i);
@@ -105,7 +105,7 @@ public final class GradientBoostingRegressor implements Predictor {
         int64 e = 0;
         while (e < this.nEstimators) {
             DecisionTreeRegressor t = this.members.get((int32) e);
-            Tensor<float64> p = t.predict(x);
+            Tensor<float64> p #= t.predict(x);
             i = 0;
             while (i < n) { acc[i] = acc[i] + this.learningRate * p.flatGet(i); i = i + 1; }
             e = e + 1;
@@ -130,7 +130,7 @@ public final class GradientBoostingRegressor implements Predictor {
         int64 e = 0;
         while (e < this.nEstimators) {
             DecisionTreeRegressor t = this.members.get((int32) e);
-            Tensor<float64> p = t.predict(x);
+            Tensor<float64> p #= t.predict(x);
             i = 0;
             while (i < n) {
                 acc[i] = acc[i] + this.learningRate * p.flatGet(i);
@@ -145,7 +145,7 @@ public final class GradientBoostingRegressor implements Predictor {
 
     /** R². */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> p = this.predict(x);
+        Tensor<float64> p #= this.predict(x);
         return Metrics.r2(y, p);
     }
 }

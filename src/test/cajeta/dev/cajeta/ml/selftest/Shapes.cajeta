@@ -18,11 +18,11 @@ public final class Shapes {
     /** 3 well-separated blobs, 20 points each, centers (0,0)/(8,8)/(-8,8). */
     public static #Tensor<float64> blobs(uint64 seed) {
         Generator gen = heap Generator(seed);
-        Tensor<float32> j = gen.normal((int64) 120);
+        Tensor<float32> j #= gen.normal((int64) 120);
         int64[] sh = heap int64[2];
         sh[0] = 60;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         float64[] cx = heap float64[3];
         cx[0] = 0.0; cx[1] = 8.0; cx[2] = -8.0;
         float64[] cy = heap float64[3];
@@ -51,11 +51,11 @@ public final class Shapes {
     /** Two concentric circles: 40 inner (r≈0.4–0.5), 40 outer (r≈1.0–1.1). */
     public static #Tensor<float64> circles(uint64 seed) {
         Generator gen = heap Generator(seed);
-        Tensor<float32> u = gen.uniform((int64) 160);
+        Tensor<float32> u #= gen.uniform((int64) 160);
         int64[] sh = heap int64[2];
         sh[0] = 80;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 80) {
             float64 theta = 2.0 * 3.14159265358979 * (float64) u.get1(i * 2);
@@ -85,12 +85,12 @@ public final class Shapes {
     /** Two interleaved moons, 40 points each, jitter 0.05. */
     public static #Tensor<float64> moons(uint64 seed) {
         Generator gen = heap Generator(seed);
-        Tensor<float32> u = gen.uniform((int64) 80);
-        Tensor<float32> j = gen.normal((int64) 160);
+        Tensor<float32> u #= gen.uniform((int64) 80);
+        Tensor<float32> j #= gen.normal((int64) 160);
         int64[] sh = heap int64[2];
         sh[0] = 80;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 80) {
             float64 t = 3.14159265358979 * (float64) u.get1(i);
@@ -121,11 +121,11 @@ public final class Shapes {
     /** Two OVERLAPPING unit-variance Gaussians at (0,0) and (2.5,0), 60 each. */
     public static #Tensor<float64> overlapGaussians(uint64 seed) {
         Generator gen = heap Generator(seed);
-        Tensor<float32> j = gen.normal((int64) 240);
+        Tensor<float32> j #= gen.normal((int64) 240);
         int64[] sh = heap int64[2];
         sh[0] = 120;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 120) {
             float64 mx = 0.0;
@@ -154,11 +154,11 @@ public final class Shapes {
      *  far-away noise points. Labels: 0/1, noise = -1 (§7.2's fixture). */
     public static #Tensor<float64> noisyBlobs(uint64 seed) {
         Generator gen = heap Generator(seed);
-        Tensor<float32> j = gen.normal((int64) 90);
+        Tensor<float32> j #= gen.normal((int64) 90);
         int64[] sh = heap int64[2];
         sh[0] = 45;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 40) {
             float64 c = 0.0;
@@ -206,11 +206,11 @@ public final class Shapes {
      *  axis and clustering follows noise; scaled, the true grouping wins. */
     public static #Tensor<float64> mixedUnits(uint64 seed) {
         Generator gen = heap Generator(seed);
-        Tensor<float32> u = gen.uniform((int64) 80);
+        Tensor<float32> u #= gen.uniform((int64) 80);
         int64[] sh = heap int64[2];
         sh[0] = 40;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 40) {
             float64 c = 0.0;
@@ -241,11 +241,11 @@ public final class Shapes {
      *  first (single perfect 30/30, ward < 0.8 in 30/30). */
     public static #Tensor<float64> denseCircles(uint64 seed) {
         Generator gen = heap Generator(seed);
-        Tensor<float32> u = gen.uniform((int64) 320);
+        Tensor<float32> u #= gen.uniform((int64) 320);
         int64[] sh = heap int64[2];
         sh[0] = 160;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 160) {
             float64 theta = 2.0 * 3.14159265358979 * (float64) u.get1(i * 2);
@@ -280,11 +280,11 @@ public final class Shapes {
      *  against sklearn, margin 0.16–0.38 Rand). */
     public static #Tensor<float64> unequalVariance(uint64 seed) {
         Generator gen = heap Generator(seed);
-        Tensor<float32> j = gen.normal((int64) 240);
+        Tensor<float32> j #= gen.normal((int64) 240);
         int64[] sh = heap int64[2];
         sh[0] = 120;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 120) {
             float64 mx = 0.0;

@@ -35,7 +35,7 @@ public class SeqClassifier extends Module {
     public static #Tensor<float32> inputs() {
         int64[] s = heap int64[3];
         s[0] = 16; s[1] = 4; s[2] = 4;
-        Tensor<float32> t = Tensor.zeros<float32>(s);
+        Tensor<float32> t #= Tensor.zeros<float32>(s);
         int64 n = 0;
         while (n < 16) {
             int64 cls = n % 4;
@@ -60,7 +60,7 @@ public class SeqClassifier extends Module {
     public static #Tensor<float32> labels() {
         int64[] s = heap int64[1];
         s[0] = 16;
-        Tensor<float32> y = Tensor.zeros<float32>(s);
+        Tensor<float32> y #= Tensor.zeros<float32>(s);
         int64 n = 0;
         while (n < 16) {
             y.flatSet(n, (float32) (n % 4));

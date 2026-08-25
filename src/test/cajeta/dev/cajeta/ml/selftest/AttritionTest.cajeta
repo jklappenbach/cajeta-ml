@@ -36,10 +36,10 @@ public class AttritionTest {
         String dir = System.env.get("ML_ATTRITION_DIR");
         if (dir == null) { return; }
 
-        Tensor<float64> xtr = Npy.loadF64(dir + "/x_train.npy");
-        Tensor<float64> ytr = Npy.loadF64(dir + "/y_train.npy");
-        Tensor<float64> xte = Npy.loadF64(dir + "/x_test.npy");
-        Tensor<float64> yte = Npy.loadF64(dir + "/y_test.npy");
+        Tensor<float64> xtr #= Npy.loadF64(dir + "/x_train.npy");
+        Tensor<float64> ytr #= Npy.loadF64(dir + "/y_train.npy");
+        Tensor<float64> xte #= Npy.loadF64(dir + "/x_test.npy");
+        Tensor<float64> yte #= Npy.loadF64(dir + "/y_test.npy");
         Assert.equals(xtr.shapeAt(0), (int64) 2058);
         Assert.equals(xtr.shapeAt(1), (int64) 44);
         Assert.equals(xte.shapeAt(0), (int64) 882);
@@ -55,12 +55,12 @@ public class AttritionTest {
         // exact root split (OverTime <= 0.5 — column 12).
         Assert.isTrue(dt.score(xtr, ytr) == 1.0);
         Assert.equals(dt.depth(), (int64) 16);
-        String ex = dt.exportText();
+        String ex #= dt.exportText();
         Assert.isTrue(ex.indexOf("|--- f12 <= 0.5") == (int64) 0);
 
         // Test: the regenerated sklearn 1.9.0 pins at 0.03.
         float64 acc = dt.score(xte, yte);
-        Tensor<float64> p = dt.predict(xte);
+        Tensor<float64> p #= dt.predict(xte);
         int64 n = xte.shapeAt(0);
         int64 tp = 0;
         int64 fn = 0;

@@ -44,7 +44,7 @@ public class Normalize implements Transform {
         int64 n = x.shapeAt(0);
         int64 c = x.shapeAt(1);
         int64 hw = x.shapeAt(2) * x.shapeAt(3);
-        Tensor<float32> out = Tensor.zeros<float32>(x.shape());
+        Tensor<float32> out #= Tensor.zeros<float32>(x.shape());
         int64 s = 0;
         while (s < n) {
             int64 ci = 0;

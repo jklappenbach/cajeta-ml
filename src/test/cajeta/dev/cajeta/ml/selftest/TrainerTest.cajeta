@@ -60,7 +60,7 @@ public class TrainerTest {
     static #Parameter[] startParam() {
         int64[] s = heap int64[1];
         s[0] = 4;
-        Tensor<float32> v = Tensor.zeros<float32>(s);
+        Tensor<float32> v #= Tensor.zeros<float32>(s);
         v.flatSet(0, 0.5f);
         v.flatSet(1, -0.25f);
         v.flatSet(2, 1.0f);
@@ -74,7 +74,7 @@ public class TrainerTest {
     static #Tensor<float32>[] gradAt(int64 s) {
         int64[] sh = heap int64[1];
         sh[0] = 4;
-        Tensor<float32> g = Tensor.zeros<float32>(sh);
+        Tensor<float32> g #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < 4) {
             g.flatSet(i, (float32) ((s + i) % 5) * 0.25f - 0.5f);
@@ -89,7 +89,7 @@ public class TrainerTest {
 
     @Test
     public void sgdPlainTrajectoryMatchesTorch() {
-        Parameter[] ps = TrainerTest.startParam();
+        Parameter[] ps #= TrainerTest.startParam();
         Parameter p = ps[0];
         Optimizer opt = heap SGD(#ps, 0.1f, 0.0f);
         int64 s = 0;
@@ -103,7 +103,7 @@ public class TrainerTest {
 
     @Test
     public void sgdMomentumTrajectoryMatchesTorch() {
-        Parameter[] ps = TrainerTest.startParam();
+        Parameter[] ps #= TrainerTest.startParam();
         Parameter p = ps[0];
         Optimizer opt = heap SGD(#ps, 0.1f, 0.9f);
         // step 1 pins the first momentum accumulation, step 4 the compounding
@@ -121,7 +121,7 @@ public class TrainerTest {
 
     @Test
     public void adamTrajectoryMatchesTorch() {
-        Parameter[] ps = TrainerTest.startParam();
+        Parameter[] ps #= TrainerTest.startParam();
         Parameter p = ps[0];
         Optimizer opt = heap Adam(#ps, 0.1f);
         opt.step(TrainerTest.gradAt(0));
@@ -144,7 +144,7 @@ public class TrainerTest {
      *  from the very first step. */
     @Test
     public void adamWDecoupledDecayMatchesTorch() {
-        Parameter[] ps = TrainerTest.startParam();
+        Parameter[] ps #= TrainerTest.startParam();
         Parameter p = ps[0];
         Optimizer opt = heap AdamW(#ps, 0.1f, 0.01f);
         opt.step(TrainerTest.gradAt(0));
@@ -160,7 +160,7 @@ public class TrainerTest {
 
         // ...and it is NOT the same as Adam's trajectory: decoupled decay
         // is a different update, not a reparameterization of the same one.
-        Parameter[] ps2 = TrainerTest.startParam();
+        Parameter[] ps2 #= TrainerTest.startParam();
         Parameter p2 = ps2[0];
         Optimizer plain = heap Adam(#ps2, 0.1f);
         s = 0;
@@ -212,14 +212,14 @@ public class TrainerTest {
 
     @Test
     public void batchingIsDeterministicPerSeedAndEpoch() {
-        Tensor<float32> x = Digits.images(5, 4, 0.1f, 3L);
-        Tensor<float32> y = Digits.labels(5, 4);
+        Tensor<float32> x #= Digits.images(5, 4, 0.1f, 3L);
+        Tensor<float32> y #= Digits.labels(5, 4);
         Batches a = heap Batches(x, y, 6, 99L);
         Batches b = heap Batches(x, y, 6, 99L);
         a.reorder(2);
         b.reorder(2);
-        int64[] ra = a.batchRows(0);
-        int64[] rb = b.batchRows(0);
+        int64[] ra #= a.batchRows(0);
+        int64[] rb #= b.batchRows(0);
         int32 i = 0;
         while (i < (int32) ra.count()) {
             Assert.isTrue(ra[i] == rb[i]);
@@ -228,7 +228,7 @@ public class TrainerTest {
         // a DIFFERENT epoch reorders — and epoch 2 is reproducible from the
         // seed alone, without replaying epochs 0 and 1
         b.reorder(3);
-        int64[] rc = b.batchRows(0);
+        int64[] rc #= b.batchRows(0);
         boolean differs = false;
         i = 0;
         while (i < (int32) ra.count()) {
@@ -238,7 +238,7 @@ public class TrainerTest {
         Assert.isTrue(differs);
         Batches fresh = heap Batches(x, y, 6, 99L);
         fresh.reorder(2);
-        int64[] rd = fresh.batchRows(0);
+        int64[] rd #= fresh.batchRows(0);
         i = 0;
         while (i < (int32) ra.count()) {
             Assert.isTrue(ra[i] == rd[i]);
@@ -248,8 +248,8 @@ public class TrainerTest {
 
     @Test
     public void batchingCoversEveryRowExactlyOnce() {
-        Tensor<float32> x = Digits.images(5, 4, 0.1f, 3L);
-        Tensor<float32> y = Digits.labels(5, 4);
+        Tensor<float32> x #= Digits.images(5, 4, 0.1f, 3L);
+        Tensor<float32> y #= Digits.labels(5, 4);
         Batches d = heap Batches(x, y, 6, 7L);     // 20 rows / 6 = 4 batches
         Assert.isTrue(d.rowCount() == 20);
         Assert.isTrue(d.batchCount() == 4);
@@ -257,7 +257,7 @@ public class TrainerTest {
         int64 b = 0;
         int64 total = 0;
         while (b < d.batchCount()) {
-            int64[] rows = d.batchRows(b);
+            int64[] rows #= d.batchRows(b);
             int64 i = 0;
             while (i < (int64) rows.count()) {
                 seen[rows[i]] = seen[rows[i]] + 1;
@@ -277,12 +277,12 @@ public class TrainerTest {
 
     @Test
     public void batchTensorsCarryTheRightRows() {
-        Tensor<float32> x = Digits.images(2, 2, 0.0f, 5L);   // noiseless
-        Tensor<float32> y = Digits.labels(2, 2);
+        Tensor<float32> x #= Digits.images(2, 2, 0.0f, 5L);   // noiseless
+        Tensor<float32> y #= Digits.labels(2, 2);
         Batches d = heap Batches(x, y, 3, 11L);
-        int64[] rows = d.batchRows(0);
-        Tensor<float32> bx = d.batchX(0);
-        Tensor<float32> by = d.batchY(0);
+        int64[] rows #= d.batchRows(0);
+        Tensor<float32> bx #= d.batchX(0);
+        Tensor<float32> by #= d.batchY(0);
         Assert.isTrue(bx.shapeAt(0) == (int64) rows.count());
         Assert.isTrue(bx.shapeAt(1) == 64);
         int64 i = 0;
@@ -300,12 +300,12 @@ public class TrainerTest {
     public void clipByGlobalNormMatchesTorch() {
         int64[] s2 = heap int64[1];
         s2[0] = 2;
-        Tensor<float32> g1 = Tensor.zeros<float32>(s2);
+        Tensor<float32> g1 #= Tensor.zeros<float32>(s2);
         g1.flatSet(0, 3.0f);
         g1.flatSet(1, 4.0f);
         int64[] s1 = heap int64[1];
         s1[0] = 1;
-        Tensor<float32> g2 = Tensor.zeros<float32>(s1);
+        Tensor<float32> g2 #= Tensor.zeros<float32>(s1);
         g2.flatSet(0, 12.0f);
         Tensor<float32>[] gs = heap Tensor<float32>[2];
         gs[0] = #g1;
@@ -323,7 +323,7 @@ public class TrainerTest {
     public void clipLeavesSmallGradientsAlone() {
         int64[] s = heap int64[1];
         s[0] = 2;
-        Tensor<float32> g = Tensor.zeros<float32>(s);
+        Tensor<float32> g #= Tensor.zeros<float32>(s);
         g.flatSet(0, 0.3f);
         g.flatSet(1, 0.4f);
         Tensor<float32>[] gs = heap Tensor<float32>[1];
@@ -339,12 +339,12 @@ public class TrainerTest {
     @Test
     public void mlpFullBatchSgdTrajectoryMatchesTorch() {
         TrainMlp net = heap TrainMlp();
-        Parameter[] ps = net.parameters();
+        Parameter[] ps #= net.parameters();
         Optimizer opt = heap SGD(net.parameters(), 0.1f, 0.0f);
         BackpropTrainer tr = heap BackpropTrainer(net, #opt, Loss.MSE, 0.0f);
 
-        Tensor<float32> x = TrainMlp.inputs();
-        Tensor<float32> y = TrainMlp.targets();
+        Tensor<float32> x #= TrainMlp.inputs();
+        Tensor<float32> y #= TrainMlp.targets();
         float64[] want = [0.90658194, 0.58905649, 0.44029745, 0.35471386,
                           0.30051339, 0.2635259, 0.23669648, 0.21622784,
                           0.19995217, 0.1865713, 0.17527525, 0.16571882,
@@ -378,10 +378,10 @@ public class TrainerTest {
         Optimizer opt = heap Adam(net.parameters(), 0.01f);
         BackpropTrainer tr = heap BackpropTrainer(net, #opt,
                                                   Loss.CROSS_ENTROPY, 1.0f);
-        Tensor<float32> x = Digits.images(12, 4, 0.25f, 17L);
-        Tensor<float32> y = Digits.labels(12, 4);
+        Tensor<float32> x #= Digits.images(12, 4, 0.25f, 17L);
+        Tensor<float32> y #= Digits.labels(12, 4);
         Batches data = heap Batches(x, y, 8, 23L);
-        TrainHistory hist = tr.fit(data, 12);
+        TrainHistory hist #= tr.fit(data, 12);
 
         Assert.isTrue(hist.epochs() == 12);
         // the loss actually came down, and substantially
@@ -390,7 +390,7 @@ public class TrainerTest {
 
         // and the trained net classifies the fixture it was shown
         net.eval();
-        Tensor<float32> logits = net.predict(x);
+        Tensor<float32> logits #= net.predict(x);
         int64 hits = 0;
         int64 r = 0;
         while (r < 48) {
@@ -418,11 +418,11 @@ public class TrainerTest {
         net.add(heap Linear(64, 1, 9L));
         Optimizer opt = heap SGD(net.parameters(), 5.0f, 0.0f);   // absurd lr
         BackpropTrainer tr = heap BackpropTrainer(net, #opt, Loss.MSE, 0.5f);
-        Tensor<float32> x = Digits.images(4, 2, 0.1f, 31L);
+        Tensor<float32> x #= Digits.images(4, 2, 0.1f, 31L);
         int64[] ys = heap int64[1];
         ys[0] = 8;
-        Tensor<float32> y = Tensor.full<float32>(ys, 100.0f);   // wild target
-        Parameter[] ps = net.parameters();
+        Tensor<float32> y #= Tensor.full<float32>(ys, 100.0f);   // wild target
+        Parameter[] ps #= net.parameters();
         int32 s = 0;
         while (s < 5) {
             float64 l = tr.stepOn(x, y, ps);

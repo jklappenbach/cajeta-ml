@@ -50,7 +50,7 @@ public final class PCA implements Transformer {
         // Center a working copy.
         int64[] pm = heap int64[1];
         pm[0] = p;
-        Tensor<float64> mu = Tensor.zeros<float64>(pm);
+        Tensor<float64> mu #= Tensor.zeros<float64>(pm);
         int64 j = 0;
         while (j < p) {
             float64 acc = 0.0;
@@ -59,7 +59,7 @@ public final class PCA implements Transformer {
             mu.set1(j, acc / (float64) n);
             j = j + 1;
         }
-        Tensor<float64> xc = x.copy();
+        Tensor<float64> xc #= x.copy();
         int64 i2 = 0;
         while (i2 < n) {
             j = 0;
@@ -70,7 +70,7 @@ public final class PCA implements Transformer {
             i2 = i2 + 1;
         }
 
-        Tensor<float64>[] usv = LinAlg.svd<float64>(xc);
+        Tensor<float64>[] usv #= LinAlg.svd<float64>(xc);
         Tensor<float64> s = usv[1];       // (r,) descending
         Tensor<float64> vt = usv[2];      // (r, p)
 
@@ -87,11 +87,11 @@ public final class PCA implements Transformer {
         int64[] cs = heap int64[2];
         cs[0] = k;
         cs[1] = p;
-        Tensor<float64> comp = Tensor.zeros<float64>(cs);
+        Tensor<float64> comp #= Tensor.zeros<float64>(cs);
         int64[] ks = heap int64[1];
         ks[0] = k;
-        Tensor<float64> ev = Tensor.zeros<float64>(ks);
-        Tensor<float64> ratio = Tensor.zeros<float64>(ks);
+        Tensor<float64> ev #= Tensor.zeros<float64>(ks);
+        Tensor<float64> ratio #= Tensor.zeros<float64>(ks);
         c = 0;
         while (c < k) {
             // svd_flip (v-based): the row's largest-|·| loading goes positive.
@@ -167,7 +167,7 @@ public final class PCA implements Transformer {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = k;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -207,7 +207,7 @@ public final class PCA implements Transformer {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = p;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             int64 j = 0;

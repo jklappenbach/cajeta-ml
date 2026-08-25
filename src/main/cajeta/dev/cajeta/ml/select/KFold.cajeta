@@ -40,10 +40,10 @@ public final class KFold {
         }
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        Tensor<int64> out #= Tensor.zeros<int64>(sh);
         // row order: identity, or a seeded permutation when shuffling
         Generator gen = heap Generator(this.seed);
-        Tensor<int64> perm = gen.permutation(n);
+        Tensor<int64> perm #= gen.permutation(n);
         int64 base = n / this.k;
         int64 extra = n % this.k;
         int64 pos = 0;

@@ -51,12 +51,12 @@ public class PcaTest {
 
     @Test
     public void componentsVarianceTransformMatchSklearn() {
-        Tensor<float64> x = PcaTest.fixX();
+        Tensor<float64> x #= PcaTest.fixX();
         int64[] esh = heap int64[1];
         esh[0] = 16;
-        Tensor<float64> yIgnored = Tensor.zeros<float64>(esh);
+        Tensor<float64> yIgnored #= Tensor.zeros<float64>(esh);
         PCA m = heap PCA((int64) 2);
-        Tensor<float64> t = m.fitTransform(x, yIgnored);
+        Tensor<float64> t #= m.fitTransform(x, yIgnored);
 
         Tensor<float64> comp = m.components();
         Assert.isTrue(PcaTest.near(comp.get2(0, 0), 0.40822972665136936));
@@ -79,7 +79,7 @@ public class PcaTest {
         Assert.isTrue(PcaTest.near(t.get2(15, 1), -0.13019844143263423));
 
         // Lossy reconstruction: max |err| matches sklearn's residual.
-        Tensor<float64> back = m.inverseTransform(t);
+        Tensor<float64> back #= m.inverseTransform(t);
         float64 maxErr = 0.0;
         int64 i = 0;
         while (i < 16) {
@@ -98,7 +98,7 @@ public class PcaTest {
     @Test
     public void pcrPipelineEndToEnd() {
         // Principal-component regression: PCA(2) → OLS as a Pipeline.
-        Tensor<float64> x = PcaTest.fixX();
+        Tensor<float64> x #= PcaTest.fixX();
         int64 n = 16;
         float64[] yd = heap float64[n];
         int64 i = 0;
@@ -109,11 +109,11 @@ public class PcaTest {
         }
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> y = Tensor.of<float64>(yd, sh);
+        Tensor<float64> y #= Tensor.of<float64>(yd, sh);
 
         PCA pca = heap PCA((int64) 2);
         LinearRegression lr = heap LinearRegression(true);
-        Pipeline pl = Pipeline.of(#pca, #lr);
+        Pipeline pl #= Pipeline.of(#pca, #lr);
         pl.fit(x, y);
         // The dominant direction carries t; the discarded 3rd PC keeps a
         // sliver of it, so the attainable R² is 0.99947 (verified with

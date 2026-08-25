@@ -35,10 +35,10 @@ public final class RepeatedHoldout {
                               Tensor<float64> y, String metric) {
         int64[] sh = heap int64[1];
         sh[0] = this.splitsV;
-        Tensor<float64> scores = Tensor.zeros<float64>(sh);
+        Tensor<float64> scores #= Tensor.zeros<float64>(sh);
         int64 s = 0;
         while (s < this.splitsV) {
-            Tensor<float64>[] parts = Split.trainTestSplit(x, y, this.fracV,
+            Tensor<float64>[] parts #= Split.trainTestSplit(x, y, this.fracV,
                 this.seedV + (uint64) s);
             est.fit(parts[0], parts[2]);
             scores.set1(s, Scorers.score(metric, est, parts[1], parts[3]));

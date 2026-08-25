@@ -78,10 +78,10 @@ public final class Pipeline implements Predictor {
             this.fitted = true;
             return;
         }
-        Tensor<float64> cur = this.stageAt(0).fitTransform(x, y);
+        Tensor<float64> cur #= this.stageAt(0).fitTransform(x, y);
         int32 i = 1;
         while (i < this.nStages) {
-            Tensor<float64> nxt = this.stageAt(i).fitTransform(cur, y);
+            Tensor<float64> nxt #= this.stageAt(i).fitTransform(cur, y);
             cur #= nxt;
             i = i + 1;
         }
@@ -100,13 +100,13 @@ public final class Pipeline implements Predictor {
             throw heap MlException("Pipeline.transformChain: fit first");
         }
         if (this.nStages == 0) {
-            Tensor<float64> cp = x.copy();
+            Tensor<float64> cp #= x.copy();
             return #cp;
         }
-        Tensor<float64> cur = this.stageAt(0).transform(x);
+        Tensor<float64> cur #= this.stageAt(0).transform(x);
         int32 i = 1;
         while (i < this.nStages) {
-            Tensor<float64> nxt = this.stageAt(i).transform(cur);
+            Tensor<float64> nxt #= this.stageAt(i).transform(cur);
             cur #= nxt;
             i = i + 1;
         }
@@ -120,7 +120,7 @@ public final class Pipeline implements Predictor {
         if (this.nStages == 0) {
             return this.last.predict(x);
         }
-        Tensor<float64> tx = this.transformChain(x);
+        Tensor<float64> tx #= this.transformChain(x);
         return this.last.predict(tx);
     }
 
@@ -132,7 +132,7 @@ public final class Pipeline implements Predictor {
         if (this.nStages == 0) {
             return this.last.score(x, y);
         }
-        Tensor<float64> tx = this.transformChain(x);
+        Tensor<float64> tx #= this.transformChain(x);
         return this.last.score(tx, y);
     }
 }

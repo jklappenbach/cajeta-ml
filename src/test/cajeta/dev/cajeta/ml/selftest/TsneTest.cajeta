@@ -32,15 +32,15 @@ public class TsneTest {
     // when q vanishes where p does not.
     @Test
     public void klDivergenceIsStdlibsAndAsymmetric() {
-        Tensor<float64> p = TsneTest.vec2(0.5, 0.5);
-        Tensor<float64> q = TsneTest.vec2(0.9, 0.1);
+        Tensor<float64> p #= TsneTest.vec2(0.5, 0.5);
+        Tensor<float64> q #= TsneTest.vec2(0.9, 0.1);
         float64 pq = Information.klDivergence(p, q);
         float64 qp = Information.klDivergence(q, p);
         // 0.5·ln(0.5/0.9) + 0.5·ln(0.5/0.1)
         Assert.isTrue(Fixtures.close(pq, 0.5108256237659907, 0.000000000001));
         Assert.isTrue(Fixtures.close(qp, 0.3680642071684971, 0.000000000001));
         Assert.isTrue(pq != qp);
-        Tensor<float64> q0 = TsneTest.vec2(1.0, 0.0);
+        Tensor<float64> q0 #= TsneTest.vec2(1.0, 0.0);
         float64 inf = Information.klDivergence(p, q0);
         Assert.isTrue(inf > 1.0E300);
         Assert.isTrue(inf == inf);      // +infinity, not NaN
@@ -54,12 +54,12 @@ public class TsneTest {
     // Rand 0.977, KL 0.43).
     @Test
     public void embeddingPreservesClusterStructure() {
-        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        Tensor<float64> x #= Shapes.blobs((uint64) 7);
         TSNE ts = heap TSNE((int64) 2, 10.0, (uint64) 3);
-        Tensor<float64> e = ts.fitTransform(x);
+        Tensor<float64> e #= ts.fitTransform(x);
         Assert.equals((int64) 60, e.shapeAt(0));
         Assert.equals((int64) 2, e.shapeAt(1));
-        int64[] truth = Shapes.blobLabels();
+        int64[] truth #= Shapes.blobLabels();
         // Neighbourhood preservation: 5-NN same-label fraction.
         float64 agree = 0.0;
         boolean[] used = heap boolean[60];
@@ -103,7 +103,7 @@ public class TsneTest {
         // Cluster agreement via K-means on the embedding.
         int64[] ys = heap int64[1];
         ys[0] = 60;
-        Tensor<float64> y = Tensor.zeros<float64>(ys);
+        Tensor<float64> y #= Tensor.zeros<float64>(ys);
         KMeans km = heap KMeans((int64) 3, (uint64) 1);
         km.fit(e, y);
         int64[] lab = heap int64[60];
@@ -122,7 +122,7 @@ public class TsneTest {
     @Test
     public void absurdPerplexityIsRejected() {
         Assert.assertThrows(() -> {
-            Tensor<float64> x = Shapes.blobs((uint64) 7);
+            Tensor<float64> x #= Shapes.blobs((uint64) 7);
             TSNE bad = heap TSNE((int64) 2, 30.0, (uint64) 3);
             bad.fitTransform(x);        // 3·30 >= 60
         });
@@ -136,18 +136,18 @@ public class TsneTest {
     // seed lands elsewhere (t-SNE is randomly initialized).
     @Test
     public void seededRunsReproduceExactly() {
-        Tensor<float64> x = Shapes.blobs((uint64) 7);
+        Tensor<float64> x #= Shapes.blobs((uint64) 7);
         TSNE a = heap TSNE((int64) 2, 10.0, (uint64) 3);
-        Tensor<float64> ea = a.fitTransform(x);
+        Tensor<float64> ea #= a.fitTransform(x);
         TSNE b = heap TSNE((int64) 2, 10.0, (uint64) 3);
-        Tensor<float64> eb = b.fitTransform(x);
+        Tensor<float64> eb #= b.fitTransform(x);
         int64 i = 0;
         while (i < ea.size()) {
             Assert.isTrue(ea.flatGet(i) == eb.flatGet(i));
             i = i + 1;
         }
         TSNE c = heap TSNE((int64) 2, 10.0, (uint64) 4);
-        Tensor<float64> ec = c.fitTransform(x);
+        Tensor<float64> ec #= c.fitTransform(x);
         boolean differs = false;
         i = 0;
         while (i < ea.size()) {
@@ -169,7 +169,7 @@ public class TsneTest {
             int64[] sh = heap int64[2];
             sh[0] = 2001;
             sh[1] = 2;
-            Tensor<float64> big = Tensor.zeros<float64>(sh);
+            Tensor<float64> big #= Tensor.zeros<float64>(sh);
             TSNE ts = heap TSNE((int64) 2, 30.0, (uint64) 0);
             ts.fitTransform(big);
         });

@@ -38,20 +38,20 @@ public final class Embeddings {
         }
         Generator g = heap Generator(seed);
         if (method == SpelaConfig.RANDOM || numClasses >= candidates) {
-            Tensor<float32> m = Embeddings.gaussian(g, numClasses, dim);
+            Tensor<float32> m #= Embeddings.gaussian(g, numClasses, dim);
             Embeddings.normalizeRows(m);
             return #m;
         }
-        Tensor<float32> cand = Embeddings.gaussian(g, candidates, dim);
+        Tensor<float32> cand #= Embeddings.gaussian(g, candidates, dim);
         Embeddings.normalizeRows(cand);
 
         int64[] osh = heap int64[2];
         osh[0] = numClasses;
         osh[1] = dim;
-        Tensor<float32> out = Tensor.zeros<float32>(osh);
+        Tensor<float32> out #= Tensor.zeros<float32>(osh);
 
         // Seed the greedy walk from a drawn index, as the reference does.
-        Tensor<float32> pick = g.uniform(1);
+        Tensor<float32> pick #= g.uniform(1);
         int64 first = (int64) ((float64) pick.get1(0) * (float64) candidates);
         if (first >= candidates) { first = candidates - 1; }
         Embeddings.copyRow(cand, first, out, 0, dim);
@@ -93,8 +93,8 @@ public final class Embeddings {
         int64[] sh = heap int64[2];
         sh[0] = rows;
         sh[1] = cols;
-        Tensor<float32> t = Tensor.zeros<float32>(sh);
-        Tensor<float32> z = g.normal(rows * cols);
+        Tensor<float32> t #= Tensor.zeros<float32>(sh);
+        Tensor<float32> z #= g.normal(rows * cols);
         int64 i = 0;
         while (i < rows * cols) {
             t.flatSet(i, z.get1(i));

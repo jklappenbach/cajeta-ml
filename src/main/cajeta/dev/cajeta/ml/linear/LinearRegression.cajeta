@@ -50,8 +50,8 @@ public final class LinearRegression implements Predictor {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = k;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
-        Tensor<float64> ysrc = y.copy();
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
+        Tensor<float64> ysrc #= y.copy();
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -74,16 +74,16 @@ public final class LinearRegression implements Predictor {
             throw heap MlException("LinearRegression.fit: y must be (n,) or (n,k) matching x rows");
         }
         this.yWas1D = y.ndim() == 1;
-        Tensor<float64> ym2 = LinearRegression.asMatrix(y, n);
+        Tensor<float64> ym2 #= LinearRegression.asMatrix(y, n);
         int64 k = ym2.shapeAt(1);
         // center when fitting an intercept (the sklearn preprocessing)
-        Tensor<float64> design = x.copy();
+        Tensor<float64> design #= x.copy();
         int64[] pm = heap int64[1];
         pm[0] = p;
-        Tensor<float64> xmean = Tensor.zeros<float64>(pm);
+        Tensor<float64> xmean #= Tensor.zeros<float64>(pm);
         int64[] km = heap int64[1];
         km[0] = k;
-        Tensor<float64> ymean = Tensor.zeros<float64>(km);
+        Tensor<float64> ymean #= Tensor.zeros<float64>(km);
         if (this.fitIcpt) {
             int64 j = 0;
             while (j < p) {
@@ -122,13 +122,13 @@ public final class LinearRegression implements Predictor {
                 i2 = i2 + 1;
             }
         }
-        Tensor<float64> w = LinAlg.lstsq<float64>(design, ym2);   // (p, k)
+        Tensor<float64> w #= LinAlg.lstsq<float64>(design, ym2);   // (p, k)
         // diagnostics: singular values + numpy-tolerance rank of the design
-        Tensor<float64>[] sv = LinAlg.svd<float64>(design);
+        Tensor<float64>[] sv #= LinAlg.svd<float64>(design);
         int64 r = sv[1].shapeAt(0);
         int64[] rs = heap int64[1];
         rs[0] = r;
-        Tensor<float64> sing = Tensor.zeros<float64>(rs);
+        Tensor<float64> sing #= Tensor.zeros<float64>(rs);
         float64 mx = (float64) n;
         if (p > n) { mx = (float64) p; }
         float64 tol = sv[1].get1(0) * mx * LinearRegression.machEps();
@@ -141,7 +141,7 @@ public final class LinearRegression implements Predictor {
             si = si + 1;
         }
         // intercept: ymean - xmean · W  (zero without fitIntercept)
-        Tensor<float64> ic = Tensor.zeros<float64>(km);
+        Tensor<float64> ic #= Tensor.zeros<float64>(km);
         if (this.fitIcpt) {
             int64 c = 0;
             while (c < k) {
@@ -209,7 +209,7 @@ public final class LinearRegression implements Predictor {
         int64[] sh2 = heap int64[2];
         sh2[0] = n;
         sh2[1] = k;
-        Tensor<float64> out2 = Tensor.zeros<float64>(sh2);
+        Tensor<float64> out2 #= Tensor.zeros<float64>(sh2);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -228,7 +228,7 @@ public final class LinearRegression implements Predictor {
         if (this.yWas1D) {
             int64[] sh1 = heap int64[1];
             sh1[0] = n;
-            Tensor<float64> out1 = Tensor.zeros<float64>(sh1);
+            Tensor<float64> out1 #= Tensor.zeros<float64>(sh1);
             int64 i1 = 0;
             while (i1 < n) {
                 out1.set1(i1, out2.get2(i1, 0));
@@ -241,10 +241,10 @@ public final class LinearRegression implements Predictor {
 
     /** R² (uniform average over outputs for multi-output fits, sklearn). */
     public float64 score(Tensor<float64> x, Tensor<float64> y) {
-        Tensor<float64> pred = this.predict(x);
+        Tensor<float64> pred #= this.predict(x);
         int64 n = y.shapeAt(0);
-        Tensor<float64> ym2 = LinearRegression.asMatrix(y, n);
-        Tensor<float64> pm2 = LinearRegression.asMatrix(pred, n);
+        Tensor<float64> ym2 #= LinearRegression.asMatrix(y, n);
+        Tensor<float64> pm2 #= LinearRegression.asMatrix(pred, n);
         int64 k = ym2.shapeAt(1);
         float64 total = 0.0;
         int64 c = 0;
@@ -295,7 +295,7 @@ public final class LinearRegression implements Predictor {
         int64[] dsh = heap int64[2];
         dsh[0] = n;
         dsh[1] = d;
-        Tensor<float64> xd = Tensor.zeros<float64>(dsh);
+        Tensor<float64> xd #= Tensor.zeros<float64>(dsh);
         int64 i = 0;
         while (i < n) {
             int64 col = 0;
@@ -310,7 +310,7 @@ public final class LinearRegression implements Predictor {
             }
             i = i + 1;
         }
-        Tensor<float64> beta = LinAlg.lstsq<float64>(xd, y);
+        Tensor<float64> beta #= LinAlg.lstsq<float64>(xd, y);
         // residuals + sums of squares
         float64 ymean = 0.0;
         i = 0;
@@ -340,13 +340,13 @@ public final class LinearRegression implements Predictor {
         // (XdᵀXd)⁺ diagonal for the standard errors (pinv, statsmodels'
         // choice — stays finite on collinear designs, where condWarning is
         // the meaningful signal)
-        Tensor<float64> g = Tensor.matmul<float64>(xd.transpose(), xd);
-        Tensor<float64> ginv = LinAlg.pinv<float64>(g);
+        Tensor<float64> g #= Tensor.matmul<float64>(xd.transpose(), xd);
+        Tensor<float64> ginv #= LinAlg.pinv<float64>(g);
         int64[] dm = heap int64[1];
         dm[0] = d;
-        Tensor<float64> se = Tensor.zeros<float64>(dm);
-        Tensor<float64> ts = Tensor.zeros<float64>(dm);
-        Tensor<float64> pv = Tensor.zeros<float64>(dm);
+        Tensor<float64> se #= Tensor.zeros<float64>(dm);
+        Tensor<float64> ts #= Tensor.zeros<float64>(dm);
+        Tensor<float64> pv #= Tensor.zeros<float64>(dm);
         int64 j2 = 0;
         while (j2 < d) {
             float64 s = Math.sqrt(sigma2 * ginv.get2(j2, j2));

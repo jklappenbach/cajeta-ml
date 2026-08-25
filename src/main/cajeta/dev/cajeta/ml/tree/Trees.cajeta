@@ -214,7 +214,7 @@ final class Trees {
         int64[] featOrder = heap int64[this.nf];
         if (this.maxFeaturesNode > 0 && this.maxFeaturesNode < this.nf) {
             budget = this.maxFeaturesNode;
-            Tensor<int64> perm = this.rng.choice(this.nf, this.nf, false);
+            Tensor<int64> perm #= this.rng.choice(this.nf, this.nf, false);
             int64 q = 0;
             while (q < this.nf) { featOrder[q] = perm.flatGet(q); q = q + 1; }
         } else {
@@ -282,7 +282,7 @@ final class Trees {
                 }
                 if (mx > mn + 0.0000001) {
                     budget = budget - 1;
-                    Tensor<float32> u = this.rng.uniform(1);
+                    Tensor<float32> u #= this.rng.uniform(1);
                     float64 thr = mn + (float64) u.flatGet(0) * (mx - mn);
                     int64 nl = 0;
                     i = start;
@@ -332,7 +332,7 @@ final class Trees {
         this.size[nid] = m;
         if (depth > this.realizedDepth) { this.realizedDepth = depth; }
         float64[] nw = heap float64[m];
-        float64[] ny = this.nodeTargets(start, end, nw);
+        float64[] ny #= this.nodeTargets(start, end, nw);
         float64 w = this.crit.weightedN(ny, nw, 0, m);
         this.nodeW[nid] = w;
         this.nodeImp[nid] = this.crit.weighted(ny, nw, 0, m) / w;
@@ -655,7 +655,7 @@ final class Trees {
     /** sklearn-style indented rule dump (leaf: "class: k" / "value: v"). */
     #String exportText() {
         String s = "";
-        s = this.dumpNode(0, "", s);
+        s #= this.dumpNode(0, "", s);
         return #s;
     }
 
@@ -679,11 +679,11 @@ final class Trees {
             return #r;
         }
         String cond = "f" + Int64.of(this.feature[nid]).toString();
-        String thr = Float64.of(this.threshold[nid]).toString();
+        String thr #= Float64.of(this.threshold[nid]).toString();
         String a1 = acc + indent + "|--- " + cond + " <= " + thr + "\n";
-        String a2 = this.dumpNode(this.left[nid], indent + "|   ", a1);
+        String a2 #= this.dumpNode(this.left[nid], indent + "|   ", a1);
         String a3 = a2 + indent + "|--- " + cond + " >  " + thr + "\n";
-        String a4 = this.dumpNode(this.right[nid], indent + "|   ", a3);
+        String a4 #= this.dumpNode(this.right[nid], indent + "|   ", a3);
         return #a4;
     }
 }
