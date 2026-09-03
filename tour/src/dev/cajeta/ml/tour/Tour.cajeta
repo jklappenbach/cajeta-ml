@@ -133,7 +133,7 @@ public final class Tour {
     }
 
     static boolean near(float64 a, float64 b, float64 tol) {
-        float64 d = a - b;
+        float64 d #= a - b;
         if (d < 0.0) { d = -d; }
         return d < tol;
     }
@@ -143,7 +143,7 @@ public final class Tour {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             float64 t = (float64) i / 20.0;
@@ -157,7 +157,7 @@ public final class Tour {
     static #Tensor<float64> makeY(int64 n) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        Tensor<float64> y #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             float64 t = (float64) i / 20.0;
@@ -179,17 +179,17 @@ public final class Tour {
         // The core API speaks Tensor<float64> (n, p). Dataframe columns cross
         // into tensor land through nucleo's zero-copy Column seam — a non-null
         // float64 column IS a tensor buffer.
-        Tensor<float64> x = Tour.makeX(n);
-        Tensor<float64> y = Tour.makeY(n);
-        Column<float64> col = Column.fromTensor<float64>(y);
-        Tensor<float64> yBack = col.asTensor();
+        Tensor<float64> x #= Tour.makeX(n);
+        Tensor<float64> y #= Tour.makeY(n);
+        Column<float64> col #= Column.fromTensor<float64>(y);
+        Tensor<float64> yBack #= col.asTensor();
         Tour.check(x.shapeAt(0) == n && x.shapeAt(1) == 2, "design matrix is (n, 2)");
         Tour.check(yBack.get1(3) == y.get1(3), "Column.asTensor round-trips the target zero-copy");
 
         // ------------------------------------------------------------------
         Tour.section("2. Preprocess — StandardScaler");
         StandardScaler scaler = heap StandardScaler();
-        Tensor<float64> xs = scaler.fitTransform(x, y);
+        Tensor<float64> xs #= scaler.fitTransform(x, y);
         float64 colSum = 0.0;
         int64 i = 0;
         while (i < n) {
@@ -201,7 +201,7 @@ public final class Tour {
 
         // ------------------------------------------------------------------
         Tour.section("3. Split — seeded, deterministic");
-        Tensor<float64>[] parts = Split.trainTestSplit(x, y, 0.25, (uint64) 42);
+        Tensor<float64>[] parts #= Split.trainTestSplit(x, y, 0.25, (uint64) 42);
         Tour.check(parts[0].shapeAt(0) == 45 && parts[1].shapeAt(0) == 15,
                    "75/25 split sizes (ceil rule)");
 
@@ -212,7 +212,7 @@ public final class Tour {
         float64 r2 = lr.score(parts[1], parts[3]);
         System.stdout.println("   held-out R2 = " + r2);
         Tour.check(r2 > 0.999, "held-out R2 above 0.999 on the quadratic data");
-        SummaryResult s = lr.summary(parts[0], parts[2]);
+        SummaryResult s #= lr.summary(parts[0], parts[2]);
         System.stdout.println("   coef[t]  = " + s.coef.get1(1) + "  se " + s.stderr.get1(1)
                               + "  t " + s.tStat.get1(1) + "  p " + s.pValue.get1(1));
         System.stdout.println("   coef[t2] = " + s.coef.get1(2) + "  se " + s.stderr.get1(2)
@@ -230,7 +230,7 @@ public final class Tour {
         float64 alpha = 0.001;
         while (alpha < 101.0) {
             Ridge rr = heap Ridge(alpha, true, false);
-            Tensor<float64> scores = Split.crossValScore(rr, x, y, kf);
+            Tensor<float64> scores #= Split.crossValScore(rr, x, y, kf);
             float64 mean = 0.0;
             int64 f = 0;
             while (f < 5) {
@@ -252,7 +252,7 @@ public final class Tour {
         Tour.section("6. LogisticRegression — newton-cholesky classification");
         int64[] shl = heap int64[1];
         shl[0] = n;
-        Tensor<float64> labels = Tensor.zeros<float64>(shl);
+        Tensor<float64> labels #= Tensor.zeros<float64>(shl);
         i = 0;
         while (i < n) {
             // class by the true curve's sign structure + a few flips for realism
@@ -268,12 +268,12 @@ public final class Tour {
         float64 acc = lg.score(x, labels);
         System.stdout.println("   training accuracy = " + acc);
         Tour.check(acc > 0.85, "accuracy beats the flips");
-        Tensor<float64> proba = lg.predictProba(x);
+        Tensor<float64> proba #= lg.predictProba(x);
         Tour.check(Tour.near(proba.get2(0, 0) + proba.get2(0, 1), 1.0, 0.000000000001),
                    "probabilities sum to one");
         // classification metrics on the fit
-        Tensor<float64> pred = lg.predict(x);
-        Tensor<float64> posP = Tour.posColumn(proba, n);
+        Tensor<float64> pred #= lg.predict(x);
+        Tensor<float64> posP #= Tour.posColumn(proba, n);
         System.stdout.println("   f1 = " + Metrics.f1(labels, pred)
                               + "  auc = " + Metrics.rocAuc(labels, posP));
         Tour.check(Metrics.f1(labels, pred) > 0.8, "F1 holds up");
@@ -292,7 +292,7 @@ public final class Tour {
         System.stdout.println("   dummy " + s1 + "  ols " + s2 + "  ridge " + s3);
         Tour.check(s2 > s1 && s3 > s1, "real models beat the mean-predicting baseline");
         // and predict() through the interface — the protocol's core promise
-        Tensor<float64> viaIface = p2.predict(x);
+        Tensor<float64> viaIface #= p2.predict(x);
         Tour.check(viaIface.shapeAt(0) == n, "predict() dispatches through the Predictor interface");
 
         // ------------------------------------------------------------------
@@ -317,7 +317,7 @@ public final class Tour {
         Table<Reading> frame = heap Table<Reading>(
             Column.of<float64>(tempv), Column.of<float64>(humv),
             Column.of<float64>(yldv));
-        Design d = Frames.design<Reading>(frame, "crop");
+        Design d #= Frames.design<Reading>(frame, "crop");
         LinearRegression fromFrame = heap LinearRegression(true);
         fromFrame.fit(d.x, d.y);
         Tour.check(d.x.shapeAt(1) == 2 && d.featureNames[0].equals("temp"),
@@ -352,7 +352,7 @@ public final class Tour {
         // fitIntercept=false is the contract that makes it bit-exact.
         Lasso ld = heap Lasso(0.01, false, 0.0001, (int64) 1000);
         ld.fit(x, y);
-        CsrMatrix xs = CsrMatrix.fromDense(x);
+        CsrMatrix xs #= CsrMatrix.fromDense(x);
         Lasso ls = heap Lasso(0.01, false, 0.0001, (int64) 1000);
         ls.fitSparse(xs, y);
         Tensor<float64> cd2 = ld.coef();
@@ -368,7 +368,7 @@ public final class Tour {
         // an explicit constructor choice, never a silent strategy switch.
         int64[] sh3 = heap int64[1];
         sh3[0] = n;
-        Tensor<float64> y3 = Tensor.zeros<float64>(sh3);
+        Tensor<float64> y3 #= Tensor.zeros<float64>(sh3);
         i = 0;
         while (i < n) {
             float64 t = (float64) i / 20.0;
@@ -381,7 +381,7 @@ public final class Tour {
         LogisticRegression sm = heap LogisticRegression(1.0, 0.00000001, (int64) 200, true);
         sm.fit(x, y3);
         Tour.check(sm.converged(), "damped full Newton converged on the softmax likelihood");
-        Tensor<float64> proba3 = sm.predictProba(x);
+        Tensor<float64> proba3 #= sm.predictProba(x);
         float64 rowSum = proba3.get2(30, 0) + proba3.get2(30, 1) + proba3.get2(30, 2);
         Tour.check(Tour.near(rowSum, 1.0, 0.000000000001), "softmax rows sum to exactly 1");
         float64 acc3 = sm.score(x, y3);
@@ -398,12 +398,12 @@ public final class Tour {
         // needs a model whose geometry depends on the scale.
         StandardScaler psc = heap StandardScaler();
         Ridge prr = heap Ridge(1.0, true, false);
-        Pipeline pl = Pipeline.of(#psc, #prr);
-        Tensor<float64> honest = Split.crossValScore(pl, x, y, kf);
+        Pipeline pl #= Pipeline.of(#psc, #prr);
+        Tensor<float64> honest #= Split.crossValScore(pl, x, y, kf);
         StandardScaler leakSc = heap StandardScaler();
-        Tensor<float64> xLeak = leakSc.fitTransform(x, y);
+        Tensor<float64> xLeak #= leakSc.fitTransform(x, y);
         Ridge bare = heap Ridge(1.0, true, false);
-        Tensor<float64> leaky = Split.crossValScore(bare, xLeak, y, kf);
+        Tensor<float64> leaky #= Split.crossValScore(bare, xLeak, y, kf);
         boolean differs = false;
         int64 f2 = 0;
         while (f2 < 5) {
@@ -414,7 +414,7 @@ public final class Tour {
         // Principal-component regression: PCA is a Transformer, so it chains.
         PCA pca = heap PCA((int64) 1);
         LinearRegression pols = heap LinearRegression(true);
-        Pipeline pcr = Pipeline.of(#pca, #pols);
+        Pipeline pcr #= Pipeline.of(#pca, #pols);
         pcr.fit(x, y);
         Tour.check(pcr.score(x, y) > 0.95,
                    "PCA(1) -> OLS: the dominant direction carries the trend");
@@ -437,7 +437,7 @@ public final class Tour {
         // training target exactly (the zero-distance rule).
         KNeighborsRegressor knn = heap KNeighborsRegressor((int64) 3, true);
         knn.fit(x, y);
-        Tensor<float64> knnPred = knn.predict(x);
+        Tensor<float64> knnPred #= knn.predict(x);
         Tour.check(knnPred.get1(7) == y.get1(7),
                    "zero-distance neighbors take all the weight (exact recall)");
 
@@ -453,10 +453,10 @@ public final class Tour {
         int64[] xs = heap int64[2];
         xs[0] = 2;
         xs[1] = 2;
-        Tensor<float32> xv = Tensor.zeros<float32>(xs);
+        Tensor<float32> xv #= Tensor.zeros<float32>(xs);
         xv.set2(0, 0, 1.0f); xv.set2(0, 1, 2.0f);
         xv.set2(1, 0, 3.0f); xv.set2(1, 1, 4.0f);
-        Tensor<float32> wv = Tensor.zeros<float32>(xs);
+        Tensor<float32> wv #= Tensor.zeros<float32>(xs);
         wv.set2(0, 0, 1.0f); wv.set2(0, 1, 0.0f);
         wv.set2(1, 0, 0.0f); wv.set2(1, 1, 1.0f);
         GradTensor xg = tape.leaf(xv, false);       // input: no gradient
@@ -476,8 +476,8 @@ public final class Tour {
         Tour.section("14. One network, trained two ways — backprop vs SPELA");
         // The contrast worth seeing: same data, same shape of call, two
         // fundamentally different training regimes.
-        Tensor<float32> nx = Digits.images(12, 4, 0.25f, (uint64) 17);
-        Tensor<float32> ny = Digits.labels(12, 4);
+        Tensor<float32> nx #= Digits.images(12, 4, 0.25f, (uint64) 17);
+        Tensor<float32> ny #= Digits.labels(12, 4);
 
         // (a) BACKPROP: forward the whole net, ONE global backward, one step.
         Sequential net = heap Sequential();
@@ -490,7 +490,7 @@ public final class Tour {
         Optimizer opt = heap Adam(net.parameters(), 0.01f);
         BackpropTrainer bp = heap BackpropTrainer(net, #opt, Loss.CROSS_ENTROPY, 1.0f);
         Batches data = heap Batches(nx, ny, (int64) 8, (uint64) 23);
-        TrainHistory bpHist = bp.fit(data, 12);
+        TrainHistory bpHist #= bp.fit(data, 12);
         Tour.check(bpHist.epochs() == 12, "backprop ran every epoch");
         Tour.check(bpHist.finalLoss() < bpHist.lossAt(0) * 0.5,
                    "backprop halved the loss (ONE global objective)");
@@ -505,7 +505,7 @@ public final class Tour {
         SpelaConfig cfg = heap SpelaConfig((int64) 4);
         SpelaTrainer sp = heap SpelaTrainer(#layers, #cfg);
         Batches sdata = heap Batches(nx, ny, (int64) 8, (uint64) 23);
-        TrainHistory spHist = sp.fit(sdata, 12);
+        TrainHistory spHist #= sp.fit(sdata, 12);
         Tour.check(spHist.epochs() == 12, "SPELA ran every epoch");
         Tour.check(sp.layerCount() == 2, "SPELA holds its layers individually");
         // The distinction that matters: a loss PER LAYER, each separately
@@ -518,15 +518,15 @@ public final class Tour {
         Tour.section("15. Checkpoints — a safetensors round trip");
         // safetensors is preferred because READING IT CANNOT EXECUTE
         // ANYTHING: a header length, a JSON header, then raw tensor bytes.
-        StateDict sd = Checkpoints.saveStateDict(net);
+        StateDict sd #= Checkpoints.saveStateDict(net);
         Tour.check(sd.count() > 0, "the state dict carries the net's parameters");
         // Names are torch's state_dict keys exactly — that is what lets a
         // file torch wrote load straight into a module defined here.
-        ArrayList<String> pnames = net.parameterNames();
+        ArrayList<String> pnames #= net.parameterNames();
         Tour.check(pnames.count() == sd.count(),
                    "every parameter is named, torch-style");
-        int8[] blob = Safetensors.encode(sd);
-        StateDict back = Safetensors.decode(blob, (int64) blob.count());
+        int8[] blob #= Safetensors.encode(sd);
+        StateDict back #= Safetensors.decode(blob, (int64) blob.count());
         Tour.check(back.count() == sd.count(), "round trip preserves every entry");
         Tensor<float32> before = sd.valueAt(0);
         Tensor<float32> after = back.get(sd.nameAt(0));
@@ -541,14 +541,14 @@ public final class Tour {
         int64[] ls2 = heap int64[2];
         ls2[0] = 3;
         ls2[1] = 16;
-        Tensor<float32> lx = Tensor.zeros<float32>(ls2);
+        Tensor<float32> lx #= Tensor.zeros<float32>(ls2);
         int64 li = 0;
         while (li < 48) {
             lx.flatSet(li, (float32) (((float64) (li % 7)) * 0.1));
             li = li + 1;
         }
-        Tensor<float32> baseOut = lora.baseLinear().forward(lx);
-        Tensor<float32> adaptOut = lora.predict(lx);
+        Tensor<float32> baseOut #= lora.baseLinear().forward(lx);
+        Tensor<float32> adaptOut #= lora.predict(lx);
         Tour.check(Tour.near((float64) baseOut.flatGet(0),
                              (float64) adaptOut.flatGet(0), 0.000001)
                    && Tour.near((float64) baseOut.flatGet(5),
@@ -607,11 +607,11 @@ public final class Tour {
         Tour.section("18. The clustering family — each wins where it should");
         // Blobs: everyone is exact. Rings: only density wins. Outliers:
         // only medoids resist. The choice of algorithm IS the point.
-        Tensor<float64> cb = Tour.threeBlobs();
-        Tensor<float64> cy = Tour.zeroY((int64) 24);
+        Tensor<float64> cb #= Tour.threeBlobs();
+        Tensor<float64> cy #= Tour.zeroY((int64) 24);
         KMedoids kmed = heap KMedoids((int64) 3);
         kmed.fit(cb, cy);
-        int64[] mi = kmed.medoidIndices();
+        int64[] mi #= kmed.medoidIndices();
         boolean rowsAreData = true;
         int64 mc = 0;
         while (mc < 3) {
@@ -631,7 +631,7 @@ public final class Tour {
             + Int64.of(mi[2]).toString() + ")");
         GaussianMixture gmix = heap GaussianMixture((int64) 3, (uint64) 2);
         gmix.fit(cb, cy);
-        Tensor<float64> proba = gmix.predictProba(cb);
+        Tensor<float64> proba #= gmix.predictProba(cb);
         Tour.check(Tour.near(proba.get2(0, 0) + proba.get2(0, 1)
             + proba.get2(0, 2), 1.0, 0.000000001),
             "GaussianMixture responsibilities sum to 1 — membership is a "
@@ -645,15 +645,15 @@ public final class Tour {
             + "chosen, not guessed");
         AgglomerativeClustering agg = heap AgglomerativeClustering((int64) 2);
         agg.fit(cb, cy);
-        Tensor<float64> cut3 = agg.cutByCount((int64) 3);
+        Tensor<float64> cut3 #= agg.cutByCount((int64) 3);
         Tour.check(agg.linkageMatrix().shapeAt(0) == 23
             && cut3.shapeAt(0) == 24,
             "one agglomerative fit answers ANY k — full merge history + "
             + "cutByCount");
         Tour.check(agg.copheneticCorrelation() > 0.5,
             "cophenetic correlation reports how faithful the tree is");
-        Tensor<float64> rings = Tour.twoRings();
-        Tensor<float64> ry = Tour.zeroY((int64) 48);
+        Tensor<float64> rings #= Tour.twoRings();
+        Tensor<float64> ry #= Tour.zeroY((int64) 48);
         DBSCAN dbs = heap DBSCAN(0.45, (int64) 3);
         dbs.fit(rings, ry);
         Tour.check(dbs.nClusters() == 2,
@@ -666,7 +666,7 @@ public final class Tour {
             + "cannot be the rings (that failure is DBSCAN's reason to exist)");
 
         Tour.section("19. Judging a clustering — three internal judges disagree");
-        Tensor<float64> truthLabels = Tour.threeBlobLabels();
+        Tensor<float64> truthLabels #= Tour.threeBlobLabels();
         float64 sil = Metrics.silhouetteScore(cb, truthLabels);
         Tour.check(sil > 0.7,
             "silhouette on the true blob labels is high");
@@ -674,20 +674,20 @@ public final class Tour {
             Tour.permutedBlobLabels()) == 1.0,
             "adjusted Rand is label-permutation invariant — 1.0 for the "
             + "same partition renamed");
-        float64[] elbow = Metrics.kmeansElbow(cb, (int64) 5, (uint64) 2);
+        float64[] elbow #= Metrics.kmeansElbow(cb, (int64) 5, (uint64) 2);
         Tour.check(elbow[2] < 0.2 * elbow[1],
             "the elbow curve BENDS at the true k=3");
 
         Tour.section("20. Embeddings & decomposition — honest APIs");
-        Tensor<float64> helix = Tour.helix10();
+        Tensor<float64> helix #= Tour.helix10();
         MDS mds = heap MDS((int64) 2, (uint64) 3);
-        Tensor<float64> memb = mds.fitTransform(helix);
+        Tensor<float64> memb #= mds.fitTransform(helix);
         Tour.check(memb.shapeAt(1) == 2 && mds.stress() < 1.0,
             "MDS embeds by minimizing STRESS, and exposes it — the "
             + "fit-quality number");
         Isomap iso = heap Isomap((int64) 4, (int64) 2);
-        Tensor<float64> iemb = iso.fitTransform(helix, Tour.zeroY((int64) 10));
-        Tensor<float64> itr = iso.transform(helix);
+        Tensor<float64> iemb #= iso.fitTransform(helix, Tour.zeroY((int64) 10));
+        Tensor<float64> itr #= iso.transform(helix);
         Tour.check(Tour.near(itr.get2(0, 0), iemb.get2(0, 0), 0.000001),
             "Isomap CAN embed unseen points (transform) — exact on "
             + "training rows");
@@ -702,12 +702,12 @@ public final class Tour {
             + "eigenvalues are non-zero (fitTransform-only: no transform "
             + "exists, and that is documented honesty, not an omission)");
         TSNE tsne = heap TSNE((int64) 2, 3.0, (uint64) 4, (int64) 250, 200.0);
-        Tensor<float64> temb = tsne.fitTransform(cb);
+        Tensor<float64> temb #= tsne.fitTransform(cb);
         Tour.check(temb.shapeAt(0) == 24 && tsne.klDivergence() >= 0.0,
             "t-SNE reports the KL it minimized (stdlib's divergence); "
             + "REMEMBER: between-cluster distances in the picture mean "
             + "nothing");
-        Tensor<float64> nmfX = Tour.rankTwo();
+        Tensor<float64> nmfX #= Tour.rankTwo();
         NMF nmf = heap NMF((int64) 2);
         nmf.fit(nmfX, Tour.zeroY((int64) 6));
         Tour.check(nmf.reconstructionError() < 0.001,
@@ -715,7 +715,7 @@ public final class Tour {
             + "error, parts-based");
         FactorAnalysis fan = heap FactorAnalysis((int64) 1);
         fan.fit(nmfX, Tour.zeroY((int64) 6));
-        float64[] fh = fan.logLikelihoodHistory();
+        float64[] fh #= fan.logLikelihoodHistory();
         Tour.check(fh[(int64) fh.count() - (int64) 1] >= fh[0],
             "FactorAnalysis EM log-likelihood never decreases — the "
             + "property that catches implementation errors");
@@ -735,7 +735,7 @@ public final class Tour {
         txs[0] = 1;
         txs[1] = 3;
         txs[2] = 4;
-        Tensor<float32> tx = Tensor.zeros<float32>(txs);
+        Tensor<float32> tx #= Tensor.zeros<float32>(txs);
         int64 tz = 0;
         while (tz < tx.size()) {
             tx.flatSet(tz, (float32) ((float64) (tz
@@ -760,8 +760,8 @@ public final class Tour {
         Tour.check(!tnet.at((int32) 0).parameters()[0].isTrainable(),
             "a frozen subtree's parameters receive NO updates (the suite "
             + "proves it by value, not by flag)");
-        StateDict tsd = Checkpoints.saveStateDict(tnet);
-        ImportReport trep = Checkpoints.importStateDict(tnet, tsd, false);
+        StateDict tsd #= Checkpoints.saveStateDict(tnet);
+        ImportReport trep #= Checkpoints.importStateDict(tnet, tsd, false);
         Tour.check(trep.clean() && trep.applied() == 4,
             "weight import reconciles BOTH directions — nothing is "
             + "silently dropped, ever");
@@ -771,9 +771,9 @@ public final class Tour {
         // The loan-default portfolio: income, debt ratio, credit history,
         // utilization, and two irrelevant columns. Deterministic — the
         // same numbers on every machine.
-        Tensor<float64> lx = Tour.loanX();
-        Tensor<float64> ly = Tour.loanY();
-        Tensor<float64>[] lparts =
+        Tensor<float64> lx #= Tour.loanX();
+        Tensor<float64> ly #= Tour.loanY();
+        Tensor<float64>[] lparts #=
             Split.trainTestSplitStratified(lx, ly, 0.25, (uint64) 42);
         LinearDiscriminantAnalysis ldaM = heap LinearDiscriminantAnalysis();
         ldaM.fit(lparts[0], lparts[2]);
@@ -786,11 +786,11 @@ public final class Tour {
             + "  QDA " + qdaAcc);
         Tour.check(ldaAcc > 0.7 && qdaAcc > 0.7,
             "both discriminants beat the base rate on held-out loans");
-        Tensor<float64> ldaP = ldaM.predictProba(lparts[1]);
+        Tensor<float64> ldaP #= ldaM.predictProba(lparts[1]);
         Tour.check(Tour.near(ldaP.get2(0, 0) + ldaP.get2(0, 1), 1.0,
             0.000000001), "posteriors normalize per row (log-space with a "
             + "max shift — no underflow)");
-        Tensor<float64> ldaProj = ldaM.transform(lparts[0]);
+        Tensor<float64> ldaProj #= ldaM.transform(lparts[0]);
         Tour.check(ldaProj.shapeAt(1) == 1,
             "LDA.transform projects onto min(K-1, p) = 1 discriminant "
             + "direction — a SUPERVISED reducer beside PCA");
@@ -813,12 +813,12 @@ public final class Tour {
         KNeighborsClassifier knnW = heap KNeighborsClassifier((int64) 5,
             true);
         knnW.fit(lparts[0], lparts[2]);
-        Tensor<float64> knnSelf = knnW.predict(lparts[0]);
+        Tensor<float64> knnSelf #= knnW.predict(lparts[0]);
         Tour.check(knnSelf.get1(0) == lparts[2].get1(0),
             "distance weighting's zero-distance rule: a training row "
             + "predicts its own label (the classifier now mirrors the "
             + "regressor's option)");
-        Predictor knnPipe = Pipeline.of(heap StandardScaler(),
+        Predictor knnPipe #= Pipeline.of(heap StandardScaler(),
             heap KNeighborsClassifier((int64) 5, true));
         Tour.check(Tour.cvMean(knnPipe, lx, ly) > 0.7,
             "StandardScaler + k-NN compose in a Pipeline under CV — scale "
@@ -831,9 +831,9 @@ public final class Tour {
             0.00000001, (int64) 500);
         llog.fit(lparts[0], lparts[2]);
         int64 lnTe = lparts[1].shapeAt(0);
-        Tensor<float64> llogP = llog.predictProba(lparts[1]);
-        Tensor<float64> llogPos = Tour.posColumn(llogP, lnTe);
-        PrCurve prc = Metrics.precisionRecallCurve(lparts[3], llogPos);
+        Tensor<float64> llogP #= llog.predictProba(lparts[1]);
+        Tensor<float64> llogPos #= Tour.posColumn(llogP, lnTe);
+        PrCurve prc #= Metrics.precisionRecallCurve(lparts[3], llogPos);
         float64 bestF1 = -1.0;
         float64 bestThr = 0.5;
         int64 ci = 0;
@@ -854,7 +854,7 @@ public final class Tour {
             + Metrics.averagePrecision(lparts[3], llogPos) + ")");
         // predict(x, t) cuts at P > t; the curve counted P >= t, so apply
         // a hair below the chosen threshold to reproduce its cut.
-        Tensor<float64> lpredT = llog.predict(lparts[1],
+        Tensor<float64> lpredT #= llog.predict(lparts[1],
             bestThr - 0.000001);
         Tour.check(Tour.near(Metrics.f1(lparts[3], lpredT), bestF1,
             0.000001), "predicting at the curve-chosen cut reproduces the "
@@ -887,7 +887,7 @@ public final class Tour {
             + "searches, loud encoders");
         StratifiedKFold lsk = heap StratifiedKFold((int64) 5, true,
             (uint64) 11);
-        Tensor<int64> lsf = lsk.assignments(ly);
+        Tensor<int64> lsf #= lsk.assignments(ly);
         float64 basePos = 0.0;
         int64 si = 0;
         while (si < 200) {
@@ -915,13 +915,13 @@ public final class Tour {
         int64[] lks = heap int64[1];
         lks[0] = 6;
         Tensor<float64>[] ldims = heap Tensor<float64>[1];
-        ldims[0] = Tensor.of<float64>(lkd, lks);
+        ldims[0] #= Tensor.of<float64>(lkd, lks);
         KFold lkf = heap KFold((int64) 5, true, (uint64) 7);
-        Tensor<int64> lfid = lkf.assignments(lparts[0].shapeAt(0));
-        SearchResult rsA = RandomizedSearch.run(heap TourKnnFactory(),
+        Tensor<int64> lfid #= lkf.assignments(lparts[0].shapeAt(0));
+        SearchResult rsA #= RandomizedSearch.run(heap TourKnnFactory(),
             ldims, (int64) 4, (uint64) 9, lparts[0], lparts[2], lfid,
             "accuracy");
-        SearchResult rsB = RandomizedSearch.run(heap TourKnnFactory(),
+        SearchResult rsB #= RandomizedSearch.run(heap TourKnnFactory(),
             ldims, (int64) 4, (uint64) 9, lparts[0], lparts[2], lfid,
             "accuracy");
         Tour.check(rsA.param((int64) 0, (int64) 0)
@@ -957,9 +957,9 @@ public final class Tour {
         int64[] cats = heap int64[2];
         cats[0] = 8;
         cats[1] = 1;
-        Tensor<float64> catX = Tensor.of<float64>(catd, cats);
+        Tensor<float64> catX #= Tensor.of<float64>(catd, cats);
         OneHotEncoder ohe = heap OneHotEncoder();
-        Tensor<float64> wide = ohe.fitTransform(catX, Tour.zeroY(8));
+        Tensor<float64> wide #= ohe.fitTransform(catX, Tour.zeroY(8));
         Tour.check(wide.shapeAt(1) == 3,
             "one-hot: one column per SORTED observed category");
         boolean unseenLoud = false;
@@ -969,8 +969,8 @@ public final class Tour {
             int64[] uns = heap int64[2];
             uns[0] = 1;
             uns[1] = 1;
-            Tensor<float64> unseen = Tensor.of<float64>(und, uns);
-            Tensor<float64> t = ohe.transform(unseen);
+            Tensor<float64> unseen #= Tensor.of<float64>(und, uns);
+            Tensor<float64> t #= ohe.transform(unseen);
         } catch (Exception ex) {
             unseenLoud = true;
         }
@@ -984,7 +984,7 @@ public final class Tour {
         int64[] krs = heap int64[2];
         krs[0] = n;
         krs[1] = 1;
-        Tensor<float64> krX = Tensor.zeros<float64>(krs);
+        Tensor<float64> krX #= Tensor.zeros<float64>(krs);
         int64 ki = 0;
         while (ki < n) {
             krX.flatSet(ki, (float64) ki / 20.0);
@@ -1004,10 +1004,10 @@ public final class Tour {
         int64[] q1s = heap int64[2];
         q1s[0] = 1;
         q1s[1] = 1;
-        Tensor<float64> qNear = Tensor.zeros<float64>(q1s);
+        Tensor<float64> qNear #= Tensor.zeros<float64>(q1s);
         qNear.flatSet(0, 1.5);
-        Tensor<float64> pNarrow = krNarrow.predict(qNear);
-        Tensor<float64> pWide = krWide.predict(qNear);
+        Tensor<float64> pNarrow #= krNarrow.predict(qNear);
+        Tensor<float64> pWide #= krWide.predict(qNear);
         float64 truth = 2.0 + 1.5 - 1.5 * 2.25;
         System.stdout.println("   at t=1.5: narrow " + pNarrow.get1(0)
             + "  wide " + pWide.get1(0) + "  (truth " + truth
@@ -1017,9 +1017,9 @@ public final class Tour {
         Tour.check(Tour.near(pWide.get1(0), yMean, 0.05),
             "a wide bandwidth is pulled toward the global mean — "
             + "bandwidth IS the smoothness knob, monotonically");
-        Tensor<float64> qFar = Tensor.zeros<float64>(q1s);
+        Tensor<float64> qFar #= Tensor.zeros<float64>(q1s);
         qFar.flatSet(0, 1000.0);
-        Tensor<float64> pFar = krNarrow.predict(qFar);
+        Tensor<float64> pFar #= krNarrow.predict(qFar);
         Tour.check(Tour.near(pFar.get1(0), y.get1(n - 1), 0.000001),
             "a query so far that every kernel weight underflows FALLS "
             + "BACK TO THE NEAREST TRAINING TARGET — the documented §9.5 "
@@ -1035,7 +1035,7 @@ public final class Tour {
         System.stdout.println("   misclassification: LDA " + e28lda
             + "  QDA " + e28qda + "  logistic " + e28l2
             + "  L1 logistic " + e28l1);
-        SearchResult ksweep = GridSearch.run(heap TourKnnFactory(), ldims,
+        SearchResult ksweep #= GridSearch.run(heap TourKnnFactory(), ldims,
             lparts[0], lparts[2], lfid, "accuracy");
         int64 kwi = 0;
         while (kwi < ksweep.count()) {
@@ -1066,7 +1066,7 @@ public final class Tour {
         int64[] sh = heap int64[2];
         sh[0] = 24;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 24) {
             int64 c = i / (int64) 8;
@@ -1088,7 +1088,7 @@ public final class Tour {
     static #Tensor<float64> threeBlobLabels() {
         int64[] sh = heap int64[1];
         sh[0] = 24;
-        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        Tensor<float64> y #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 24) {
             y.set1(i, (float64) (i / (int64) 8));
@@ -1100,7 +1100,7 @@ public final class Tour {
     static #Tensor<float64> permutedBlobLabels() {
         int64[] sh = heap int64[1];
         sh[0] = 24;
-        Tensor<float64> y = Tensor.zeros<float64>(sh);
+        Tensor<float64> y #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 24) {
             y.set1(i, (float64) ((int64) 2 - i / (int64) 8));
@@ -1115,7 +1115,7 @@ public final class Tour {
         int64[] sh = heap int64[2];
         sh[0] = 48;
         sh[1] = 2;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 48) {
             float64 r = 0.45;
@@ -1137,7 +1137,7 @@ public final class Tour {
         int64[] sh = heap int64[2];
         sh[0] = 10;
         sh[1] = 3;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 10) {
             float64 t = (float64) i;
@@ -1154,7 +1154,7 @@ public final class Tour {
         int64[] sh = heap int64[2];
         sh[0] = 6;
         sh[1] = 4;
-        Tensor<float64> x = Tensor.zeros<float64>(sh);
+        Tensor<float64> x #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < 6) {
             float64 a = (float64) (i + (int64) 1);
@@ -1190,7 +1190,7 @@ public final class Tour {
         int64[] sh = heap int64[2];
         sh[0] = 1;
         sh[1] = 64;
-        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        Tensor<float32> out #= Tensor.zeros<float32>(sh);
         int64 j = 0;
         while (j < 64) {
             out.flatSet(j, x.flatGet(r * 64 + j));
@@ -1203,7 +1203,7 @@ public final class Tour {
     static #Tensor<float64> posColumn(Tensor<float64> proba, int64 n) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
             out.set1(i, proba.get2(i, 1));
@@ -1236,7 +1236,7 @@ public final class Tour {
     }
 
     static #Tensor<float64> loanY() {
-        Tensor<float64> x = Tour.loanX();
+        Tensor<float64> x #= Tour.loanX();
         float64[] d = heap float64[200];
         int64 i = 0;
         while (i < 200) {
@@ -1255,7 +1255,7 @@ public final class Tour {
 
     static float64 cvMean(Predictor est, Tensor<float64> x, Tensor<float64> y) {
         KFold kf = heap KFold((int64) 4, true, (uint64) 11);
-        Tensor<float64> scores = Split.crossValScore(est, x, y, kf);
+        Tensor<float64> scores #= Split.crossValScore(est, x, y, kf);
         float64 mean = 0.0;
         int64 f = 0;
         while (f < 4) {
