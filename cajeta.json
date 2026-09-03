@@ -17,7 +17,7 @@
 
     "details": {
         "name":               "dev.cajeta.ml",
-        "version":            "0.10.0",
+        "version":            "0.10.1",
         "description":        "cajeta-ml — classical ML: linear models with inference, preprocessing, model selection, metrics, and the ecosystem estimator protocol",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -36,7 +36,7 @@
         // run-tests.sh resolves the archive (sibling checkout, then store,
         // then a sha256-verified Olla fetch at this pin).
         "dev-dependencies": {
-            "dev.cajeta.unit": "0.2.0"
+            "dev.cajeta.unit": "0.2.4"
         },
 
         "repositories": [

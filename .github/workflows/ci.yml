@@ -52,7 +52,7 @@ env:
   # surface and the linalg pieces (eigh/svd/solve/pinv/slogdet) the
   # decomposition family rides. 0.5.0 (the neural re-home) baselines
   # v0.16.0+; this pin supersedes it compatibly — do not step back.
-  CAJETA_VERSION: v0.17.0
+  CAJETA_VERSION: v0.26.0
 
 jobs:
   build-test:
