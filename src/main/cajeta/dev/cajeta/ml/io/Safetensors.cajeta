@@ -28,7 +28,7 @@ public final class Safetensors {
 
     /** Read a checkpoint file. */
     public static #StateDict read(String path) {
-        int8[] raw = File.readAllBytes(path);
+        int8[] raw #= File.readAllBytes(path);
         return Safetensors.decode(raw, (int64) raw.count());
     }
 

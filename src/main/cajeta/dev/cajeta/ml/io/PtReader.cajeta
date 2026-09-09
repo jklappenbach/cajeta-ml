@@ -76,7 +76,7 @@ public final class PtReader {
 
     /** Read a `torch.save(state_dict)` file. */
     public static #StateDict read(String path) {
-        int8[] raw = File.readAllBytes(path);
+        int8[] raw #= File.readAllBytes(path);
         return PtReader.decode(raw, (int64) raw.count());
     }
 

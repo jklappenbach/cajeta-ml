@@ -177,7 +177,7 @@ public class TransferLearningTest {
         pv.set1(1, 0.0f - 1.0f);
         Parameter p = heap Parameter(#pv);
         Parameter[] ps = heap Parameter[1];
-        ps[0] = p;
+        ps[0] = #p;    // the array leaves the frame (`heap Adam(#ps, …)`): the slot must own p (spec 5.10)
         Adam opt = heap Adam(#ps, 0.01f);
         Tensor<float32> g #= Tensor.zeros<float32>(sh);
         g.set1(0, 1.0f);
