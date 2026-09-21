@@ -52,7 +52,29 @@ env:
   # surface and the linalg pieces (eigh/svd/solve/pinv/slogdet) the
   # decomposition family rides. 0.5.0 (the neural re-home) baselines
   # v0.16.0+; this pin supersedes it compatibly — do not step back.
-  CAJETA_VERSION: v0.26.0
+  #
+  # v0.29.0 is NOT here for being the newest. Nothing in cajeta-ml's own
+  # sources needs the floor, and that was measured rather than assumed:
+  # with the unit pin at 0.3.0 the suite is 391 passed / 0 failed /
+  # 1 skipped on v0.26.0 and identically on v0.29.0, and the manifest
+  # parses on both. Two checked reasons put it here anyway.
+  #
+  # First, a consumer's compiler re-checks a DEPENDENCY archive's own
+  # sources, so the toolchain a consumer gates on decides whether this
+  # library's sources are acceptable — not the toolchain that cut the
+  # .cja. cajeta-recsys, cajeta-timeseries and cajeta-xgboost all depend
+  # on dev.cajeta.ml, so gating here on what they gate on is the only
+  # thing that proves ml survives the checks they will run. The reverse
+  # case is what moved the dev-dependency in this same cut: unit 0.2.4
+  # links clean under v0.26.0 and is REJECTED under v0.29.0's
+  # captured-borrow check, inside ml's own test build, naming a `pred`
+  # field that lives in cajeta-unit and not in this library.
+  #
+  # Second, v0.29.0 validates every task's exec action. It caught the
+  # `clean` task asking for a program named "rm -rf build": exec runs a
+  # program directly with no shell, so that task had never been able to
+  # run. Pinning here is what stops a dead task passing CI again.
+  CAJETA_VERSION: v0.29.0
 
 jobs:
   build-test:

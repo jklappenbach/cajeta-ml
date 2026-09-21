@@ -8,6 +8,6 @@ public class SmokeTest {
 
     @Test
     public void libraryLinks() {
-        Assert.equals("0.1.0", Ml.version());
+        Assert.equals("0.10.2", Ml.version());
     }
 }

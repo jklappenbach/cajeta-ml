@@ -17,7 +17,7 @@
 
     "details": {
         "name":               "dev.cajeta.ml",
-        "version":            "0.10.1",
+        "version":            "0.10.2",
         "description":        "cajeta-ml — classical ML: linear models with inference, preprocessing, model selection, metrics, and the ecosystem estimator protocol",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -35,8 +35,17 @@
         // The suite is driven by cajeta-unit's reflective @Test discovery;
         // run-tests.sh resolves the archive (sibling checkout, then store,
         // then a sha256-verified Olla fetch at this pin).
+        //
+        // 0.3.0 is a REQUIRED floor, not a courtesy raise. A consumer's
+        // compiler re-checks a dependency archive's own sources, so 0.2.4
+        // brings its PredMatcher along: that class keeps a plain function
+        // parameter `pred` in a field of the same name, and the
+        // captured-borrow check rejects it. Measured against the released
+        // v0.29.0 on this tree, unchanged: the test binary refuses to link
+        // with CAJETA_ERROR_CAPTURED_BORROW_PARAM naming `pred`, a symbol
+        // cajeta-ml does not contain. 0.3.0 takes the predicate owned.
         "dev-dependencies": {
-            "dev.cajeta.unit": "0.2.4"
+            "dev.cajeta.unit": "0.3.0"
         },
 
         "repositories": [
@@ -83,10 +92,13 @@
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
         },
 
+        // `exec` runs a program directly with no shell, so the command is the
+        // program and the arguments go in `args`. The old one-string form
+        // named a program called "rm -rf build" and could never have run.
         "clean": {
             "description": "Remove build outputs",
             "actions": [
-                { "action": "exec", "command": "rm -rf build" }
+                { "action": "exec", "command": "rm", "args": ["-rf", "build"] }
             ]
         }
     }

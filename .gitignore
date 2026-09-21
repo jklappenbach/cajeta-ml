@@ -4,3 +4,7 @@ build/
 # Never source. Committed cache also risks feeding a stale artifact to a
 # different toolchain than the one that produced it.
 **/.cajeta/cache/
+
+# Scratch for gate logs, fetched toolchains and probe trees. TMPDIR points
+# here so the runners' mktemp lands in the repo rather than /tmp.
+tmp/
