@@ -24,7 +24,7 @@ public final class LrSchedule {
 
     LrSchedule(Optimizer opt, int32 kind, float32 base, float32 gamma,
                int64 stepSize, int64 tMax, int64 warmupSteps) {
-        this.opt = opt;
+        this.opt #= opt;
         this.kind = kind;
         this.base = base;
         this.gamma = gamma;
