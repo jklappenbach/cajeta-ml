@@ -17,7 +17,7 @@
 
     "details": {
         "name":               "dev.cajeta.ml",
-        "version":            "0.10.2",
+        "version":            "0.10.3",
         "description":        "cajeta-ml — classical ML: linear models with inference, preprocessing, model selection, metrics, and the ecosystem estimator protocol",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -44,8 +44,9 @@
         // v0.29.0 on this tree, unchanged: the test binary refuses to link
         // with CAJETA_ERROR_CAPTURED_BORROW_PARAM naming `pred`, a symbol
         // cajeta-ml does not contain. 0.3.0 takes the predicate owned.
+        // 0.3.3 is the release that passes v0.35.0's field-store rule.
         "dev-dependencies": {
-            "dev.cajeta.unit": "0.3.0"
+            "dev.cajeta.unit": "0.3.3"
         },
 
         "repositories": [

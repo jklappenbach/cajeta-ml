@@ -74,7 +74,9 @@ env:
   # `clean` task asking for a program named "rm -rf build": exec runs a
   # program directly with no shell, so that task had never been able to
   # run. Pinning here is what stops a dead task passing CI again.
-  CAJETA_VERSION: v0.29.0
+  # v0.35.0 enforces the field-store rule, which consumers apply to this
+  # library's sources, so ml gates on it.
+  CAJETA_VERSION: v0.35.0
 
 jobs:
   build-test:

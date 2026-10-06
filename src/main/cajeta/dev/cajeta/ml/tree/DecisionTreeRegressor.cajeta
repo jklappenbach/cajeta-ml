@@ -68,7 +68,7 @@ public final class DecisionTreeRegressor implements Predictor {
             throw heap MlException("DecisionTreeRegressor: unsupported "
                 + "splitter '" + splitter + "' (best | random)");
         }
-        this.criterion = criterion;
+        this.criterion #= criterion;
         this.maxDepth = maxDepth;
         this.splitter = splitter.equals("best") ? (int64) 0 : (int64) 1;
         this.seed = seed;
