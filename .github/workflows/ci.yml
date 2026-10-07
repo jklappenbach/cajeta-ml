@@ -76,7 +76,8 @@ env:
   # run. Pinning here is what stops a dead task passing CI again.
   # v0.35.0 enforces the field-store rule, which consumers apply to this
   # library's sources, so ml gates on it.
-  CAJETA_VERSION: v0.35.0
+  # v0.36.0 extends that rule to holders passed with `#`, so ml gates on it.
+  CAJETA_VERSION: v0.36.0
 
 jobs:
   build-test:
