@@ -17,7 +17,7 @@
 
     "details": {
         "name":               "dev.cajeta.ml",
-        "version":            "0.10.4",
+        "version":            "0.10.5",
         "description":        "cajeta-ml — classical ML: linear models with inference, preprocessing, model selection, metrics, and the ecosystem estimator protocol",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -44,9 +44,9 @@
         // v0.29.0 on this tree, unchanged: the test binary refuses to link
         // with CAJETA_ERROR_CAPTURED_BORROW_PARAM naming `pred`, a symbol
         // cajeta-ml does not contain. 0.3.0 takes the predicate owned.
-        // 0.3.4 is the release published for v0.36.0.
+        // 0.3.5 is the release published for v0.38.0.
         "dev-dependencies": {
-            "dev.cajeta.unit": "0.3.4"
+            "dev.cajeta.unit": "0.3.5"
         },
 
         "repositories": [
