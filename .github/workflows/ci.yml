@@ -7,9 +7,9 @@
 #
 # Bare-runner flow: install the pinned cajeta toolchain from the cajeta
 # repo's GitHub Release; ./run-tests.sh takes its Olla-fetch path for
-# dev.cajeta.unit. The Olla publish self-arms when OLLA_* secrets exist on
-# this repo; until then releases bridge via cajeta-logging's publish-sibling
-# workflow (authorized 2026-07-29).
+# dev.cajeta.unit. The Olla publish authenticates
+# with the job's GitHub identity token; it still needs the CI signing key
+# pair, OLLA_SIGNING_KEY_PEM and OLLA_SIGNING_KEY_ID.
 
 name: ci
 
