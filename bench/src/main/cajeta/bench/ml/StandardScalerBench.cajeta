@@ -40,6 +40,7 @@ public class StandardScalerBench extends MlBenchmark {
     }
 
     public void prepare(String v) {
+        this.begin(v);
         this.x #= Data.f64("standard-scaler/" + v + "/x.npy");
         this.zy #= Data.zeros(this.x.shapeAt(0));
         this.refv #= Data.f64("ref/standard-scaler-" + v + ".npy");

@@ -129,6 +129,7 @@ public class NeuralBench extends MlBenchmark {
     }
 
     public void prepare(String v) {
+        this.begin(v);
         this.build();
         String d = this.dir();
         this.x #= Data.f32(d + "/x.npy");

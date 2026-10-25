@@ -24,6 +24,10 @@ public class KMeansBench extends MlBenchmark {
         this.iters = 0;
     }
 
+    public String unit() {
+        return "rows/s";
+    }
+
     public String name() {
         return "kmeans";
     }
@@ -40,6 +44,7 @@ public class KMeansBench extends MlBenchmark {
     }
 
     public void prepare(String v) {
+        this.begin(v);
         this.x #= Data.f64("kmeans/" + v + "/x.npy");
         this.zy #= Data.zeros(this.x.shapeAt(0));
         this.refv = Data.scalar("ref/kmeans-" + v + ".npy");

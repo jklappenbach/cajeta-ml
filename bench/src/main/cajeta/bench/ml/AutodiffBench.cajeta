@@ -29,6 +29,10 @@ public class AutodiffBench extends MlBenchmark {
         this.mdl = "";
     }
 
+    public String unit() {
+        return "samples/s";
+    }
+
     public String name() {
         return "autodiff-overhead";
     }
@@ -56,6 +60,7 @@ public class AutodiffBench extends MlBenchmark {
     }
 
     public void prepare(String v) {
+        this.begin(v);
         int64 a = Data.intAt("mlp/config.npy", (int64) 0);
         int64 b = Data.intAt("mlp/config.npy", (int64) 1);
         int64 c = Data.intAt("mlp/config.npy", (int64) 2);

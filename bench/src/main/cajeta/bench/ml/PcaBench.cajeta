@@ -23,6 +23,10 @@ public class PcaBench extends MlBenchmark {
         this.k = 0;
     }
 
+    public String unit() {
+        return "rows/s";
+    }
+
     public String name() {
         return "pca";
     }
@@ -38,6 +42,7 @@ public class PcaBench extends MlBenchmark {
     }
 
     public void prepare(String v) {
+        this.begin(v);
         this.x #= Data.f64("pca/" + v + "/x.npy");
         this.zy #= Data.zeros(this.x.shapeAt(0));
         this.k = Data.intAt("pca/" + v + "/k.npy", (int64) 0);

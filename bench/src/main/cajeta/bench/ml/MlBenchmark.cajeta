@@ -6,26 +6,27 @@ import dev.cajeta.ml.grad.Ops;
 
 /**
  * What every dev.cajeta.ml row shares: area `ml` (so the row id is
- * `ml/<name>`), the platform, the per-variant state the harness reads back
- * after measuring (dataset, input size, the check's detail for notes), and the
- * device rule.
+ * `ml/<name>`), the library and platform, the per-variant state a measured
+ * variant leaves for the harness to read back (dataset, input size, the
+ * check's detail for notes), and the device rule.
  *
  * A `device` variant is skipped, with the reason on the row, when
  * CAJETA_BENCH_NO_GPU=1 (the GPU belongs to another session), or when
  * dev.cajeta.ml has no device kernels to run it on: its Ops dispatch seam has
  * an empty GPU column in 0.10.6 (Ops.hasGpu answers false for every op).
+ * The decision and its reason are functions of the variant (supportsVariant,
+ * skipReasonFor, backendFor); nothing is stashed between harness calls.
+ * Every subclass's prepare(v) starts with begin(v).
  */
 public class MlBenchmark extends Benchmark {
 
     public String cur;
-    public String why;
     public String note;
     public String ds;
     public int64 nIn;
 
     public MlBenchmark() {
         this.cur = "";
-        this.why = "variant not supported by this benchmark";
         this.note = "";
         this.ds = "";
         this.nIn = -1;
@@ -33,6 +34,14 @@ public class MlBenchmark extends Benchmark {
 
     public String area() {
         return "ml";
+    }
+
+    public String library() {
+        return "dev.cajeta.ml";
+    }
+
+    public String libraryVersion() {
+        return "0.10.6";
     }
 
     public String platform() {
@@ -51,10 +60,6 @@ public class MlBenchmark extends Benchmark {
         return this.nIn;
     }
 
-    public String skipReason() {
-        return this.why;
-    }
-
     public int32 warmupIters() {
         return 3;
     }
@@ -63,8 +68,8 @@ public class MlBenchmark extends Benchmark {
         return 10;
     }
 
-    public String backend() {
-        if (this.cur.equals("device")) {
+    public String backendFor(String v) {
+        if (v.equals("device")) {
             return "gpu";
         }
         return "cpu";
@@ -75,28 +80,43 @@ public class MlBenchmark extends Benchmark {
         return "";
     }
 
-    public boolean supportsVariant(String v) {
+    // The start of a measured variant: the per-variant state back to empty.
+    public void begin(String v) {
         this.cur = "" + v;
         this.note = "";
         this.ds = "";
         this.nIn = -1;
+    }
+
+    // Why `v` cannot run here, or "" when it can.
+    public #String whyNot(String v) {
         if (v.equals("device")) {
             if (Data.noGpu()) {
-                this.why = "GPU held by another session (CAJETA_BENCH_NO_GPU=1)";
-                return false;
+                return "GPU held by another session (CAJETA_BENCH_NO_GPU=1)";
             }
             if (!Ops.hasGpu(Op.MATMUL)) {
-                this.why = "dev.cajeta.ml 0.10.6 has no device kernels (the Ops GPU column is empty)";
-                return false;
+                return "dev.cajeta.ml 0.10.6 has no device kernels (the Ops GPU column is empty)";
             }
         }
         String need = this.probe(v);
         if (!need.isEmpty()) {
             if (!Data.has(need)) {
-                this.why = "dataset " + need + " not generated (run bench.sh, which runs gen_data.py)";
-                return false;
+                return "dataset " + need + " not generated (run bench.sh, which runs gen_data.py)";
             }
         }
-        return true;
+        return "";
+    }
+
+    public boolean supportsVariant(String v) {
+        String why #= this.whyNot(v);
+        return why.isEmpty();
+    }
+
+    // The skipped row is made right after this call: it carries no state of
+    // the variant measured before it.
+    public String skipReasonFor(String v) {
+        this.begin(v);
+        String why #= this.whyNot(v);
+        return "" + why;
     }
 }

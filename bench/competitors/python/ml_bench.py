@@ -125,7 +125,7 @@ def run_classical(name, variant, d):
         diff = abs(got - ref[0])
         ok = diff <= tol
         note = f"{what} {got:.10g} vs scikit-learn {ref[0]:.10g}, |d| {diff:.3g} <= {tol:g}"
-        return bc.measured_row(samples, w, input_size=xtr.shape[0], check_ok=ok, note=note,
+        return bc.measured_row(samples, w, input_size=xtr.shape[0], unit="rows/s", check_ok=ok, note=note,
                                dataset_name=ds, **meta)
 
     if name == "kmeans":
@@ -141,7 +141,7 @@ def run_classical(name, variant, d):
         tol = TOL[f"kmeans-{variant}"]
         note = (f"k=10 to convergence ({state['m'].n_iter_} iterations); inertia {got:.10g} vs "
                 f"reference {ref[0]:.10g}, rel |d| {rel:.3g} <= {tol:g}")
-        return bc.measured_row(samples, w, input_size=x.shape[0], check_ok=rel <= tol, note=note,
+        return bc.measured_row(samples, w, input_size=x.shape[0], unit="rows/s", check_ok=rel <= tol, note=note,
                                dataset_name=ds, **meta)
 
     if name == "pca":
@@ -156,7 +156,7 @@ def run_classical(name, variant, d):
         rel = float(np.max(np.abs(got - ref) / ref))
         tol = TOL[name]
         note = f"{k} components; explained-variance ratio max rel |d| {rel:.3g} <= {tol:g}"
-        return bc.measured_row(samples, w, input_size=x.shape[0], check_ok=rel <= tol, note=note,
+        return bc.measured_row(samples, w, input_size=x.shape[0], unit="rows/s", check_ok=rel <= tol, note=note,
                                dataset_name=f"pca-{variant} {size_note(x)}", **meta)
 
     if name == "standard-scaler":
@@ -311,7 +311,7 @@ def run_neural(name, variant, d):
         note = (f"forward+backward; backward/forward {b_med / max(f_med, 1):.3f} "
                 f"(forward median {f_med} ns, backward median {b_med} ns); "
                 f"max |dW - dW_ref| {worst:.3g} <= {tol:g}; " + torch_threads_note())
-        return bc.measured_row(samples, w, input_size=x.shape[0], check_ok=worst <= tol,
+        return bc.measured_row(samples, w, input_size=x.shape[0], unit="samples/s", check_ok=worst <= tol,
                                note=note, model=mdl, **meta)
 
     if name == "checkpoint-load":
@@ -327,7 +327,7 @@ def run_neural(name, variant, d):
         equal = all(np.array_equal(twins.cajeta_layout(k, p), load(d, f"mlp/cajeta/{k}.npy"))
                     for k, p in m.named_parameters())
         note = f"torch.load + load_state_dict x{loads} per iteration; weights equal: {equal}"
-        return bc.measured_row(samples, w, input_size=loads, check_ok=equal, note=note,
+        return bc.measured_row(samples, w, input_size=loads, unit="loads/s", check_ok=equal, note=note,
                                model=f"mlp {n_in}-{hid}-{n_out} f32",
                                dataset_name=f"mlp/model.pt {os.path.getsize(path)} B", **meta)
     raise ValueError(name)

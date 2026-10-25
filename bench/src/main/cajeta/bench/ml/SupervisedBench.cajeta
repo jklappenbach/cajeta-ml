@@ -28,7 +28,13 @@ public class SupervisedBench extends MlBenchmark {
         return this.name() + "/" + variant + "/x_train.npy";
     }
 
+    // Training rows per second (input_size is the training set).
+    public String unit() {
+        return "rows/s";
+    }
+
     public void prepare(String v) {
+        this.begin(v);
         String base = this.name() + "/" + v;
         this.xtr #= Data.f64(base + "/x_train.npy");
         this.ytr #= Data.f64(base + "/y_train.npy");
