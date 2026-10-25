@@ -30,7 +30,8 @@ CAJETA_BENCH_SMOKE=1 ./bench.sh --competitors   # reduced sizes, warmup 1, trial
    gains the competitor versions, load average, GPU state, data seed and
    manifest checksum.
 
-Output lands in `results/<machine>/<run-id>/` (`run-id` is
+Output lands in `results/<machine>/<run-id>/` (gitignored: only the publish
+step copies a non-smoke run into the compiler repo, spec §9.4) (`run-id` is
 `<UTC basic>-<cajeta version>`). `cajeta bench` alone builds and measures the
 Cajeta rows into `build/results.csv`; it needs the data step first.
 
@@ -117,8 +118,8 @@ a sanity check of the pipeline; the Cajeta row's is the real one).
 
 ## Measured (Phoenix, 2026-10-25, smoke)
 
-`results/phoenix/20261025T1915Z-0.46.3/` is the smoke run (every row tagged
-`smoke`, never published): `test/bench_smoke.sh` PASS in 206 s — data 5 s,
+The smoke run (run id `20261025T1915Z-0.46.3`; `results/` is gitignored here,
+because a smoke run is never committed, spec §1.5.1 and §9.3): `test/bench_smoke.sh` PASS in 206 s — data 5 s,
 build a cache hit, Cajeta rows 191 s, competitor rows 7 s — at load average
 15–21 from other sessions' compiles, so its timings are not numbers to quote.
 Its slowest Cajeta rows: logistic-regression/digits 20.6 s per fit on 360

@@ -34,7 +34,7 @@
         // a working tree ahead of its release is measured by `cajeta install`
         // in .. first, which puts it in ~/.olla where this resolves.
         "dependencies": {
-            "dev.cajeta.bench": "0.1.0",
+            "dev.cajeta.bench": "0.1.1",
             "dev.cajeta.ml":    "0.10.6"
         },
 
