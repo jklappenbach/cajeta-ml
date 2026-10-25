@@ -1,0 +1,70 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.decompose.PCA;
+
+/**
+ * ml/pca: full-SVD PCA, 20 components (10 under smoke, where the data has 20
+ * features). Explained-variance ratios within a relative Tol.PCA of
+ * scikit-learn's PCA(svd_solver="full").
+ */
+public class PcaBench extends MlBenchmark {
+
+    Tensor<float64> x;
+    Tensor<float64> zy;
+    Tensor<float64> refv;
+    Tensor<float64> ratio;
+    int64 k;
+
+    // Explicit: a subclass with no constructor of its own comes out of
+    // `heap` unusable on cajeta 0.46.3 (measured; bench/README.md).
+    public PcaBench() {
+        this.k = 0;
+    }
+
+    public String name() {
+        return "pca";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("synthetic");
+        return v;
+    }
+
+    public String probe(String variant) {
+        return "pca/" + variant + "/x.npy";
+    }
+
+    public void prepare(String v) {
+        this.x #= Data.f64("pca/" + v + "/x.npy");
+        this.zy #= Data.zeros(this.x.shapeAt(0));
+        this.k = Data.intAt("pca/" + v + "/k.npy", (int64) 0);
+        this.refv #= Data.f64("ref/pca-" + v + ".npy");
+        this.nIn = this.x.shapeAt(0);
+        this.ds = "pca-" + v + " " + Data.shape64(this.x) + " seed " + Data.SEED;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        PCA p = heap PCA(this.k);
+        p.fit(this.x, this.zy);
+        this.ratio #= p.explainedVarianceRatio().copy();
+    }
+
+    public boolean checkResult() {
+        float64 worst = 0.0;
+        int64 i = 0;
+        while (i < this.k) {
+            float64 r = this.refv.flatGet(i);
+            float64 d = Data.abs(this.ratio.flatGet(i) - r) / r;
+            if (d > worst) {
+                worst = d;
+            }
+            i = i + 1;
+        }
+        this.note = "" + this.k + " components; explained-variance ratio max relative |d| "
+            + worst + " <= " + Tol.PCA;
+        return worst <= Tol.PCA;
+    }
+}

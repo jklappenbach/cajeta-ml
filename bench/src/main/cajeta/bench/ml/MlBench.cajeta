@@ -1,0 +1,31 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import dev.cajeta.bench.Benchmark;
+import dev.cajeta.bench.BenchMain;
+
+/**
+ * The dev.cajeta.ml benchmark entry: one Benchmark per id on the compiler
+ * repo's bench/ml/Classical.md and bench/ml/Neural.md, in page order.
+ * `--list`, `--run`, `--area`, `--bench`, `--out` are dev.cajeta.bench's.
+ */
+public final class MlBench {
+    public static int32 main(String[] args) {
+        ArrayList<Benchmark> b = heap ArrayList<Benchmark>();
+        b.add(heap LinearRegressionBench());
+        b.add(heap LogisticRegressionBench());
+        b.add(heap KMeansBench());
+        b.add(heap KnnBench());
+        b.add(heap PcaBench());
+        b.add(heap StandardScalerBench());
+        b.add(heap NeuralBench(NeuralBench.MLP, true));
+        b.add(heap NeuralBench(NeuralBench.MLP, false));
+        b.add(heap NeuralBench(NeuralBench.CNN, true));
+        b.add(heap NeuralBench(NeuralBench.CNN, false));
+        b.add(heap NeuralBench(NeuralBench.TRANSFORMER, true));
+        b.add(heap NeuralBench(NeuralBench.TRANSFORMER, false));
+        b.add(heap AutodiffBench());
+        b.add(heap CheckpointLoadBench());
+        return BenchMain.run(args, b);
+    }
+}

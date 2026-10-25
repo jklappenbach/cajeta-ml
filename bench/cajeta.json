@@ -1,0 +1,83 @@
+{
+    // cajeta-ml/bench — the dev.cajeta.ml benchmarks on the shared harness
+    // dev.cajeta.bench (cajeta specs/benchmark-reference-spec.md §3, §7.2).
+    // The pages that define every id live in the compiler repo:
+    // bench/ml/Classical.md and bench/ml/Neural.md.
+    //
+    //   src/main/cajeta/bench/ml/   one Benchmark per page id; MlBench registers them
+    //   competitors/python/         gen_data.py (the shared, seeded inputs) and
+    //                               ml_bench.py (scikit-learn and torch rows)
+    //   bench.sh                    data → Cajeta rows → competitor rows → results/
+    //   test/bench_smoke.sh         the smoke gate
+    //
+    // `cajeta bench` builds and measures everything into build/results.csv; it
+    // needs the data first (./bench.sh does both, and the competitors).
+
+    "details": {
+        "name":                "ml-bench",
+        "version":             "0.1.0",
+        "description":         "dev.cajeta.ml benchmarks against scikit-learn and PyTorch",
+        "license":             "Apache-2.0",
+        "authors":             ["Julian Klappenbach"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        // dev.cajeta.bench's four: clock (trials), filesystem (the CSVs, /proc,
+        // and here the .npy / .pt inputs), env (CAJETA_BENCH_*,
+        // CAJETA_ML_BENCH_DATA), process (driver detection).
+        "capabilities": ["filesystem", "clock", "env", "process"],
+
+        // dev.cajeta.ml at the version this checkout is (details.version in
+        // ../cajeta.json). The build tool resolves a version, not a path (a
+        // `{ "path": ".." }` dependency parses but resolves nothing today), so
+        // a working tree ahead of its release is measured by `cajeta install`
+        // in .. first, which puts it in ~/.olla where this resolves.
+        "dependencies": {
+            "dev.cajeta.bench": "0.1.0",
+            "dev.cajeta.ml":    "0.10.6"
+        },
+
+        "repositories": [
+            { "name": "central", "url": "https://olla.cajeta.dev", "priority": 0 }
+        ],
+
+        "build": {
+            "source-root":  "src/main/cajeta",
+            "target":       "host",
+            "entry-method": "bench.ml.MlBench::main"
+        }
+    },
+
+    "tasks": {
+
+        "release": {
+            "description": "Release build of the benchmark binary (build/ml-bench)",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native" },
+                  "output-path": "build/ml-bench", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "bench": {
+            "description": "Build and measure every benchmark into build/results.csv (data from ./bench.sh)",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native" },
+                  "output-path": "build/ml-bench", "id": "art" },
+                // exec does not split its command string: arguments go in args.
+                { "action": "exec", "command": "${art.path}",
+                  "args": ["--run", "--out", "build/results.csv"] }
+            ]
+        },
+
+        "clean": {
+            "description": "Remove build outputs",
+            "actions": [
+                { "action": "exec", "command": "rm", "args": ["-rf", "build"] }
+            ]
+        }
+    }
+}

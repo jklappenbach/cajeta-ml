@@ -1,0 +1,46 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.neighbors.KNeighborsClassifier;
+
+/** ml/knn: k = 5, uniform weights, brute force; accuracy within Tol.KNN of scikit-learn's. */
+public class KnnBench extends SupervisedBench {
+
+    // Explicit: a subclass with no constructor of its own comes out of
+    // `heap` unusable on cajeta 0.46.3 (measured; bench/README.md).
+    public KnnBench() {
+    }
+
+    public String name() {
+        return "knn";
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 5;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("synthetic");
+        return v;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        KNeighborsClassifier k = heap KNeighborsClassifier((int64) 5);
+        k.fit(this.xtr, this.ytr);
+        this.pred #= k.predict(this.xte);
+    }
+
+    public boolean checkResult() {
+        float64 got = Metrics.accuracy(this.yte, this.pred);
+        float64 d = Data.abs(got - this.refv);
+        this.note = "k=5 over " + this.xte.shapeAt(0) + " queries; accuracy " + got
+            + " vs scikit-learn " + this.refv + ", |d| " + d + " <= " + Tol.KNN;
+        return d <= Tol.KNN;
+    }
+}

@@ -1,0 +1,50 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.linear.LogisticRegression;
+
+/**
+ * ml/logistic-regression: newton-cholesky IRLS, C = 1, tol 1e-4, 100
+ * iterations (scikit-learn's solver="newton-cholesky" with the same knobs);
+ * digits fits one multinomial likelihood, scikit-learn >= 1.7's only
+ * multiclass mode. Accuracy within Tol.ACCURACY of scikit-learn's.
+ */
+public class LogisticRegressionBench extends SupervisedBench {
+
+    // Explicit: a subclass with no constructor of its own comes out of
+    // `heap` unusable on cajeta 0.46.3 (measured; bench/README.md).
+    public LogisticRegressionBench() {
+    }
+
+    public String name() {
+        return "logistic-regression";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("synthetic");
+        v.add("digits");
+        return v;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        if (variant.equals("digits")) {
+            LogisticRegression m = heap LogisticRegression(1.0, 0.0001, (int64) 100, true);
+            m.fit(this.xtr, this.ytr);
+            this.pred #= m.predict(this.xte);
+        } else {
+            LogisticRegression b = heap LogisticRegression(1.0, 0.0001, (int64) 100);
+            b.fit(this.xtr, this.ytr);
+            this.pred #= b.predict(this.xte);
+        }
+    }
+
+    public boolean checkResult() {
+        float64 got = Metrics.accuracy(this.yte, this.pred);
+        float64 d = Data.abs(got - this.refv);
+        this.note = "accuracy " + got + " vs scikit-learn " + this.refv + ", |d| " + d
+            + " <= " + Tol.ACCURACY;
+        return d <= Tol.ACCURACY;
+    }
+}

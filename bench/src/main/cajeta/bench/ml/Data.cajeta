@@ -1,0 +1,159 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.io.file.Path;
+import cajeta.math.Tensor;
+import cajeta.math.npio.Npy;
+
+/**
+ * Where the benchmarks' inputs live and how they are read. Every input and
+ * every reference result is a file that competitors/python/gen_data.py wrote
+ * once from one recorded seed (SEED); the Python runner reads the same files.
+ *
+ *   CAJETA_ML_BENCH_DATA   the data directory (bench.sh sets it)
+ *   default                data/smoke under CAJETA_BENCH_SMOKE=1, else data/full
+ *   CAJETA_BENCH_NO_GPU=1  the GPU is another session's: device rows skip
+ */
+public final class Data {
+
+    public static uint64 SEED = 20261025;
+
+    public static boolean truthy(String v) {
+        if (v == null) {
+            return false;
+        }
+        return v.equals("1") || v.equals("true") || v.equals("yes");
+    }
+
+    public static boolean smoke() {
+        return Data.truthy(System.env.get("CAJETA_BENCH_SMOKE"));
+    }
+
+    public static boolean noGpu() {
+        return Data.truthy(System.env.get("CAJETA_BENCH_NO_GPU"));
+    }
+
+    public static #String dir() {
+        String d = System.env.get("CAJETA_ML_BENCH_DATA");
+        if (d != null) {
+            if (!d.isEmpty()) {
+                return "" + d;
+            }
+        }
+        if (Data.smoke()) {
+            return "data/smoke";
+        }
+        return "data/full";
+    }
+
+    public static #String path(String rel) {
+        String d #= Data.dir();
+        return d + "/" + rel;
+    }
+
+    public static boolean has(String rel) {
+        String p #= Data.path(rel);
+        Path f #= Path.of(p);
+        return f.exists();
+    }
+
+    public static #Tensor<float64> f64(String rel) {
+        String p #= Data.path(rel);
+        return Npy.loadF64(p);
+    }
+
+    public static #Tensor<float32> f32(String rel) {
+        String p #= Data.path(rel);
+        return Npy.loadF32(p);
+    }
+
+    public static #Tensor<int64> i64(String rel) {
+        String p #= Data.path(rel);
+        return Npy.loadI64(p);
+    }
+
+    /** The first element of a float64 .npy (a reference metric). */
+    public static float64 scalar(String rel) {
+        Tensor<float64> t #= Data.f64(rel);
+        return t.flatGet(0);
+    }
+
+    /** Element `i` of an int64 .npy (a config vector). */
+    public static int64 intAt(String rel, int64 i) {
+        Tensor<int64> t #= Data.i64(rel);
+        return t.flatGet(i);
+    }
+
+    public static #Tensor<float64> zeros(int64 n) {
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return Tensor.zeros<float64>(sh);
+    }
+
+    public static float64 abs(float64 x) {
+        if (x < 0.0) {
+            return 0.0 - x;
+        }
+        return x;
+    }
+
+    public static #String shape64(Tensor<float64> t) {
+        String s = "" + t.shapeAt(0);
+        int32 i = 1;
+        while (i < t.ndim()) {
+            s = s + "x" + t.shapeAt(i);
+            i = i + 1;
+        }
+        return s;
+    }
+
+    public static #String shape32(Tensor<float32> t) {
+        String s = "" + t.shapeAt(0);
+        int32 i = 1;
+        while (i < t.ndim()) {
+            s = s + "x" + t.shapeAt(i);
+            i = i + 1;
+        }
+        return s;
+    }
+
+    /** max |a - b| over the first `n` flat elements of two float32 tensors. */
+    public static float64 maxDiff32(Tensor<float32> a, Tensor<float32> b, int64 n) {
+        float64 worst = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = Data.abs((float64) a.flatGet(i) - (float64) b.flatGet(i));
+            if (d > worst) {
+                worst = d;
+            }
+            i = i + 1;
+        }
+        return worst;
+    }
+
+    /** The median of the recorded nanosecond samples (sorted copy). */
+    public static int64 median(ArrayList<int64> xs) {
+        int32 n = xs.count();
+        if (n == 0) {
+            return 0;
+        }
+        int64[] a = heap int64[n];
+        int32 i = 0;
+        while (i < n) {
+            a[i] = xs.get(i);
+            i = i + 1;
+        }
+        i = 1;
+        while (i < n) {
+            int64 key = a[i];
+            int32 j = i - 1;
+            while (j >= 0 && a[j] > key) {
+                a[j + 1] = a[j];
+                j = j - 1;
+            }
+            a[j + 1] = key;
+            i = i + 1;
+        }
+        return a[n / 2];
+    }
+}

@@ -1,0 +1,103 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.zoo.Mlp;
+
+/**
+ * ml/checkpoint-load: read the MLP's torch checkpoint (mlp/model.pt, written by
+ * torch.save) and import it into the module, config/train.npy[1] times per
+ * iteration (100; 10 under smoke) — torch's row does torch.load +
+ * load_state_dict the same number of times. The check: every loaded weight
+ * equal, bit for bit, to torch's (mlp/cajeta/<name>.npy, in cajeta layout).
+ */
+public class CheckpointLoadBench extends MlBenchmark {
+
+    Mlp net;
+    String pt;
+    String mdl;
+    int64 loads;
+    int32 applied;
+
+    public CheckpointLoadBench() {
+        this.pt = "";
+        this.mdl = "";
+        this.loads = 0;
+        this.applied = 0;
+    }
+
+    public String name() {
+        return "checkpoint-load";
+    }
+
+    public String model() {
+        return this.mdl;
+    }
+
+    public int32 warmupIters() {
+        return 2;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("cpu");
+        return v;
+    }
+
+    public String probe(String variant) {
+        return "mlp/model.pt";
+    }
+
+    public void prepare(String v) {
+        int64 a = Data.intAt("mlp/config.npy", (int64) 0);
+        int64 b = Data.intAt("mlp/config.npy", (int64) 1);
+        int64 c = Data.intAt("mlp/config.npy", (int64) 2);
+        int64[] hidden = heap int64[1];
+        hidden[0] = b;
+        this.net = heap Mlp(a, hidden, c, (uint64) 1);
+        this.mdl = "mlp " + a + "-" + b + "-" + c + " f32";
+        this.pt #= Data.path("mlp/model.pt");
+        this.loads = Data.intAt("config/train.npy", (int64) 1);
+        this.nIn = this.loads;
+        this.ds = "mlp/model.pt seed " + Data.SEED;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int64 i = 0;
+        while (i < this.loads) {
+            this.applied = Train.importPt(this.net, this.pt);
+            i = i + 1;
+        }
+    }
+
+    public boolean checkResult() {
+        Parameter[] ps #= this.net.parameters();
+        ArrayList<String> names #= this.net.parameterNames();
+        boolean equal = true;
+        int32 i = 0;
+        while (i < names.count()) {
+            Tensor<float32> ref #= Data.f32("mlp/cajeta/" + names.get(i) + ".npy");
+            Tensor<float32> got = ps[i].get();
+            if (ref.size() != got.size()) {
+                equal = false;
+            } else {
+                int64 j = 0;
+                while (j < ref.size()) {
+                    if (got.flatGet(j) != ref.flatGet(j)) {
+                        equal = false;
+                    }
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+        this.note = "PtReader.read + torchToCajeta + importTorch x" + this.loads
+            + " per iteration (" + this.applied + " tensors each); weights equal: " + equal;
+        return equal && this.applied == names.count();
+    }
+}

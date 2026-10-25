@@ -1,0 +1,70 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.preprocess.StandardScaler;
+
+/**
+ * ml/standard-scaler: fit and transform; the transformed matrix within
+ * Tol.SCALER of scikit-learn's on the first 1000 rows (the reference file
+ * keeps 1000 rows so the full-size reference stays small).
+ */
+public class StandardScalerBench extends MlBenchmark {
+
+    Tensor<float64> x;
+    Tensor<float64> zy;
+    Tensor<float64> refv;
+    Tensor<float64> z;
+
+    // Explicit: a subclass with no constructor of its own comes out of
+    // `heap` unusable on cajeta 0.46.3 (measured; bench/README.md).
+    public StandardScalerBench() {
+    }
+
+    public String name() {
+        return "standard-scaler";
+    }
+
+    public String unit() {
+        return "rows/s";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("synthetic");
+        return v;
+    }
+
+    public String probe(String variant) {
+        return "standard-scaler/" + variant + "/x.npy";
+    }
+
+    public void prepare(String v) {
+        this.x #= Data.f64("standard-scaler/" + v + "/x.npy");
+        this.zy #= Data.zeros(this.x.shapeAt(0));
+        this.refv #= Data.f64("ref/standard-scaler-" + v + ".npy");
+        this.nIn = this.x.shapeAt(0);
+        this.ds = "standard-scaler-" + v + " " + Data.shape64(this.x) + " seed " + Data.SEED;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        StandardScaler s = heap StandardScaler();
+        this.z #= s.fitTransform(this.x, this.zy);
+    }
+
+    public boolean checkResult() {
+        int64 n = this.refv.size();
+        float64 worst = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = Data.abs(this.z.flatGet(i) - this.refv.flatGet(i));
+            if (d > worst) {
+                worst = d;
+            }
+            i = i + 1;
+        }
+        this.note = "fit and transform; max |z - z_ref| " + worst + " <= " + Tol.SCALER
+            + " (first 1000 rows)";
+        return worst <= Tol.SCALER;
+    }
+}

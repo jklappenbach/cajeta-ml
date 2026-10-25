@@ -1,0 +1,102 @@
+package bench.ml;
+
+import dev.cajeta.bench.Benchmark;
+import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.grad.Ops;
+
+/**
+ * What every dev.cajeta.ml row shares: area `ml` (so the row id is
+ * `ml/<name>`), the platform, the per-variant state the harness reads back
+ * after measuring (dataset, input size, the check's detail for notes), and the
+ * device rule.
+ *
+ * A `device` variant is skipped, with the reason on the row, when
+ * CAJETA_BENCH_NO_GPU=1 (the GPU belongs to another session), or when
+ * dev.cajeta.ml has no device kernels to run it on: its Ops dispatch seam has
+ * an empty GPU column in 0.10.6 (Ops.hasGpu answers false for every op).
+ */
+public class MlBenchmark extends Benchmark {
+
+    public String cur;
+    public String why;
+    public String note;
+    public String ds;
+    public int64 nIn;
+
+    public MlBenchmark() {
+        this.cur = "";
+        this.why = "variant not supported by this benchmark";
+        this.note = "";
+        this.ds = "";
+        this.nIn = -1;
+    }
+
+    public String area() {
+        return "ml";
+    }
+
+    public String platform() {
+        return "dev.cajeta.ml 0.10.6";
+    }
+
+    public String competitorNote() {
+        return this.note;
+    }
+
+    public String datasetInfo() {
+        return this.ds;
+    }
+
+    public int64 inputSize() {
+        return this.nIn;
+    }
+
+    public String skipReason() {
+        return this.why;
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public String backend() {
+        if (this.cur.equals("device")) {
+            return "gpu";
+        }
+        return "cpu";
+    }
+
+    // The data a variant needs; overridden per benchmark.
+    public String probe(String variant) {
+        return "";
+    }
+
+    public boolean supportsVariant(String v) {
+        this.cur = "" + v;
+        this.note = "";
+        this.ds = "";
+        this.nIn = -1;
+        if (v.equals("device")) {
+            if (Data.noGpu()) {
+                this.why = "GPU held by another session (CAJETA_BENCH_NO_GPU=1)";
+                return false;
+            }
+            if (!Ops.hasGpu(Op.MATMUL)) {
+                this.why = "dev.cajeta.ml 0.10.6 has no device kernels (the Ops GPU column is empty)";
+                return false;
+            }
+        }
+        String need = this.probe(v);
+        if (!need.isEmpty()) {
+            if (!Data.has(need)) {
+                this.why = "dataset " + need + " not generated (run bench.sh, which runs gen_data.py)";
+                return false;
+            }
+        }
+        return true;
+    }
+}

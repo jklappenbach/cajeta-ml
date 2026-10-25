@@ -1,0 +1,38 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import dev.cajeta.ml.Metrics;
+import dev.cajeta.ml.linear.LinearRegression;
+
+/** ml/linear-regression: OLS fit and predict; R2 within Tol.R2 of scikit-learn's. */
+public class LinearRegressionBench extends SupervisedBench {
+
+    // Explicit: a subclass with no constructor of its own comes out of
+    // `heap` unusable on cajeta 0.46.3 (measured; bench/README.md).
+    public LinearRegressionBench() {
+    }
+
+    public String name() {
+        return "linear-regression";
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("synthetic");
+        v.add("housing");
+        return v;
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        LinearRegression lr = heap LinearRegression(true);
+        lr.fit(this.xtr, this.ytr);
+        this.pred #= lr.predict(this.xte);
+    }
+
+    public boolean checkResult() {
+        float64 got = Metrics.r2(this.yte, this.pred);
+        float64 d = Data.abs(got - this.refv);
+        this.note = "R2 " + got + " vs scikit-learn " + this.refv + ", |d| " + d + " <= " + Tol.R2;
+        return d <= Tol.R2;
+    }
+}

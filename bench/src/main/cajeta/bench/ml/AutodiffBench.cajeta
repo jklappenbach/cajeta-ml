@@ -1,0 +1,132 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import cajeta.time.Clock;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Nets;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.zoo.Mlp;
+
+/**
+ * ml/autodiff-overhead: one forward + mean cross-entropy + backward of the
+ * MLP per iteration, with the forward and the backward also timed apart so
+ * the row's notes carry backward/forward (the page's measure); torch's row
+ * carries the same ratio from autograd. The check: every parameter gradient
+ * within Tol.GRAD of torch's on the same weights and batch.
+ */
+public class AutodiffBench extends MlBenchmark {
+
+    Mlp net;
+    Tensor<float32> x;
+    Tensor<float32> y;
+    ArrayList<int64> fwd;
+    ArrayList<int64> bwd;
+    String mdl;
+
+    public AutodiffBench() {
+        this.mdl = "";
+    }
+
+    public String name() {
+        return "autodiff-overhead";
+    }
+
+    public String model() {
+        return this.mdl;
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("cpu");
+        return v;
+    }
+
+    public String probe(String variant) {
+        return "mlp/model.pt";
+    }
+
+    public void prepare(String v) {
+        int64 a = Data.intAt("mlp/config.npy", (int64) 0);
+        int64 b = Data.intAt("mlp/config.npy", (int64) 1);
+        int64 c = Data.intAt("mlp/config.npy", (int64) 2);
+        int64[] hidden = heap int64[1];
+        hidden[0] = b;
+        this.net = heap Mlp(a, hidden, c, Data.SEED);
+        this.mdl = "mlp " + a + "-" + b + "-" + c + " f32";
+        String pt #= Data.path("mlp/model.pt");
+        Train.importPt(this.net, pt);
+        this.x #= Data.f32("mlp/x.npy");
+        this.y #= Data.f32("mlp/y.npy");
+        this.nIn = this.x.shapeAt(0);
+        this.ds = "mlp batch " + Data.shape32(this.x) + " seed " + Data.SEED;
+        this.fwd = heap ArrayList<int64>();
+        this.bwd = heap ArrayList<int64>();
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        GradTape<float32> tape = heap GradTape<float32>();
+        this.net.bindParameters(tape);
+        int64 t0 = Clock.nanoTime();
+        GradTensor xn = tape.leaf(this.x, false);
+        GradTensor out = this.net.forward(tape, xn);
+        GradTensor loss = tape.crossEntropy(out, this.y);
+        int64 t1 = Clock.nanoTime();
+        tape.backward(loss);
+        int64 t2 = Clock.nanoTime();
+        this.net.unbindParameters();
+        this.fwd.add(t1 - t0);
+        this.bwd.add(t2 - t1);
+    }
+
+    public boolean checkResult() {
+        int64 fm = Data.median(this.fwd);
+        int64 bm = Data.median(this.bwd);
+        float64 ratio = 0.0;
+        if (fm > 0) {
+            ratio = (float64) bm / (float64) fm;
+        }
+        // The gradients of one more pass, against torch's.
+        GradTape<float32> tape = heap GradTape<float32>();
+        this.net.bindParameters(tape);
+        GradTensor xn = tape.leaf(this.x, false);
+        GradTensor out = this.net.forward(tape, xn);
+        GradTensor loss = tape.crossEntropy(out, this.y);
+        tape.backward(loss);
+        Parameter[] ps #= this.net.parameters();
+        ArrayList<String> names #= this.net.parameterNames();
+        Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
+        this.net.unbindParameters();
+        float64 worst = 0.0;
+        boolean shapes = true;
+        int32 i = 0;
+        while (i < names.count()) {
+            Tensor<float32> ref #= Data.f32("ref/mlp-grad/" + names.get(i) + ".npy");
+            if (ref.size() != gs[i].size()) {
+                shapes = false;
+            } else {
+                float64 d = Data.maxDiff32(gs[i], ref, ref.size());
+                if (d > worst) {
+                    worst = d;
+                }
+            }
+            i = i + 1;
+        }
+        this.note = "forward+backward; backward/forward " + ratio + " (forward median " + fm
+            + " ns, backward median " + bm + " ns); max |dW - torch dW| " + worst + " <= "
+            + Tol.GRAD;
+        if (!shapes) {
+            this.note = this.note + "; a gradient's shape disagrees with torch's";
+        }
+        return shapes && worst <= Tol.GRAD;
+    }
+}

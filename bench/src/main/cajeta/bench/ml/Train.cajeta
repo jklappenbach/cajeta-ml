@@ -1,0 +1,56 @@
+package bench.ml;
+
+import cajeta.math.Tensor;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.io.Checkpoints;
+import dev.cajeta.ml.io.ImportReport;
+import dev.cajeta.ml.io.PtReader;
+import dev.cajeta.ml.io.StateDict;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Nets;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.optim.Adam;
+
+/** The training step and the torch-checkpoint import both sides share in shape. */
+public final class Train {
+
+    /**
+     * One step: fresh tape, forward, loss (mean cross-entropy against class
+     * ids, or mean squared error against a same-shaped target), backward,
+     * Adam. torch's twin: zero_grad, forward, loss, backward, step.
+     */
+    public static float64 step(Module net, Adam opt, Tensor<float32> x, Tensor<float32> y,
+                               boolean mse) {
+        GradTape<float32> tape = heap GradTape<float32>();
+        net.bindParameters(tape);
+        GradTensor xn = tape.leaf(x, false);
+        GradTensor out = net.forward(tape, xn);
+        GradTensor loss = out;
+        if (mse) {
+            GradTensor tgt = tape.leaf(y, false);
+            loss = tape.mseLoss(out, tgt);
+        } else {
+            loss = tape.crossEntropy(out, y);
+        }
+        float64 v = (float64) tape.valueOf(loss).flatGet(0);
+        tape.backward(loss);
+        Parameter[] ps #= net.parameters();
+        Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
+        opt.step(gs);
+        net.unbindParameters();
+        return v;
+    }
+
+    /**
+     * Read a torch .pt state_dict (PtReader's allowlisted unpickler), map it
+     * to cajeta layout (rank-2 `.weight` transposed) and import it strictly:
+     * every parameter filled, every key consumed. Returns the applied count.
+     */
+    public static int32 importPt(Module net, String path) {
+        StateDict raw #= PtReader.read(path);
+        StateDict mapped #= Checkpoints.torchToCajeta(raw);
+        ImportReport rep #= Checkpoints.importTorch(net, mapped);
+        return rep.applied();
+    }
+}

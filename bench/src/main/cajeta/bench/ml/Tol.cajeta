@@ -1,0 +1,19 @@
+package bench.ml;
+
+/**
+ * The recorded tolerances, one per check, identical to TOL in
+ * competitors/python/ml_bench.py. Why each is what it is: bench/README.md.
+ */
+public final class Tol {
+    public static float64 R2 = 1.0e-9;            // |R2 - R2_ref|, both QR least squares in float64
+    public static float64 ACCURACY = 0.005;       // |acc - acc_ref|, newton-cholesky both sides
+    public static float64 KMEANS_SYNTHETIC = 1.0e-6;  // relative inertia, separated blobs
+    public static float64 KMEANS_DIGITS = 0.05;   // relative inertia, overlapping clusters
+    public static float64 KNN = 0.002;            // |acc - acc_ref|, brute force both sides
+    public static float64 PCA = 1.0e-8;           // max relative explained-variance-ratio gap
+    public static float64 SCALER = 1.0e-10;       // max |z - z_ref|, first 1000 rows
+    public static float64 MLP_LOGITS = 1.0e-4;    // max |logit - torch|, float32
+    public static float64 CNN_LOGITS = 1.0e-4;
+    public static float64 TRANSFORMER_OUT = 1.0e-3;
+    public static float64 GRAD = 1.0e-4;          // max |dW - torch dW|, float32
+}

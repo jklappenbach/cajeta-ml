@@ -1,0 +1,42 @@
+package bench.ml;
+
+import cajeta.math.Tensor;
+
+/**
+ * A fit-and-predict row over a train/test split: <name>/<variant>/x_train,
+ * y_train, x_test, y_test, and the scikit-learn reference metric
+ * ref/<name>-<variant>.npy. One iteration constructs the estimator, fits it on
+ * the train split and predicts the test split; the metric is computed from the
+ * last iteration's predictions, outside the timed region.
+ */
+public class SupervisedBench extends MlBenchmark {
+
+    public Tensor<float64> xtr;
+    public Tensor<float64> ytr;
+    public Tensor<float64> xte;
+    public Tensor<float64> yte;
+    public Tensor<float64> pred;
+    public float64 refv;
+
+    // Explicit: a subclass with no constructor of its own comes out of
+    // `heap` unusable on cajeta 0.46.3 (measured; bench/README.md).
+    public SupervisedBench() {
+        this.refv = 0.0;
+    }
+
+    public String probe(String variant) {
+        return this.name() + "/" + variant + "/x_train.npy";
+    }
+
+    public void prepare(String v) {
+        String base = this.name() + "/" + v;
+        this.xtr #= Data.f64(base + "/x_train.npy");
+        this.ytr #= Data.f64(base + "/y_train.npy");
+        this.xte #= Data.f64(base + "/x_test.npy");
+        this.yte #= Data.f64(base + "/y_test.npy");
+        this.refv = Data.scalar("ref/" + this.name() + "-" + v + ".npy");
+        this.nIn = this.xtr.shapeAt(0);
+        this.ds = this.name() + "-" + v + " train " + Data.shape64(this.xtr)
+            + " test " + Data.shape64(this.xte) + " seed " + Data.SEED;
+    }
+}
