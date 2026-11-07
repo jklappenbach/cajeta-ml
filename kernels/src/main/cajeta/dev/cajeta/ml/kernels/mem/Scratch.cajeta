@@ -1,0 +1,32 @@
+package dev.cajeta.ml.kernels.mem;
+
+import cajeta.xpu.KernelBuffer;
+
+/**
+ * Fixed scratch that grows only past its high-water mark (spec §7.6): {@link #ensure}
+ * returns the same buffer step after step and allocates only when a larger request
+ * arrives. llm's ActivationPool and MoeScratch.ensureBatch, one buffer at a time.
+ */
+public final class Scratch<E> {
+    KernelBuffer<E> buf;
+    uint64 cap;
+
+    public Scratch() {
+        this.buf = null;
+        this.cap = (uint64) 0;
+    }
+
+    /** A buffer of at least `n` elements; a new one only when `n` passes the mark. */
+    public KernelBuffer<E> ensure(uint64 n) {
+        if (this.buf == null || n > this.cap) {
+            this.buf = heap KernelBuffer<E>(n);
+            this.cap = n;
+        }
+        return this.buf;
+    }
+
+    /** The high-water mark: the current buffer's length, 0 before the first ensure. */
+    public uint64 capacity() {
+        return this.cap;
+    }
+}

@@ -1,0 +1,92 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Fill;
+import dev.cajeta.ml.kernels.mem.Arena;
+import dev.cajeta.ml.kernels.mem.ArenaException;
+import dev.cajeta.ml.kernels.mem.Scratch;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+
+/** cajeta-ml-gpu 10.1.1 (spec §7.6): a step loop over arena views and fixed scratch allocates nothing after its first step. */
+public class ArenaTest {
+    public ArenaTest() { return; }
+
+    /** One step: three views from a reset arena and the step's scratch. */
+    static void step(Arena<float32> arena, Scratch<float32> scratch, int64 rows) {
+        arena.reset();
+        KernelBuffer<float32> x #= arena.take((uint64) (rows * 64L));
+        KernelBuffer<float32> y #= arena.take((uint64) (rows * 64L));
+        KernelBuffer<float32> z #= arena.take((uint64) rows);
+        KernelBuffer<float32> s = scratch.ensure((uint64) (rows * 8L));
+        Assert.isTrue(x.length() == (uint64) (rows * 64L));
+        Assert.isTrue(z.length() == (uint64) rows);
+        Assert.isTrue(s.length() >= (uint64) (rows * 8L));
+    }
+
+    @Test
+    public void aThousandStepsAllocateOnlyOnTheFirst() {
+        Arena<float32> arena = heap Arena<float32>((uint64) 16384);
+        Scratch<float32> scratch = heap Scratch<float32>();
+        ArenaTest.step(arena, scratch, 100L);
+        int64 after1 = Device.deviceAllocationCount();
+        int64 i = 1L;
+        while (i < 1000L) {
+            ArenaTest.step(arena, scratch, 100L);
+            i = i + 1L;
+        }
+        Assert.equals(after1, Device.deviceAllocationCount());
+        Assert.isTrue(arena.used() == (uint64) (100L * 64L * 2L + 100L));
+    }
+
+    @Test
+    public void aViewIsTheBlocksElementsAtItsOffset() {
+        if (!Device.kernelAvailable("fillF32")) {
+            DeviceSkip.noKernel("fillF32", "cajeta-ml-gpu 8.2.1");
+            return;
+        }
+        Arena<float32> arena = heap Arena<float32>((uint64) 256);
+        KernelBuffer<float32> a #= arena.take((uint64) 64);
+        KernelBuffer<float32> b #= arena.take((uint64) 64);
+        Fill.f32(a, 64L, 1.0f);
+        Fill.f32(b, 64L, 2.0f);
+        float32[] got = heap float32[128];
+        arena.block().downloadTo(got, 0L, 128L);
+        Assert.isTrue(got[0] == 1.0f);
+        Assert.isTrue(got[63] == 1.0f);
+        Assert.isTrue(got[64] == 2.0f);
+        Assert.isTrue(got[127] == 2.0f);
+    }
+
+    @Test
+    public void aTakePastTheCapacityIsRefusedByName() {
+        Arena<float32> arena = heap Arena<float32>((uint64) 64);
+        KernelBuffer<float32> a #= arena.take((uint64) 48);
+        boolean threw = false;
+        try {
+            KernelBuffer<float32> b #= arena.take((uint64) 32);
+        } catch (ArenaException e) {
+            threw = true;
+            Assert.isTrue(e.getMessage().contains("32"));
+            Assert.isTrue(e.getMessage().contains("64"));
+        }
+        Assert.isTrue(threw);
+    }
+
+    @Test
+    public void scratchGrowsOnlyPastItsHighWaterMark() {
+        Scratch<float32> scratch = heap Scratch<float32>();
+        int64 before = Device.deviceAllocationCount();
+        KernelBuffer<float32> a = scratch.ensure((uint64) 100);
+        Assert.equals(before + 1L, Device.deviceAllocationCount());
+        KernelBuffer<float32> b = scratch.ensure((uint64) 50);
+        Assert.equals(before + 1L, Device.deviceAllocationCount());
+        Assert.isTrue(scratch.capacity() == (uint64) 100);
+        KernelBuffer<float32> c = scratch.ensure((uint64) 200);
+        Assert.equals(before + 2L, Device.deviceAllocationCount());
+        Assert.isTrue(scratch.capacity() == (uint64) 200);
+        KernelBuffer<float32> d = scratch.ensure((uint64) 200);
+        Assert.equals(before + 2L, Device.deviceAllocationCount());
+    }
+}

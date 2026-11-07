@@ -1,1 +1,3 @@
 build/
+# Generated kernel manifests, rewritten on every build.
+deps/

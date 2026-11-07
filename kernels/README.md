@@ -10,6 +10,12 @@ cajeta-xgboost are its first consumers.
   for every kernel it registers: `ValueCheck` (a launch is not a check),
   `KernelCensus` (run and value-checked, a probe, or a tracked skip, or the
   suite fails), `DeviceSkip` (a skip says why), `LaunchFailureBudget`.
+- `dev.cajeta.ml.kernels.tune` — `TileShape`, `TileFamily<S>` (members pruned
+  with a reason, the measured winner stored per problem, build and device) and
+  `TuneMode`.
+- `dev.cajeta.ml.kernels.mem` — `Arena<E>` (one block, views per step, reset)
+  and `Scratch<E>` (grows only past its high-water mark): a step loop that
+  allocates nothing after its first step.
 
 ```sh
 ./run-tests.sh                 # cpu backend

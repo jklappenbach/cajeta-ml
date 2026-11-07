@@ -1,0 +1,61 @@
+package dev.cajeta.ml.kernels.mem;
+
+import cajeta.xpu.KernelBuffer;
+
+/**
+ * One device block carved into views per step (spec §7.6): the block is allocated
+ * once, {@link #take} hands out non-owning slices of it, and {@link #reset} rewinds
+ * for the next step. llm's PrefillArena, over a KernelBuffer.
+ */
+public final class Arena<E> {
+    KernelBuffer<E> blk;
+    uint64 cap;
+    uint64 pos;
+    uint64 align;
+
+    /** A block of `elements` elements, allocated now; takes start at 64-element boundaries (256 bytes for f32, every device's storage-binding alignment). */
+    public Arena(uint64 elements) {
+        this.blk = heap KernelBuffer<E>(elements);
+        this.cap = elements;
+        this.pos = (uint64) 0;
+        this.align = (uint64) 64;
+    }
+
+    /** A block whose takes start at `alignElements` boundaries. */
+    public Arena(uint64 elements, uint64 alignElements) {
+        this.blk = heap KernelBuffer<E>(elements);
+        this.cap = elements;
+        this.pos = (uint64) 0;
+        this.align = alignElements < (uint64) 1 ? (uint64) 1 : alignElements;
+    }
+
+    /** The next `n` elements as a view on the block, at the arena's alignment; refuses past the capacity. */
+    public #KernelBuffer<E> take(uint64 n) {
+        uint64 at = ((this.pos + this.align - (uint64) 1) / this.align) * this.align;
+        if (at + n > this.cap) {
+            throw heap ArenaException("arena: a take of " + (int64) n + " elements at "
+                + (int64) at + " passes the block of " + (int64) this.cap);
+        }
+        this.pos = at + n;
+        return this.blk.slice(at, n);
+    }
+
+    /** Rewind: the next take starts at the block's first element. */
+    public void reset() {
+        this.pos = (uint64) 0;
+    }
+
+    /** Elements handed out since the last reset, alignment included. */
+    public uint64 used() {
+        return this.pos;
+    }
+
+    public uint64 capacity() {
+        return this.cap;
+    }
+
+    /** The block itself, for a bulk transfer or a whole-block launch. */
+    public KernelBuffer<E> block() {
+        return this.blk;
+    }
+}
