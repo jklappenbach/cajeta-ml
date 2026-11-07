@@ -1,0 +1,139 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.RadixSort;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** cajeta-ml-gpu 17.1.1 (spec §4.9): stable key and key-value sorts over int32 and float32 keys against the host. */
+public class SortTest {
+    public SortTest() { return; }
+
+    /** 251 distinct values with many duplicates, so stability has something to break. */
+    static int64 pattern(int64 i) {
+        return ((i * 7919L) % 251L) - 125L;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 17.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 17.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** The host's stable order of `n` elements whose rank (0..250) is `rank[i]`: a counting sort, indices in input order per rank. */
+    static #int32[] hostStableOrder(int32[] rank, int64 n) {
+        int32[] count = heap int32[252];
+        int64 i = 0L;
+        while (i < n) { count[rank[(int32) i] + 1] = count[rank[(int32) i] + 1] + 1; i = i + 1L; }
+        int32 r = 1;
+        while (r < 252) { count[r] = count[r] + count[r - 1]; r = r + 1; }
+        int32[] order = heap int32[n];
+        i = 0L;
+        while (i < n) {
+            int32 k = rank[(int32) i];
+            order[count[k]] = (int32) i;
+            count[k] = count[k] + 1;
+            i = i + 1L;
+        }
+        return #order;
+    }
+
+    static void intCase(int64 n, boolean pairs) {
+        int32[] keys = heap int32[n];
+        int32[] rank = heap int32[n];
+        int64 i = 0L;
+        while (i < n) { keys[(int32) i] = (int32) SortTest.pattern(i); rank[(int32) i] = keys[(int32) i] + 125; i = i + 1L; }
+        int32[] order #= SortTest.hostStableOrder(rank, n);
+        KernelBuffer<int32> dKeys = heap KernelBuffer<int32>((uint64) n);
+        dKeys.upload(keys);
+        KernelBuffer<int32> outKeys = heap KernelBuffer<int32>((uint64) n);
+        int64[] m #= ValueCheck.mark();
+        if (pairs) {
+            KernelBuffer<uint32> outVals = heap KernelBuffer<uint32>((uint64) n);
+            RadixSort.pairs<int32>(outKeys, outVals, dKeys, n);
+            uint32[] gv = heap uint32[n];
+            outVals.download(gv);
+            i = 0L;
+            while (i < n) {
+                if ((int32) gv[(int32) i] != order[(int32) i]) {
+                    System.stdout.println("sort pairs int32 n=" + n + ": [" + i + "] got index " + (int64) gv[(int32) i] + " want " + order[(int32) i]);
+                }
+                Assert.isTrue((int32) gv[(int32) i] == order[(int32) i]);
+                i = i + 1L;
+            }
+        } else {
+            RadixSort.keys<int32>(outKeys, dKeys, n);
+        }
+        int32[] gk = heap int32[n];
+        outKeys.download(gk);
+        i = 0L;
+        while (i < n) {
+            int32 want = keys[order[(int32) i]];
+            if (gk[(int32) i] != want) {
+                System.stdout.println("sort int32 n=" + n + ": [" + i + "] got " + gk[(int32) i] + " want " + want);
+            }
+            Assert.isTrue(gk[(int32) i] == want);
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    static void floatCase(int64 n) {
+        float32[] keys = heap float32[n];
+        int32[] rank = heap int32[n];
+        int64 i = 0L;
+        while (i < n) {
+            int64 p = SortTest.pattern(i);
+            keys[(int32) i] = (float32) p * 0.75f;
+            rank[(int32) i] = (int32) p + 125;
+            i = i + 1L;
+        }
+        int32[] order #= SortTest.hostStableOrder(rank, n);
+        KernelBuffer<float32> dKeys = heap KernelBuffer<float32>((uint64) n);
+        dKeys.upload(keys);
+        KernelBuffer<float32> outKeys = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<uint32> outVals = heap KernelBuffer<uint32>((uint64) n);
+        int64[] m #= ValueCheck.mark();
+        RadixSort.pairs<float32>(outKeys, outVals, dKeys, n);
+        float32[] gk = heap float32[n];
+        uint32[] gv = heap uint32[n];
+        outKeys.download(gk);
+        outVals.download(gv);
+        i = 0L;
+        while (i < n) {
+            if ((int32) gv[(int32) i] != order[(int32) i] || gk[(int32) i] != keys[order[(int32) i]]) {
+                System.stdout.println("sort pairs float32 n=" + n + ": [" + i + "] got " + (float64) gk[(int32) i] + " @" + (int64) gv[(int32) i] + " want " + (float64) keys[order[(int32) i]] + " @" + order[(int32) i]);
+            }
+            Assert.isTrue((int32) gv[(int32) i] == order[(int32) i]);
+            Assert.isTrue(gk[(int32) i] == keys[order[(int32) i]]);
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void keyValueSortsAreStableAndMatchTheHost() {
+        if (!SortTest.usable("toOrdered_int32")) { return; }
+        SortTest.intCase(1L, true);
+        SortTest.intCase(255L, true);
+        SortTest.intCase(256L, true);
+        SortTest.intCase(1000000L, true);
+        SortTest.intCase(777L, true);
+        if (!SortTest.usable("toOrdered_float32")) { return; }
+        SortTest.floatCase(1000000L);
+        SortTest.floatCase(777L);
+    }
+
+    @Test
+    public void keyOnlySortsMatchTheHost() {
+        if (!SortTest.usable("toOrdered_int32")) { return; }
+        SortTest.intCase(100003L, false);
+        SortTest.intCase(256L, false);
+    }
+}

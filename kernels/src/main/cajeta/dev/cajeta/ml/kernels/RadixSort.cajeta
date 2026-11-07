@@ -1,0 +1,153 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/**
+ * A stable ascending radix sort (spec §4.9) over int32 or float32 keys, optionally
+ * carrying a uint32 value per key: keys map to an order-preserving unsigned form, eight
+ * passes of four bits each count digits per block, scan the counts digit-major (Unit 13)
+ * and scatter with a stable in-block rank, and the keys map back. One answer on every
+ * backend. The in-block rank is a plain count for now; Unit 18 measures it against CUB.
+ */
+public final class RadixSort {
+    public RadixSort() { return; }
+
+    /** Key i as an unsigned value in the key's order: an int32 flips its sign bit, a float32 its sign bit when positive and every bit when negative. */
+    @Kernel
+    public static void toOrdered<K>(KernelBuffer<uint32> out, KernelBuffer<K> in, uint32 n, int32 isFloat) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            K k = in[i];
+            uint32 u = 0;
+            if (isFloat != 0) {
+                int32 b = Cajeta.f32ToBits((float32) k);
+                if (b >= 0) { u = (uint32) b | (uint32) 2147483648L; }
+                else { u = (uint32) 4294967295L - (uint32) b; }
+            } else {
+                u = (uint32) ((int32) k) ^ (uint32) 2147483648L;
+            }
+            out[i] = u;
+        }
+    }
+
+    /** The inverse of {@link #toOrdered}. */
+    @Kernel
+    public static void fromOrdered<K>(KernelBuffer<K> out, KernelBuffer<uint32> in, uint32 n, int32 isFloat) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            uint32 u = in[i];
+            if (isFloat != 0) {
+                int32 b = 0;
+                if ((u & (uint32) 2147483648L) != 0) { b = (int32) (u & (uint32) 2147483647L); }
+                else { b = (int32) ((uint32) 4294967295L - u); }
+                out[i] = (K) Cajeta.bitsToF32(b);
+            } else {
+                out[i] = (K) ((int32) (u ^ (uint32) 2147483648L));
+            }
+        }
+    }
+
+    /** Block b counts its 256 keys' digits at `shift` into counts[d * blocks + b]. */
+    @Kernel
+    public static void digitHist(KernelBuffer<int32> counts, KernelBuffer<uint32> keys, uint32 n, uint32 shift, uint32 blocks) {
+        Shared<int32> h = shared int32[16];
+        uint32 t = KernelThread.x();
+        uint32 b = Workgroup.x();
+        if (t < 16) { h[t] = 0; }
+        Barrier.workgroup();
+        uint32 i = b * 256 + t;
+        if (i < n) { h.atomicAdd((keys[i] >> shift) & 15, 1); }
+        Barrier.workgroup();
+        if (t < 16) { counts[t * blocks + b] = h[t]; }
+    }
+
+    /** Element i lands at its digit's block offset plus its stable rank among the block's earlier equal digits. */
+    @Kernel
+    public static void scatterPass(KernelBuffer<uint32> outKeys, KernelBuffer<uint32> outVals, KernelBuffer<uint32> inKeys,
+                                   KernelBuffer<uint32> inVals, KernelBuffer<int32> offsets, uint32 n, uint32 shift,
+                                   uint32 blocks, int32 hasVals) {
+        Shared<int32> digit = shared int32[256];
+        uint32 t = KernelThread.x();
+        uint32 b = Workgroup.x();
+        uint32 i = b * 256 + t;
+        int32 d = -1;
+        uint32 key = 0;
+        if (i < n) { key = inKeys[i]; d = (int32) ((key >> shift) & 15); }
+        digit[t] = d;
+        Barrier.workgroup();
+        if (i < n) {
+            uint32 rank = 0;
+            uint32 j = 0;
+            while (j < t) {
+                if (digit[j] == d) { rank = rank + 1; }
+                j = j + 1;
+            }
+            uint32 dst = (uint32) offsets[(uint32) d * blocks + b] + rank;
+            outKeys[dst] = key;
+            if (hasVals != 0) { outVals[dst] = inVals[i]; }
+        }
+    }
+
+    static void passes(KernelBuffer<uint32> k0, KernelBuffer<uint32> k1, KernelBuffer<uint32> v0, KernelBuffer<uint32> v1,
+                       int64 n, int32 hasVals) {
+        uint32 un = (uint32) n;
+        uint32 blocks = (un + 255) / 256;
+        KernelBuffer<int32> counts = heap KernelBuffer<int32>((uint64) (16 * blocks));
+        KernelBuffer<int32> offsets = heap KernelBuffer<int32>((uint64) (16 * blocks));
+        KernelStream s #= KernelStream.current();
+        uint32 shift = 0;
+        while (shift < 32) {
+            digitHist.launch(s, grid: [blocks], block: [256])(counts, k0, un, shift, blocks);
+            s.sync();
+            Scan.exclusive<int32>(offsets, counts, (int64) (16 * blocks));
+            scatterPass.launch(s, grid: [blocks], block: [256])(k1, v1, k0, v0, offsets, un, shift, blocks, hasVals);
+            s.sync();
+            KernelBuffer<uint32> tk = k0; k0 = k1; k1 = tk;
+            KernelBuffer<uint32> tv = v0; v0 = v1; v1 = tv;
+            shift = shift + 4;
+        }
+    }
+
+    /** 1 when K is a floating type: a half survives the cast, an integer type truncates it to 0. */
+    static int32 floating<K>() {
+        if ((float64) ((K) 0.5f) != 0.0) { return 1; }
+        return 0;
+    }
+
+    /** `outKeys` = `inKeys` sorted ascending, stably; `outVals[j]` = the input index of the key now at j; synced. */
+    public static void pairs<K>(KernelBuffer<K> outKeys, KernelBuffer<uint32> outVals, KernelBuffer<K> inKeys, int64 n) {
+        int32 isFloat = RadixSort.floating<K>();
+        uint32 un = (uint32) n;
+        KernelBuffer<uint32> k0 = heap KernelBuffer<uint32>((uint64) n);
+        KernelBuffer<uint32> k1 = heap KernelBuffer<uint32>((uint64) n);
+        KernelBuffer<uint32> v0 = heap KernelBuffer<uint32>((uint64) n);
+        KernelBuffer<uint32> v1 = heap KernelBuffer<uint32>((uint64) n);
+        KernelStream s #= KernelStream.current();
+        toOrdered.launch(s, grid: [(un + 255) / 256], block: [256])(k0, inKeys, un, isFloat);
+        s.sync();
+        Iota.into<uint32>(v0, n);
+        RadixSort.passes(k0, k1, v0, v1, n, 1);
+        fromOrdered.launch(s, grid: [(un + 255) / 256], block: [256])(outKeys, k0, un, isFloat);
+        s.sync();
+        Copy.into<uint32>(outVals, v0, n);
+    }
+
+    /** `outKeys` = `inKeys` sorted ascending, stably; synced. */
+    public static void keys<K>(KernelBuffer<K> outKeys, KernelBuffer<K> inKeys, int64 n) {
+        int32 isFloat = RadixSort.floating<K>();
+        uint32 un = (uint32) n;
+        KernelBuffer<uint32> k0 = heap KernelBuffer<uint32>((uint64) n);
+        KernelBuffer<uint32> k1 = heap KernelBuffer<uint32>((uint64) n);
+        KernelStream s #= KernelStream.current();
+        toOrdered.launch(s, grid: [(un + 255) / 256], block: [256])(k0, inKeys, un, isFloat);
+        s.sync();
+        RadixSort.passes(k0, k1, k0, k1, n, 0);
+        fromOrdered.launch(s, grid: [(un + 255) / 256], block: [256])(outKeys, k0, un, isFloat);
+        s.sync();
+    }
+}
