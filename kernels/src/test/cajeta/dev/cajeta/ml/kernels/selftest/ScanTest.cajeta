@@ -1,0 +1,102 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Scan;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 13.1.1 (spec §4.3): inclusive and exclusive prefix sums, plain and
+ * segmented, over int32, int64 and float32, against a host scan, with segment boundaries
+ * that fall inside a workgroup.
+ */
+public class ScanTest {
+    public ScanTest() { return; }
+
+    static int64 sizeAt(int32 k) {
+        if (k == 0) { return 1L; }
+        if (k == 1) { return 255L; }
+        if (k == 2) { return 256L; }
+        if (k == 3) { return 1000000L; }
+        return 777L;
+    }
+
+    /** Values in [-125, 125] whose running sums stay small and exact in every dtype under test. */
+    static int64 pattern(int64 i) {
+        return ((i * 7919L) % 251L) - 125L;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 13.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 13.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** The device scan of `n` pattern values at `E`, segments of `segLen`, against the host's running sum. */
+    static void scanCase<E>(String kernel, int64 n, int64 segLen, boolean inclusive) {
+        E[] src = heap E[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = (E) ScanTest.pattern(i); i = i + 1L; }
+        KernelBuffer<E> in = heap KernelBuffer<E>((uint64) n);
+        in.upload(src);
+        KernelBuffer<E> out = heap KernelBuffer<E>((uint64) n);
+        int64[] m #= ValueCheck.mark();
+        if (segLen >= n) {
+            if (inclusive) { Scan.inclusive<E>(out, in, n); } else { Scan.exclusive<E>(out, in, n); }
+        } else {
+            Scan.segmented<E>(out, in, segLen, n / segLen, inclusive);
+        }
+        E[] got = heap E[n];
+        out.download(got);
+        E run = (E) 0;
+        i = 0L;
+        while (i < n) {
+            if (segLen < n && i % segLen == 0L) { run = (E) 0; }
+            E want = run + src[(int32) i];
+            if (!inclusive) { want = run; }
+            run = run + src[(int32) i];
+            if (!(got[(int32) i] == want)) {
+                System.stdout.println(kernel + " n=" + n + " seg=" + segLen + ": [" + i + "] got " + (float64) got[(int32) i] + " want " + (float64) want);
+            }
+            Assert.isTrue(got[(int32) i] == want);
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    static void sizes<E>(String kernel) {
+        if (!ScanTest.usable(kernel)) { return; }
+        int32 k = 0;
+        while (k < 5) {
+            int64 n = ScanTest.sizeAt(k);
+            ScanTest.scanCase<E>(kernel, n, n, true);
+            ScanTest.scanCase<E>(kernel, n, n, false);
+            k = k + 1;
+        }
+    }
+
+    @Test
+    public void plainScansMatchTheHostAtEverySize() {
+        ScanTest.sizes<int32>("scanBlock_int32");
+        ScanTest.sizes<int64>("scanBlock_int64");
+        ScanTest.sizes<float32>("scanBlock_float32");
+    }
+
+    /** 1000-element segments: a boundary falls inside every fourth 256-lane block. */
+    @Test
+    public void segmentBoundariesInsideAWorkgroupResetTheSum() {
+        if (!ScanTest.usable("scanBlock_int32")) { return; }
+        ScanTest.scanCase<int32>("scanBlock_int32", 37000L, 1000L, true);
+        ScanTest.scanCase<int32>("scanBlock_int32", 37000L, 1000L, false);
+        if (!ScanTest.usable("scanBlock_float32")) { return; }
+        ScanTest.scanCase<float32>("scanBlock_float32", 37000L, 1000L, true);
+        if (!ScanTest.usable("scanBlock_int64")) { return; }
+        ScanTest.scanCase<int64>("scanBlock_int64", 3003L, 7L, false);
+    }
+}

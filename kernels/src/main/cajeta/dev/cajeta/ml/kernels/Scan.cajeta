@@ -1,0 +1,112 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/**
+ * Prefix sums (spec §4.3), inclusive or exclusive, plain or over equal-length segments,
+ * as reduce-then-scan (specs/xpu-scan-primitive-spec.md §3.2, the portable strategy):
+ * each block scans its 256 elements in shared memory honouring segment heads, one lane
+ * carries the block totals in order, and every block adds its carry to the elements
+ * before its first head. The order never varies, so a float32 result repeats bit for bit.
+ */
+public final class Scan {
+    public Scan() { return; }
+
+    /** Block b: the segmented inclusive scan of in[b*256 ..) into `out` (shifted when exclusive), its total and whether it holds a head. */
+    @Kernel
+    public static void scanBlock<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<E> totals,
+                                    KernelBuffer<int32> heads, uint32 n, uint32 segLen, int32 inclusive) {
+        Shared<E> tile = shared E[256];
+        Shared<int32> flag = shared int32[256];
+        uint32 t = KernelThread.x();
+        uint32 i = Workgroup.x() * 256 + t;
+        E x = (E) 0;
+        int32 head = 0;
+        if (i < n) {
+            x = in[i];
+            if (i - (i / segLen) * segLen == 0) { head = 1; }
+        }
+        tile[t] = x;
+        flag[t] = head;
+        Barrier.workgroup();
+        uint32 offset = 1;
+        while (offset < 256) {
+            E add = (E) 0;
+            int32 f = 0;
+            if (t >= offset && flag[t] == 0) { add = tile[t - offset]; f = flag[t - offset]; }
+            Barrier.workgroup();
+            tile[t] = tile[t] + add;
+            if (f != 0) { flag[t] = 1; }
+            Barrier.workgroup();
+            offset = offset * 2;
+        }
+        if (i < n) {
+            if (inclusive != 0) { out[i] = tile[t]; }
+            else if (head != 0 || t == 0) { out[i] = (E) 0; }
+            else { out[i] = tile[t - 1]; }
+        }
+        if (t == 255) {
+            totals[Workgroup.x()] = tile[255];
+            heads[Workgroup.x()] = flag[255];
+        }
+    }
+
+    /** One lane: carry[b] is the sum of the blocks before b back to the last block holding a head. */
+    @Kernel
+    public static void scanTotals<E>(KernelBuffer<E> carry, KernelBuffer<E> totals, KernelBuffer<int32> heads,
+                                     uint32 blocks) {
+        if (KernelThread.globalIdX() == 0) {
+            E run = (E) 0;
+            uint32 b = 0;
+            while (b < blocks) {
+                carry[b] = run;
+                if (heads[b] != 0) { run = totals[b]; } else { run = run + totals[b]; }
+                b = b + 1;
+            }
+        }
+    }
+
+    /** Element i takes its block's carry when its segment began before the block did. */
+    @Kernel
+    public static void applyCarry<E>(KernelBuffer<E> out, KernelBuffer<E> carry, uint32 n, uint32 segLen) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            uint32 inSeg = i - (i / segLen) * segLen;
+            uint32 inBlock = i - (i / 256) * 256;
+            if (inSeg > inBlock) { out[i] = out[i] + carry[i / 256]; }
+        }
+    }
+
+    /** `out[s*segLen + j]` = the prefix sum within segment `s`; `segments` segments of `segLen`; synced. */
+    public static void segmented<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 segLen, int64 segments,
+                                    boolean inclusive) {
+        int64 n = segLen * segments;
+        uint32 un = (uint32) n;
+        uint32 blocks = (un + 255) / 256;
+        KernelBuffer<E> totals = heap KernelBuffer<E>((uint64) blocks);
+        KernelBuffer<E> carry = heap KernelBuffer<E>((uint64) blocks);
+        KernelBuffer<int32> heads = heap KernelBuffer<int32>((uint64) blocks);
+        int32 inc = 0;
+        if (inclusive) { inc = 1; }
+        KernelStream s #= KernelStream.current();
+        scanBlock.launch(s, grid: [blocks], block: [256])(out, in, totals, heads, un, (uint32) segLen, inc);
+        scanTotals.launch(s, grid: [1], block: [64])(carry, totals, heads, blocks);
+        applyCarry.launch(s, grid: [blocks], block: [256])(out, carry, un, (uint32) segLen);
+        s.sync();
+    }
+
+    /** `out[i]` = `in[0] + … + in[i]`. */
+    public static void inclusive<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 n) {
+        Scan.segmented<E>(out, in, n, 1L, true);
+    }
+
+    /** `out[i]` = `in[0] + … + in[i-1]`, `out[0]` = 0. */
+    public static void exclusive<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 n) {
+        Scan.segmented<E>(out, in, n, 1L, false);
+    }
+}
