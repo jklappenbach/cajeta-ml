@@ -184,7 +184,7 @@ public final class GradTape<E extends Floating> {
 
     /** Record `value` as a leaf. `requiresGrad` marks a trainable input. */
     public GradTensor leaf(Tensor<E> value, boolean requiresGrad) {
-        Tensor<E> own #= value.copy();
+        Tensor<E> own #= Ops.copyOf<E>(value);
         GradTensor t = this.push(Op.LEAF, -1, -1, 0, 0.0, #own);
         this.needsGrad[t.idx] = requiresGrad && this.noGradDepth == 0;
         this.isLeafGrad[t.idx] = this.needsGrad[t.idx];

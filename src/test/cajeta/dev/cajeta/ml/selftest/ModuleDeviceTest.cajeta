@@ -1,0 +1,119 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.zoo.Mlp;
+import dev.cajeta.ml.zoo.SmallCnn;
+
+/**
+ * cajeta-ml-gpu 27.1.3 (spec §6.6): `Module.toDevice()` moves every parameter and buffer of a
+ * zoo model to the device, and the model's forward there matches the CPU forward.
+ */
+public class ModuleDeviceTest {
+    public ModuleDeviceTest() { return; }
+
+    static #Tensor<float32> input(int64[] shape, int64 seed) {
+        Tensor<float32> t #= Tensor.full<float32>(shape, 0.0f);
+        int64 n = t.size();
+        int64 f = 0;
+        while (f < n) {
+            t.flatSet(f, (float32) ((((f + seed) * 7919L) % 251L) - 125L) * 0.012f);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    static void same(String what, Tensor<float32> want, Tensor<float32> got, float64 tol) {
+        Assert.equals(want.size(), got.size());
+        int64 i = 0;
+        while (i < want.size()) {
+            float64 w = (float64) want.flatGet(i);
+            float64 g = (float64) got.flatGet(i);
+            float64 d = g - w;
+            if (d < 0.0) { d = 0.0 - d; }
+            float64 aw = w;
+            if (aw < 0.0) { aw = 0.0 - aw; }
+            if (!(d <= tol * (aw + 1.0))) {
+                System.stdout.println("  " + what + " [" + i + "] device " + g + " cpu " + w);
+                Assert.isTrue(false);
+            }
+            i = i + 1;
+        }
+    }
+
+    @Test
+    public void mlpPredictsTheSameOnTheDevice() {
+        int64[] hidden = [8L, 6L];
+        Mlp net = heap Mlp(4L, hidden, 3L, 11L);
+        int64[] xs = [5L, 4L];
+        Tensor<float32> x #= ModuleDeviceTest.input(xs, 3L);
+        Tensor<float32> want #= net.predict(x);
+        net.toDevice();
+        Parameter[] ps #= net.parameters();
+        int32 k = 0;
+        while (k < (int32) ps.count()) { Assert.isTrue(ps[k].get().isOnGpu()); k = k + 1; }
+        Tensor<float32> xd #= x.copy();
+        xd.gpu();
+        Tensor<float32> got #= net.predict(xd);
+        Assert.isTrue(got.isOnGpu());
+        got.cpu();
+        ModuleDeviceTest.same("mlp", want, got, 1.0e-5);
+        net.toHost();
+        k = 0;
+        while (k < (int32) ps.count()) { Assert.isFalse(ps[k].get().isOnGpu()); k = k + 1; }
+        Tensor<float32> back #= net.predict(x);
+        ModuleDeviceTest.same("mlp back on the host", want, back, 0.0);
+    }
+
+    @Test
+    public void smallCnnForwardsTheSameOnTheDeviceInBothModes() {
+        SmallCnn net = heap SmallCnn(1L, 4L, 4L, 7L);
+        int64[] xs = [2L, 1L, 8L, 8L];
+        Tensor<float32> x #= ModuleDeviceTest.input(xs, 5L);
+        // a training forward on the CPU updates the running statistics; the device must do the same
+        GradTape<float32> t1 = heap GradTape<float32>();
+        net.train();
+        net.bindParameters(t1);
+        GradTensor y1 = net.forward(t1, t1.leaf(x, false));
+        Tensor<float32> wantTrain #= t1.valueOf(y1).copy();
+        net.unbindParameters();
+        Tensor<float32>[] bufs #= net.buffers();
+        Tensor<float32>[] wantBufs = heap Tensor<float32>[bufs.count()];
+        int32 b = 0;
+        while (b < (int32) bufs.count()) { wantBufs[b] #= bufs[b].copy(); b = b + 1; }
+        net.eval();
+        Tensor<float32> wantEval #= net.predict(x);
+        // the same model, rewound to fresh statistics, on the device
+        SmallCnn dev = heap SmallCnn(1L, 4L, 4L, 7L);
+        dev.toDevice();
+        Tensor<float32> xd #= x.copy();
+        xd.gpu();
+        GradTape<float32> t2 = heap GradTape<float32>();
+        dev.train();
+        dev.bindParameters(t2);
+        GradTensor y2 = dev.forward(t2, t2.leaf(xd, false));
+        Tensor<float32> gotTrain #= t2.valueOf(y2);
+        Assert.isTrue(gotTrain.isOnGpu());
+        gotTrain.cpu();
+        ModuleDeviceTest.same("smallCnn train forward", wantTrain, gotTrain, 1.0e-4);
+        dev.unbindParameters();
+        Tensor<float32>[] devBufs #= dev.buffers();
+        b = 0;
+        while (b < (int32) devBufs.count()) {
+            Assert.isTrue(devBufs[b].isOnGpu());
+            devBufs[b].cpu();
+            ModuleDeviceTest.same("running stat " + b, wantBufs[b], devBufs[b], 1.0e-4);
+            devBufs[b].gpu();
+            b = b + 1;
+        }
+        dev.eval();
+        Tensor<float32> gotEval #= dev.predict(xd);
+        Assert.isTrue(gotEval.isOnGpu());
+        gotEval.cpu();
+        ModuleDeviceTest.same("smallCnn eval forward", wantEval, gotEval, 1.0e-4);
+    }
+}

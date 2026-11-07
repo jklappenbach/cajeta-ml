@@ -5,6 +5,7 @@ import cajeta.math.Tensor;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Ops;
 
 /**
  * Module — the composable neural-net building block: a base class whose
@@ -116,9 +117,35 @@ public class Module {
         this.bindParameters(tape);
         GradTensor xn = tape.leaf(x, false);
         GradTensor y = this.forward(tape, xn);
-        Tensor<float32> out #= tape.valueOf(y).copy();
+        Tensor<float32> out #= Ops.copyOf<float32>(tape.valueOf(y));
         this.unbindParameters();
         return #out;
+    }
+
+    /**
+     * Move every parameter and buffer of this module tree to the device. A forward then runs
+     * through the op seam's GPU column; inputs must be device-resident too (mixed residency
+     * fails by name). The optimizer's update and the backward are still host-only.
+     */
+    public void toDevice() {
+        Parameter[] ps #= this.parameters();
+        int32 i = 0;
+        while (i < (int32) ps.count()) { ps[i].get().gpu(); i = i + 1; }
+        Tensor<float32>[] bs #= this.buffers();
+        i = 0;
+        while (i < (int32) bs.count()) { bs[i].gpu(); i = i + 1; }
+        return;
+    }
+
+    /** Bring every parameter and buffer of this module tree back to the host. */
+    public void toHost() {
+        Parameter[] ps #= this.parameters();
+        int32 i = 0;
+        while (i < (int32) ps.count()) { ps[i].get().cpu(); i = i + 1; }
+        Tensor<float32>[] bs #= this.buffers();
+        i = 0;
+        while (i < (int32) bs.count()) { bs[i].cpu(); i = i + 1; }
+        return;
     }
 
     /** Drop every tape binding in the tree (the tape is going away). */

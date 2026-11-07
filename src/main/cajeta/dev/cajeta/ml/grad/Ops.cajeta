@@ -199,6 +199,16 @@ public final class Ops {
         return t.copy();
     }
 
+    /** running = (1 - m) * running + m * scale * batch, in place on the device. */
+    static void blendInto<E extends Floating>(Tensor<E> running, Tensor<E> batch, float64 m, float64 scale) {
+        String name = "batchNorm2d.runningStats";
+        int64 n = running.size();
+        Elementwise.map<E>(running.deviceView(name), running.deviceView(name), n, Elementwise.SCALE, (float32) (1.0 - m));
+        Tensor<E> tmp #= Ewise.deviceLike<E>(batch);
+        Elementwise.map<E>(tmp.deviceView(name), batch.deviceView(name), n, Elementwise.SCALE, (float32) (m * scale));
+        Ewise.arithInto<E>(name, running, running, tmp, 0);
+    }
+
     /** C-order strides of `shape`. */
     static #int64[] contig(int64[] shape) {
         int32 nd = (int32) shape.count();
@@ -581,7 +591,14 @@ public final class Ops {
                                                               int64 count,
                                                               float64 momentum) {
         Ops.requireSame<E>("batchNorm2d.runningStats", runningMean, batchMean);
-        Ops.requireCpu<E>("batchNorm2d.runningStats", runningMean);
+        if (runningMean.isOnGpu()) {
+            Ops.requireF32<E>("batchNorm2d.runningStats");
+            float64 unbiased = 1.0;
+            if (count > 1) { unbiased = (float64) count / (float64) (count - 1); }
+            Ops.blendInto<E>(runningMean, batchMean, momentum, 1.0);
+            Ops.blendInto<E>(runningVar, batchVar, momentum, unbiased);
+            return;
+        }
         StructKernels.updateRunningStats<E>(runningMean, runningVar, batchMean,
                                             batchVar, count, momentum);
         return;
