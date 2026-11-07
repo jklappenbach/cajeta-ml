@@ -189,12 +189,12 @@ public class GradOpsTest {
     // ── 2.1.3 the seam registry pin ──────────────────────────────────────
 
     @Test
-    public void seamCpuColumnCompleteGpuColumnEmpty() {
+    public void seamCpuColumnComplete() {
         Assert.isFalse(Ops.hasCpu(Op.LEAF));
+        Assert.isFalse(Ops.hasGpu(Op.LEAF));
         int32 op = Op.ADD;
         while (op < Op.COUNT) {
             Assert.isTrue(Ops.hasCpu(op));
-            Assert.isFalse(Ops.hasGpu(op));
             op = op + 1;
         }
         Assert.equals("matmul", Ops.name(Op.MATMUL));

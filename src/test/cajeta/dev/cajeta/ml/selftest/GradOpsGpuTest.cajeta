@@ -1,0 +1,122 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.grad.Ops;
+
+/**
+ * cajeta-ml-gpu 27.1.1 and 27.1.2 (spec §6.6, §6.7): the device column of the op seam. Each
+ * op's forward on device-resident inputs matches the CPU column within float32's tolerance,
+ * `Ops.hasGpu` answers true for it, and mixed residency fails by name.
+ */
+public class GradOpsGpuTest {
+    public GradOpsGpuTest() { return; }
+
+    /** rows x cols of (f*7919 % 251 - 125) * 0.012 (+ 1.6 when positive), the same sequence the CPU column sees. */
+    static #Tensor<float32> fill(int64 rows, int64 cols, int64 seed, boolean positive) {
+        int64[] sh = [rows, cols];
+        Tensor<float32> t #= Tensor.full<float32>(sh, 0.0f);
+        int64 f = 0;
+        while (f < rows * cols) {
+            float32 v = (float32) ((((f + seed) * 7919L) % 251L) - 125L) * 0.012f;
+            if (positive) { v = v + 1.6f; }
+            t.flatSet(f, v);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    /** A device-resident copy. */
+    static #Tensor<float32> onDevice(Tensor<float32> t) {
+        Tensor<float32> d #= t.copy();
+        d.gpu();
+        return #d;
+    }
+
+    static void same(String what, Tensor<float32> want, Tensor<float32> got) {
+        Assert.isTrue(got.isOnGpu());
+        got.cpu();
+        Assert.equals((int64) want.ndim(), (int64) got.ndim());
+        int64 n = want.size();
+        Assert.equals(n, got.size());
+        int64 i = 0;
+        while (i < n) {
+            float64 w = (float64) want.flatGet(i);
+            float64 g = (float64) got.flatGet(i);
+            float64 d = g - w;
+            if (d < 0.0) { d = 0.0 - d; }
+            float64 aw = w;
+            if (aw < 0.0) { aw = 0.0 - aw; }
+            if (!(d <= 1.0e-5 * (aw + 1.0))) {
+                System.stdout.println("  " + what + " [" + i + "] device " + g + " cpu " + w);
+                Assert.isTrue(false);
+            }
+            i = i + 1;
+        }
+    }
+
+    static void unary(int32 op, boolean positive, float32 c) {
+        Tensor<float32> a #= GradOpsGpuTest.fill(3L, 7L, (int64) op, positive);
+        Tensor<float32> want #= Ops.run1<float32>(op, a, -1, c);
+        Tensor<float32> ad #= GradOpsGpuTest.onDevice(a);
+        Tensor<float32> got #= Ops.run1<float32>(op, ad, -1, c);
+        GradOpsGpuTest.same(Ops.name(op), want, got);
+        Assert.isTrue(Ops.hasGpu(op));
+    }
+
+    @Test
+    public void elementwiseAndRowOpsRunOnTheDevice() {
+        GradOpsGpuTest.unary(Op.RELU, false, 0.0f);
+        GradOpsGpuTest.unary(Op.NEG, false, 0.0f);
+        GradOpsGpuTest.unary(Op.EXP, false, 0.0f);
+        GradOpsGpuTest.unary(Op.LOG, true, 0.0f);
+        GradOpsGpuTest.unary(Op.SQRT, true, 0.0f);
+        GradOpsGpuTest.unary(Op.TANH, false, 0.0f);
+        GradOpsGpuTest.unary(Op.SIGMOID, false, 0.0f);
+        GradOpsGpuTest.unary(Op.GELU, false, 0.0f);
+        GradOpsGpuTest.unary(Op.SOFTMAX, false, 0.0f);
+        GradOpsGpuTest.unary(Op.LOGSOFTMAX, false, 0.0f);
+        GradOpsGpuTest.unary(Op.POWS, true, 2.0f);
+        GradOpsGpuTest.unary(Op.ROWNORM, false, 0.0f);
+    }
+
+    static void binary(int32 op, Tensor<float32> a, Tensor<float32> b) {
+        Tensor<float32> want #= Ops.run2<float32>(op, a, b);
+        Tensor<float32> ad #= GradOpsGpuTest.onDevice(a);
+        Tensor<float32> bd #= GradOpsGpuTest.onDevice(b);
+        Tensor<float32> got #= Ops.run2<float32>(op, ad, bd);
+        GradOpsGpuTest.same(Ops.name(op), want, got);
+        Assert.isTrue(Ops.hasGpu(op));
+    }
+
+    @Test
+    public void binaryOpsRunOnTheDevice() {
+        Tensor<float32> a #= GradOpsGpuTest.fill(3L, 7L, 1L, false);
+        Tensor<float32> b #= GradOpsGpuTest.fill(3L, 7L, 2L, true);
+        GradOpsGpuTest.binary(Op.ADD, a, b);
+        GradOpsGpuTest.binary(Op.SUB, a, b);
+        GradOpsGpuTest.binary(Op.MUL, a, b);
+        GradOpsGpuTest.binary(Op.DIV, a, b);
+        Tensor<float32> w #= GradOpsGpuTest.fill(7L, 5L, 3L, false);
+        GradOpsGpuTest.binary(Op.MATMUL, a, w);
+    }
+
+    @Test
+    public void mixedResidencyFailsByName() {
+        Tensor<float32> a #= GradOpsGpuTest.fill(3L, 7L, 1L, false);
+        Tensor<float32> b #= GradOpsGpuTest.fill(3L, 7L, 2L, true);
+        Tensor<float32> ad #= GradOpsGpuTest.onDevice(a);
+        boolean threw = false;
+        try {
+            Tensor<float32> r #= Ops.run2<float32>(Op.ADD, ad, b);
+        } catch (MlException e) {
+            threw = true;
+            Assert.isTrue(e.getMessage().contains("add"));
+            Assert.isTrue(e.getMessage().contains("different devices"));
+        }
+        Assert.isTrue(threw);
+    }
+}

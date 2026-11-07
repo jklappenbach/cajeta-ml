@@ -145,7 +145,6 @@ public class GradStructuredTest {
         int32 op = Op.CONV2D;
         while (op < Op.COUNT) {
             Assert.isTrue(Ops.hasCpu(op));
-            Assert.isFalse(Ops.hasGpu(op));
             op = op + 1;
         }
         Assert.equals("conv2d", Ops.name(Op.CONV2D));

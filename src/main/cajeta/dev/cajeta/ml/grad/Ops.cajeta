@@ -1,8 +1,15 @@
 package dev.cajeta.ml.grad;
 
+import cajeta.math.DType;
+import cajeta.math.Ewise;
 import cajeta.math.Tensor;
 import cajeta.math.stats.Stats;
+import cajeta.xpu.KernelBuffer;
 import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.kernels.Elementwise;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.nn.Act;
+import dev.cajeta.ml.kernels.nn.Norm;
 
 /**
  * The op dispatch layer — THE device seam (spec §3.3, designed in from
@@ -10,9 +17,10 @@ import dev.cajeta.ml.MlException;
  * {@link #run1} / {@link #run2}: residency is checked here (mixed
  * CPU/GPU inputs are a loud error, never a silent transfer), and the
  * kernel is chosen from the registry column matching the inputs' device.
- * v3 ships the CPU column complete; {@link #hasGpu} answers false for
- * every op until the `cajeta.xpu` phase fills that column in — AT WHICH
- * POINT NO CALLER CHANGES: the seam is the contract.
+ * The CPU column is complete; the GPU column (cajeta-ml-gpu 27.1.1) is
+ * filled in group by group through the `dev.cajeta.ml.kernels` package,
+ * at float32, and {@link #hasGpu} answers per op. NO CALLER CHANGES: the
+ * seam is the contract.
  *
  * Generic over `E extends Floating` (f32 + f64, spec §3.1); scalar
  * intermediates compute in float64 and narrow on store.
@@ -28,17 +36,30 @@ public final class Ops {
         return op > Op.LEAF && op < Op.COUNT;
     }
 
-    /** True when a GPU kernel exists for `op` (v3: none — the xpu phase). */
+    /** True when a GPU kernel exists for `op`: the elementwise, row and
+     *  binary group (cajeta-ml-gpu 27.1.1) so far. */
     public static boolean hasGpu(int32 op) {
-        return false;
+        return op == Op.RELU || op == Op.NEG || op == Op.EXP || op == Op.LOG
+            || op == Op.SQRT || op == Op.TANH || op == Op.SIGMOID || op == Op.GELU
+            || op == Op.SOFTMAX || op == Op.LOGSOFTMAX || op == Op.POWS
+            || op == Op.ROWNORM || op == Op.ADD || op == Op.SUB || op == Op.MUL
+            || op == Op.DIV || op == Op.MATMUL;
     }
 
     static void requireCpu<E extends Floating>(String opName, Tensor<E> t) {
         if (t.isOnGpu()) {
             throw heap MlException("ml.grad: '" + opName + "' input is "
-                + "GPU-resident but the GPU kernel column is not filled in "
-                + "yet (the cajeta.xpu phase) — move it with .cpu(), or "
-                + "keep training CPU-resident in v3");
+                + "GPU-resident but the op has no GPU kernel yet "
+                + "(cajeta-ml-gpu 27.1.1) — move it with .cpu()");
+        }
+    }
+
+    /** The GPU column runs at float32; a float64 tensor on the device is refused by name. */
+    static void requireF32<E extends Floating>(String opName) {
+        DType d #= DType.of<E>();
+        if (d.bits() != 32) {
+            throw heap MlException("ml.grad: '" + opName + "' on the device "
+                + "runs at float32 only; keep float64 tensors on the host");
         }
     }
 
@@ -48,13 +69,15 @@ public final class Ops {
                 + "different devices — no silent transfers; move one "
                 + "explicitly");
         }
-        Ops.requireCpu<E>(opName, a);
     }
 
     /** Unary dispatch. `axis` and `c` are op-specific payloads. */
     public static #Tensor<E> run1<E extends Floating>(int32 op, Tensor<E> a,
                                                       int32 axis, E c) {
-        Ops.requireCpu<E>(Ops.name(op), a);
+        if (a.isOnGpu()) {
+            if (!Ops.hasGpu(op)) { Ops.requireCpu<E>(Ops.name(op), a); }
+            return Ops.run1Gpu<E>(op, a, c);
+        }
         if (op == Op.RELU)       { return Tensor.relu<E>(a); }
         if (op == Op.NEG)        { return Tensor.neg<E>(a); }
         if (op == Op.EXP)        { return Tensor.exp<E>(a); }
@@ -77,10 +100,58 @@ public final class Ops {
         throw heap MlException("ml.grad: unknown unary op " + op);
     }
 
+    /** The unary GPU column: `out` is allocated on the device, with no host mirror. */
+    static #Tensor<E> run1Gpu<E extends Floating>(int32 op, Tensor<E> a, E c) {
+        String name #= Ops.name(op);
+        Ops.requireF32<E>(name);
+        Tensor<E> out #= Ewise.deviceLike<E>(a);
+        KernelBuffer<E> xo = out.deviceView(name);
+        KernelBuffer<E> xi = a.deviceView(name);
+        int64 n = a.size();
+        int64 cols = a.shapeAt(a.ndim() - 1);
+        if (op == Op.RELU)       { Act.apply<E>(xo, xi, n, Act.RELU); return #out; }
+        if (op == Op.TANH)       { Act.apply<E>(xo, xi, n, Act.TANH); return #out; }
+        if (op == Op.SIGMOID)    { Act.apply<E>(xo, xi, n, Act.SIGMOID); return #out; }
+        if (op == Op.GELU)       { Act.apply<E>(xo, xi, n, Act.GELU_ERF); return #out; }
+        if (op == Op.NEG)        { Elementwise.map<E>(xo, xi, n, Elementwise.NEG, 0.0f); return #out; }
+        if (op == Op.EXP)        { Elementwise.map<E>(xo, xi, n, Elementwise.EXP, 0.0f); return #out; }
+        if (op == Op.LOG)        { Elementwise.map<E>(xo, xi, n, Elementwise.LOG, 0.0f); return #out; }
+        if (op == Op.SQRT)       { Elementwise.map<E>(xo, xi, n, Elementwise.SQRT, 0.0f); return #out; }
+        if (op == Op.POWS)       { Elementwise.map<E>(xo, xi, n, Elementwise.POW, (float32) c); return #out; }
+        if (op == Op.SOFTMAX)    { Act.softmaxRows<E>(xo, xi, n / cols, cols); return #out; }
+        if (op == Op.LOGSOFTMAX) { Act.logSoftmaxRows<E>(xo, xi, n / cols, cols); return #out; }
+        if (op == Op.ROWNORM)    { Norm.l2rows<E>(xo, xi, n / cols, cols, 0.00000001f); return #out; }
+        throw heap MlException("ml.grad: '" + name + "' has no GPU kernel");
+    }
+
+    /** The binary GPU column. The arithmetic rides Tensor's own device routing. */
+    static #Tensor<E> run2Gpu<E extends Floating>(int32 op, Tensor<E> a, Tensor<E> b) {
+        String name #= Ops.name(op);
+        Ops.requireF32<E>(name);
+        if (op == Op.ADD) { return Tensor.add<E>(a, b); }
+        if (op == Op.SUB) { return Tensor.sub<E>(a, b); }
+        if (op == Op.MUL) { return Tensor.mul<E>(a, b); }
+        if (op == Op.DIV) { return Tensor.div<E>(a, b); }
+        if (op == Op.MATMUL) {
+            int64 m = a.shapeAt(0);
+            int64 k = a.shapeAt(1);
+            int64 n = b.shapeAt(1);
+            int64[] shp = [m, n];
+            Tensor<E> out #= Ewise.deviceOf<E>(shp);
+            Gemm.tiled<E>(out.deviceView(name), a.deviceView(name), b.deviceView(name), m, n, k);
+            return #out;
+        }
+        throw heap MlException("ml.grad: '" + name + "' has no GPU kernel");
+    }
+
     /** Binary dispatch. */
     public static #Tensor<E> run2<E extends Floating>(int32 op, Tensor<E> a,
                                                       Tensor<E> b) {
         Ops.requireSame<E>(Ops.name(op), a, b);
+        if (a.isOnGpu()) {
+            if (!Ops.hasGpu(op)) { Ops.requireCpu<E>(Ops.name(op), a); }
+            return Ops.run2Gpu<E>(op, a, b);
+        }
         if (op == Op.ADD)    { return Tensor.add<E>(a, b); }
         if (op == Op.SUB)    { return Tensor.sub<E>(a, b); }
         if (op == Op.MUL)    { return Tensor.mul<E>(a, b); }
@@ -129,6 +200,7 @@ public final class Ops {
                                                         int32 pad) {
         Ops.requireSame<E>("conv2d", x, w);
         Ops.requireSame<E>("conv2d", x, b);
+        Ops.requireCpu<E>("conv2d", x);
         return StructKernels.conv2d<E>(x, w, b, stride, pad);
     }
 
@@ -136,6 +208,7 @@ public final class Ops {
                                                               Tensor<E> w, int32 stride,
                                                               int32 pad) {
         Ops.requireSame<E>("conv2d.backward", g, x);
+        Ops.requireCpu<E>("conv2d.backward", g);
         return StructKernels.conv2dBackIn<E>(g, x, w, stride, pad);
     }
 
@@ -145,6 +218,7 @@ public final class Ops {
                                                                   int32 stride,
                                                                   int32 pad) {
         Ops.requireSame<E>("conv2d.backward", g, x);
+        Ops.requireCpu<E>("conv2d.backward", g);
         return StructKernels.conv2dBackWeight<E>(g, x, w, stride, pad);
     }
 
@@ -163,6 +237,7 @@ public final class Ops {
     public static #Tensor<E> maxPool2dBack<E extends Floating>(Tensor<E> g, Tensor<E> x,
                                                                Tensor<E> argmax) {
         Ops.requireSame<E>("maxPool2d.backward", g, x);
+        Ops.requireCpu<E>("maxPool2d.backward", g);
         return StructKernels.maxPool2dBack<E>(g, x, argmax);
     }
 
@@ -176,6 +251,7 @@ public final class Ops {
                                                                int32 k, int32 stride,
                                                                int32 pad) {
         Ops.requireSame<E>("avgPool2d.backward", g, x);
+        Ops.requireCpu<E>("avgPool2d.backward", g);
         return StructKernels.avgPool2dBack<E>(g, x, k, stride, pad);
     }
 
@@ -189,6 +265,7 @@ public final class Ops {
     public static #Tensor<E> adaptiveAvgPool2dBack<E extends Floating>(Tensor<E> g,
                                                                        Tensor<E> x) {
         Ops.requireSame<E>("adaptiveAvgPool2d.backward", g, x);
+        Ops.requireCpu<E>("adaptiveAvgPool2d.backward", g);
         return StructKernels.adaptiveAvgPool2dBack<E>(g, x);
     }
 
@@ -199,6 +276,7 @@ public final class Ops {
 
     public static #Tensor<E> channelVar<E extends Floating>(Tensor<E> x, Tensor<E> mean) {
         Ops.requireSame<E>("batchNorm2d", x, mean);
+        Ops.requireCpu<E>("batchNorm2d", x);
         return StructKernels.channelVar<E>(x, mean);
     }
 
@@ -209,6 +287,7 @@ public final class Ops {
                                                              Tensor<E> invstd) {
         Ops.requireSame<E>("batchNorm2d", x, gamma);
         Ops.requireSame<E>("batchNorm2d", x, beta);
+        Ops.requireCpu<E>("batchNorm2d", x);
         return StructKernels.batchNorm2d<E>(x, gamma, beta, mean, var, eps, xhat, invstd);
     }
 
@@ -218,11 +297,13 @@ public final class Ops {
                                                                    Tensor<E> invstd,
                                                                    boolean training) {
         Ops.requireSame<E>("batchNorm2d.backward", g, xhat);
+        Ops.requireCpu<E>("batchNorm2d.backward", g);
         return StructKernels.batchNorm2dBackIn<E>(g, xhat, gamma, invstd, training);
     }
 
     public static #Tensor<E> normBackScale<E extends Floating>(Tensor<E> g, Tensor<E> xhat) {
         Ops.requireSame<E>("batchNorm2d.backward", g, xhat);
+        Ops.requireCpu<E>("batchNorm2d.backward", g);
         return StructKernels.normBackScale<E>(g, xhat);
     }
 
@@ -241,6 +322,7 @@ public final class Ops {
                                                               int64 count,
                                                               float64 momentum) {
         Ops.requireSame<E>("batchNorm2d.runningStats", runningMean, batchMean);
+        Ops.requireCpu<E>("batchNorm2d.runningStats", runningMean);
         StructKernels.updateRunningStats<E>(runningMean, runningVar, batchMean,
                                             batchVar, count, momentum);
         return;
@@ -252,6 +334,7 @@ public final class Ops {
                                                            Tensor<E> invstd) {
         Ops.requireSame<E>("layerNorm", x, gamma);
         Ops.requireSame<E>("layerNorm", x, beta);
+        Ops.requireCpu<E>("layerNorm", x);
         return StructKernels.layerNorm<E>(x, gamma, beta, eps, xhat, invstd);
     }
 
@@ -260,12 +343,14 @@ public final class Ops {
                                                                  Tensor<E> gamma,
                                                                  Tensor<E> invstd) {
         Ops.requireSame<E>("layerNorm.backward", g, xhat);
+        Ops.requireCpu<E>("layerNorm.backward", g);
         return StructKernels.layerNormBackIn<E>(g, xhat, gamma, invstd);
     }
 
     public static #Tensor<E> layerNormBackScale<E extends Floating>(Tensor<E> g,
                                                                     Tensor<E> xhat) {
         Ops.requireSame<E>("layerNorm.backward", g, xhat);
+        Ops.requireCpu<E>("layerNorm.backward", g);
         return StructKernels.layerNormBackScale<E>(g, xhat);
     }
 
@@ -282,6 +367,7 @@ public final class Ops {
     public static #Tensor<E> embeddingBack<E extends Floating>(Tensor<E> g, Tensor<E> w,
                                                                Tensor<E> idx) {
         Ops.requireSame<E>("embedding.backward", g, w);
+        Ops.requireCpu<E>("embedding.backward", g);
         return StructKernels.embeddingBack<E>(g, w, idx);
     }
 
@@ -308,6 +394,7 @@ public final class Ops {
 
     public static #Tensor<E> mseLoss<E extends Floating>(Tensor<E> pred, Tensor<E> target) {
         Ops.requireSame<E>("mseLoss", pred, target);
+        Ops.requireCpu<E>("mseLoss", pred);
         return StructKernels.mseLoss<E>(pred, target);
     }
 
@@ -315,12 +402,14 @@ public final class Ops {
                                                              Tensor<E> target,
                                                              boolean wantPred) {
         Ops.requireSame<E>("mseLoss.backward", pred, target);
+        Ops.requireCpu<E>("mseLoss.backward", pred);
         return StructKernels.mseLossBack<E>(g, pred, target, wantPred);
     }
 
     public static #Tensor<E> cosineSim<E extends Floating>(Tensor<E> a, Tensor<E> b,
                                                            float64 eps, Tensor<E> cache) {
         Ops.requireSame<E>("cosineSim", a, b);
+        Ops.requireCpu<E>("cosineSim", a);
         return StructKernels.cosineSim<E>(a, b, eps, cache);
     }
 
@@ -328,6 +417,7 @@ public final class Ops {
                                                                Tensor<E> b, Tensor<E> cache,
                                                                float64 eps, boolean wantA) {
         Ops.requireSame<E>("cosineSim.backward", a, b);
+        Ops.requireCpu<E>("cosineSim.backward", a);
         return StructKernels.cosineSimBack<E>(g, a, b, cache, eps, wantA);
     }
 

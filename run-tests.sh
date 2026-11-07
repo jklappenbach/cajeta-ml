@@ -106,13 +106,25 @@ fi
 [[ -f "$unit_cja" ]] || { echo "could not resolve a dev.cajeta.unit archive" >&2; exit 1; }
 echo ">> cajeta-unit: $unit_cja"
 
+# The kernel package (kernels/, this repo) is the GPU column's dependency: built here from
+# source, linked into the library and the test binary. XPU_BACKEND (default cpu) is the
+# backend the kernels are lowered for; the runtime picks the same one.
+XPU_BACKEND="${XPU_BACKEND:-${CAJETA_XPU_BACKEND:-cpu}}"
+export CAJETA_XPU_BACKEND="${XPU_BACKEND}"
+echo ">> backend: ${XPU_BACKEND}"
+echo ">> building the kernels package .cja"
+"$CAJETA" --emit=cja -o "$out/kernels.cja" --xpu-backend="${XPU_BACKEND}" \
+    --classpath="$unit_cja" \
+    dev.cajeta.ml.kernels.Kernels.version "$here/kernels/src/main/cajeta" "$out" >/dev/null
+
 echo ">> building ml library .cja"
-"$CAJETA" --emit=cja -o "$out/ml.cja" \
+"$CAJETA" --emit=cja -o "$out/ml.cja" --xpu-backend="${XPU_BACKEND}" \
+    --classpath="$out/kernels.cja" \
     dev.cajeta.ml.Ml.run "$here/src/main/cajeta" "$out" >/dev/null
 
-echo ">> building + running the test binary"
-"$CAJETA" --emit=exe --profile=test \
-    --classpath="$out/ml.cja,$unit_cja" \
+echo ">> building + running the test binary (${XPU_BACKEND})"
+"$CAJETA" --emit=exe --profile=test --xpu-backend="${XPU_BACKEND}" \
+    --classpath="$out/ml.cja,$out/kernels.cja,$unit_cja" \
     -o "$out/mltests" \
     dev.cajeta.ml.selftest.TestMain.run "$here/src/test/cajeta" "$out" >/dev/null
 
