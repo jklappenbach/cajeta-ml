@@ -1,0 +1,23 @@
+package dev.cajeta.ml.kernels.tune;
+
+import cajeta.lang.String;
+
+/**
+ * Whether a timed choice may run without a store to keep its answer. A process
+ * with no tune store sets untimed, so every choice takes its default and two
+ * such processes compute the same bits (spec §7.3).
+ */
+public final class TuneMode {
+    public TuneMode() { return; }
+
+    static boolean untimedOn = false;
+
+    public static void setUntimed(boolean on) { TuneMode.untimedOn = on; }
+
+    public static boolean untimed() { return TuneMode.untimedOn; }
+
+    /** True when a choice with store `dir` must take its default untimed. */
+    public static boolean skipTiming(String dir) {
+        return TuneMode.untimedOn && dir.byteLength() == 0;
+    }
+}

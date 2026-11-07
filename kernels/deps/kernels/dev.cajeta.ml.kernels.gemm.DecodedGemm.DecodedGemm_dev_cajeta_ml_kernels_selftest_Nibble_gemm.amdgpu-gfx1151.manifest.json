@@ -1,0 +1,76 @@
+{
+  "access": [
+    {
+      "kind": "kernelBuffer",
+      "mode": "write",
+      "origin": "derived",
+      "param": "c"
+    },
+    {
+      "kind": "kernelBuffer",
+      "mode": "read",
+      "origin": "derived",
+      "param": "a"
+    },
+    {
+      "kind": "kernelBuffer",
+      "mode": "read",
+      "origin": "derived",
+      "param": "w"
+    }
+  ],
+  "captureSafe": false,
+  "drainsDevice": false,
+  "footprint": {
+    "block": [
+      64,
+      1,
+      1
+    ],
+    "ldsStaticBytes": 0,
+    "occupancyLimiter": "waveSlots",
+    "residentGroupsPerCu": 32,
+    "sgpr": 17,
+    "spillBytes": 0,
+    "threadsPerGroup": 64,
+    "vgpr": 24,
+    "waveWidth": 32
+  },
+  "identity": {
+    "codeHash": "sha256:d5de535a76e42569c72ef4d5d918a982bdf437a7ac7bf9c0f0a68b8248861495",
+    "compilerVersion": "0.52.0",
+    "instrumented": false,
+    "kernel": "dev.cajeta.ml.kernels.gemm.DecodedGemm<dev.cajeta.ml.kernels.selftest.Nibble>.gemm",
+    "target": "amdgpu/gfx1151",
+    "xpuAbiVersion": 3
+  },
+  "nativeOps": [],
+  "restartable": true,
+  "schemaVersion": 1,
+  "work": {
+    "buffers": [
+      {
+        "bytesRead": "0",
+        "bytesWritten": "measured",
+        "param": "c",
+        "storedBits": 32
+      },
+      {
+        "bytesRead": "measured",
+        "bytesWritten": "0",
+        "param": "a",
+        "storedBits": 32
+      },
+      {
+        "bytesRead": "0",
+        "bytesWritten": "0",
+        "param": "w",
+        "storedBits": 8
+      }
+    ],
+    "costUnit": "item",
+    "intOps": "0",
+    "matrixMacs": "0",
+    "vectorMacs": "measured"
+  }
+}

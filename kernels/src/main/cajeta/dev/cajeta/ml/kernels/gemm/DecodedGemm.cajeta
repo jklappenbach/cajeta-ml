@@ -1,0 +1,42 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * `C = A · decode(W)`: a GEMM whose right operand is in the consumer's own packed
+ * format, decoded in the kernel through the type parameter's `@Device static
+ * float32 decode(KernelBuffer<int8> w, uint32 k, uint32 n, uint32 cols)` (spec
+ * §5.5, §11.1). One thread per output element; the tiled, matrix-core form
+ * replaces the body in Phase D and keeps this contract.
+ */
+public final class DecodedGemm<D> {
+    public DecodedGemm() { return; }
+
+    @Kernel
+    public static void gemm(KernelBuffer<float32> c, KernelBuffer<float32> a, KernelBuffer<int8> w,
+                            uint32 rows, uint32 cols, uint32 depth) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < rows * cols) {
+            uint32 r = i / cols;
+            uint32 n = i % cols;
+            float32 acc = 0.0f;
+            uint32 k = 0;
+            while (k < depth) {
+                acc = acc + a[r * depth + k] * D.decode(w, k, n, cols);
+                k = k + 1;
+            }
+            c[i] = acc;
+        }
+    }
+
+    /** `c[rows x cols] = a[rows x depth] · decode(w)[depth x cols]`; synced. */
+    public void run(KernelBuffer<float32> c, KernelBuffer<float32> a, KernelBuffer<int8> w,
+                    int64 rows, int64 cols, int64 depth) {
+        uint32 n = (uint32) (rows * cols);
+        KernelStream s #= KernelStream.current();
+        gemm.launch(s, grid: [(n + 63) / 64], block: [64])(c, a, w, (uint32) rows, (uint32) cols, (uint32) depth);
+        s.sync();
+    }
+}

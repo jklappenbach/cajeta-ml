@@ -1,0 +1,15 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.String;
+import dev.cajeta.ml.kernels.tune.TileShape;
+
+/** A Scale<TM> member: fits a problem whose length is a multiple of TM. */
+public final class ScaleShape implements TileShape {
+    int32 tm;
+    public ScaleShape(int32 tm) { this.tm = tm; }
+    public #String kernel() { return "Scale_" + this.tm + "_scale"; }
+    public int32 tileM() { return this.tm; }
+    public int32 tileN() { return 1; }
+    public int32 threads() { return this.tm; }
+    public boolean fits(int64 rows, int64 outDim, int64 cols) { return rows % (int64) this.tm == 0L; }
+}

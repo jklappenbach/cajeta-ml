@@ -1,0 +1,27 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * `y = a * x` over `TM`-element tiles: a tile family of one kernel at two widths,
+ * the smallest shape the tuning support can list, prune and time (spec §7.2).
+ */
+public final class Scale<uint32 TM> {
+    public Scale() { return; }
+
+    @Kernel @Occupancy(maxThreads = 128)
+    public static void scale(KernelBuffer<float32> y, KernelBuffer<float32> x, uint32 n, float32 a) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { y[i] = a * x[i]; }
+    }
+
+    /** One launch over `n` elements in `TM`-wide blocks; synced. */
+    public void run(KernelBuffer<float32> y, KernelBuffer<float32> x, int64 n, float32 a) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        scale.launch(s, grid: [(un + TM - 1) / TM], block: [TM])(y, x, un, a);
+        s.sync();
+    }
+}

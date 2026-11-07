@@ -1,0 +1,33 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.ShapeProbe;
+import dev.cajeta.ml.kernels.Scale;
+
+/** Times one Scale member at the probe's problem. */
+public final class ScaleProbe implements ShapeProbe {
+    KernelBuffer<float32> y;
+    KernelBuffer<float32> x;
+    int64 n;
+    public int32 timed = 0;
+
+    public ScaleProbe(^KernelBuffer<float32> y, ^KernelBuffer<float32> x, int64 n) {
+        this.y = y;
+        this.x = x;
+        this.n = n;
+    }
+
+    public int64 timeNanos(int32 i) {
+        this.timed = this.timed + 1;
+        int64 t0 = Clock.nanoTime();
+        if (i == 0) {
+            Scale<64> s64 = heap Scale<64>();
+            s64.run(this.y, this.x, this.n, 2.0f);
+        } else {
+            Scale<128> s128 = heap Scale<128>();
+            s128.run(this.y, this.x, this.n, 2.0f);
+        }
+        return Clock.nanoTime() - t0;
+    }
+}

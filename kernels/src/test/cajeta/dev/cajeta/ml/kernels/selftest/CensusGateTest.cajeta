@@ -33,6 +33,18 @@ public class CensusGateTest {
         ValueCheck.credit(m);
         String stale #= "|" + Device.activeBackend() + ":fillF32=some plan item|";
         Assert.equals(1, KernelCensus.gate(stale, "||", "||", "||"));
-        Assert.equals(0, KernelCensus.gate("||", "||", "||", "||"));
+        // The clean arm: every other registered kernel that has not run yet in this
+        // process is tracked, so only fillF32's check decides the verdict.
+        String others #= "|";
+        int32 n = Device.registeredKernelCount();
+        int32 i = 0;
+        while (i < n) {
+            String name #= Device.registeredKernel(i);
+            if (!name.equals("fillF32") && Device.kernelLaunchCount(name) == 0L) {
+                others #= others + Device.activeBackend() + ":" + name + "=not yet run in this test|";
+            }
+            i = i + 1;
+        }
+        Assert.equals(0, KernelCensus.gate(others, "||", "||", "||"));
     }
 }

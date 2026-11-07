@@ -1,0 +1,24 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.KernelBuffer;
+
+/** A toy 4-bit weight format: two signed nibbles per byte, column-major within a row, scale 0.5. */
+public final class Nibble {
+    public Nibble() { return; }
+
+    @Device
+    public static float32 decode(KernelBuffer<int8> w, uint32 k, uint32 n, uint32 cols) {
+        uint32 e = k * cols + n;
+        int32 b = (int32) w[e / 2];
+        int32 q = (e % 2 == 0) ? (b & 15) : ((b >> 4) & 15);
+        return (float32) (q - 8) * 0.5f;
+    }
+
+    /** The host's reading of the same byte. */
+    public static float32 decodeHost(int8[] w, int64 k, int64 n, int64 cols) {
+        int64 e = k * cols + n;
+        int32 b = (int32) w[(int32) (e / 2L)];
+        int32 q = (e % 2L == 0L) ? (b & 15) : ((b >> 4) & 15);
+        return (float32) (q - 8) * 0.5f;
+    }
+}

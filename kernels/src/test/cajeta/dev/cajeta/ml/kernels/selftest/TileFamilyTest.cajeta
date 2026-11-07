@@ -1,0 +1,103 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.io.file.Path;
+import cajeta.time.Clock;
+import cajeta.lang.String;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.ShapeFilter;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Scale;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+import dev.cajeta.ml.kernels.tune.TileFamily;
+import dev.cajeta.ml.kernels.tune.TuneMode;
+
+/** cajeta-ml-gpu 9.1.1: a tile family lists, prunes with a reason, times and remembers. */
+public class TileFamilyTest {
+    public TileFamilyTest() { return; }
+
+    static #TileFamily<ScaleShape> family() {
+        TileFamily<ScaleShape> f #= heap TileFamily<ScaleShape>("scale");
+        f.add(#heap ScaleShape(64));
+        f.add(#heap ScaleShape(128));
+        return #f;
+    }
+
+    @Test
+    public void membersPruneWithAReason() {
+        TileFamily<ScaleShape> f #= TileFamilyTest.family();
+        Assert.equals(2, (int32) f.shapes().count());
+        Assert.isTrue(f.fits(128L, 1L, 1L));
+        Assert.isTrue(f.fits(64L, 1L, 1L));
+        Assert.isFalse(f.fits(100L, 1L, 1L));
+        String why #= f.pruneReason("Scale_128_scale", 64L, 1L, 1L);
+        Assert.isTrue(why.contains("does not fit"));
+        String none #= f.pruneReason("Scale_32_scale", 64L, 1L, 1L);
+        Assert.isTrue(none.contains("not a listed member"));
+        Assert.equals(-1, f.remembered(128L, 1L, 1L));
+    }
+
+    @Test
+    public void aTimedChoiceIsRememberedPerProblemAndCached() {
+        if (!Device.kernelAvailable("Scale_64_scale") || !Device.kernelAvailable("Scale_128_scale")) {
+            DeviceSkip.noKernel("Scale_64_scale", "cajeta-ml-gpu 9.2.2");
+            return;
+        }
+        int64 n = 4096L;
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) n);
+        float32[] hx = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { hx[(int32) i] = (float32) i; i = i + 1L; }
+        x.upload(hx);
+        // A store of this run's own, so an earlier run's answer cannot stand in for a timing.
+        String store #= "build/tune-test-" + Clock.nanoTime();
+        Path dir #= Path.of(store);
+        dir.mkdirs();
+        TuneMode.setUntimed(false);
+        TileFamily<ScaleShape> f #= TileFamilyTest.family();
+        ShapeFilter flt #= f.filterFor(n, 1L, 1L);
+        Assert.equals(2, flt.survivorCount());
+        ScaleProbe probe = heap ScaleProbe(y, x, n);
+        int64[] m #= ValueCheck.mark();
+        int32 idx = f.chooseWith(store, flt, probe, n, 1L, 1L);
+        Assert.isTrue(idx == 0 || idx == 1);
+        Assert.isTrue(probe.timed > 0);
+        Assert.equals(idx, f.remembered(n, 1L, 1L));
+        float32[] got = heap float32[n];
+        y.download(got);
+        Assert.isTrue(got[0] == 0.0f && got[4095] == 2.0f * 4095.0f);
+        ValueCheck.credit(m);
+        // A second family over the same store answers from the cache without timing.
+        TileFamily<ScaleShape> g #= TileFamilyTest.family();
+        ShapeFilter flt2 #= g.filterFor(n, 1L, 1L);
+        ScaleProbe quiet = heap ScaleProbe(y, x, n);
+        int32 again = g.chooseWith(store, flt2, quiet, n, 1L, 1L);
+        Assert.equals(idx, again);
+        Assert.equals(0, quiet.timed);
+    }
+
+    @Test
+    public void withNoStoreAnUntimedChoiceIsDeterministic() {
+        if (!Device.kernelAvailable("Scale_64_scale")) {
+            DeviceSkip.noKernel("Scale_64_scale", "cajeta-ml-gpu 9.2.2");
+            return;
+        }
+        int64 n = 256L;
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) n);
+        TuneMode.setUntimed(true);
+        TileFamily<ScaleShape> f #= TileFamilyTest.family();
+        ShapeFilter flt #= f.filterFor(n, 1L, 1L);
+        ScaleProbe probe = heap ScaleProbe(y, x, n);
+        int32 a = f.chooseWith("", flt, probe, n, 1L, 1L);
+        TileFamily<ScaleShape> g #= TileFamilyTest.family();
+        ShapeFilter flt2 #= g.filterFor(n, 1L, 1L);
+        int32 b = g.chooseWith("", flt2, probe, n, 1L, 1L);
+        TuneMode.setUntimed(false);
+        Assert.equals(0, probe.timed);
+        Assert.equals(a, b);
+        Assert.equals(0, a);
+    }
+}

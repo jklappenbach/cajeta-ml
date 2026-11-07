@@ -1,0 +1,56 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.DecodedGemm;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** cajeta-ml-gpu 9.1.3: a consumer's decode step runs inside the library's GEMM skeleton. */
+public class DecodedGemmTest {
+    public DecodedGemmTest() { return; }
+
+    @Test
+    public void aToyFourBitDecodeMatchesHostDecodeThenGemm() {
+        if (!Device.kernelAvailable("DecodedGemm_dev_cajeta_ml_kernels_selftest_Nibble_gemm")) {
+            DeviceSkip.noKernel("DecodedGemm_dev_cajeta_ml_kernels_selftest_Nibble_gemm", "cajeta-ml-gpu 9.2.1");
+            return;
+        }
+        int64 rows = 4L;
+        int64 depth = 8L;
+        int64 cols = 6L;
+        float32[] ha = heap float32[rows * depth];
+        int64 i = 0L;
+        while (i < rows * depth) { ha[(int32) i] = (float32) ((i * 7L) % 5L) - 2.0f; i = i + 1L; }
+        int8[] hw = heap int8[(depth * cols) / 2L];
+        i = 0L;
+        while (i < (depth * cols) / 2L) { hw[(int32) i] = (int8) ((i * 37L) % 256L); i = i + 1L; }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>((uint64) (rows * depth));
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) ((depth * cols) / 2L));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (rows * cols));
+        a.upload(ha);
+        w.upload(hw);
+        int64[] m #= ValueCheck.mark();
+        DecodedGemm<Nibble> g = heap DecodedGemm<Nibble>();
+        g.run(c, a, w, rows, cols, depth);
+        float32[] got = heap float32[rows * cols];
+        c.download(got);
+        int64 r = 0L;
+        while (r < rows) {
+            int64 n = 0L;
+            while (n < cols) {
+                float32 acc = 0.0f;
+                int64 k = 0L;
+                while (k < depth) {
+                    acc = acc + ha[(int32) (r * depth + k)] * Nibble.decodeHost(hw, k, n, cols);
+                    k = k + 1L;
+                }
+                Assert.isTrue(got[(int32) (r * cols + n)] == acc);
+                n = n + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+}

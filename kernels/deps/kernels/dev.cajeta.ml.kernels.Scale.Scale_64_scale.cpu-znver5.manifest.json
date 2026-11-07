@@ -1,0 +1,53 @@
+{
+  "access": [
+    {
+      "kind": "kernelBuffer",
+      "mode": "write",
+      "origin": "derived",
+      "param": "y"
+    },
+    {
+      "kind": "kernelBuffer",
+      "mode": "read",
+      "origin": "derived",
+      "param": "x"
+    }
+  ],
+  "captureSafe": false,
+  "drainsDevice": false,
+  "footprint": {
+    "waveWidth": 1
+  },
+  "identity": {
+    "codeHash": "sha256:dd177365b3a88fc45c11847a28267ed75d4382565524f9d130d3283902a07c0e",
+    "compilerVersion": "0.52.0",
+    "instrumented": false,
+    "kernel": "dev.cajeta.ml.kernels.Scale<64>.scale",
+    "target": "cpu/znver5",
+    "xpuAbiVersion": 3
+  },
+  "nativeOps": [],
+  "restartable": true,
+  "schemaVersion": 1,
+  "work": {
+    "buffers": [
+      {
+        "bytesRead": "0",
+        "bytesWritten": "4",
+        "param": "y",
+        "storedBits": 32
+      },
+      {
+        "bytesRead": "4",
+        "bytesWritten": "0",
+        "param": "x",
+        "storedBits": 32
+      }
+    ],
+    "costUnit": "item",
+    "intOps": "0",
+    "matrixMacs": "0",
+    "vectorMacs": "1",
+    "workAxisParam": "n"
+  }
+}
