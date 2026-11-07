@@ -78,8 +78,9 @@ env:
   # v0.35.0 enforces the field-store rule, which consumers apply to this
   # library's sources, so ml gates on it.
   # v0.36.0 extends that rule to holders passed with `#`, so ml gates on it.
-  # v0.39.0 is the release the fleet republishes on.
-  CAJETA_VERSION: v0.51.0
+  # v0.39.0 is the release the fleet republishes on. v0.53.0 is the kernel
+  # package's pin (kernels/.cajeta-version): generic kernel instantiation.
+  CAJETA_VERSION: v0.53.0
 
 jobs:
   build-test:
