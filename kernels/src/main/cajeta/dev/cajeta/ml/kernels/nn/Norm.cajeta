@@ -190,6 +190,63 @@ public final class Norm {
         }
     }
 
+    /** The layernorm input VJP per row: invstd/d * (d*dxh - sum dxh - xhat * sum dxh*xhat), dxh = g*w. */
+    @Kernel
+    public static void layernormBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> xhat, KernelBuffer<E> w, KernelBuffer<E> invstd, uint32 cols) {
+        Shared<float32> pa = shared float32[256];
+        Shared<float32> pb = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 row = Workgroup.x();
+        uint32 base = row * cols;
+        float32 sa = 0.0f;
+        float32 sb = 0.0f;
+        uint32 i = lane;
+        while (i < cols) {
+            float32 dxh = (float32) g[base + i] * (float32) w[i];
+            sa = sa + dxh;
+            sb = sb + dxh * (float32) xhat[base + i];
+            i = i + 256;
+        }
+        pa[lane] = sa;
+        pb[lane] = sb;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { pa[lane] = pa[lane] + pa[lane + s]; pb[lane] = pb[lane] + pb[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 sumDx = pa[0];
+        float32 sumDxXh = pb[0];
+        float32 iv = (float32) invstd[row];
+        float32 d = (float32) cols;
+        uint32 j = lane;
+        while (j < cols) {
+            float32 dxh = (float32) g[base + j] * (float32) w[j];
+            dx[base + j] = (E) (iv / d * (d * dxh - sumDx - (float32) xhat[base + j] * sumDxXh));
+            j = j + 256;
+        }
+    }
+
+    /** dw[j] = sum over rows of g*xhat and db[j] = sum of g: one lane per column. */
+    @Kernel
+    public static void layernormParamGrads<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<E> g, KernelBuffer<E> xhat, uint32 rows, uint32 cols) {
+        uint32 j = KernelThread.globalIdX();
+        if (j < cols) {
+            float32 sa = 0.0f;
+            float32 sb = 0.0f;
+            uint32 r = 0;
+            while (r < rows) {
+                float32 gv = (float32) g[r * cols + j];
+                sa = sa + gv * (float32) xhat[r * cols + j];
+                sb = sb + gv;
+                r = r + 1;
+            }
+            dw[j] = (E) sa;
+            db[j] = (E) sb;
+        }
+    }
+
     /** `out` = rmsnorm of each of `rows` rows of `x` (rows x cols) scaled by `w`; synced. */
     public static void rms<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
@@ -216,6 +273,21 @@ public final class Norm {
     public static void l2rowsBack<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> y, KernelBuffer<E> g, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         l2normBack.launch(s, grid: [(uint32) rows], block: [256])(out, x, y, g, (uint32) cols, eps);
+        s.sync();
+    }
+
+    /** The layernorm input VJP over `rows` rows; synced. */
+    public static void layerBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> xhat, KernelBuffer<E> w, KernelBuffer<E> invstd, int64 rows, int64 cols) {
+        KernelStream s #= KernelStream.current();
+        layernormBack.launch(s, grid: [(uint32) rows], block: [256])(dx, g, xhat, w, invstd, (uint32) cols);
+        s.sync();
+    }
+
+    /** The layernorm scale and shift VJPs summed over `rows`; synced. */
+    public static void layerParamGrads<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<E> g, KernelBuffer<E> xhat, int64 rows, int64 cols) {
+        uint32 uc = (uint32) cols;
+        KernelStream s #= KernelStream.current();
+        layernormParamGrads.launch(s, grid: [(uc + 255) / 256], block: [256])(dw, db, g, xhat, (uint32) rows, uc);
         s.sync();
     }
 

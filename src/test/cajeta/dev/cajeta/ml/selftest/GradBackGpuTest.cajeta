@@ -6,6 +6,8 @@ import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
 import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.zoo.SmallCnn;
 
 /**
  * cajeta-ml-gpu 29.1.1 (spec §6.6): the backward column. For each op, `tape.backward` on
@@ -189,5 +191,236 @@ public class GradBackGpuTest {
         Tensor<float32> xa #= GradBackGpuTest.fill(ba, 29L, false);
         Tensor<float32> xb #= GradBackGpuTest.fill(bb, 31L, false);
         GradBackGpuTest.binary("matmulBatched", Op.MATMULB, xa, xb, 0);
+    }
+
+    static #Tensor<float32> ids(int64 n, int64 vocab, int64 step) {
+        int64[] sh = [n];
+        Tensor<float32> t #= Tensor.zeros<float32>(sh);
+        int64 i = 0;
+        while (i < n) { t.flatSet(i, (float32) ((i * step) % vocab)); i = i + 1; }
+        return #t;
+    }
+
+    @Test
+    public void convAndPoolBackwardsMatchTheCpu() {
+        int64[] xs = [2L, 3L, 6L, 6L];
+        int64[] ws = [4L, 3L, 3L, 3L];
+        int64[] bs = [4L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 41L, false);
+        Tensor<float32> w #= GradBackGpuTest.fill(ws, 43L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(bs, 47L, false);
+        int32 cs = 0;
+        while (cs < 2) {
+            int32 stride = 1 + cs;
+            int32 pad = 1 - cs;
+            GradTape<float32> t = heap GradTape<float32>();
+            GradTensor lx = t.leaf(x, true);
+            GradTensor lw = t.leaf(w, true);
+            GradTensor lb = t.leaf(b, true);
+            t.backward(t.conv2d(lx, lw, lb, stride, pad));
+            Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+            Tensor<float32> wd #= GradBackGpuTest.onDevice(w);
+            Tensor<float32> bd #= GradBackGpuTest.onDevice(b);
+            GradTape<float32> d = heap GradTape<float32>();
+            GradTensor dx = d.leaf(xd, true);
+            GradTensor dw = d.leaf(wd, true);
+            GradTensor db = d.leaf(bd, true);
+            d.backward(d.conv2d(dx, dw, db, stride, pad));
+            GradBackGpuTest.sameGrad("conv2d dx s" + stride, t.gradOf(lx), d.gradOf(dx));
+            GradBackGpuTest.sameGrad("conv2d dw s" + stride, t.gradOf(lw), d.gradOf(dw));
+            GradBackGpuTest.sameGrad("conv2d db s" + stride, t.gradOf(lb), d.gradOf(db));
+            cs = cs + 1;
+        }
+        // pools, each through a sum so the cotangent is uniform ones
+        int32 pk = 0;
+        while (pk < 3) {
+            GradTape<float32> t = heap GradTape<float32>();
+            GradTensor lx = t.leaf(x, true);
+            GradTensor y = lx;
+            if (pk == 0) { y = t.maxPool2d(lx, 2, 2, 0); }
+            if (pk == 1) { y = t.avgPool2d(lx, 3, 1, 1); }
+            if (pk == 2) { y = t.adaptiveAvgPool2d(lx, 4, 4); }
+            t.backward(y);
+            Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+            GradTape<float32> d = heap GradTape<float32>();
+            GradTensor dx = d.leaf(xd, true);
+            GradTensor yd = dx;
+            if (pk == 0) { yd = d.maxPool2d(dx, 2, 2, 0); }
+            if (pk == 1) { yd = d.avgPool2d(dx, 3, 1, 1); }
+            if (pk == 2) { yd = d.adaptiveAvgPool2d(dx, 4, 4); }
+            d.backward(yd);
+            GradBackGpuTest.sameGrad("pool " + pk, t.gradOf(lx), d.gradOf(dx));
+            pk = pk + 1;
+        }
+    }
+
+    @Test
+    public void normBackwardsMatchTheCpu() {
+        int64[] xs = [2L, 3L, 4L, 4L];
+        int64[] cs = [3L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 53L, false);
+        Tensor<float32> gamma #= GradBackGpuTest.fill(cs, 59L, true);
+        Tensor<float32> beta #= GradBackGpuTest.fill(cs, 61L, false);
+        Tensor<float32> mean #= GradBackGpuTest.fill(cs, 67L, false);
+        Tensor<float32> var #= GradBackGpuTest.fill(cs, 71L, true);
+        int32 mode = 0;
+        while (mode < 2) {
+            GradTape<float32> t = heap GradTape<float32>();
+            GradTensor lx = t.leaf(x, true);
+            GradTensor lg = t.leaf(gamma, true);
+            GradTensor lb = t.leaf(beta, true);
+            GradTensor y = lx;
+            if (mode == 0) { y = t.batchNorm2dTrain(lx, lg, lb, 0.00001); } else { y = t.batchNorm2dEval(lx, lg, lb, mean, var, 0.00001); }
+            t.backward(y);
+            Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+            Tensor<float32> gd #= GradBackGpuTest.onDevice(gamma);
+            Tensor<float32> bd #= GradBackGpuTest.onDevice(beta);
+            Tensor<float32> md #= GradBackGpuTest.onDevice(mean);
+            Tensor<float32> vd #= GradBackGpuTest.onDevice(var);
+            GradTape<float32> d = heap GradTape<float32>();
+            GradTensor dx = d.leaf(xd, true);
+            GradTensor dg = d.leaf(gd, true);
+            GradTensor db = d.leaf(bd, true);
+            GradTensor yd = dx;
+            if (mode == 0) { yd = d.batchNorm2dTrain(dx, dg, db, 0.00001); } else { yd = d.batchNorm2dEval(dx, dg, db, md, vd, 0.00001); }
+            d.backward(yd);
+            GradBackGpuTest.sameGrad("batchNorm2d dx mode " + mode, t.gradOf(lx), d.gradOf(dx));
+            GradBackGpuTest.sameGrad("batchNorm2d dgamma mode " + mode, t.gradOf(lg), d.gradOf(dg));
+            GradBackGpuTest.sameGrad("batchNorm2d dbeta mode " + mode, t.gradOf(lb), d.gradOf(db));
+            mode = mode + 1;
+        }
+        // layerNorm over the last axis of 6x7
+        int64[] ls = [6L, 7L];
+        int64[] ds = [7L];
+        Tensor<float32> l #= GradBackGpuTest.fill(ls, 73L, false);
+        Tensor<float32> lgam #= GradBackGpuTest.fill(ds, 79L, true);
+        Tensor<float32> lbet #= GradBackGpuTest.fill(ds, 83L, false);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor lx = t.leaf(l, true);
+        GradTensor lg = t.leaf(lgam, true);
+        GradTensor lb = t.leaf(lbet, true);
+        t.backward(t.layerNorm(lx, lg, lb, 0.00001));
+        Tensor<float32> ld #= GradBackGpuTest.onDevice(l);
+        Tensor<float32> lgd #= GradBackGpuTest.onDevice(lgam);
+        Tensor<float32> lbd #= GradBackGpuTest.onDevice(lbet);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor dx = d.leaf(ld, true);
+        GradTensor dg = d.leaf(lgd, true);
+        GradTensor db = d.leaf(lbd, true);
+        d.backward(d.layerNorm(dx, dg, db, 0.00001));
+        GradBackGpuTest.sameGrad("layerNorm dx", t.gradOf(lx), d.gradOf(dx));
+        GradBackGpuTest.sameGrad("layerNorm dgamma", t.gradOf(lg), d.gradOf(dg));
+        GradBackGpuTest.sameGrad("layerNorm dbeta", t.gradOf(lb), d.gradOf(db));
+    }
+
+    @Test
+    public void lossEmbeddingAndDropoutBackwardsMatchTheCpu() {
+        // embedding: repeated ids accumulate
+        int64[] ws = [5L, 3L];
+        Tensor<float32> w #= GradBackGpuTest.fill(ws, 89L, false);
+        Tensor<float32> idx #= GradBackGpuTest.ids(7L, 5L, 2L);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor lw = t.leaf(w, true);
+        t.backward(t.embedding(lw, idx));
+        Tensor<float32> wd #= GradBackGpuTest.onDevice(w);
+        Tensor<float32> idxD #= GradBackGpuTest.onDevice(idx);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor dw = d.leaf(wd, true);
+        d.backward(d.embedding(dw, idxD));
+        GradBackGpuTest.sameGrad("embedding dw", t.gradOf(lw), d.gradOf(dw));
+        // cross-entropy: 4 rows of 6 classes
+        int64[] ls = [4L, 6L];
+        Tensor<float32> logits #= GradBackGpuTest.fill(ls, 97L, false);
+        Tensor<float32> tg #= GradBackGpuTest.ids(4L, 6L, 3L);
+        GradTape<float32> t2 = heap GradTape<float32>();
+        GradTensor ll = t2.leaf(logits, true);
+        t2.backward(t2.crossEntropy(ll, tg));
+        Tensor<float32> logitsD #= GradBackGpuTest.onDevice(logits);
+        Tensor<float32> tgD #= GradBackGpuTest.onDevice(tg);
+        GradTape<float32> d2 = heap GradTape<float32>();
+        GradTensor dl = d2.leaf(logitsD, true);
+        d2.backward(d2.crossEntropy(dl, tgD));
+        GradBackGpuTest.sameGrad("crossEntropy dlogits", t2.gradOf(ll), d2.gradOf(dl));
+        // mse and cosine over 3x7 pairs
+        int64[] s = [3L, 7L];
+        Tensor<float32> a #= GradBackGpuTest.fill(s, 101L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(s, 103L, false);
+        int32 which = 0;
+        while (which < 2) {
+            GradTape<float32> t3 = heap GradTape<float32>();
+            GradTensor la = t3.leaf(a, true);
+            GradTensor lb = t3.leaf(b, true);
+            GradTensor y = la;
+            if (which == 0) { y = t3.mseLoss(la, lb); } else { y = t3.cosineSim(la, lb); }
+            t3.backward(y);
+            Tensor<float32> ad #= GradBackGpuTest.onDevice(a);
+            Tensor<float32> bd #= GradBackGpuTest.onDevice(b);
+            GradTape<float32> d3 = heap GradTape<float32>();
+            GradTensor da = d3.leaf(ad, true);
+            GradTensor db = d3.leaf(bd, true);
+            GradTensor yd = da;
+            if (which == 0) { yd = d3.mseLoss(da, db); } else { yd = d3.cosineSim(da, db); }
+            d3.backward(yd);
+            GradBackGpuTest.sameGrad("loss " + which + " dA", t3.gradOf(la), d3.gradOf(da));
+            GradBackGpuTest.sameGrad("loss " + which + " dB", t3.gradOf(lb), d3.gradOf(db));
+            which = which + 1;
+        }
+        // dropout: the gradient is the mask, so grad * x reproduces the output
+        int64[] dsh = [20L, 50L];
+        Tensor<float32> x #= GradBackGpuTest.fill(dsh, 107L, true);
+        Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+        GradTape<float32> d4 = heap GradTape<float32>();
+        GradTensor dx = d4.leaf(xd, true);
+        GradTensor yd = d4.dropout(dx, 0.5, true, (uint64) 99);
+        Tensor<float32> out = d4.valueOf(yd);
+        d4.backward(yd);
+        Tensor<float32> g = d4.gradOf(dx);
+        Assert.isTrue(g.isOnGpu());
+        g.cpu();
+        out.cpu();
+        int64 i = 0;
+        int64 kept = 0;
+        while (i < 1000L) {
+            float32 m = g.flatGet(i);
+            Assert.isTrue(m == 0.0f || m == 2.0f);
+            Assert.isTrue(out.flatGet(i) == x.flatGet(i) * m);
+            if (m == 2.0f) { kept = kept + 1; }
+            i = i + 1;
+        }
+        Assert.isTrue(kept > 400L && kept < 600L);
+    }
+
+    @Test
+    public void smallCnnTrainingStepGradientsMatchTheCpu() {
+        SmallCnn net = heap SmallCnn(1L, 4L, 4L, 7L);
+        int64[] xs = [2L, 1L, 8L, 8L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 5L, false);
+        Tensor<float32> y #= GradBackGpuTest.ids(2L, 4L, 3L);
+        GradTape<float32> t = heap GradTape<float32>();
+        net.train();
+        net.bindParameters(t);
+        GradTensor loss = t.crossEntropy(net.forward(t, t.leaf(x, false)), y);
+        t.backward(loss);
+        Parameter[] ps #= net.parameters();
+        Tensor<float32>[] want = heap Tensor<float32>[ps.count()];
+        int32 k = 0;
+        while (k < (int32) ps.count()) { want[k] #= t.gradOf(ps[k].node()).copy(); k = k + 1; }
+        net.unbindParameters();
+        SmallCnn dev = heap SmallCnn(1L, 4L, 4L, 7L);
+        dev.toDevice();
+        dev.train();
+        Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+        Tensor<float32> yd #= GradBackGpuTest.onDevice(y);
+        GradTape<float32> d = heap GradTape<float32>();
+        dev.bindParameters(d);
+        GradTensor lossD = d.crossEntropy(dev.forward(d, d.leaf(xd, false)), yd);
+        d.backward(lossD);
+        Parameter[] pd #= dev.parameters();
+        k = 0;
+        while (k < (int32) pd.count()) {
+            GradBackGpuTest.sameGrad("smallCnn parameter " + k, want[k], d.gradOf(pd[k].node()));
+            k = k + 1;
+        }
+        dev.unbindParameters();
     }
 }

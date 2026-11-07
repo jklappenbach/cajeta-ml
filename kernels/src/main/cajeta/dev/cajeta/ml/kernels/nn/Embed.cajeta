@@ -49,4 +49,29 @@ public final class Embed {
         embedF.launch(s, grid: [(total + 255) / 256], block: [256])(out, table, ids, total, (uint32) dim, (uint32) vocab);
         s.sync();
     }
+
+    /** dw[v][j] = sum of g[i][j] over the rows i whose id is v: one lane per table element scanning the ids, no atomics. */
+    @Kernel
+    public static void embedScatterAdd<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> ids, uint32 vocab, uint32 dim, uint32 n) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < vocab * dim) {
+            uint32 v = t / dim;
+            uint32 j = t - v * dim;
+            float32 acc = 0.0f;
+            uint32 i = 0;
+            while (i < n) {
+                if ((float32) ids[i] == (float32) v) { acc = acc + (float32) g[i * dim + j]; }
+                i = i + 1;
+            }
+            dw[t] = (E) acc;
+        }
+    }
+
+    /** The embedding VJP: `g` (n x dim) scattered and summed into `dw` (vocab x dim) by the E-valued `ids`; synced. */
+    public static void scatterRows<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> ids, int64 vocab, int64 dim, int64 n) {
+        uint32 total = (uint32) (vocab * dim);
+        KernelStream s #= KernelStream.current();
+        embedScatterAdd.launch(s, grid: [(total + 255) / 256], block: [256])(dw, g, ids, (uint32) vocab, (uint32) dim, (uint32) n);
+        s.sync();
+    }
 }

@@ -1,0 +1,479 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.nn.BatchNorm;
+import dev.cajeta.ml.kernels.nn.Conv;
+import dev.cajeta.ml.kernels.nn.Embed;
+import dev.cajeta.ml.kernels.nn.Loss;
+import dev.cajeta.ml.kernels.nn.Norm;
+import dev.cajeta.ml.kernels.nn.Pool;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 29.1.2 (spec §6.6): the structured backward kernels against float64 host
+ * references at float32: conv2d's input and weight VJPs, the three pooling VJPs, batch-norm's
+ * parameter sums and input VJP, layernorm's VJPs, the embedding scatter-add and the loss VJPs.
+ */
+public class StructuredBackTest {
+    public StructuredBackTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) (((i * 7919L) % 251L) - 125L) * 0.012f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 29.1.2"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 29.1.2");
+            return false;
+        }
+        return true;
+    }
+
+    static String stage = "";
+
+    static void close(float64 got, float64 want, float64 extra) {
+        float64 d = got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        if (d > 1.0e-5 * (w + 1.0) + extra) {
+            System.stdout.println("  " + StructuredBackTest.stage + ": got " + got + " want " + want);
+            Assert.isTrue(false);
+        }
+    }
+
+    static #KernelBuffer<float32> upload(int64 n, int64 seed, float64[] f) {
+        float32[] h = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { h[(int32) i] = StructuredBackTest.pattern(i + seed); f[(int32) i] = (float64) h[(int32) i]; i = i + 1L; }
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) n);
+        b.upload(h);
+        return #b;
+    }
+
+    static int64 outExtent(int64 inLen, int32 k, int32 stride, int32 pad) {
+        return (inLen + 2L * (int64) pad - (int64) k) / (int64) stride + 1L;
+    }
+
+    static void convBackCase(int32 stride, int32 pad) {
+        int64 n = 2L; int64 c = 3L; int64 h = 5L; int64 wd = 6L; int64 oc = 4L; int64 kh = 3L; int64 kw = 3L;
+        int64 oh = StructuredBackTest.outExtent(h, (int32) kh, stride, pad);
+        int64 ow = StructuredBackTest.outExtent(wd, (int32) kw, stride, pad);
+        float64[] fx = heap float64[n * c * h * wd];
+        float64[] fw = heap float64[oc * c * kh * kw];
+        float64[] fg = heap float64[n * oc * oh * ow];
+        KernelBuffer<float32> x #= StructuredBackTest.upload(n * c * h * wd, 3L, fx);
+        KernelBuffer<float32> w #= StructuredBackTest.upload(oc * c * kh * kw, 101L, fw);
+        KernelBuffer<float32> g #= StructuredBackTest.upload(n * oc * oh * ow, 211L, fg);
+        KernelBuffer<float32> dx = heap KernelBuffer<float32>((uint64) (n * c * h * wd));
+        KernelBuffer<float32> dw = heap KernelBuffer<float32>((uint64) (oc * c * kh * kw));
+        int64[] m #= ValueCheck.mark();
+        Conv.backwardInput<float32>(dx, g, w, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
+        Conv.backwardWeight<float32>(dw, g, x, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
+        float32[] gdx = heap float32[n * c * h * wd];
+        float32[] gdw = heap float32[oc * c * kh * kw];
+        dx.download(gdx);
+        dw.download(gdw);
+        float64[] hdx = heap float64[n * c * h * wd];
+        float64[] hdw = heap float64[oc * c * kh * kw];
+        int64 i = 0L;
+        while (i < n * c * h * wd) { hdx[(int32) i] = 0.0; i = i + 1L; }
+        i = 0L;
+        while (i < oc * c * kh * kw) { hdw[(int32) i] = 0.0; i = i + 1L; }
+        int64 bn = 0L;
+        while (bn < n) {
+            int64 o = 0L;
+            while (o < oc) {
+                int64 y = 0L;
+                while (y < oh) {
+                    int64 xx = 0L;
+                    while (xx < ow) {
+                        float64 gv = fg[(int32) (((bn * oc + o) * oh + y) * ow + xx)];
+                        int64 ci = 0L;
+                        while (ci < c) {
+                            int64 a = 0L;
+                            while (a < kh) {
+                                int64 ih = y * (int64) stride - (int64) pad + a;
+                                if (ih >= 0L && ih < h) {
+                                    int64 e = 0L;
+                                    while (e < kw) {
+                                        int64 iw = xx * (int64) stride - (int64) pad + e;
+                                        if (iw >= 0L && iw < wd) {
+                                            int64 xi = ((bn * c + ci) * h + ih) * wd + iw;
+                                            int64 wi = ((o * c + ci) * kh + a) * kw + e;
+                                            hdx[(int32) xi] = hdx[(int32) xi] + gv * fw[(int32) wi];
+                                            hdw[(int32) wi] = hdw[(int32) wi] + gv * fx[(int32) xi];
+                                        }
+                                        e = e + 1L;
+                                    }
+                                }
+                                a = a + 1L;
+                            }
+                            ci = ci + 1L;
+                        }
+                        xx = xx + 1L;
+                    }
+                    y = y + 1L;
+                }
+                o = o + 1L;
+            }
+            bn = bn + 1L;
+        }
+        StructuredBackTest.stage = "conv backIn s" + stride;
+        i = 0L;
+        while (i < n * c * h * wd) { StructuredBackTest.close((float64) gdx[(int32) i], hdx[(int32) i], 36.0 * 1.0e-7); i = i + 1L; }
+        StructuredBackTest.stage = "conv backWeight s" + stride;
+        i = 0L;
+        while (i < oc * c * kh * kw) { StructuredBackTest.close((float64) gdw[(int32) i], hdw[(int32) i], 60.0 * 1.0e-7); i = i + 1L; }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void conv2dBackwardsMatchTheHost() {
+        if (!StructuredBackTest.usable("convBackIn_float32") || !StructuredBackTest.usable("convBackWeight_float32")) { return; }
+        StructuredBackTest.convBackCase(1, 1);
+        StructuredBackTest.convBackCase(2, 0);
+    }
+
+    static void poolBackCase(int32 k, int32 stride, int32 pad) {
+        int64 n = 2L; int64 c = 3L; int64 h = 5L; int64 wd = 6L;
+        int64 oh = StructuredBackTest.outExtent(h, k, stride, pad);
+        int64 ow = StructuredBackTest.outExtent(wd, k, stride, pad);
+        int64 nin = n * c * h * wd;
+        int64 nout = n * c * oh * ow;
+        float64[] fx = heap float64[nin];
+        float64[] fg = heap float64[nout];
+        KernelBuffer<float32> x #= StructuredBackTest.upload(nin, 11L, fx);
+        KernelBuffer<float32> g #= StructuredBackTest.upload(nout, 223L, fg);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) nout);
+        KernelBuffer<float32> am = heap KernelBuffer<float32>((uint64) nout);
+        KernelBuffer<float32> dx = heap KernelBuffer<float32>((uint64) nin);
+        int64[] m #= ValueCheck.mark();
+        Pool.max<float32>(out, am, x, n, c, h, wd, oh, ow, k, stride, pad);
+        float32[] gam = heap float32[nout];
+        am.download(gam);
+        Pool.maxBackward<float32>(dx, g, am, n, c, h, wd, oh, ow, k, stride, pad);
+        float32[] gdx = heap float32[nin];
+        dx.download(gdx);
+        float64[] hdx = heap float64[nin];
+        int64 i = 0L;
+        while (i < nin) { hdx[(int32) i] = 0.0; i = i + 1L; }
+        i = 0L;
+        while (i < nout) { int64 xi = (int64) gam[(int32) i]; hdx[(int32) xi] = hdx[(int32) xi] + fg[(int32) i]; i = i + 1L; }
+        StructuredBackTest.stage = "maxBack k" + k;
+        i = 0L;
+        while (i < nin) { StructuredBackTest.close((float64) gdx[(int32) i], hdx[(int32) i], 0.0); i = i + 1L; }
+        Pool.avgBackward<float32>(dx, g, n, c, h, wd, oh, ow, k, stride, pad);
+        dx.download(gdx);
+        i = 0L;
+        while (i < nin) { hdx[(int32) i] = 0.0; i = i + 1L; }
+        int64 plane = 0L;
+        while (plane < n * c) {
+            int64 y = 0L;
+            while (y < oh) {
+                int64 xx = 0L;
+                while (xx < ow) {
+                    float64 share = fg[(int32) ((plane * oh + y) * ow + xx)] / (float64) (k * k);
+                    int64 a = 0L;
+                    while (a < (int64) k) {
+                        int64 ih = y * (int64) stride - (int64) pad + a;
+                        if (ih >= 0L && ih < h) {
+                            int64 e = 0L;
+                            while (e < (int64) k) {
+                                int64 iw = xx * (int64) stride - (int64) pad + e;
+                                if (iw >= 0L && iw < wd) { int64 xi = (plane * h + ih) * wd + iw; hdx[(int32) xi] = hdx[(int32) xi] + share; }
+                                e = e + 1L;
+                            }
+                        }
+                        a = a + 1L;
+                    }
+                    xx = xx + 1L;
+                }
+                y = y + 1L;
+            }
+            plane = plane + 1L;
+        }
+        StructuredBackTest.stage = "avgBack k" + k;
+        i = 0L;
+        while (i < nin) { StructuredBackTest.close((float64) gdx[(int32) i], hdx[(int32) i], 1.0e-6); i = i + 1L; }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void poolBackwardsMatchTheHost() {
+        if (!StructuredBackTest.usable("maxBack_float32") || !StructuredBackTest.usable("adaptiveBack_float32")) { return; }
+        StructuredBackTest.poolBackCase(2, 2, 0);
+        StructuredBackTest.poolBackCase(3, 1, 1);
+        int64 n = 2L; int64 c = 3L; int64 h = 5L; int64 wd = 6L; int64 oh = 2L; int64 ow = 3L;
+        int64 nin = n * c * h * wd;
+        float64[] fg = heap float64[n * c * oh * ow];
+        KernelBuffer<float32> g #= StructuredBackTest.upload(n * c * oh * ow, 227L, fg);
+        KernelBuffer<float32> dx = heap KernelBuffer<float32>((uint64) nin);
+        int64[] m #= ValueCheck.mark();
+        Pool.adaptiveBackward<float32>(dx, g, n, c, h, wd, oh, ow);
+        float32[] gdx = heap float32[nin];
+        dx.download(gdx);
+        float64[] hdx = heap float64[nin];
+        int64 i = 0L;
+        while (i < nin) { hdx[(int32) i] = 0.0; i = i + 1L; }
+        int64 plane = 0L;
+        while (plane < n * c) {
+            int64 y = 0L;
+            while (y < oh) {
+                int64 h0 = (y * h) / oh;
+                int64 h1 = ((y + 1L) * h + oh - 1L) / oh;
+                int64 xx = 0L;
+                while (xx < ow) {
+                    int64 w0 = (xx * wd) / ow;
+                    int64 w1 = ((xx + 1L) * wd + ow - 1L) / ow;
+                    float64 share = fg[(int32) ((plane * oh + y) * ow + xx)] / (float64) ((h1 - h0) * (w1 - w0));
+                    int64 ih = h0;
+                    while (ih < h1) {
+                        int64 iw = w0;
+                        while (iw < w1) { int64 xi = (plane * h + ih) * wd + iw; hdx[(int32) xi] = hdx[(int32) xi] + share; iw = iw + 1L; }
+                        ih = ih + 1L;
+                    }
+                    xx = xx + 1L;
+                }
+                y = y + 1L;
+            }
+            plane = plane + 1L;
+        }
+        StructuredBackTest.stage = "adaptiveBack";
+        i = 0L;
+        while (i < nin) { StructuredBackTest.close((float64) gdx[(int32) i], hdx[(int32) i], 1.0e-6); i = i + 1L; }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void batchNormBackwardsMatchTheHost() {
+        if (!StructuredBackTest.usable("bnParamGrads_float32") || !StructuredBackTest.usable("bnBackIn_float32")) { return; }
+        int64 n = 4L; int64 c = 3L; int64 hw = 300L;
+        int64 total = n * c * hw;
+        float64[] fg = heap float64[total];
+        float64[] fxh = heap float64[total];
+        float64[] fgam = heap float64[c];
+        float64[] finv = heap float64[c];
+        KernelBuffer<float32> g #= StructuredBackTest.upload(total, 23L, fg);
+        KernelBuffer<float32> xhat #= StructuredBackTest.upload(total, 29L, fxh);
+        KernelBuffer<float32> gamma #= StructuredBackTest.upload(c, 31L, fgam);
+        KernelBuffer<float32> invstd #= StructuredBackTest.upload(c, 37L, finv);
+        KernelBuffer<float32> dgamma = heap KernelBuffer<float32>((uint64) c);
+        KernelBuffer<float32> dbeta = heap KernelBuffer<float32>((uint64) c);
+        KernelBuffer<float32> dx = heap KernelBuffer<float32>((uint64) total);
+        int64[] m #= ValueCheck.mark();
+        BatchNorm.channelParamGrads<float32>(dgamma, dbeta, g, xhat, n, c, hw);
+        float32[] ggam = heap float32[c];
+        float32[] gbet = heap float32[c];
+        dgamma.download(ggam);
+        dbeta.download(gbet);
+        int64 ci = 0L;
+        float64[] sumG = heap float64[c];
+        float64[] sumGX = heap float64[c];
+        while (ci < c) {
+            float64 sa = 0.0; float64 sb = 0.0;
+            int64 bn = 0L;
+            while (bn < n) { int64 p = 0L; while (p < hw) { int64 i = (bn * c + ci) * hw + p; sa = sa + fg[(int32) i] * fxh[(int32) i]; sb = sb + fg[(int32) i]; p = p + 1L; } bn = bn + 1L; }
+            sumGX[(int32) ci] = sa; sumG[(int32) ci] = sb;
+            StructuredBackTest.stage = "bn dgamma";
+            StructuredBackTest.close((float64) ggam[(int32) ci], sa, 1.0e-4);
+            StructuredBackTest.stage = "bn dbeta";
+            StructuredBackTest.close((float64) gbet[(int32) ci], sb, 1.0e-4);
+            ci = ci + 1L;
+        }
+        int32 mode = 0;
+        while (mode < 2) {
+            BatchNorm.backwardInput<float32>(dx, g, xhat, gamma, invstd, dgamma, dbeta, n, c, hw, mode == 1);
+            float32[] gdx = heap float32[total];
+            dx.download(gdx);
+            StructuredBackTest.stage = "bn backIn training=" + mode;
+            ci = 0L;
+            while (ci < c) {
+                float64 gv = fgam[(int32) ci];
+                float64 iv = finv[(int32) ci];
+                float64 mm = (float64) (n * hw);
+                int64 bn = 0L;
+                while (bn < n) {
+                    int64 p = 0L;
+                    while (p < hw) {
+                        int64 i = (bn * c + ci) * hw + p;
+                        float64 dxh = fg[(int32) i] * gv;
+                        float64 want = dxh * iv;
+                        if (mode == 1) { want = iv / mm * (mm * dxh - gv * sumG[(int32) ci] - fxh[(int32) i] * gv * sumGX[(int32) ci]); }
+                        StructuredBackTest.close((float64) gdx[(int32) i], want, 1.0e-5);
+                        p = p + 1L;
+                    }
+                    bn = bn + 1L;
+                }
+                ci = ci + 1L;
+            }
+            mode = mode + 1;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void layerNormBackwardsMatchTheHost() {
+        if (!StructuredBackTest.usable("layernormBack_float32") || !StructuredBackTest.usable("layernormParamGrads_float32")) { return; }
+        int64 rows = 7L; int64 cols = 300L;
+        int64 total = rows * cols;
+        float64[] fg = heap float64[total];
+        float64[] fxh = heap float64[total];
+        float64[] fw = heap float64[cols];
+        float64[] finv = heap float64[rows];
+        KernelBuffer<float32> g #= StructuredBackTest.upload(total, 41L, fg);
+        KernelBuffer<float32> xhat #= StructuredBackTest.upload(total, 43L, fxh);
+        KernelBuffer<float32> w #= StructuredBackTest.upload(cols, 47L, fw);
+        KernelBuffer<float32> invstd #= StructuredBackTest.upload(rows, 53L, finv);
+        KernelBuffer<float32> dx = heap KernelBuffer<float32>((uint64) total);
+        KernelBuffer<float32> dw = heap KernelBuffer<float32>((uint64) cols);
+        KernelBuffer<float32> db = heap KernelBuffer<float32>((uint64) cols);
+        int64[] m #= ValueCheck.mark();
+        Norm.layerBack<float32>(dx, g, xhat, w, invstd, rows, cols);
+        Norm.layerParamGrads<float32>(dw, db, g, xhat, rows, cols);
+        float32[] gdx = heap float32[total];
+        float32[] gdw = heap float32[cols];
+        float32[] gdb = heap float32[cols];
+        dx.download(gdx);
+        dw.download(gdw);
+        db.download(gdb);
+        int64 r = 0L;
+        while (r < rows) {
+            float64 sa = 0.0; float64 sb = 0.0;
+            int64 j = 0L;
+            while (j < cols) { float64 dxh = fg[(int32) (r * cols + j)] * fw[(int32) j]; sa = sa + dxh; sb = sb + dxh * fxh[(int32) (r * cols + j)]; j = j + 1L; }
+            float64 iv = finv[(int32) r];
+            StructuredBackTest.stage = "ln backIn";
+            j = 0L;
+            while (j < cols) {
+                float64 dxh = fg[(int32) (r * cols + j)] * fw[(int32) j];
+                StructuredBackTest.close((float64) gdx[(int32) (r * cols + j)], iv / (float64) cols * ((float64) cols * dxh - sa - fxh[(int32) (r * cols + j)] * sb), 1.0e-5);
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
+        int64 j = 0L;
+        while (j < cols) {
+            float64 sa = 0.0; float64 sb = 0.0;
+            r = 0L;
+            while (r < rows) { sa = sa + fg[(int32) (r * cols + j)] * fxh[(int32) (r * cols + j)]; sb = sb + fg[(int32) (r * cols + j)]; r = r + 1L; }
+            StructuredBackTest.stage = "ln dw";
+            StructuredBackTest.close((float64) gdw[(int32) j], sa, 1.0e-5);
+            StructuredBackTest.stage = "ln db";
+            StructuredBackTest.close((float64) gdb[(int32) j], sb, 1.0e-5);
+            j = j + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void scatterAddAndLossBackwardsMatchTheHost() {
+        if (!StructuredBackTest.usable("embedScatterAdd_float32") || !StructuredBackTest.usable("nllBack_float32") || !StructuredBackTest.usable("cosineBack_float32")) { return; }
+        // scatter-add: 9 rows of dim 5 into a vocab of 11, ids with repeats
+        int64 vocab = 11L; int64 dim = 5L; int64 n = 9L;
+        float64[] fg = heap float64[n * dim];
+        KernelBuffer<float32> g #= StructuredBackTest.upload(n * dim, 67L, fg);
+        float32[] hi = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { hi[(int32) i] = (float32) ((i * 4L) % vocab); i = i + 1L; }
+        KernelBuffer<float32> ids = heap KernelBuffer<float32>((uint64) n);
+        ids.upload(hi);
+        KernelBuffer<float32> dw = heap KernelBuffer<float32>((uint64) (vocab * dim));
+        int64[] m #= ValueCheck.mark();
+        Embed.scatterRows<float32>(dw, g, ids, vocab, dim, n);
+        float32[] gdw = heap float32[vocab * dim];
+        dw.download(gdw);
+        StructuredBackTest.stage = "scatterAdd";
+        int64 v = 0L;
+        while (v < vocab) {
+            int64 j = 0L;
+            while (j < dim) {
+                float64 acc = 0.0;
+                i = 0L;
+                while (i < n) { if ((int64) hi[(int32) i] == v) { acc = acc + fg[(int32) (i * dim + j)]; } i = i + 1L; }
+                StructuredBackTest.close((float64) gdw[(int32) (v * dim + j)], acc, 0.0);
+                j = j + 1L;
+            }
+            v = v + 1L;
+        }
+        // nll: 37 rows of 6 classes
+        int64 rows = 37L; int64 cls = 6L;
+        float64[] fp = heap float64[rows * cls];
+        KernelBuffer<float32> probs #= StructuredBackTest.upload(rows * cls, 71L, fp);
+        float32[] ht = heap float32[rows];
+        int64 r = 0L;
+        while (r < rows) { ht[(int32) r] = (float32) ((r * 5L) % cls); r = r + 1L; }
+        KernelBuffer<float32> targets = heap KernelBuffer<float32>((uint64) rows);
+        targets.upload(ht);
+        float32[] hgs = [0.75f];
+        KernelBuffer<float32> gs = heap KernelBuffer<float32>(1);
+        gs.upload(hgs);
+        KernelBuffer<float32> dl = heap KernelBuffer<float32>((uint64) (rows * cls));
+        Loss.nllBackward<float32>(dl, probs, targets, gs, rows, cls);
+        float32[] gdl = heap float32[rows * cls];
+        dl.download(gdl);
+        StructuredBackTest.stage = "nllBack";
+        r = 0L;
+        while (r < rows) {
+            int64 j = 0L;
+            while (j < cls) {
+                float64 pv = fp[(int32) (r * cls + j)];
+                if (j == (int64) ht[(int32) r]) { pv = pv - 1.0; }
+                StructuredBackTest.close((float64) gdl[(int32) (r * cls + j)], pv * 0.75 / (float64) rows, 0.0);
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
+        // cosine VJP for both inputs over 37 rows of 300
+        int64 d = 300L;
+        float64[] fa = heap float64[rows * d];
+        float64[] fb = heap float64[rows * d];
+        float64[] fgr = heap float64[rows];
+        KernelBuffer<float32> a #= StructuredBackTest.upload(rows * d, 59L, fa);
+        KernelBuffer<float32> b #= StructuredBackTest.upload(rows * d, 61L, fb);
+        KernelBuffer<float32> gr #= StructuredBackTest.upload(rows, 73L, fgr);
+        KernelBuffer<float32> cos = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> cache = heap KernelBuffer<float32>((uint64) (rows * 3L));
+        Loss.cosineRows<float32>(cos, cache, a, b, rows, d, 1.0e-8f);
+        float32[] hc = heap float32[rows * 3L];
+        cache.download(hc);
+        KernelBuffer<float32> dsrc = heap KernelBuffer<float32>((uint64) (rows * d));
+        int32 side = 0;
+        while (side < 2) {
+            Loss.cosineBackward<float32>(dsrc, gr, a, b, cache, rows, d, 1.0e-8f, side == 0);
+            if (side == 1) { Loss.cosineBackward<float32>(dsrc, gr, b, a, cache, rows, d, 1.0e-8f, false); }
+            float32[] gd = heap float32[rows * d];
+            dsrc.download(gd);
+            StructuredBackTest.stage = "cosineBack side " + side;
+            r = 0L;
+            while (r < rows) {
+                float64 na = (float64) hc[(int32) (r * 3L)];
+                float64 nb = (float64) hc[(int32) (r * 3L + 1L)];
+                float64 cs = (float64) hc[(int32) (r * 3L + 2L)];
+                float64 ns = na;
+                if (side == 1) { ns = nb; }
+                float64 den = na * nb;
+                if (den < 1.0e-8) { den = 1.0e-8; }
+                float64 ns2 = ns * ns;
+                if (ns2 < 1.0e-8) { ns2 = 1.0e-8; }
+                int64 j = 0L;
+                while (j < d) {
+                    float64 sv = fa[(int32) (r * d + j)];
+                    float64 ov = fb[(int32) (r * d + j)];
+                    if (side == 1) { sv = fb[(int32) (r * d + j)]; ov = fa[(int32) (r * d + j)]; }
+                    StructuredBackTest.close((float64) gd[(int32) (r * d + j)], fgr[(int32) r] * (ov / den - cs * sv / ns2), 1.0e-6);
+                    j = j + 1L;
+                }
+                r = r + 1L;
+            }
+            side = side + 1;
+        }
+        ValueCheck.credit(m);
+    }
+}

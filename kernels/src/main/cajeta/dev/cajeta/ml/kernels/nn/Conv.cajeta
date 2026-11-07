@@ -57,4 +57,102 @@ public final class Conv {
             (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad);
         s.sync();
     }
+
+    /** dx[bn][ci][ih][iw] = sum over the outputs whose window covers it of g * w, one lane per input element. */
+    @Kernel
+    public static void convBackIn<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> w,
+                                 uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc, uint32 kh, uint32 kw,
+                                 uint32 oh, uint32 ow, int32 stride, int32 pad) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * c * h * wd) {
+            uint32 iw = t % wd;
+            uint32 q = t / wd;
+            uint32 ih = q % h;
+            q = q / h;
+            uint32 ci = q % c;
+            uint32 bn = q / c;
+            float32 acc = 0.0f;
+            uint32 a = 0;
+            while (a < kh) {
+                int32 yn = (int32) ih + pad - (int32) a;
+                if (yn >= 0 && yn - (yn / stride) * stride == 0 && yn / stride < (int32) oh) {
+                    uint32 y = (uint32) (yn / stride);
+                    uint32 e = 0;
+                    while (e < kw) {
+                        int32 xn = (int32) iw + pad - (int32) e;
+                        if (xn >= 0 && xn - (xn / stride) * stride == 0 && xn / stride < (int32) ow) {
+                            uint32 xx = (uint32) (xn / stride);
+                            uint32 o = 0;
+                            while (o < oc) {
+                                acc = acc + (float32) g[((bn * oc + o) * oh + y) * ow + xx] * (float32) w[((o * c + ci) * kh + a) * kw + e];
+                                o = o + 1;
+                            }
+                        }
+                        e = e + 1;
+                    }
+                }
+                a = a + 1;
+            }
+            dx[t] = (E) acc;
+        }
+    }
+
+    /** dw[o][ci][a][e] = sum over the batch and the output plane of g * x, one lane per weight. */
+    @Kernel
+    public static void convBackWeight<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
+                                     uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc, uint32 kh, uint32 kw,
+                                     uint32 oh, uint32 ow, int32 stride, int32 pad) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < oc * c * kh * kw) {
+            uint32 e = t % kw;
+            uint32 q = t / kw;
+            uint32 a = q % kh;
+            q = q / kh;
+            uint32 ci = q % c;
+            uint32 o = q / c;
+            float32 acc = 0.0f;
+            uint32 bn = 0;
+            while (bn < n) {
+                uint32 y = 0;
+                while (y < oh) {
+                    int32 ih = (int32) y * stride - pad + (int32) a;
+                    if (ih >= 0 && ih < (int32) h) {
+                        uint32 xx = 0;
+                        while (xx < ow) {
+                            int32 iw = (int32) xx * stride - pad + (int32) e;
+                            if (iw >= 0 && iw < (int32) wd) {
+                                acc = acc + (float32) g[((bn * oc + o) * oh + y) * ow + xx] * (float32) x[((bn * c + ci) * h + (uint32) ih) * wd + (uint32) iw];
+                            }
+                            xx = xx + 1;
+                        }
+                    }
+                    y = y + 1;
+                }
+                bn = bn + 1;
+            }
+            dw[t] = (E) acc;
+        }
+    }
+
+    /** dx = the conv2d input VJP of `g` (n,oc,oh,ow) with `w` (oc,c,kh,kw); synced. */
+    public static void backwardInput<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> w,
+                                        int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
+                                        int64 oh, int64 ow, int32 stride, int32 pad) {
+        uint32 total = (uint32) (n * c * h * wd);
+        KernelStream s #= KernelStream.current();
+        convBackIn.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, w, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad);
+        s.sync();
+    }
+
+    /** dw = the conv2d weight VJP of `g` against `x`; synced. */
+    public static void backwardWeight<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
+                                         int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
+                                         int64 oh, int64 ow, int32 stride, int32 pad) {
+        uint32 total = (uint32) (oc * c * kh * kw);
+        KernelStream s #= KernelStream.current();
+        convBackWeight.launch(s, grid: [(total + 255) / 256], block: [256])(dw, g, x, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad);
+        s.sync();
+    }
 }

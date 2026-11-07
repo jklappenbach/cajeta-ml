@@ -455,6 +455,29 @@ public final class Ops {
         return #out;
     }
 
+    /** Both batch-norm parameter VJPs on the device; `wantScale` picks dgamma (sum g*xhat) over dbeta (sum g). */
+    static #Tensor<E> channelParamGradsGpu<E extends Floating>(Tensor<E> g, Tensor<E> xhat, boolean wantScale) {
+        int64[] cs = [g.shapeAt(1)];
+        Tensor<E> dgamma #= Ewise.deviceOf<E>(cs);
+        Tensor<E> dbeta #= Ewise.deviceOf<E>(cs);
+        BatchNorm.channelParamGrads<E>(dgamma.deviceView("batchNorm2d.backward"), dbeta.deviceView("batchNorm2d.backward"),
+            g.deviceView("batchNorm2d.backward"), xhat.deviceView("batchNorm2d.backward"), g.shapeAt(0), g.shapeAt(1), g.shapeAt(2) * g.shapeAt(3));
+        if (wantScale) { return #dgamma; }
+        return #dbeta;
+    }
+
+    /** Both layernorm parameter VJPs on the device; `wantScale` picks dgamma over dbeta. */
+    static #Tensor<E> layerParamGradsGpu<E extends Floating>(Tensor<E> g, Tensor<E> xhat, boolean wantScale) {
+        int64 d = g.shapeAt(g.ndim() - 1);
+        int64[] ds = [d];
+        Tensor<E> dw #= Ewise.deviceOf<E>(ds);
+        Tensor<E> db #= Ewise.deviceOf<E>(ds);
+        Norm.layerParamGrads<E>(dw.deviceView("layerNorm.backward"), db.deviceView("layerNorm.backward"),
+            g.deviceView("layerNorm.backward"), xhat.deviceView("layerNorm.backward"), g.size() / d, d);
+        if (wantScale) { return #dw; }
+        return #db;
+    }
+
     /** C-order strides of `shape`. */
     static #int64[] contig(int64[] shape) {
         int32 nd = (int32) shape.count();
@@ -665,7 +688,13 @@ public final class Ops {
                                                               Tensor<E> w, int32 stride,
                                                               int32 pad) {
         Ops.requireSame<E>("conv2d.backward", g, x);
-        Ops.requireCpu<E>("conv2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("conv2d.backward");
+            Tensor<E> dx #= Ewise.deviceLike<E>(x);
+            Conv.backwardInput<E>(dx.deviceView("conv2d.backward"), g.deviceView("conv2d.backward"), w.deviceView("conv2d.backward"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2), x.shapeAt(3), w.shapeAt(0), w.shapeAt(2), w.shapeAt(3), g.shapeAt(2), g.shapeAt(3), stride, pad);
+            return #dx;
+        }
         return StructKernels.conv2dBackIn<E>(g, x, w, stride, pad);
     }
 
@@ -675,12 +704,27 @@ public final class Ops {
                                                                   int32 stride,
                                                                   int32 pad) {
         Ops.requireSame<E>("conv2d.backward", g, x);
-        Ops.requireCpu<E>("conv2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("conv2d.backward");
+            Tensor<E> dw #= Ewise.deviceLike<E>(w);
+            Conv.backwardWeight<E>(dw.deviceView("conv2d.backward"), g.deviceView("conv2d.backward"), x.deviceView("conv2d.backward"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2), x.shapeAt(3), w.shapeAt(0), w.shapeAt(2), w.shapeAt(3), g.shapeAt(2), g.shapeAt(3), stride, pad);
+            return #dw;
+        }
         return StructKernels.conv2dBackWeight<E>(g, x, w, stride, pad);
     }
 
     public static #Tensor<E> conv2dBackBias<E extends Floating>(Tensor<E> g) {
-        Ops.requireCpu<E>("conv2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("conv2d.backward");
+            // sum over the plane, then over the batch: (n, oc, ohw) -> (n, oc, 1) -> (1, oc, 1) -> (oc)
+            int64[] s3 = [g.shapeAt(0), g.shapeAt(1), g.shapeAt(2) * g.shapeAt(3)];
+            Tensor<E> g3 #= Ops.reshape<E>(g, s3);
+            Tensor<E> r1 #= Ops.reduceAxisGpu<E>("conv2d.backward", g3, 2, Reduce.SUM);
+            Tensor<E> r2 #= Ops.reduceAxisGpu<E>("conv2d.backward", r1, 0, Reduce.SUM);
+            int64[] s1 = [g.shapeAt(1)];
+            return Ops.reshape<E>(r2, s1);
+        }
         return StructKernels.conv2dBackBias<E>(g);
     }
 
@@ -700,9 +744,16 @@ public final class Ops {
     }
 
     public static #Tensor<E> maxPool2dBack<E extends Floating>(Tensor<E> g, Tensor<E> x,
-                                                               Tensor<E> argmax) {
+                                                               Tensor<E> argmax, int32 k,
+                                                               int32 stride, int32 pad) {
         Ops.requireSame<E>("maxPool2d.backward", g, x);
-        Ops.requireCpu<E>("maxPool2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("maxPool2d.backward");
+            Tensor<E> dx #= Ewise.deviceLike<E>(x);
+            Pool.maxBackward<E>(dx.deviceView("maxPool2d.backward"), g.deviceView("maxPool2d.backward"), argmax.deviceView("maxPool2d.backward"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2), x.shapeAt(3), g.shapeAt(2), g.shapeAt(3), k, stride, pad);
+            return #dx;
+        }
         return StructKernels.maxPool2dBack<E>(g, x, argmax);
     }
 
@@ -723,7 +774,13 @@ public final class Ops {
                                                                int32 k, int32 stride,
                                                                int32 pad) {
         Ops.requireSame<E>("avgPool2d.backward", g, x);
-        Ops.requireCpu<E>("avgPool2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("avgPool2d.backward");
+            Tensor<E> dx #= Ewise.deviceLike<E>(x);
+            Pool.avgBackward<E>(dx.deviceView("avgPool2d.backward"), g.deviceView("avgPool2d.backward"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2), x.shapeAt(3), g.shapeAt(2), g.shapeAt(3), k, stride, pad);
+            return #dx;
+        }
         return StructKernels.avgPool2dBack<E>(g, x, k, stride, pad);
     }
 
@@ -744,7 +801,13 @@ public final class Ops {
     public static #Tensor<E> adaptiveAvgPool2dBack<E extends Floating>(Tensor<E> g,
                                                                        Tensor<E> x) {
         Ops.requireSame<E>("adaptiveAvgPool2d.backward", g, x);
-        Ops.requireCpu<E>("adaptiveAvgPool2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("adaptiveAvgPool2d.backward");
+            Tensor<E> dx #= Ewise.deviceLike<E>(x);
+            Pool.adaptiveBackward<E>(dx.deviceView("adaptiveAvgPool2d.backward"), g.deviceView("adaptiveAvgPool2d.backward"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2), x.shapeAt(3), g.shapeAt(2), g.shapeAt(3));
+            return #dx;
+        }
         return StructKernels.adaptiveAvgPool2dBack<E>(g, x);
     }
 
@@ -813,18 +876,41 @@ public final class Ops {
                                                                    Tensor<E> invstd,
                                                                    boolean training) {
         Ops.requireSame<E>("batchNorm2d.backward", g, xhat);
-        Ops.requireCpu<E>("batchNorm2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("batchNorm2d.backward");
+            int64 n = g.shapeAt(0);
+            int64 c = g.shapeAt(1);
+            int64 hw = g.shapeAt(2) * g.shapeAt(3);
+            int64[] cs = [c];
+            Tensor<E> dgamma #= Ewise.deviceOf<E>(cs);
+            Tensor<E> dbeta #= Ewise.deviceOf<E>(cs);
+            BatchNorm.channelParamGrads<E>(dgamma.deviceView("batchNorm2d.backward"), dbeta.deviceView("batchNorm2d.backward"),
+                g.deviceView("batchNorm2d.backward"), xhat.deviceView("batchNorm2d.backward"), n, c, hw);
+            Tensor<E> dx #= Ewise.deviceLike<E>(g);
+            BatchNorm.backwardInput<E>(dx.deviceView("batchNorm2d.backward"), g.deviceView("batchNorm2d.backward"), xhat.deviceView("batchNorm2d.backward"),
+                gamma.deviceView("batchNorm2d.backward"), invstd.deviceView("batchNorm2d.backward"),
+                dgamma.deviceView("batchNorm2d.backward"), dbeta.deviceView("batchNorm2d.backward"), n, c, hw, training);
+            return #dx;
+        }
         return StructKernels.batchNorm2dBackIn<E>(g, xhat, gamma, invstd, training);
     }
 
     public static #Tensor<E> normBackScale<E extends Floating>(Tensor<E> g, Tensor<E> xhat) {
         Ops.requireSame<E>("batchNorm2d.backward", g, xhat);
-        Ops.requireCpu<E>("batchNorm2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("batchNorm2d.backward");
+            Tensor<E> dgamma #= Ops.channelParamGradsGpu<E>(g, xhat, true);
+            return #dgamma;
+        }
         return StructKernels.normBackScale<E>(g, xhat);
     }
 
     public static #Tensor<E> normBackShift<E extends Floating>(Tensor<E> g) {
-        Ops.requireCpu<E>("batchNorm2d.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("batchNorm2d.backward");
+            Tensor<E> dbeta #= Ops.channelParamGradsGpu<E>(g, g, false);
+            return #dbeta;
+        }
         return StructKernels.normBackShift<E>(g);
     }
 
@@ -875,19 +961,34 @@ public final class Ops {
                                                                  Tensor<E> gamma,
                                                                  Tensor<E> invstd) {
         Ops.requireSame<E>("layerNorm.backward", g, xhat);
-        Ops.requireCpu<E>("layerNorm.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("layerNorm.backward");
+            int64 d = g.shapeAt(g.ndim() - 1);
+            Tensor<E> dx #= Ewise.deviceLike<E>(g);
+            Norm.layerBack<E>(dx.deviceView("layerNorm.backward"), g.deviceView("layerNorm.backward"), xhat.deviceView("layerNorm.backward"),
+                gamma.deviceView("layerNorm.backward"), invstd.deviceView("layerNorm.backward"), g.size() / d, d);
+            return #dx;
+        }
         return StructKernels.layerNormBackIn<E>(g, xhat, gamma, invstd);
     }
 
     public static #Tensor<E> layerNormBackScale<E extends Floating>(Tensor<E> g,
                                                                     Tensor<E> xhat) {
         Ops.requireSame<E>("layerNorm.backward", g, xhat);
-        Ops.requireCpu<E>("layerNorm.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("layerNorm.backward");
+            Tensor<E> dw #= Ops.layerParamGradsGpu<E>(g, xhat, true);
+            return #dw;
+        }
         return StructKernels.layerNormBackScale<E>(g, xhat);
     }
 
     public static #Tensor<E> layerNormBackShift<E extends Floating>(Tensor<E> g) {
-        Ops.requireCpu<E>("layerNorm.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("layerNorm.backward");
+            Tensor<E> db #= Ops.layerParamGradsGpu<E>(g, g, false);
+            return #db;
+        }
         return StructKernels.layerNormBackShift<E>(g);
     }
 
@@ -907,7 +1008,13 @@ public final class Ops {
     public static #Tensor<E> embeddingBack<E extends Floating>(Tensor<E> g, Tensor<E> w,
                                                                Tensor<E> idx) {
         Ops.requireSame<E>("embedding.backward", g, w);
-        Ops.requireCpu<E>("embedding.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("embedding.backward");
+            Tensor<E> dw #= Ewise.deviceLike<E>(w);
+            Embed.scatterRows<E>(dw.deviceView("embedding.backward"), g.deviceView("embedding.backward"), idx.deviceView("embedding.backward"),
+                w.shapeAt(0), w.shapeAt(1), idx.size());
+            return #dw;
+        }
         return StructKernels.embeddingBack<E>(g, w, idx);
     }
 
@@ -951,7 +1058,15 @@ public final class Ops {
     public static #Tensor<E> crossEntropyBack<E extends Floating>(Tensor<E> g,
                                                                   Tensor<E> probs,
                                                                   Tensor<E> targets) {
-        Ops.requireCpu<E>("crossEntropy.backward", g);
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("crossEntropy.backward");
+            int64 cls = probs.shapeAt(probs.ndim() - 1);
+            int64 rows = probs.size() / cls;
+            Tensor<E> dx #= Ewise.deviceLike<E>(probs);
+            Loss.nllBackward<E>(dx.deviceView("crossEntropy.backward"), probs.deviceView("crossEntropy.backward"), targets.deviceView("crossEntropy.backward"),
+                g.deviceView("crossEntropy.backward"), rows, cls);
+            return #dx;
+        }
         return StructKernels.crossEntropyBack<E>(g, probs, targets);
     }
 
@@ -977,7 +1092,18 @@ public final class Ops {
                                                              Tensor<E> target,
                                                              boolean wantPred) {
         Ops.requireSame<E>("mseLoss.backward", pred, target);
-        Ops.requireCpu<E>("mseLoss.backward", pred);
+        if (pred.isOnGpu()) {
+            Ops.requireF32<E>("mseLoss.backward");
+            int64 n = pred.size();
+            int64[] ps #= Ops.shapeOf<E>(pred);
+            Tensor<E> tv #= Ops.reshape<E>(target, ps);
+            Tensor<E> diff #= Tensor.sub<E>(pred, tv);
+            Tensor<E> gb #= Ops.broadcastCopy<E>(g, ps);
+            Tensor<E> prod #= Tensor.mul<E>(diff, gb);
+            E f = (E) 2 / (E) n;
+            if (!wantPred) { f = (E) 0 - f; }
+            return Ops.scale<E>(prod, f);
+        }
         return StructKernels.mseLossBack<E>(g, pred, target, wantPred);
     }
 
@@ -1001,7 +1127,17 @@ public final class Ops {
                                                                Tensor<E> b, Tensor<E> cache,
                                                                float64 eps, boolean wantA) {
         Ops.requireSame<E>("cosineSim.backward", a, b);
-        Ops.requireCpu<E>("cosineSim.backward", a);
+        if (a.isOnGpu()) {
+            Ops.requireF32<E>("cosineSim.backward");
+            int64 d = a.shapeAt(a.ndim() - 1);
+            Tensor<E> src = a;
+            Tensor<E> other = b;
+            if (!wantA) { src = b; other = a; }
+            Tensor<E> dsrc #= Ewise.deviceLike<E>(src);
+            Loss.cosineBackward<E>(dsrc.deviceView("cosineSim.backward"), g.deviceView("cosineSim.backward"), src.deviceView("cosineSim.backward"),
+                other.deviceView("cosineSim.backward"), cache.deviceView("cosineSim.backward"), a.size() / d, d, (float32) eps, wantA);
+            return #dsrc;
+        }
         return StructKernels.cosineSimBack<E>(g, a, b, cache, eps, wantA);
     }
 

@@ -734,7 +734,8 @@ public final class GradTape<E extends Floating> {
         }
         if (op == Op.MAXPOOL2D) {
             Tensor<E> argmax = this.auxT.get(this.aux0[i]);
-            this.accum(a, Ops.maxPool2dBack<E>(g, va, argmax));
+            this.accum(a, Ops.maxPool2dBack<E>(g, va, argmax, this.getPay(i, 0),
+                                               this.getPay(i, 1), this.getPay(i, 2)));
             return;
         }
         if (op == Op.AVGPOOL2D) {

@@ -94,4 +94,74 @@ public final class BatchNorm {
             (uint32) n, (uint32) c, (uint32) hw, eps);
         s.sync();
     }
+
+    /** dgamma[ci] = sum g*xhat and dbeta[ci] = sum g over (n, hw): one workgroup per channel. */
+    @Kernel
+    public static void bnParamGrads<E>(KernelBuffer<E> dgamma, KernelBuffer<E> dbeta, KernelBuffer<E> g, KernelBuffer<E> xhat, uint32 n, uint32 c, uint32 hw) {
+        Shared<float32> pa = shared float32[256];
+        Shared<float32> pb = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 ci = Workgroup.x();
+        uint32 count = n * hw;
+        float32 sa = 0.0f;
+        float32 sb = 0.0f;
+        uint32 i = lane;
+        while (i < count) {
+            uint32 bn = i / hw;
+            uint32 idx = (bn * c + ci) * hw + (i - bn * hw);
+            float32 gv = (float32) g[idx];
+            sa = sa + gv * (float32) xhat[idx];
+            sb = sb + gv;
+            i = i + 256;
+        }
+        pa[lane] = sa;
+        pb[lane] = sb;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { pa[lane] = pa[lane] + pa[lane + s]; pb[lane] = pb[lane] + pb[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        if (lane == 0) { dgamma[ci] = (E) pa[0]; dbeta[ci] = (E) pb[0]; }
+    }
+
+    /** dx from g with the channel sums: training uses the full batch rule, eval g * gamma * invstd. */
+    @Kernel
+    public static void bnBackIn<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> xhat, KernelBuffer<E> gamma, KernelBuffer<E> invstd,
+                                 KernelBuffer<E> dgamma, KernelBuffer<E> dbeta, uint32 n, uint32 c, uint32 hw, int32 training) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * c * hw) {
+            uint32 ci = (t / hw) % c;
+            float32 gv = (float32) gamma[ci];
+            float32 iv = (float32) invstd[ci];
+            float32 dxh = (float32) g[t] * gv;
+            if (training == 0) {
+                dx[t] = (E) (dxh * iv);
+            } else {
+                float32 m = (float32) (n * hw);
+                float32 sumDx = gv * (float32) dbeta[ci];
+                float32 sumDxXh = gv * (float32) dgamma[ci];
+                dx[t] = (E) (iv / m * (m * dxh - sumDx - (float32) xhat[t] * sumDxXh));
+            }
+        }
+    }
+
+    /** Per-channel dgamma = sum g*xhat and dbeta = sum g; synced. */
+    public static void channelParamGrads<E>(KernelBuffer<E> dgamma, KernelBuffer<E> dbeta, KernelBuffer<E> g, KernelBuffer<E> xhat, int64 n, int64 c, int64 hw) {
+        KernelStream s #= KernelStream.current();
+        bnParamGrads.launch(s, grid: [(uint32) c], block: [256])(dgamma, dbeta, g, xhat, (uint32) n, (uint32) c, (uint32) hw);
+        s.sync();
+    }
+
+    /** The input VJP from g, the saved xhat and invstd and the channel sums; synced. */
+    public static void backwardInput<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> xhat, KernelBuffer<E> gamma, KernelBuffer<E> invstd,
+                                        KernelBuffer<E> dgamma, KernelBuffer<E> dbeta, int64 n, int64 c, int64 hw, boolean training) {
+        int32 tr = 0;
+        if (training) { tr = 1; }
+        uint32 total = (uint32) (n * c * hw);
+        KernelStream s #= KernelStream.current();
+        bnBackIn.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, xhat, gamma, invstd, dgamma, dbeta, (uint32) n, (uint32) c, (uint32) hw, tr);
+        s.sync();
+    }
 }

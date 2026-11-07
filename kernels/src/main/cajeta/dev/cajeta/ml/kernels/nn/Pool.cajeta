@@ -137,4 +137,129 @@ public final class Pool {
             (uint32) wd, (uint32) oh, (uint32) ow);
         s.sync();
     }
+
+    /** Max-pool VJP: one lane per input element summing the cotangents of the windows whose argmax is it. */
+    @Kernel
+    public static void maxBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> argmax,
+                                  uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oh, uint32 ow, int32 k, int32 stride, int32 pad) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * c * h * wd) {
+            uint32 iw = t % wd;
+            uint32 q = t / wd;
+            uint32 ih = q % h;
+            uint32 plane = q / h;
+            float32 acc = 0.0f;
+            int32 a = 0;
+            while (a < k) {
+                int32 yn = (int32) ih + pad - a;
+                if (yn >= 0 && yn - (yn / stride) * stride == 0 && yn / stride < (int32) oh) {
+                    uint32 y = (uint32) (yn / stride);
+                    int32 e = 0;
+                    while (e < k) {
+                        int32 xn = (int32) iw + pad - e;
+                        if (xn >= 0 && xn - (xn / stride) * stride == 0 && xn / stride < (int32) ow) {
+                            uint32 gi = (plane * oh + y) * ow + (uint32) (xn / stride);
+                            if ((uint32) ((float32) argmax[gi]) == t) { acc = acc + (float32) g[gi]; }
+                        }
+                        e = e + 1;
+                    }
+                }
+                a = a + 1;
+            }
+            dx[t] = (E) acc;
+        }
+    }
+
+    /** Average-pool VJP: each covering window hands the input g / (k*k). */
+    @Kernel
+    public static void avgBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g,
+                                  uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oh, uint32 ow, int32 k, int32 stride, int32 pad) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * c * h * wd) {
+            uint32 iw = t % wd;
+            uint32 q = t / wd;
+            uint32 ih = q % h;
+            uint32 plane = q / h;
+            float32 acc = 0.0f;
+            int32 a = 0;
+            while (a < k) {
+                int32 yn = (int32) ih + pad - a;
+                if (yn >= 0 && yn - (yn / stride) * stride == 0 && yn / stride < (int32) oh) {
+                    uint32 y = (uint32) (yn / stride);
+                    int32 e = 0;
+                    while (e < k) {
+                        int32 xn = (int32) iw + pad - e;
+                        if (xn >= 0 && xn - (xn / stride) * stride == 0 && xn / stride < (int32) ow) {
+                            acc = acc + (float32) g[(plane * oh + y) * ow + (uint32) (xn / stride)];
+                        }
+                        e = e + 1;
+                    }
+                }
+                a = a + 1;
+            }
+            dx[t] = (E) (acc / (float32) (k * k));
+        }
+    }
+
+    /** Adaptive-average VJP: each output window containing the input hands it g / area. */
+    @Kernel
+    public static void adaptiveBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g,
+                                       uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oh, uint32 ow) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * c * h * wd) {
+            uint32 iw = t % wd;
+            uint32 q = t / wd;
+            uint32 ih = q % h;
+            uint32 plane = q / h;
+            float32 acc = 0.0f;
+            uint32 y = 0;
+            while (y < oh) {
+                uint32 h0 = (y * h) / oh;
+                uint32 h1 = ((y + 1) * h + oh - 1) / oh;
+                if (ih >= h0 && ih < h1) {
+                    uint32 xx = 0;
+                    while (xx < ow) {
+                        uint32 w0 = (xx * wd) / ow;
+                        uint32 w1 = ((xx + 1) * wd + ow - 1) / ow;
+                        if (iw >= w0 && iw < w1) {
+                            acc = acc + (float32) g[(plane * oh + y) * ow + xx] / (float32) ((h1 - h0) * (w1 - w0));
+                        }
+                        xx = xx + 1;
+                    }
+                }
+                y = y + 1;
+            }
+            dx[t] = (E) acc;
+        }
+    }
+
+    /** The max-pool VJP into `dx` (n,c,h,wd) from `g` and the forward's `argmax`; synced. */
+    public static void maxBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> argmax,
+                                      int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow, int32 k, int32 stride, int32 pad) {
+        uint32 total = (uint32) (n * c * h * wd);
+        KernelStream s #= KernelStream.current();
+        maxBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, argmax, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oh, (uint32) ow, k, stride, pad);
+        s.sync();
+    }
+
+    /** The average-pool VJP; synced. */
+    public static void avgBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> g,
+                                      int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow, int32 k, int32 stride, int32 pad) {
+        uint32 total = (uint32) (n * c * h * wd);
+        KernelStream s #= KernelStream.current();
+        avgBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oh, (uint32) ow, k, stride, pad);
+        s.sync();
+    }
+
+    /** The adaptive-average VJP; synced. */
+    public static void adaptiveBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> g,
+                                           int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow) {
+        uint32 total = (uint32) (n * c * h * wd);
+        KernelStream s #= KernelStream.current();
+        adaptiveBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oh, (uint32) ow);
+        s.sync();
+    }
 }

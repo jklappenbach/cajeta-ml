@@ -89,4 +89,56 @@ public final class Loss {
         cosine.launch(s, grid: [(uint32) rows], block: [256])(out, cache, a, b, (uint32) d, eps);
         s.sync();
     }
+
+    /** dlogits = (probs - onehot(target)) * g[0] / rows, one lane per element. */
+    @Kernel
+    public static void nllBack<E>(KernelBuffer<E> dx, KernelBuffer<E> probs, KernelBuffer<E> targets, KernelBuffer<E> g, uint32 rows, uint32 cls) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < rows * cls) {
+            uint32 r = t / cls;
+            uint32 j = t - r * cls;
+            float32 v = (float32) probs[t];
+            if ((float32) j == (float32) targets[r]) { v = v - 1.0f; }
+            dx[t] = (E) (v * (float32) g[0] / (float32) rows);
+        }
+    }
+
+    /** d cos / d src = other / max(|a||b|, eps) - cos * src / max(|src|^2, eps), scaled by the row's g. */
+    @Kernel
+    public static void cosineBack<E>(KernelBuffer<E> dsrc, KernelBuffer<E> g, KernelBuffer<E> src, KernelBuffer<E> other, KernelBuffer<E> cache,
+                                     uint32 rows, uint32 d, float32 eps, int32 wantA) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < rows * d) {
+            uint32 r = t / d;
+            float32 na = (float32) cache[r * 3];
+            float32 nb = (float32) cache[r * 3 + 1];
+            float32 cos = (float32) cache[r * 3 + 2];
+            float32 ns = na;
+            if (wantA == 0) { ns = nb; }
+            float32 den = na * nb;
+            if (den < eps) { den = eps; }
+            float32 ns2 = ns * ns;
+            if (ns2 < eps) { ns2 = eps; }
+            dsrc[t] = (E) ((float32) g[r] * ((float32) other[t] / den - cos * (float32) src[t] / ns2));
+        }
+    }
+
+    /** The cross-entropy VJP over `rows` rows of `cls` classes from the scalar cotangent `g`; synced. */
+    public static void nllBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> probs, KernelBuffer<E> targets, KernelBuffer<E> g, int64 rows, int64 cls) {
+        uint32 total = (uint32) (rows * cls);
+        KernelStream s #= KernelStream.current();
+        nllBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, probs, targets, g, (uint32) rows, (uint32) cls);
+        s.sync();
+    }
+
+    /** The cosine VJP for `src` against `other` from the per-row cotangent `g` and the forward's cache; synced. */
+    public static void cosineBackward<E>(KernelBuffer<E> dsrc, KernelBuffer<E> g, KernelBuffer<E> src, KernelBuffer<E> other, KernelBuffer<E> cache,
+                                         int64 rows, int64 d, float32 eps, boolean wantA) {
+        int32 wa = 0;
+        if (wantA) { wa = 1; }
+        uint32 total = (uint32) (rows * d);
+        KernelStream s #= KernelStream.current();
+        cosineBack.launch(s, grid: [(total + 255) / 256], block: [256])(dsrc, g, src, other, cache, (uint32) rows, (uint32) d, eps, wa);
+        s.sync();
+    }
 }
