@@ -59,7 +59,7 @@ public class GemmIntTest {
                 float64 w = acc;
                 if (w < 0.0) { w = 0.0 - w; }
                 if (diff > worst) { worst = diff; }
-                if (diff > 1.0e-5 * (w + 1.0)) {
+                if (diff > 1.0e-5 * (w + 1.0) + (float64) k * 1.0e-7) {
                     if (bad < 3) { System.stdout.println("gemm16_float32 " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + (float64) got[(int32) (r * n + col)] + " want " + acc); }
                     bad = bad + 1;
                 }

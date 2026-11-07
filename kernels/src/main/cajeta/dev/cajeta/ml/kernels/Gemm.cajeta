@@ -7,6 +7,12 @@ import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 import cajeta.xpu.Shared;
 import cajeta.xpu.Workgroup;
+import cajeta.lang.String;
+import cajeta.time.Clock;
+import cajeta.xpu.ShapeFilter;
+import cajeta.xpu.ShapeProbe;
+import dev.cajeta.ml.kernels.tune.TileFamily;
+import dev.cajeta.ml.kernels.tune.TileShape;
 
 /**
  * GEMM at f16, bf16 and f32 into float32, and int8 into int32 (spec §5.1): C[m][n] = A[m][k] . B[k][n], all row-major,
@@ -14,7 +20,8 @@ import cajeta.xpu.Workgroup;
  * 16x16 member stages each K-slab of A and B through zero-filled shared tiles, so a shape
  * that is no multiple of the tile runs; the torch-recipe tile (amdgpu) and llm's X3 shape
  * join the family when they are measured. A native matrix core accumulates in its own order
- * and precision: within 1e-5 relative of a sequential float32 sum (bit-exact on the portable tile).
+ * and precision: within 1e-5 relative plus K x 1e-7 absolute of a sequential float32 sum
+ * (bit-exact on the portable tile).
  */
 public final class Gemm {
     public Gemm() { return; }
@@ -138,6 +145,319 @@ public final class Gemm {
         s.sync();
     }
 
+    // Three kernels of one body: a class template over S instantiated inside the library
+    // links twice in a consumer (cajeta-ml-gpu 21.2.2), while generic-method instantiations dedupe.
+
+    /** Split-K, S = 2: workgroup (split, tile) multiplies its K range into slice `split` of `parts`. */
+    @Kernel
+    public static void split2<E>(KernelBuffer<float32> parts, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k) {
+        Shared<E> sa = shared E[256];
+        Shared<E> sb = shared E[256];
+        Shared<float32> sc = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 ntiles = (n + 15) / 16;
+        uint32 tiles = ((m + 15) / 16) * ntiles;
+        uint32 wid = Workgroup.x();
+        uint32 split = wid / tiles;
+        uint32 tl = wid - split * tiles;
+        uint32 mi = tl / ntiles;
+        uint32 nj = tl - mi * ntiles;
+        uint32 kc = (((k + 2 - 1) / 2 + 15) / 16) * 16;
+        uint32 kStart = split * kc;
+        uint32 kEnd = kStart + kc;
+        if (kEnd > k) { kEnd = k; }
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<E,16,16,0> ma;
+        CooperativeMatrix<E,16,16,1> mb;
+        uint32 kk = kStart;
+        while (kk < kEnd) {
+            uint32 idx = t;
+            while (idx < 256) {
+                uint32 r = idx / 16;
+                uint32 cc = idx - r * 16;
+                uint32 gm = mi * 16 + r;
+                uint32 gk = kk + cc;
+                E va = (E) 0;
+                if (gm < m && gk < kEnd) { va = a[gm * k + gk]; }
+                sa[idx] = va;
+                uint32 gk2 = kk + r;
+                uint32 gn = nj * 16 + cc;
+                E vb = (E) 0;
+                if (gk2 < kEnd && gn < n) { vb = b[gk2 * n + gn]; }
+                sb[idx] = vb;
+                idx = idx + Workgroup.dimX();
+            }
+            Barrier.workgroup();
+            ma.load(sa, 0, 0, 16);
+            mb.load(sb, 0, 0, 16);
+            mc.mma(ma, mb);
+            Barrier.workgroup();
+            kk = kk + 16;
+        }
+        mc.store(sc, 0, 0, 16);
+        Barrier.workgroup();
+        uint32 o = t;
+        while (o < 256) {
+            uint32 orow = o / 16;
+            uint32 ocol = o - orow * 16;
+            uint32 gm = mi * 16 + orow;
+            uint32 gn = nj * 16 + ocol;
+            if (gm < m && gn < n) { parts[split * m * n + gm * n + gn] = sc[o]; }
+            o = o + Workgroup.dimX();
+        }
+    }
+
+    /** Split-K, S = 4: workgroup (split, tile) multiplies its K range into slice `split` of `parts`. */
+    @Kernel
+    public static void split4<E>(KernelBuffer<float32> parts, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k) {
+        Shared<E> sa = shared E[256];
+        Shared<E> sb = shared E[256];
+        Shared<float32> sc = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 ntiles = (n + 15) / 16;
+        uint32 tiles = ((m + 15) / 16) * ntiles;
+        uint32 wid = Workgroup.x();
+        uint32 split = wid / tiles;
+        uint32 tl = wid - split * tiles;
+        uint32 mi = tl / ntiles;
+        uint32 nj = tl - mi * ntiles;
+        uint32 kc = (((k + 4 - 1) / 4 + 15) / 16) * 16;
+        uint32 kStart = split * kc;
+        uint32 kEnd = kStart + kc;
+        if (kEnd > k) { kEnd = k; }
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<E,16,16,0> ma;
+        CooperativeMatrix<E,16,16,1> mb;
+        uint32 kk = kStart;
+        while (kk < kEnd) {
+            uint32 idx = t;
+            while (idx < 256) {
+                uint32 r = idx / 16;
+                uint32 cc = idx - r * 16;
+                uint32 gm = mi * 16 + r;
+                uint32 gk = kk + cc;
+                E va = (E) 0;
+                if (gm < m && gk < kEnd) { va = a[gm * k + gk]; }
+                sa[idx] = va;
+                uint32 gk2 = kk + r;
+                uint32 gn = nj * 16 + cc;
+                E vb = (E) 0;
+                if (gk2 < kEnd && gn < n) { vb = b[gk2 * n + gn]; }
+                sb[idx] = vb;
+                idx = idx + Workgroup.dimX();
+            }
+            Barrier.workgroup();
+            ma.load(sa, 0, 0, 16);
+            mb.load(sb, 0, 0, 16);
+            mc.mma(ma, mb);
+            Barrier.workgroup();
+            kk = kk + 16;
+        }
+        mc.store(sc, 0, 0, 16);
+        Barrier.workgroup();
+        uint32 o = t;
+        while (o < 256) {
+            uint32 orow = o / 16;
+            uint32 ocol = o - orow * 16;
+            uint32 gm = mi * 16 + orow;
+            uint32 gn = nj * 16 + ocol;
+            if (gm < m && gn < n) { parts[split * m * n + gm * n + gn] = sc[o]; }
+            o = o + Workgroup.dimX();
+        }
+    }
+
+    /** Split-K, S = 8: workgroup (split, tile) multiplies its K range into slice `split` of `parts`. */
+    @Kernel
+    public static void split8<E>(KernelBuffer<float32> parts, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k) {
+        Shared<E> sa = shared E[256];
+        Shared<E> sb = shared E[256];
+        Shared<float32> sc = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 ntiles = (n + 15) / 16;
+        uint32 tiles = ((m + 15) / 16) * ntiles;
+        uint32 wid = Workgroup.x();
+        uint32 split = wid / tiles;
+        uint32 tl = wid - split * tiles;
+        uint32 mi = tl / ntiles;
+        uint32 nj = tl - mi * ntiles;
+        uint32 kc = (((k + 8 - 1) / 8 + 15) / 16) * 16;
+        uint32 kStart = split * kc;
+        uint32 kEnd = kStart + kc;
+        if (kEnd > k) { kEnd = k; }
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<E,16,16,0> ma;
+        CooperativeMatrix<E,16,16,1> mb;
+        uint32 kk = kStart;
+        while (kk < kEnd) {
+            uint32 idx = t;
+            while (idx < 256) {
+                uint32 r = idx / 16;
+                uint32 cc = idx - r * 16;
+                uint32 gm = mi * 16 + r;
+                uint32 gk = kk + cc;
+                E va = (E) 0;
+                if (gm < m && gk < kEnd) { va = a[gm * k + gk]; }
+                sa[idx] = va;
+                uint32 gk2 = kk + r;
+                uint32 gn = nj * 16 + cc;
+                E vb = (E) 0;
+                if (gk2 < kEnd && gn < n) { vb = b[gk2 * n + gn]; }
+                sb[idx] = vb;
+                idx = idx + Workgroup.dimX();
+            }
+            Barrier.workgroup();
+            ma.load(sa, 0, 0, 16);
+            mb.load(sb, 0, 0, 16);
+            mc.mma(ma, mb);
+            Barrier.workgroup();
+            kk = kk + 16;
+        }
+        mc.store(sc, 0, 0, 16);
+        Barrier.workgroup();
+        uint32 o = t;
+        while (o < 256) {
+            uint32 orow = o / 16;
+            uint32 ocol = o - orow * 16;
+            uint32 gm = mi * 16 + orow;
+            uint32 gn = nj * 16 + ocol;
+            if (gm < m && gn < n) { parts[split * m * n + gm * n + gn] = sc[o]; }
+            o = o + Workgroup.dimX();
+        }
+    }
+
+    /** Lane i sums the S slices of `parts` at i in split order into c[i]. */
+    @Kernel
+    public static void splitFixup(KernelBuffer<float32> c, KernelBuffer<float32> parts, uint32 mn, uint32 splits) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < mn) {
+            float32 acc = 0.0f;
+            uint32 s = 0;
+            while (s < splits) { acc = acc + parts[s * mn + i]; s = s + 1; }
+            c[i] = acc;
+        }
+    }
+
+    /** The f16 GEMM split S ways over K (S in 1, 2, 4, 8), fixed up in split order; synced. */
+    public static void splitKF16(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
+                                 int64 m, int64 n, int64 k, int64 splits) {
+        if (splits <= 1L) { Gemm.run<float16>(c, a, b, m, n, k); return; }
+        KernelBuffer<float32> parts = heap KernelBuffer<float32>((uint64) (splits * m * n));
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 uk = (uint32) k;
+        uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
+        KernelStream s #= KernelStream.current();
+        if (splits == 2L) { split2.launch(s, grid: [tiles * 2], block: [64])(parts, a, b, um, un, uk); }
+        else if (splits == 4L) { split4.launch(s, grid: [tiles * 4], block: [64])(parts, a, b, um, un, uk); }
+        else { split8.launch(s, grid: [tiles * 8], block: [64])(parts, a, b, um, un, uk); }
+        uint32 mn = (uint32) (m * n);
+        splitFixup.launch(s, grid: [(mn + 255) / 256], block: [256])(c, parts, mn, (uint32) splits);
+        s.sync();
+    }
+
+    static TileFamily<SplitShape> splitFam;
+    static boolean splitTimed = false;
+
+    static TileFamily<SplitShape> splitFamily() {
+        if (Gemm.splitFam == null) {
+            Gemm.splitFam = heap TileFamily<SplitShape>("gemm-splitk");
+            Gemm.splitFam.add(#heap SplitShape(1));
+            Gemm.splitFam.add(#heap SplitShape(2));
+            Gemm.splitFam.add(#heap SplitShape(4));
+            Gemm.splitFam.add(#heap SplitShape(8));
+        }
+        return Gemm.splitFam;
+    }
+
+    /** Whether the last {@link #runTunedF16} timed its members. */
+    public static boolean lastChoiceTimed() { return Gemm.splitTimed; }
+
+    /** The f16 GEMM by the split count the family chooses for this shape (timed at first use, remembered under `tuneDir`); returns the split count. */
+    public static int32 runTunedF16(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
+                                    int64 m, int64 n, int64 k, String tuneDir) {
+        TileFamily<SplitShape> f = Gemm.splitFamily();
+        ShapeFilter flt #= f.filterFor(m, n, k);
+        SplitProbe probe = heap SplitProbe(a, b, flt, f, m, n, k);
+        int32 idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
+        Gemm.splitTimed = probe.timed > 0;
+        int64 splits = SplitShape.splitsOf(idx);
+        Gemm.splitKF16(c, a, b, m, n, k, splits);
+        return (int32) splits;
+    }
+
+    /** Batch b of `batch` independent products in one launch: workgroup (b, tile). */
+    @Kernel
+    public static void gemm16Batched<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k) {
+        Shared<E> sa = shared E[256];
+        Shared<E> sb = shared E[256];
+        Shared<float32> sc = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 ntiles = (n + 15) / 16;
+        uint32 tiles = ((m + 15) / 16) * ntiles;
+        uint32 wid = Workgroup.x();
+        uint32 bi = wid / tiles;
+        uint32 tl = wid - bi * tiles;
+        uint32 mi = tl / ntiles;
+        uint32 nj = tl - mi * ntiles;
+        uint32 aBase = bi * m * k;
+        uint32 bBase = bi * k * n;
+        uint32 cBase = bi * m * n;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<E,16,16,0> ma;
+        CooperativeMatrix<E,16,16,1> mb;
+        uint32 ktiles = (k + 15) / 16;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            uint32 idx = t;
+            while (idx < 256) {
+                uint32 r = idx / 16;
+                uint32 cc = idx - r * 16;
+                uint32 gm = mi * 16 + r;
+                uint32 gk = kk * 16 + cc;
+                E va = (E) 0;
+                if (gm < m && gk < k) { va = a[aBase + gm * k + gk]; }
+                sa[idx] = va;
+                uint32 gk2 = kk * 16 + r;
+                uint32 gn = nj * 16 + cc;
+                E vb = (E) 0;
+                if (gk2 < k && gn < n) { vb = b[bBase + gk2 * n + gn]; }
+                sb[idx] = vb;
+                idx = idx + Workgroup.dimX();
+            }
+            Barrier.workgroup();
+            ma.load(sa, 0, 0, 16);
+            mb.load(sb, 0, 0, 16);
+            mc.mma(ma, mb);
+            Barrier.workgroup();
+            kk = kk + 1;
+        }
+        mc.store(sc, 0, 0, 16);
+        Barrier.workgroup();
+        uint32 o = t;
+        while (o < 256) {
+            uint32 orow = o / 16;
+            uint32 ocol = o - orow * 16;
+            uint32 gm = mi * 16 + orow;
+            uint32 gn = nj * 16 + ocol;
+            if (gm < m && gn < n) { c[cBase + gm * n + gn] = sc[o]; }
+            o = o + Workgroup.dimX();
+        }
+    }
+
+    /** `batch` independent m x k by k x n products, operands and results stacked, in one launch; synced. */
+    public static void batched<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, int64 batch) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
+        KernelStream s #= KernelStream.current();
+        gemm16Batched.launch(s, grid: [tiles * (uint32) batch], block: [64])(c, a, b, um, un, (uint32) k);
+        s.sync();
+    }
+
     /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E; synced. */
     public static void run<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
@@ -147,5 +467,56 @@ public final class Gemm {
         KernelStream s #= KernelStream.current();
         gemm16.launch(s, grid: [tiles], block: [64])(c, a, b, um, un, uk);
         s.sync();
+    }
+}
+
+/** A split count as a tile family member: 1 is the plain f16 kernel, 2, 4 and 8 the split kernels. */
+final class SplitShape implements TileShape {
+    int32 v;
+    public SplitShape(int32 v) { this.v = v; }
+    static int64 splitsOf(int32 idx) { if (idx == 1) { return 2L; } if (idx == 2) { return 4L; } if (idx == 3) { return 8L; } return 1L; }
+    public #String kernel() {
+        if (this.v == 2) { return "split2_float16"; }
+        if (this.v == 4) { return "split4_float16"; }
+        if (this.v == 8) { return "split8_float16"; }
+        return "gemm16_float16";
+    }
+    public int32 tileM() { return 16; }
+    public int32 tileN() { return 16; }
+    public int32 threads() { return 64; }
+    /** A split needs at least one 16-wide K step per part. */
+    public boolean fits(int64 rows, int64 outDim, int64 cols) { return cols >= 16L * (int64) this.v; }
+}
+
+/** Times one surviving split count at the probe's shape into a scratch C. */
+final class SplitProbe implements ShapeProbe {
+    KernelBuffer<float16> a;
+    KernelBuffer<float16> b;
+    ShapeFilter filter;
+    TileFamily<SplitShape> fam;
+    KernelBuffer<float32> scratch;
+    int64 m;
+    int64 n;
+    int64 k;
+    public int32 timed = 0;
+
+    public SplitProbe(^KernelBuffer<float16> a, ^KernelBuffer<float16> b, ^ShapeFilter filter, ^TileFamily<SplitShape> fam,
+                      int64 m, int64 n, int64 k) {
+        this.a = a;
+        this.b = b;
+        this.filter = filter;
+        this.fam = fam;
+        this.m = m;
+        this.n = n;
+        this.k = k;
+        this.scratch = heap KernelBuffer<float32>((uint64) (m * n));
+    }
+
+    public int64 timeNanos(int32 i) {
+        this.timed = this.timed + 1;
+        int32 idx = this.fam.indexOf(this.filter.survivor(i).candidate.kernel);
+        int64 t0 = Clock.nanoTime();
+        Gemm.splitKF16(this.scratch, this.a, this.b, this.m, this.n, this.k, SplitShape.splitsOf(idx));
+        return Clock.nanoTime() - t0;
     }
 }

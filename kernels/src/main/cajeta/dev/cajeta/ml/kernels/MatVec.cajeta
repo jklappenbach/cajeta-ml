@@ -1,0 +1,35 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.GroupOp;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+
+/** Mat-vec for decode (spec §5.2): y[r] = W[r][.] . x, one workgroup per row, lanes striding the columns, accumulated in float32. llm's router mat-vec core. */
+public final class MatVec {
+    public MatVec() { return; }
+
+    @Kernel
+    public static void matvec<E>(KernelBuffer<float32> y, KernelBuffer<E> w, KernelBuffer<E> x, uint32 rows, uint32 cols) {
+        uint32 lane = KernelThread.x();
+        uint32 r = Workgroup.x();
+        float32 acc = 0.0f;
+        if (r < rows) {
+            uint32 j = lane;
+            while (j < cols) {
+                acc = acc + (float32) w[r * cols + j] * (float32) x[j];
+                j = j + 256;
+            }
+        }
+        float32 tot = Workgroup.reduce(GroupOp.Add, acc);
+        if (lane == 0 && r < rows) { y[r] = tot; }
+    }
+
+    /** `y` (rows, float32) = `w` (rows x cols) . `x` (cols) at E; synced. */
+    public static void run<E>(KernelBuffer<float32> y, KernelBuffer<E> w, KernelBuffer<E> x, int64 rows, int64 cols) {
+        KernelStream s #= KernelStream.current();
+        matvec.launch(s, grid: [(uint32) rows], block: [256])(y, w, x, (uint32) rows, (uint32) cols);
+        s.sync();
+    }
+}

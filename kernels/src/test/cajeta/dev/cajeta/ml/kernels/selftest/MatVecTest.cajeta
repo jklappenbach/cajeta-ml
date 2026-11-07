@@ -1,0 +1,201 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.io.file.Path;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.MatVec;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+import dev.cajeta.ml.kernels.tune.TuneMode;
+
+/**
+ * cajeta-ml-gpu 21.1.1 (spec §5.2, §5.3, §5.6): mat-vec at decode shapes for f16 and f32;
+ * split-K chosen by measurement on a long-K shape; a batch of eight GEMMs in one launch.
+ */
+public class MatVecTest {
+    public MatVecTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) ((((i * 7919L) % 251L) - 125L) % 5L) * 0.5f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 21.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 21.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** Within the documented tolerance of the host's float64 value: 1e-5 relative plus K x 1e-7 absolute (the native matrix cores' own accumulation). */
+    static boolean close(float32 got, float64 want, int64 k) {
+        float64 d = (float64) got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        boolean ok = d <= 1.0e-5 * (w + 1.0) + (float64) k * 1.0e-7;
+        if (!ok) { System.stdout.println("  k=" + k + ": got " + (float64) got + " want " + want); }
+        return ok;
+    }
+
+    static void matVecCase<E>(String kernel, int64 rows, int64 cols) {
+        E[] hw = heap E[rows * cols];
+        E[] hx = heap E[cols];
+        float32[] fw = heap float32[rows * cols];
+        float32[] fx = heap float32[cols];
+        int64 i = 0L;
+        while (i < rows * cols) { fw[(int32) i] = MatVecTest.pattern(i); hw[(int32) i] = (E) fw[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < cols) { fx[(int32) i] = MatVecTest.pattern(i + 31L); hx[(int32) i] = (E) fx[(int32) i]; i = i + 1L; }
+        KernelBuffer<E> w = heap KernelBuffer<E>((uint64) (rows * cols));
+        KernelBuffer<E> x = heap KernelBuffer<E>((uint64) cols);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(hw);
+        x.upload(hx);
+        int64[] m #= ValueCheck.mark();
+        MatVec.run<E>(y, w, x, rows, cols);
+        float32[] got = heap float32[rows];
+        y.download(got);
+        int64 r = 0L;
+        int32 bad = 0;
+        while (r < rows) {
+            float64 acc = 0.0;
+            int64 c = 0L;
+            while (c < cols) { acc = acc + (float64) fw[(int32) (r * cols + c)] * (float64) fx[(int32) c]; c = c + 1L; }
+            if (!MatVecTest.close(got[(int32) r], acc, cols)) {
+                if (bad < 3) { System.stdout.println(kernel + " " + rows + "x" + cols + ": [" + r + "] got " + (float64) got[(int32) r] + " want " + acc); }
+                bad = bad + 1;
+            }
+            r = r + 1L;
+        }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void matVecAtDecodeShapesMatchesTheHost() {
+        if (MatVecTest.usable("matvec_float16")) {
+            MatVecTest.matVecCase<float16>("matvec_float16", 4096L, 4096L);
+            MatVecTest.matVecCase<float16>("matvec_float16", 1000L, 14336L);
+            MatVecTest.matVecCase<float16>("matvec_float16", 1L, 1L);
+            MatVecTest.matVecCase<float16>("matvec_float16", 37L, 777L);
+        }
+        if (MatVecTest.usable("matvec_float32")) {
+            MatVecTest.matVecCase<float32>("matvec_float32", 4096L, 4096L);
+            MatVecTest.matVecCase<float32>("matvec_float32", 37L, 777L);
+        }
+    }
+
+    /** Fills a and b for an m x k by k x n product and returns the host's C in float64. */
+    static #float64[] hostGemm(float32[] fa, float32[] fb, int64 m, int64 n, int64 k) {
+        float64[] want = heap float64[m * n];
+        int64 r = 0L;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                want[(int32) (r * n + col)] = acc;
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        return #want;
+    }
+
+    @Test
+    public void splitKIsChosenByMeasurementOnALongKShape() {
+        if (!MatVecTest.usable("split2_float16") || !MatVecTest.usable("splitFixup")) { return; }
+        int64 m = 16L;
+        int64 n = 32L;
+        int64 k = 14336L;
+        float16[] ha = heap float16[m * k];
+        float16[] hb = heap float16[k * n];
+        float32[] fa = heap float32[m * k];
+        float32[] fb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < m * k) { fa[(int32) i] = MatVecTest.pattern(i); ha[(int32) i] = (float16) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = MatVecTest.pattern(i + 17L); hb[(int32) i] = (float16) fb[(int32) i]; i = i + 1L; }
+        float64[] want #= MatVecTest.hostGemm(fa, fb, m, n, k);
+        KernelBuffer<float16> a = heap KernelBuffer<float16>((uint64) (m * k));
+        KernelBuffer<float16> b = heap KernelBuffer<float16>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        String store #= "build/tune-test-" + Clock.nanoTime();
+        Path dir #= Path.of(store);
+        dir.mkdirs();
+        TuneMode.setUntimed(false);
+        int64[] mk #= ValueCheck.mark();
+        // every split count, by name
+        int32 s = 1;
+        while (s <= 8) {
+            Gemm.splitKF16(c, a, b, m, n, k, (int64) s);
+            float32[] got = heap float32[m * n];
+            c.download(got);
+            i = 0L;
+            while (i < m * n) { Assert.isTrue(MatVecTest.close(got[(int32) i], want[(int32) i], k)); i = i + 1L; }
+            s = s * 2;
+        }
+        // the family's measured choice, remembered
+        int32 chosen = Gemm.runTunedF16(c, a, b, m, n, k, store);
+        Assert.isTrue(chosen >= 1);
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        i = 0L;
+        while (i < m * n) { Assert.isTrue(MatVecTest.close(got[(int32) i], want[(int32) i], k)); i = i + 1L; }
+        int32 again = Gemm.runTunedF16(c, a, b, m, n, k, store);
+        Assert.equals((int64) chosen, (int64) again);
+        Assert.isTrue(Gemm.lastChoiceTimed() == false);
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void aBatchOfEightGemmsRunsInOneLaunch() {
+        if (!MatVecTest.usable("gemm16Batched_float16")) { return; }
+        int64 batch = 8L;
+        int64 m = 33L;
+        int64 n = 65L;
+        int64 k = 129L;
+        float16[] ha = heap float16[batch * m * k];
+        float16[] hb = heap float16[batch * k * n];
+        float32[] fa = heap float32[batch * m * k];
+        float32[] fb = heap float32[batch * k * n];
+        int64 i = 0L;
+        while (i < batch * m * k) { fa[(int32) i] = MatVecTest.pattern(i); ha[(int32) i] = (float16) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < batch * k * n) { fb[(int32) i] = MatVecTest.pattern(i + 17L); hb[(int32) i] = (float16) fb[(int32) i]; i = i + 1L; }
+        KernelBuffer<float16> a = heap KernelBuffer<float16>((uint64) (batch * m * k));
+        KernelBuffer<float16> b = heap KernelBuffer<float16>((uint64) (batch * k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (batch * m * n));
+        a.upload(ha);
+        b.upload(hb);
+        int64 launches = Device.kernelLaunchCount("gemm16Batched_float16");
+        int64[] mk #= ValueCheck.mark();
+        Gemm.batched<float16>(c, a, b, m, n, k, batch);
+        Assert.equals(launches + 1L, Device.kernelLaunchCount("gemm16Batched_float16"));
+        float32[] got = heap float32[batch * m * n];
+        c.download(got);
+        int64 bi = 0L;
+        while (bi < batch) {
+            float32[] sa = heap float32[m * k];
+            float32[] sb = heap float32[k * n];
+            i = 0L;
+            while (i < m * k) { sa[(int32) i] = fa[(int32) (bi * m * k + i)]; i = i + 1L; }
+            i = 0L;
+            while (i < k * n) { sb[(int32) i] = fb[(int32) (bi * k * n + i)]; i = i + 1L; }
+            float64[] want #= MatVecTest.hostGemm(sa, sb, m, n, k);
+            i = 0L;
+            while (i < m * n) { Assert.isTrue(MatVecTest.close(got[(int32) (bi * m * n + i)], want[(int32) i], k)); i = i + 1L; }
+            bi = bi + 1L;
+        }
+        ValueCheck.credit(mk);
+    }
+}
