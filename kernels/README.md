@@ -17,8 +17,8 @@ cajeta-xgboost are its first consumers.
   `Partition` (stable, segmented, by a predicate; spec §4.6), `Bucketize` (the
   upper-bound bucket against sorted edges; §4.7), `Gather` and `Scatter`
   (scatter-add included; §4.8), `RadixSort` (stable key and key-value sorts over
-  int32 and float32 keys; §4.9), `Gemm` (f16 and bf16 GEMM with float32 output
-  through the matrix cores, any shape; §5.1), `Scale<TM>` (a tile family member), `gemm/DecodedGemm<D>` (a
+  int32 and float32 keys; §4.9), `Gemm` (f16, bf16 and f32 GEMM into float32 and int8
+  into int32 through the matrix cores, any shape; §5.1), `Scale<TM>` (a tile family member), `gemm/DecodedGemm<D>` (a
   consumer-supplied decode step inside the tile skeleton).
 - `dev.cajeta.ml.kernels.testing` — what a consumer's suite needs to account
   for every kernel it registers: `ValueCheck` (a launch is not a check),

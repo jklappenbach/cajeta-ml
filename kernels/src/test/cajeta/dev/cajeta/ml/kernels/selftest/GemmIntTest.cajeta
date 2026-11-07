@@ -1,0 +1,130 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 20.1.1 (spec §5.1): f32 GEMM against the host within the documented
+ * tolerance (bit-exact on the portable tile), and int8 GEMM into int32 exactly, at square
+ * and LLM shapes, shapes that are no multiple of the tile included.
+ */
+public class GemmIntTest {
+    public GemmIntTest() { return; }
+
+    static int64 pattern(int64 i) {
+        return (((i * 7919L) % 251L) - 125L) % 5L;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 20.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 20.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    static void f32Case(int64 m, int64 n, int64 k) {
+        float32[] fa = heap float32[m * k];
+        float32[] fb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < m * k) { fa[(int32) i] = (float32) GemmIntTest.pattern(i) * 0.5f; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = (float32) GemmIntTest.pattern(i + 17L) * 0.5f; i = i + 1L; }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>((uint64) (m * k));
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(fa);
+        b.upload(fb);
+        int64[] mk #= ValueCheck.mark();
+        Gemm.run<float32>(c, a, b, m, n, k);
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        int64 r = 0L;
+        int32 bad = 0;
+        float64 worst = 0.0;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 diff = (float64) got[(int32) (r * n + col)] - acc;
+                if (diff < 0.0) { diff = 0.0 - diff; }
+                float64 w = acc;
+                if (w < 0.0) { w = 0.0 - w; }
+                if (diff > worst) { worst = diff; }
+                if (diff > 1.0e-5 * (w + 1.0)) {
+                    if (bad < 3) { System.stdout.println("gemm16_float32 " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + (float64) got[(int32) (r * n + col)] + " want " + acc); }
+                    bad = bad + 1;
+                }
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        if (worst > 0.0) { System.stdout.println("  gemm16_float32 " + m + "x" + n + "x" + k + ": largest difference " + worst); }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void f32GemmMatchesTheHost() {
+        if (!GemmIntTest.usable("gemm16_float32")) { return; }
+        GemmIntTest.f32Case(16L, 16L, 16L);
+        GemmIntTest.f32Case(100L, 100L, 100L);
+        GemmIntTest.f32Case(257L, 33L, 129L);
+        GemmIntTest.f32Case(7L, 1000L, 2049L);
+        GemmIntTest.f32Case(4L, 256L, 14336L);
+    }
+
+    static void i8Case(int64 m, int64 n, int64 k) {
+        int8[] ha = heap int8[m * k];
+        int8[] hb = heap int8[k * n];
+        int64 i = 0L;
+        while (i < m * k) { ha[(int32) i] = (int8) (GemmIntTest.pattern(i) * 25L); i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { hb[(int32) i] = (int8) (GemmIntTest.pattern(i + 17L) * 31L); i = i + 1L; }
+        KernelBuffer<int8> a = heap KernelBuffer<int8>((uint64) (m * k));
+        KernelBuffer<int8> b = heap KernelBuffer<int8>((uint64) (k * n));
+        KernelBuffer<int32> c = heap KernelBuffer<int32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        int64[] mk #= ValueCheck.mark();
+        Gemm.runI8(c, a, b, m, n, k);
+        int32[] got = heap int32[m * n];
+        c.download(got);
+        int64 r = 0L;
+        int32 bad = 0;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                int64 acc = 0L;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (int64) ha[(int32) (r * k + d)] * (int64) hb[(int32) (d * n + col)]; d = d + 1L; }
+                if ((int64) got[(int32) (r * n + col)] != acc) {
+                    if (bad < 3) { System.stdout.println("gemm16I8 " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + got[(int32) (r * n + col)] + " want " + acc); }
+                    bad = bad + 1;
+                }
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void int8GemmIntoInt32IsExact() {
+        if (!GemmIntTest.usable("gemm16I8")) { return; }
+        GemmIntTest.i8Case(16L, 16L, 16L);
+        GemmIntTest.i8Case(100L, 100L, 100L);
+        GemmIntTest.i8Case(257L, 33L, 129L);
+        GemmIntTest.i8Case(7L, 1000L, 2049L);
+        GemmIntTest.i8Case(4L, 256L, 14336L);
+    }
+}
