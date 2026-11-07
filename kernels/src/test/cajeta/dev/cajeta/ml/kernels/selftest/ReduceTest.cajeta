@@ -147,6 +147,66 @@ public class ReduceTest {
         }
     }
 
+    /** out[o][i] = op over in[o][j][i] on a 3 x 7 x 5 buffer, each axis in turn, against the host in float64. */
+    @Test
+    public void axisReductionsMatchTheHost() {
+        if (!ReduceTest.usable("axis_float32")) { return; }
+        int64 n = 105L;
+        float32[] src = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = ReduceTest.pattern(i); i = i + 1L; }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        in.upload(src);
+        int64[] dims = [3L, 7L, 5L];
+        int32 ax = 0;
+        while (ax < 3) {
+            int64 outer = 1L;
+            int64 inner = 1L;
+            int32 d = 0;
+            while (d < 3) { if (d < ax) { outer = outer * dims[d]; } if (d > ax) { inner = inner * dims[d]; } d = d + 1; }
+            int64 axisLen = dims[ax];
+            KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (outer * inner));
+            int32 op = 0;
+            while (op < 5) {
+                int64[] m #= ValueCheck.mark();
+                Reduce.alongAxis<float32>(out, in, outer, axisLen, inner, op);
+                float32[] got = heap float32[outer * inner];
+                out.download(got);
+                int64 o = 0L;
+                while (o < outer) {
+                    int64 ii = 0L;
+                    while (ii < inner) {
+                        float64 acc = 0.0;
+                        int64 j = 0L;
+                        while (j < axisLen) {
+                            float64 x = (float64) src[(int32) ((o * axisLen + j) * inner + ii)];
+                            if (op == Reduce.SUM || op == Reduce.MEAN) { acc = acc + x; }
+                            if (op == Reduce.SUMSQ) { acc = acc + x * x; }
+                            if (op == Reduce.MIN && (j == 0L || x < acc)) { acc = x; }
+                            if (op == Reduce.MAX && (j == 0L || x > acc)) { acc = x; }
+                            j = j + 1L;
+                        }
+                        if (op == Reduce.MEAN) { acc = acc / (float64) axisLen; }
+                        float32 g = got[(int32) (o * inner + ii)];
+                        float64 df = (float64) g - acc;
+                        if (df < 0.0) { df = 0.0 - df; }
+                        float64 w = acc;
+                        if (w < 0.0) { w = 0.0 - w; }
+                        if (df > 1.0e-5 * (w + 1.0)) {
+                            System.stdout.println("axis " + ax + " op " + op + " [" + o + "," + ii + "] got " + (float64) g + " want " + acc);
+                            Assert.isTrue(false);
+                        }
+                        ii = ii + 1L;
+                    }
+                    o = o + 1L;
+                }
+                ValueCheck.credit(m);
+                op = op + 1;
+            }
+            ax = ax + 1;
+        }
+    }
+
     /** The sorted compensated (Neumaier) float64 sum of `v[0..n)`, rounded once to float32. */
     static float32 sortedCompensated(float32[] v, int64 n) {
         float32[] a = heap float32[n];

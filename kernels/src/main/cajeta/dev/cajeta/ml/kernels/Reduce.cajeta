@@ -9,7 +9,7 @@ import cajeta.xpu.Workgroup;
 /**
  * Reductions (spec §4.2): sum, min, max and sum of squares over a whole buffer or
  * equal-length segments, as a two-kernel tree whose order never varies, so a result
- * repeats bit for bit; and an exact sum in sign-split 320-bit fixed point, order-free
+ * repeats bit for bit; a reduction along one axis of a tensor at E; and an exact sum in sign-split 320-bit fixed point, order-free
  * by construction, rounded once to float32 (xgboost's clipWords, generalised).
  */
 public final class Reduce {
@@ -19,6 +19,7 @@ public final class Reduce {
     public static final int32 MIN = 1;
     public static final int32 MAX = 2;
     public static final int32 SUMSQ = 3;
+    public static final int32 MEAN = 4;
 
     @Device
     static float32 identity(int32 op) {
@@ -75,6 +76,41 @@ public final class Reduce {
             }
             out[s] = acc;
         }
+    }
+
+    /**
+     * Reduction along one axis of a row-major tensor viewed as (outer, axisLen, inner):
+     * out[o][i] = op over in[o][j][i], one lane per output element folding in j order,
+     * so it matches a sequential float32 sum. `op` adds MEAN (4): the sum over axisLen.
+     */
+    @Kernel
+    public static void axis<E>(KernelBuffer<E> out, KernelBuffer<E> in, uint32 outer, uint32 axisLen, uint32 inner, int32 op) {
+        uint32 t = KernelThread.globalIdX();
+        uint32 total = outer * inner;
+        if (t < total) {
+            uint32 o = t / inner;
+            uint32 i = t - o * inner;
+            int32 k = op;
+            if (k == 4) { k = 0; }
+            float32 acc = Reduce.identity(k);
+            uint32 j = 0;
+            while (j < axisLen) {
+                float32 v = (float32) in[(o * axisLen + j) * inner + i];
+                if (k == 3) { v = v * v; }
+                acc = Reduce.combine(k, acc, v);
+                j = j + 1;
+            }
+            if (op == 4) { acc = acc / (float32) axisLen; }
+            out[t] = (E) acc;
+        }
+    }
+
+    /** `out` (outer x inner) = `op` along the middle axis of `in` (outer x axisLen x inner), at E; synced. */
+    public static void alongAxis<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 outer, int64 axisLen, int64 inner, int32 op) {
+        uint32 total = (uint32) (outer * inner);
+        KernelStream s #= KernelStream.current();
+        axis.launch(s, grid: [(total + 255) / 256], block: [256])(out, in, (uint32) outer, (uint32) axisLen, (uint32) inner, op);
+        s.sync();
     }
 
     /** Chunks per segment: one block of 256 lanes per 4096 elements, 1 to 64. */

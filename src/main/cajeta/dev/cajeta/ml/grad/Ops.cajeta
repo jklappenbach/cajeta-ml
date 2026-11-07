@@ -6,8 +6,10 @@ import cajeta.math.Tensor;
 import cajeta.math.stats.Stats;
 import cajeta.xpu.KernelBuffer;
 import dev.cajeta.ml.MlException;
+import dev.cajeta.ml.kernels.Convert;
 import dev.cajeta.ml.kernels.Elementwise;
 import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.Reduce;
 import dev.cajeta.ml.kernels.nn.Act;
 import dev.cajeta.ml.kernels.nn.Norm;
 
@@ -36,14 +38,15 @@ public final class Ops {
         return op > Op.LEAF && op < Op.COUNT;
     }
 
-    /** True when a GPU kernel exists for `op`: the elementwise, row and
-     *  binary group (cajeta-ml-gpu 27.1.1) so far. */
+    /** True when a GPU kernel exists for `op`: the elementwise, row, binary
+     *  and reduction groups (cajeta-ml-gpu 27.1.1) so far. */
     public static boolean hasGpu(int32 op) {
         return op == Op.RELU || op == Op.NEG || op == Op.EXP || op == Op.LOG
             || op == Op.SQRT || op == Op.TANH || op == Op.SIGMOID || op == Op.GELU
             || op == Op.SOFTMAX || op == Op.LOGSOFTMAX || op == Op.POWS
             || op == Op.ROWNORM || op == Op.ADD || op == Op.SUB || op == Op.MUL
-            || op == Op.DIV || op == Op.MATMUL;
+            || op == Op.DIV || op == Op.MATMUL || op == Op.SUM || op == Op.MEAN
+            || op == Op.SUMAXIS || op == Op.MEANAXIS || op == Op.MAXAXIS;
     }
 
     static void requireCpu<E extends Floating>(String opName, Tensor<E> t) {
@@ -76,7 +79,7 @@ public final class Ops {
                                                       int32 axis, E c) {
         if (a.isOnGpu()) {
             if (!Ops.hasGpu(op)) { Ops.requireCpu<E>(Ops.name(op), a); }
-            return Ops.run1Gpu<E>(op, a, c);
+            return Ops.run1Gpu<E>(op, a, axis, c);
         }
         if (op == Op.RELU)       { return Tensor.relu<E>(a); }
         if (op == Op.NEG)        { return Tensor.neg<E>(a); }
@@ -101,9 +104,16 @@ public final class Ops {
     }
 
     /** The unary GPU column: `out` is allocated on the device, with no host mirror. */
-    static #Tensor<E> run1Gpu<E extends Floating>(int32 op, Tensor<E> a, E c) {
+    static #Tensor<E> run1Gpu<E extends Floating>(int32 op, Tensor<E> a, int32 axis, E c) {
         String name #= Ops.name(op);
         Ops.requireF32<E>(name);
+        if (op == Op.SUM || op == Op.MEAN) { return Ops.reduceAllGpu<E>(name, a, op == Op.MEAN); }
+        if (op == Op.SUMAXIS || op == Op.MEANAXIS || op == Op.MAXAXIS) {
+            int32 rop = Reduce.SUM;
+            if (op == Op.MEANAXIS) { rop = Reduce.MEAN; }
+            if (op == Op.MAXAXIS) { rop = Reduce.MAX; }
+            return Ops.reduceAxisGpu<E>(name, a, axis, rop);
+        }
         Tensor<E> out #= Ewise.deviceLike<E>(a);
         KernelBuffer<E> xo = out.deviceView(name);
         KernelBuffer<E> xi = a.deviceView(name);
@@ -122,6 +132,40 @@ public final class Ops {
         if (op == Op.LOGSOFTMAX) { Act.logSoftmaxRows<E>(xo, xi, n / cols, cols); return #out; }
         if (op == Op.ROWNORM)    { Norm.l2rows<E>(xo, xi, n / cols, cols, 0.00000001f); return #out; }
         throw heap MlException("ml.grad: '" + name + "' has no GPU kernel");
+    }
+
+    /** Whole-tensor sum or mean on the device: the float32 tree, converted to E into a [1] tensor. */
+    static #Tensor<E> reduceAllGpu<E extends Floating>(String name, Tensor<E> a, boolean mean) {
+        int64 n = a.size();
+        int64[] sh = [1];
+        Tensor<E> out #= Ewise.deviceOf<E>(sh);
+        KernelBuffer<float32> f = heap KernelBuffer<float32>(1);
+        Reduce.segments<E>(f, a.deviceView(name), n, 1L, Reduce.SUM);
+        Convert.into<float32, E>(out.deviceView(name), f, 1L);
+        if (mean) { Elementwise.map<E>(out.deviceView(name), out.deviceView(name), 1L, Elementwise.SCALE, 1.0f / (float32) n); }
+        return #out;
+    }
+
+    /** Reduction along `axis` with keepdims, as (outer, axisLen, inner) through `Reduce.axis`. */
+    static #Tensor<E> reduceAxisGpu<E extends Floating>(String name, Tensor<E> a, int32 axis, int32 rop) {
+        int32 nd = a.ndim();
+        int32 ax = axis;
+        if (ax < 0) { ax = ax + nd; }
+        int64[] sh = heap int64[nd];
+        int64 outer = 1;
+        int64 inner = 1;
+        int32 d = 0;
+        while (d < nd) {
+            sh[d] = a.shapeAt(d);
+            if (d < ax) { outer = outer * sh[d]; }
+            if (d > ax) { inner = inner * sh[d]; }
+            d = d + 1;
+        }
+        int64 axisLen = sh[ax];
+        sh[ax] = 1;
+        Tensor<E> out #= Ewise.deviceOf<E>(sh);
+        Reduce.alongAxis<E>(out.deviceView(name), a.deviceView(name), outer, axisLen, inner, rop);
+        return #out;
     }
 
     /** The binary GPU column. The arithmetic rides Tensor's own device routing. */
