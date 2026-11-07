@@ -332,7 +332,7 @@ public final class GradTape<E extends Floating> {
         int64 oh = StructKernels.outExtent(xv.shapeAt(2), k, stride, pad);
         int64 ow = StructKernels.outExtent(xv.shapeAt(3), k, stride, pad);
         int64[] osh #= StructKernels.shape4(xv.shapeAt(0), xv.shapeAt(1), oh, ow);
-        Tensor<E> argmax #= Tensor.zeros<E>(osh);
+        Tensor<E> argmax #= Ops.zerosOn<E>(osh, xv);
         Tensor<E> v #= Ops.maxPool2d<E>(xv, k, stride, pad, argmax);
         GradTensor t = this.push(Op.MAXPOOL2D, x.idx, -1, 0, 0.0, #v);
         this.setPay(t.idx, 0, k);
@@ -381,9 +381,9 @@ public final class GradTape<E extends Floating> {
                         Tensor<E> mean, Tensor<E> var, float64 eps,
                         boolean training) {
         Tensor<E> xv = this.values.get(x.idx);
-        Tensor<E> xhat #= Tensor.zerosLike<E>(xv);
+        Tensor<E> xhat #= Ops.zerosLike<E>(xv);
         int64[] csh #= StructKernels.shape1(xv.shapeAt(1));
-        Tensor<E> invstd #= Tensor.zeros<E>(csh);
+        Tensor<E> invstd #= Ops.zerosOn<E>(csh, xv);
         Tensor<E> v #= Ops.batchNorm2d<E>(xv, this.values.get(gamma.idx),
                                          this.values.get(beta.idx), mean, var,
                                          eps, xhat, invstd);
@@ -399,7 +399,7 @@ public final class GradTape<E extends Floating> {
     public GradTensor layerNorm(GradTensor x, GradTensor gamma, GradTensor beta,
                                 float64 eps) {
         Tensor<E> xv = this.values.get(x.idx);
-        Tensor<E> xhat #= Tensor.zerosLike<E>(xv);
+        Tensor<E> xhat #= Ops.zerosLike<E>(xv);
         int64 rows = 1;
         int32 k = 0;
         while (k < xv.ndim() - 1) {
@@ -407,7 +407,7 @@ public final class GradTape<E extends Floating> {
             k = k + 1;
         }
         int64[] rsh #= StructKernels.shape1(rows);
-        Tensor<E> invstd #= Tensor.zeros<E>(rsh);
+        Tensor<E> invstd #= Ops.zerosOn<E>(rsh, xv);
         Tensor<E> v #= Ops.layerNorm<E>(xv, this.values.get(gamma.idx),
                                        this.values.get(beta.idx), eps, xhat, invstd);
         GradTensor t = this.push(Op.LAYERNORM, x.idx, gamma.idx, 0, eps, #v);
@@ -423,7 +423,7 @@ public final class GradTape<E extends Floating> {
     public GradTensor embedding(GradTensor table, Tensor<E> indices) {
         Tensor<E> v #= Ops.embedding<E>(this.values.get(table.idx), indices);
         GradTensor t = this.push(Op.EMBEDDING, table.idx, -1, 0, 0.0, #v);
-        Tensor<E> own #= indices.copy();
+        Tensor<E> own #= Ops.copyOf<E>(indices);
         this.aux0[t.idx] = this.addAux(#own);
         return t;
     }
@@ -432,7 +432,7 @@ public final class GradTape<E extends Floating> {
     public GradTensor dropout(GradTensor x, float64 p, boolean training,
                               uint64 seed) {
         Tensor<E> xv = this.values.get(x.idx);
-        Tensor<E> mask #= Tensor.zerosLike<E>(xv);
+        Tensor<E> mask #= Ops.zerosLike<E>(xv);
         Tensor<E> v #= Ops.dropout<E>(xv, p, training, seed, mask);
         GradTensor t = this.push(Op.DROPOUT, x.idx, -1, 0, p, #v);
         if (training) { this.setPay(t.idx, 0, 1); }
@@ -443,11 +443,11 @@ public final class GradTape<E extends Floating> {
     /** Softmax cross-entropy against class ids, mean reduction → (1,). */
     public GradTensor crossEntropy(GradTensor logits, Tensor<E> targets) {
         Tensor<E> lv = this.values.get(logits.idx);
-        Tensor<E> probs #= Tensor.zerosLike<E>(lv);
+        Tensor<E> probs #= Ops.zerosLike<E>(lv);
         Tensor<E> v #= Ops.crossEntropy<E>(lv, targets, probs);
         GradTensor t = this.push(Op.CROSSENTROPY, logits.idx, -1, 0, 0.0, #v);
         this.aux0[t.idx] = this.addAux(#probs);
-        Tensor<E> own #= targets.copy();
+        Tensor<E> own #= Ops.copyOf<E>(targets);
         this.aux1[t.idx] = this.addAux(#own);
         return t;
     }
@@ -470,7 +470,7 @@ public final class GradTape<E extends Floating> {
             k = k + 1;
         }
         int64[] csh #= StructKernels.shape1(rows * 3);
-        Tensor<E> cache #= Tensor.zeros<E>(csh);
+        Tensor<E> cache #= Ops.zerosOn<E>(csh, av);
         float64 eps = 0.00000001;
         Tensor<E> v #= Ops.cosineSim<E>(av, this.values.get(b.idx), eps, cache);
         GradTensor t = this.push(Op.COSINESIM, a.idx, b.idx, 0, eps, #v);

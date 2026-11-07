@@ -1,0 +1,140 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * 2-D pooling over NCHW input (spec §6.6), one lane per output element. Max pooling skips the
+ * padding and records each cell's flat input index as E (the backward's routing table); average
+ * pooling divides by the full window (torch's count_include_pad); adaptive pooling takes torch's
+ * windows floor(i*in/out) .. ceil((i+1)*in/out).
+ */
+public final class Pool {
+    public Pool() { return; }
+
+    @Kernel
+    public static void max2d<E>(KernelBuffer<E> out, KernelBuffer<E> argmax, KernelBuffer<E> x,
+                                uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oh, uint32 ow,
+                                int32 k, int32 stride, int32 pad) {
+        uint32 t = KernelThread.globalIdX();
+        uint32 total = n * c * oh * ow;
+        if (t < total) {
+            uint32 xx = t % ow;
+            uint32 q = t / ow;
+            uint32 y = q % oh;
+            uint32 plane = q / oh;
+            boolean seen = false;
+            float32 best = 0.0f;
+            uint32 bestIdx = 0;
+            int32 a = 0;
+            while (a < k) {
+                int32 ih = (int32) y * stride - pad + a;
+                if (ih >= 0 && ih < (int32) h) {
+                    int32 e = 0;
+                    while (e < k) {
+                        int32 iw = (int32) xx * stride - pad + e;
+                        if (iw >= 0 && iw < (int32) wd) {
+                            uint32 xi = (plane * h + (uint32) ih) * wd + (uint32) iw;
+                            float32 v = (float32) x[xi];
+                            if (!seen || v > best) { best = v; bestIdx = xi; seen = true; }
+                        }
+                        e = e + 1;
+                    }
+                }
+                a = a + 1;
+            }
+            out[t] = (E) best;
+            argmax[t] = (E) ((float32) bestIdx);
+        }
+    }
+
+    @Kernel
+    public static void avg2d<E>(KernelBuffer<E> out, KernelBuffer<E> x,
+                                uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oh, uint32 ow,
+                                int32 k, int32 stride, int32 pad) {
+        uint32 t = KernelThread.globalIdX();
+        uint32 total = n * c * oh * ow;
+        if (t < total) {
+            uint32 xx = t % ow;
+            uint32 q = t / ow;
+            uint32 y = q % oh;
+            uint32 plane = q / oh;
+            float32 acc = 0.0f;
+            int32 a = 0;
+            while (a < k) {
+                int32 ih = (int32) y * stride - pad + a;
+                if (ih >= 0 && ih < (int32) h) {
+                    int32 e = 0;
+                    while (e < k) {
+                        int32 iw = (int32) xx * stride - pad + e;
+                        if (iw >= 0 && iw < (int32) wd) {
+                            acc = acc + (float32) x[(plane * h + (uint32) ih) * wd + (uint32) iw];
+                        }
+                        e = e + 1;
+                    }
+                }
+                a = a + 1;
+            }
+            out[t] = (E) (acc / (float32) (k * k));
+        }
+    }
+
+    @Kernel
+    public static void adaptive2d<E>(KernelBuffer<E> out, KernelBuffer<E> x,
+                                     uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oh, uint32 ow) {
+        uint32 t = KernelThread.globalIdX();
+        uint32 total = n * c * oh * ow;
+        if (t < total) {
+            uint32 xx = t % ow;
+            uint32 q = t / ow;
+            uint32 y = q % oh;
+            uint32 plane = q / oh;
+            uint32 h0 = (y * h) / oh;
+            uint32 h1 = ((y + 1) * h + oh - 1) / oh;
+            uint32 w0 = (xx * wd) / ow;
+            uint32 w1 = ((xx + 1) * wd + ow - 1) / ow;
+            float32 acc = 0.0f;
+            uint32 ih = h0;
+            while (ih < h1) {
+                uint32 iw = w0;
+                while (iw < w1) {
+                    acc = acc + (float32) x[(plane * h + ih) * wd + iw];
+                    iw = iw + 1;
+                }
+                ih = ih + 1;
+            }
+            out[t] = (E) (acc / (float32) ((h1 - h0) * (w1 - w0)));
+        }
+    }
+
+    /** Max pooling with `argmax` receiving each output cell's flat input index; synced. */
+    public static void max<E>(KernelBuffer<E> out, KernelBuffer<E> argmax, KernelBuffer<E> x,
+                              int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow, int32 k, int32 stride, int32 pad) {
+        uint32 total = (uint32) (n * c * oh * ow);
+        KernelStream s #= KernelStream.current();
+        max2d.launch(s, grid: [(total + 255) / 256], block: [256])(out, argmax, x, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oh, (uint32) ow, k, stride, pad);
+        s.sync();
+    }
+
+    /** Average pooling over the full k x k window; synced. */
+    public static void avg<E>(KernelBuffer<E> out, KernelBuffer<E> x,
+                              int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow, int32 k, int32 stride, int32 pad) {
+        uint32 total = (uint32) (n * c * oh * ow);
+        KernelStream s #= KernelStream.current();
+        avg2d.launch(s, grid: [(total + 255) / 256], block: [256])(out, x, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oh, (uint32) ow, k, stride, pad);
+        s.sync();
+    }
+
+    /** Adaptive average pooling to (oh, ow); synced. */
+    public static void adaptive<E>(KernelBuffer<E> out, KernelBuffer<E> x,
+                                   int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow) {
+        uint32 total = (uint32) (n * c * oh * ow);
+        KernelStream s #= KernelStream.current();
+        adaptive2d.launch(s, grid: [(total + 255) / 256], block: [256])(out, x, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oh, (uint32) ow);
+        s.sync();
+    }
+}

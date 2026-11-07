@@ -9,7 +9,7 @@ import dev.cajeta.ml.grad.Ops;
 
 /**
  * cajeta-ml-gpu 27.1.1 and 27.1.2 (spec §6.6, §6.7): the device column of the op seam. Each
- * op's forward (elementwise, row, binary, reduction and shape groups so far) on device-resident inputs matches the CPU column within float32's tolerance,
+ * op's forward (every group) on device-resident inputs matches the CPU column within float32's tolerance,
  * `Ops.hasGpu` answers true for it, and mixed residency fails by name.
  */
 public class GradOpsGpuTest {
@@ -186,6 +186,213 @@ public class GradOpsGpuTest {
             ax = ax + 1;
         }
         Assert.isTrue(Ops.hasGpu(Op.CONCAT));
+    }
+
+    /** NCHW 2x3x4x4 of the test sequence. */
+    static #Tensor<float32> fill4(int64 n, int64 c, int64 h, int64 w, int64 seed) {
+        int64[] sh = [n, c, h, w];
+        Tensor<float32> t #= Tensor.full<float32>(sh, 0.0f);
+        int64 f = 0;
+        while (f < n * c * h * w) {
+            t.flatSet(f, (float32) ((((f + seed) * 7919L) % 251L) - 125L) * 0.012f);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    @Test
+    public void convAndPoolsRunOnTheDevice() {
+        Tensor<float32> x #= GradOpsGpuTest.fill4(2L, 3L, 4L, 4L, 31L);
+        Tensor<float32> w #= GradOpsGpuTest.fill4(4L, 3L, 3L, 3L, 37L);
+        int64[] bs = [4L];
+        Tensor<float32> b #= Tensor.full<float32>(bs, 0.25f);
+        Tensor<float32> xd #= GradOpsGpuTest.onDevice(x);
+        Tensor<float32> wd #= GradOpsGpuTest.onDevice(w);
+        Tensor<float32> bd #= GradOpsGpuTest.onDevice(b);
+        Tensor<float32> c1 #= Ops.conv2d<float32>(x, w, b, 1, 1);
+        Tensor<float32> d1 #= Ops.conv2d<float32>(xd, wd, bd, 1, 1);
+        GradOpsGpuTest.sameWithin("conv2d s1 p1", c1, d1, 27.0 * 3.0e-7);
+        Tensor<float32> c2 #= Ops.conv2d<float32>(x, w, b, 2, 0);
+        Tensor<float32> d2 #= Ops.conv2d<float32>(xd, wd, bd, 2, 0);
+        GradOpsGpuTest.sameWithin("conv2d s2 p0", c2, d2, 27.0 * 3.0e-7);
+        Assert.isTrue(Ops.hasGpu(Op.CONV2D));
+        // max pool with its argmax, 2/2/0 and 3/1/1
+        int64[] osh = [2L, 3L, 2L, 2L];
+        Tensor<float32> am #= Tensor.zeros<float32>(osh);
+        Tensor<float32> amd #= Ops.zerosOn<float32>(osh, xd);
+        Tensor<float32> m1 #= Ops.maxPool2d<float32>(x, 2, 2, 0, am);
+        Tensor<float32> n1 #= Ops.maxPool2d<float32>(xd, 2, 2, 0, amd);
+        GradOpsGpuTest.same("maxPool2d", m1, n1);
+        GradOpsGpuTest.same("maxPool2d argmax", am, amd);
+        int64[] osh2 = [2L, 3L, 4L, 4L];
+        Tensor<float32> am2 #= Tensor.zeros<float32>(osh2);
+        Tensor<float32> amd2 #= Ops.zerosOn<float32>(osh2, xd);
+        Tensor<float32> m2 #= Ops.maxPool2d<float32>(x, 3, 1, 1, am2);
+        Tensor<float32> n2 #= Ops.maxPool2d<float32>(xd, 3, 1, 1, amd2);
+        GradOpsGpuTest.same("maxPool2d 3/1/1", m2, n2);
+        GradOpsGpuTest.same("maxPool2d 3/1/1 argmax", am2, amd2);
+        Assert.isTrue(Ops.hasGpu(Op.MAXPOOL2D));
+        Tensor<float32> a1 #= Ops.avgPool2d<float32>(x, 2, 2, 0);
+        Tensor<float32> e1 #= Ops.avgPool2d<float32>(xd, 2, 2, 0);
+        GradOpsGpuTest.same("avgPool2d", a1, e1);
+        Tensor<float32> a2 #= Ops.avgPool2d<float32>(x, 3, 1, 1);
+        Tensor<float32> e2 #= Ops.avgPool2d<float32>(xd, 3, 1, 1);
+        GradOpsGpuTest.same("avgPool2d 3/1/1", a2, e2);
+        Assert.isTrue(Ops.hasGpu(Op.AVGPOOL2D));
+        Tensor<float32> p1 #= Ops.adaptiveAvgPool2d<float32>(x, 1, 1);
+        Tensor<float32> q1 #= Ops.adaptiveAvgPool2d<float32>(xd, 1, 1);
+        GradOpsGpuTest.same("adaptiveAvgPool2d 1x1", p1, q1);
+        Tensor<float32> p3 #= Ops.adaptiveAvgPool2d<float32>(x, 3, 3);
+        Tensor<float32> q3 #= Ops.adaptiveAvgPool2d<float32>(xd, 3, 3);
+        GradOpsGpuTest.same("adaptiveAvgPool2d 3x3", p3, q3);
+        Assert.isTrue(Ops.hasGpu(Op.ADAPTAVGPOOL2D));
+    }
+
+    @Test
+    public void normsRunOnTheDevice() {
+        Tensor<float32> x #= GradOpsGpuTest.fill4(2L, 3L, 4L, 4L, 41L);
+        Tensor<float32> xd #= GradOpsGpuTest.onDevice(x);
+        int64[] cs = [3L];
+        Tensor<float32> gamma #= GradOpsGpuTest.fill(3L, 1L, 43L, true);
+        Tensor<float32> beta #= GradOpsGpuTest.fill(3L, 1L, 47L, false);
+        Tensor<float32> g1 #= Ops.reshape<float32>(gamma, cs);
+        Tensor<float32> b1 #= Ops.reshape<float32>(beta, cs);
+        Tensor<float32> gd #= GradOpsGpuTest.onDevice(g1);
+        Tensor<float32> bd #= GradOpsGpuTest.onDevice(b1);
+        // `same` brings its device operand home, so every device result is made before any compare
+        Tensor<float32> mean #= Ops.channelMean<float32>(x);
+        Tensor<float32> meanD #= Ops.channelMean<float32>(xd);
+        Tensor<float32> var #= Ops.channelVar<float32>(x, mean);
+        Tensor<float32> varD #= Ops.channelVar<float32>(xd, meanD);
+        Tensor<float32> xhat #= Tensor.zerosLike<float32>(x);
+        Tensor<float32> invstd #= Tensor.zeros<float32>(cs);
+        Tensor<float32> xhatD #= Ops.zerosLike<float32>(xd);
+        Tensor<float32> invstdD #= Ops.zerosOn<float32>(cs, xd);
+        Tensor<float32> y #= Ops.batchNorm2d<float32>(x, g1, b1, mean, var, 0.00001, xhat, invstd);
+        Tensor<float32> yD #= Ops.batchNorm2d<float32>(xd, gd, bd, meanD, varD, 0.00001, xhatD, invstdD);
+        GradOpsGpuTest.same("channelMean", mean, meanD);
+        GradOpsGpuTest.same("channelVar", var, varD);
+        GradOpsGpuTest.same("batchNorm2d", y, yD);
+        GradOpsGpuTest.same("batchNorm2d xhat", xhat, xhatD);
+        GradOpsGpuTest.same("batchNorm2d invstd", invstd, invstdD);
+        Assert.isTrue(Ops.hasGpu(Op.BATCHNORM2D));
+        // layerNorm over the last axis of a 6x7
+        Tensor<float32> l #= GradOpsGpuTest.fill(6L, 7L, 53L, false);
+        Tensor<float32> ld #= GradOpsGpuTest.onDevice(l);
+        int64[] ds = [7L];
+        Tensor<float32> lg #= Ops.reshape<float32>(GradOpsGpuTest.fill(7L, 1L, 59L, true), ds);
+        Tensor<float32> lb #= Ops.reshape<float32>(GradOpsGpuTest.fill(7L, 1L, 61L, false), ds);
+        Tensor<float32> lgd #= GradOpsGpuTest.onDevice(lg);
+        Tensor<float32> lbd #= GradOpsGpuTest.onDevice(lb);
+        int64[] rs = [6L];
+        Tensor<float32> lx #= Tensor.zerosLike<float32>(l);
+        Tensor<float32> li #= Tensor.zeros<float32>(rs);
+        Tensor<float32> lxD #= Ops.zerosLike<float32>(ld);
+        Tensor<float32> liD #= Ops.zerosOn<float32>(rs, ld);
+        Tensor<float32> ly #= Ops.layerNorm<float32>(l, lg, lb, 0.00001, lx, li);
+        Tensor<float32> lyD #= Ops.layerNorm<float32>(ld, lgd, lbd, 0.00001, lxD, liD);
+        GradOpsGpuTest.same("layerNorm", ly, lyD);
+        GradOpsGpuTest.same("layerNorm xhat", lx, lxD);
+        GradOpsGpuTest.same("layerNorm invstd", li, liD);
+        Assert.isTrue(Ops.hasGpu(Op.LAYERNORM));
+    }
+
+    @Test
+    public void lossesEmbeddingAndDropoutRunOnTheDevice() {
+        // embedding: 5x3 table, ids [0 2 4 1 2]
+        Tensor<float32> w #= GradOpsGpuTest.fill(5L, 3L, 67L, false);
+        int64[] is = [5L];
+        Tensor<float32> idx #= Tensor.zeros<float32>(is);
+        idx.flatSet(1, 2.0f);
+        idx.flatSet(2, 4.0f);
+        idx.flatSet(3, 1.0f);
+        idx.flatSet(4, 2.0f);
+        Tensor<float32> wd #= GradOpsGpuTest.onDevice(w);
+        Tensor<float32> idxD #= GradOpsGpuTest.onDevice(idx);
+        Tensor<float32> e #= Ops.embedding<float32>(w, idx);
+        Tensor<float32> eD #= Ops.embedding<float32>(wd, idxD);
+        GradOpsGpuTest.same("embedding", e, eD);
+        Assert.isTrue(Ops.hasGpu(Op.EMBEDDING));
+        // cross-entropy: 4 rows of 6 classes, targets [1 5 0 3]
+        Tensor<float32> logits #= GradOpsGpuTest.fill(4L, 6L, 71L, false);
+        int64[] ts = [4L];
+        Tensor<float32> tg #= Tensor.zeros<float32>(ts);
+        tg.flatSet(0, 1.0f);
+        tg.flatSet(1, 5.0f);
+        tg.flatSet(3, 3.0f);
+        Tensor<float32> logitsD #= GradOpsGpuTest.onDevice(logits);
+        Tensor<float32> tgD #= GradOpsGpuTest.onDevice(tg);
+        Tensor<float32> probs #= Tensor.zerosLike<float32>(logits);
+        Tensor<float32> probsD #= Ops.zerosLike<float32>(logitsD);
+        Tensor<float32> ce #= Ops.crossEntropy<float32>(logits, tg, probs);
+        Tensor<float32> ceD #= Ops.crossEntropy<float32>(logitsD, tgD, probsD);
+        GradOpsGpuTest.same("crossEntropy", ce, ceD);
+        GradOpsGpuTest.same("crossEntropy probs", probs, probsD);
+        Assert.isTrue(Ops.hasGpu(Op.CROSSENTROPY));
+        // mse over 3x7 against 3x7 and against a 21-vector
+        Tensor<float32> pr #= GradOpsGpuTest.fill(3L, 7L, 73L, false);
+        Tensor<float32> tt #= GradOpsGpuTest.fill(3L, 7L, 79L, false);
+        Tensor<float32> prD #= GradOpsGpuTest.onDevice(pr);
+        Tensor<float32> ttD #= GradOpsGpuTest.onDevice(tt);
+        Tensor<float32> ms #= Ops.mseLoss<float32>(pr, tt);
+        Tensor<float32> msD #= Ops.mseLoss<float32>(prD, ttD);
+        GradOpsGpuTest.same("mseLoss", ms, msD);
+        int64[] flat = [21L];
+        Tensor<float32> tf #= Ops.reshape<float32>(tt, flat);
+        Tensor<float32> tfD #= GradOpsGpuTest.onDevice(tf);
+        Tensor<float32> ms2 #= Ops.mseLoss<float32>(pr, tf);
+        Tensor<float32> ms2D #= Ops.mseLoss<float32>(prD, tfD);
+        GradOpsGpuTest.same("mseLoss flat target", ms2, ms2D);
+        Assert.isTrue(Ops.hasGpu(Op.MSELOSS));
+        // cosine over 3x7 rows
+        int64[] c3 = [9L];
+        Tensor<float32> cache #= Tensor.zeros<float32>(c3);
+        Tensor<float32> cacheD #= Ops.zerosOn<float32>(c3, prD);
+        Tensor<float32> cs #= Ops.cosineSim<float32>(pr, tt, 0.00000001, cache);
+        Tensor<float32> csD #= Ops.cosineSim<float32>(prD, ttD, 0.00000001, cacheD);
+        GradOpsGpuTest.same("cosineSim", cs, csD);
+        GradOpsGpuTest.same("cosineSim cache", cache, cacheD);
+        Assert.isTrue(Ops.hasGpu(Op.COSINESIM));
+        // batched matmul (2,3,7)x(2,7,5)
+        Tensor<float32> ba #= GradOpsGpuTest.fill3(2L, 3L, 7L, 83L);
+        Tensor<float32> bb #= GradOpsGpuTest.fill3(2L, 7L, 5L, 89L);
+        GradOpsGpuTest.binary(Op.MATMULB, ba, bb);
+        // dropout: eval is identity with a unit mask; training scales survivors by 2 and keeps about half
+        Tensor<float32> dx #= GradOpsGpuTest.fill(40L, 50L, 97L, true);
+        Tensor<float32> dxD #= GradOpsGpuTest.onDevice(dx);
+        Tensor<float32> mk #= Ops.zerosLike<float32>(dxD);
+        Tensor<float32> ev #= Ops.dropout<float32>(dxD, 0.5, false, (uint64) 7, mk);
+        GradOpsGpuTest.same("dropout eval", dx, ev);
+        Tensor<float32> ones #= Tensor.full<float32>(GradOpsGpuTest.shapeOf(dx), 1.0f);
+        GradOpsGpuTest.same("dropout eval mask", ones, mk);
+        Tensor<float32> mk2 #= Ops.zerosLike<float32>(dxD);
+        Tensor<float32> tr #= Ops.dropout<float32>(dxD, 0.5, true, (uint64) 12345, mk2);
+        Assert.isTrue(tr.isOnGpu());
+        tr.cpu();
+        mk2.cpu();
+        int64 kept = 0;
+        int64 i = 0;
+        while (i < 2000L) {
+            float32 m = mk2.flatGet(i);
+            Assert.isTrue(m == 0.0f || m == 2.0f);
+            Assert.isTrue(tr.flatGet(i) == dx.flatGet(i) * m);
+            if (m == 2.0f) { kept = kept + 1; }
+            i = i + 1;
+        }
+        Assert.isTrue(kept > 850L && kept < 1150L);
+        Tensor<float32> mk3 #= Ops.zerosLike<float32>(dxD);
+        Tensor<float32> tr2 #= Ops.dropout<float32>(dxD, 0.5, true, (uint64) 12345, mk3);
+        tr2.cpu();
+        i = 0;
+        while (i < 2000L) { Assert.isTrue(tr2.flatGet(i) == tr.flatGet(i)); i = i + 1; }
+        Assert.isTrue(Ops.hasGpu(Op.DROPOUT));
+    }
+
+    static #int64[] shapeOf(Tensor<float32> t) {
+        int64[] sh = heap int64[t.ndim()];
+        int32 d = 0;
+        while (d < t.ndim()) { sh[d] = t.shapeAt(d); d = d + 1; }
+        return #sh;
     }
 
     static void binary(int32 op, Tensor<float32> a, Tensor<float32> b) {

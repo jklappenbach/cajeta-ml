@@ -1,0 +1,523 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.nn.BatchNorm;
+import dev.cajeta.ml.kernels.nn.Conv;
+import dev.cajeta.ml.kernels.nn.Dropout;
+import dev.cajeta.ml.kernels.nn.Embed;
+import dev.cajeta.ml.kernels.nn.Loss;
+import dev.cajeta.ml.kernels.nn.Norm;
+import dev.cajeta.ml.kernels.nn.Pool;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 27.1.1 (spec §6.6): the structured kernels of cajeta-ml's op table against
+ * float64 host references at float32: conv2d, the three poolings, batch-norm statistics and
+ * normalise, the saved layernorm, dropout's semantics, the row losses, the E-indexed embedding
+ * and the batched plain GEMM.
+ */
+public class StructuredTest {
+    public StructuredTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) (((i * 7919L) % 251L) - 125L) * 0.012f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 27.1.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 27.1.1");
+            return false;
+        }
+        return true;
+    }
+
+    static String stage = "";
+
+    static void close(float64 got, float64 want, float64 extra) {
+        float64 d = got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        if (d > 1.0e-5 * (w + 1.0) + extra) {
+            System.stdout.println("  " + StructuredTest.stage + ": got " + got + " want " + want);
+            Assert.isTrue(false);
+        }
+    }
+
+    /** A buffer of `n` pattern values from `seed`, with its float64 mirror in `f`. */
+    static #KernelBuffer<float32> upload(int64 n, int64 seed, float64[] f) {
+        float32[] h = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { h[(int32) i] = StructuredTest.pattern(i + seed); f[(int32) i] = (float64) h[(int32) i]; i = i + 1L; }
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) n);
+        b.upload(h);
+        return #b;
+    }
+
+    static int64 outExtent(int64 inLen, int32 k, int32 stride, int32 pad) {
+        return (inLen + 2L * (int64) pad - (int64) k) / (int64) stride + 1L;
+    }
+
+    static void convCase(int32 stride, int32 pad) {
+        int64 n = 2L; int64 c = 3L; int64 h = 5L; int64 wd = 6L; int64 oc = 4L; int64 kh = 3L; int64 kw = 3L;
+        int64 oh = StructuredTest.outExtent(h, (int32) kh, stride, pad);
+        int64 ow = StructuredTest.outExtent(wd, (int32) kw, stride, pad);
+        float64[] fx = heap float64[n * c * h * wd];
+        float64[] fw = heap float64[oc * c * kh * kw];
+        float64[] fb = heap float64[oc];
+        KernelBuffer<float32> x #= StructuredTest.upload(n * c * h * wd, 3L, fx);
+        KernelBuffer<float32> w #= StructuredTest.upload(oc * c * kh * kw, 101L, fw);
+        KernelBuffer<float32> b #= StructuredTest.upload(oc, 7L, fb);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (n * oc * oh * ow));
+        int64[] m #= ValueCheck.mark();
+        Conv.forward<float32>(out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
+        float32[] got = heap float32[n * oc * oh * ow];
+        out.download(got);
+        StructuredTest.stage = "conv2d s" + stride + " p" + pad;
+        int64 bn = 0L;
+        while (bn < n) {
+            int64 o = 0L;
+            while (o < oc) {
+                int64 y = 0L;
+                while (y < oh) {
+                    int64 xx = 0L;
+                    while (xx < ow) {
+                        float64 acc = fb[(int32) o];
+                        int64 ci = 0L;
+                        while (ci < c) {
+                            int64 a = 0L;
+                            while (a < kh) {
+                                int64 ih = y * (int64) stride - (int64) pad + a;
+                                if (ih >= 0L && ih < h) {
+                                    int64 e = 0L;
+                                    while (e < kw) {
+                                        int64 iw = xx * (int64) stride - (int64) pad + e;
+                                        if (iw >= 0L && iw < wd) {
+                                            acc = acc + fx[(int32) (((bn * c + ci) * h + ih) * wd + iw)] * fw[(int32) (((o * c + ci) * kh + a) * kw + e)];
+                                        }
+                                        e = e + 1L;
+                                    }
+                                }
+                                a = a + 1L;
+                            }
+                            ci = ci + 1L;
+                        }
+                        StructuredTest.close((float64) got[(int32) (((bn * oc + o) * oh + y) * ow + xx)], acc, 27.0 * 1.0e-7);
+                        xx = xx + 1L;
+                    }
+                    y = y + 1L;
+                }
+                o = o + 1L;
+            }
+            bn = bn + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void conv2dMatchesTheHost() {
+        if (!StructuredTest.usable("conv2d_float32")) { return; }
+        StructuredTest.convCase(1, 1);
+        StructuredTest.convCase(2, 0);
+        StructuredTest.convCase(1, 0);
+    }
+
+    static void poolCase(int32 k, int32 stride, int32 pad) {
+        int64 n = 2L; int64 c = 3L; int64 h = 5L; int64 wd = 6L;
+        int64 oh = StructuredTest.outExtent(h, k, stride, pad);
+        int64 ow = StructuredTest.outExtent(wd, k, stride, pad);
+        float64[] fx = heap float64[n * c * h * wd];
+        KernelBuffer<float32> x #= StructuredTest.upload(n * c * h * wd, 11L, fx);
+        int64 total = n * c * oh * ow;
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) total);
+        KernelBuffer<float32> am = heap KernelBuffer<float32>((uint64) total);
+        int64[] m #= ValueCheck.mark();
+        Pool.max<float32>(out, am, x, n, c, h, wd, oh, ow, k, stride, pad);
+        float32[] gm = heap float32[total];
+        float32[] ga = heap float32[total];
+        out.download(gm);
+        am.download(ga);
+        Pool.avg<float32>(out, x, n, c, h, wd, oh, ow, k, stride, pad);
+        float32[] gv = heap float32[total];
+        out.download(gv);
+        int64 plane = 0L;
+        while (plane < n * c) {
+            int64 y = 0L;
+            while (y < oh) {
+                int64 xx = 0L;
+                while (xx < ow) {
+                    boolean seen = false;
+                    float64 best = 0.0;
+                    int64 bestIdx = -1L;
+                    float64 sum = 0.0;
+                    int64 a = 0L;
+                    while (a < (int64) k) {
+                        int64 ih = y * (int64) stride - (int64) pad + a;
+                        if (ih >= 0L && ih < h) {
+                            int64 e = 0L;
+                            while (e < (int64) k) {
+                                int64 iw = xx * (int64) stride - (int64) pad + e;
+                                if (iw >= 0L && iw < wd) {
+                                    int64 xi = (plane * h + ih) * wd + iw;
+                                    float64 v = fx[(int32) xi];
+                                    sum = sum + v;
+                                    if (!seen || v > best) { best = v; bestIdx = xi; seen = true; }
+                                }
+                                e = e + 1L;
+                            }
+                        }
+                        a = a + 1L;
+                    }
+                    int64 oi = (plane * oh + y) * ow + xx;
+                    StructuredTest.stage = "max2d k" + k;
+                    StructuredTest.close((float64) gm[(int32) oi], best, 0.0);
+                    Assert.isTrue((int64) ga[(int32) oi] == bestIdx);
+                    StructuredTest.stage = "avg2d k" + k;
+                    StructuredTest.close((float64) gv[(int32) oi], sum / (float64) (k * k), 0.0);
+                    xx = xx + 1L;
+                }
+                y = y + 1L;
+            }
+            plane = plane + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void poolsMatchTheHost() {
+        if (!StructuredTest.usable("max2d_float32") || !StructuredTest.usable("adaptive2d_float32")) { return; }
+        StructuredTest.poolCase(2, 2, 0);
+        StructuredTest.poolCase(3, 1, 1);
+        // adaptive to 1x1 and 2x3 over 2x3x5x6
+        int64 n = 2L; int64 c = 3L; int64 h = 5L; int64 wd = 6L;
+        float64[] fx = heap float64[n * c * h * wd];
+        KernelBuffer<float32> x #= StructuredTest.upload(n * c * h * wd, 11L, fx);
+        int64[] ohs = [1L, 2L];
+        int64[] ows = [1L, 3L];
+        int32 cs = 0;
+        while (cs < 2) {
+            int64 oh = ohs[cs];
+            int64 ow = ows[cs];
+            KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (n * c * oh * ow));
+            int64[] m #= ValueCheck.mark();
+            Pool.adaptive<float32>(out, x, n, c, h, wd, oh, ow);
+            float32[] g = heap float32[n * c * oh * ow];
+            out.download(g);
+            StructuredTest.stage = "adaptive2d " + oh + "x" + ow;
+            int64 plane = 0L;
+            while (plane < n * c) {
+                int64 y = 0L;
+                while (y < oh) {
+                    int64 h0 = (y * h) / oh;
+                    int64 h1 = ((y + 1L) * h + oh - 1L) / oh;
+                    int64 xx = 0L;
+                    while (xx < ow) {
+                        int64 w0 = (xx * wd) / ow;
+                        int64 w1 = ((xx + 1L) * wd + ow - 1L) / ow;
+                        float64 acc = 0.0;
+                        int64 ih = h0;
+                        while (ih < h1) {
+                            int64 iw = w0;
+                            while (iw < w1) { acc = acc + fx[(int32) ((plane * h + ih) * wd + iw)]; iw = iw + 1L; }
+                            ih = ih + 1L;
+                        }
+                        StructuredTest.close((float64) g[(int32) ((plane * oh + y) * ow + xx)], acc / (float64) ((h1 - h0) * (w1 - w0)), 0.0);
+                        xx = xx + 1L;
+                    }
+                    y = y + 1L;
+                }
+                plane = plane + 1L;
+            }
+            ValueCheck.credit(m);
+            cs = cs + 1;
+        }
+    }
+
+    @Test
+    public void batchNormMatchesTheHost() {
+        if (!StructuredTest.usable("stats_float32") || !StructuredTest.usable("normalize_float32")) { return; }
+        int64 n = 4L; int64 c = 3L; int64 hw = 300L;
+        float64[] fx = heap float64[n * c * hw];
+        float64[] fg = heap float64[c];
+        float64[] fb = heap float64[c];
+        KernelBuffer<float32> x #= StructuredTest.upload(n * c * hw, 23L, fx);
+        KernelBuffer<float32> g #= StructuredTest.upload(c, 29L, fg);
+        KernelBuffer<float32> b #= StructuredTest.upload(c, 31L, fb);
+        KernelBuffer<float32> mean = heap KernelBuffer<float32>((uint64) c);
+        KernelBuffer<float32> var = heap KernelBuffer<float32>((uint64) c);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (n * c * hw));
+        KernelBuffer<float32> xhat = heap KernelBuffer<float32>((uint64) (n * c * hw));
+        KernelBuffer<float32> invstd = heap KernelBuffer<float32>((uint64) c);
+        int64[] m #= ValueCheck.mark();
+        BatchNorm.channelStats<float32>(mean, var, x, n, c, hw);
+        BatchNorm.apply<float32>(out, xhat, invstd, x, g, b, mean, var, n, c, hw, 1.0e-5f);
+        float32[] gm = heap float32[c];
+        float32[] gv = heap float32[c];
+        float32[] gi = heap float32[c];
+        float32[] go = heap float32[n * c * hw];
+        float32[] gx = heap float32[n * c * hw];
+        mean.download(gm);
+        var.download(gv);
+        invstd.download(gi);
+        out.download(go);
+        xhat.download(gx);
+        int64 ci = 0L;
+        while (ci < c) {
+            float64 s = 0.0;
+            int64 bn = 0L;
+            while (bn < n) { int64 p = 0L; while (p < hw) { s = s + fx[(int32) ((bn * c + ci) * hw + p)]; p = p + 1L; } bn = bn + 1L; }
+            float64 mu = s / (float64) (n * hw);
+            float64 d2 = 0.0;
+            bn = 0L;
+            while (bn < n) { int64 p = 0L; while (p < hw) { float64 d = fx[(int32) ((bn * c + ci) * hw + p)] - mu; d2 = d2 + d * d; p = p + 1L; } bn = bn + 1L; }
+            float64 vr = d2 / (float64) (n * hw);
+            float64 iv = 1.0 / Math.sqrt(vr + 1.0e-5);
+            StructuredTest.stage = "stats mean";
+            StructuredTest.close((float64) gm[(int32) ci], mu, 1.0e-6);
+            StructuredTest.stage = "stats var";
+            StructuredTest.close((float64) gv[(int32) ci], vr, 1.0e-6);
+            StructuredTest.stage = "normalize invstd";
+            StructuredTest.close((float64) gi[(int32) ci], iv, 0.0);
+            bn = 0L;
+            while (bn < n) {
+                int64 p = 0L;
+                while (p < hw) {
+                    int64 i = (bn * c + ci) * hw + p;
+                    float64 xh = (fx[(int32) i] - mu) * iv;
+                    StructuredTest.stage = "normalize xhat";
+                    StructuredTest.close((float64) gx[(int32) i], xh, 1.0e-5);
+                    StructuredTest.stage = "normalize out";
+                    StructuredTest.close((float64) go[(int32) i], fg[(int32) ci] * xh + fb[(int32) ci], 1.0e-5);
+                    p = p + 1L;
+                }
+                bn = bn + 1L;
+            }
+            ci = ci + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void savedLayerNormMatchesTheHost() {
+        if (!StructuredTest.usable("layernormSaved_float32")) { return; }
+        int64 rows = 7L; int64 cols = 300L;
+        float64[] fx = heap float64[rows * cols];
+        float64[] fw = heap float64[cols];
+        float64[] fb = heap float64[cols];
+        KernelBuffer<float32> x #= StructuredTest.upload(rows * cols, 41L, fx);
+        KernelBuffer<float32> w #= StructuredTest.upload(cols, 43L, fw);
+        KernelBuffer<float32> b #= StructuredTest.upload(cols, 47L, fb);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (rows * cols));
+        KernelBuffer<float32> xhat = heap KernelBuffer<float32>((uint64) (rows * cols));
+        KernelBuffer<float32> invstd = heap KernelBuffer<float32>((uint64) rows);
+        int64[] m #= ValueCheck.mark();
+        Norm.layerSaved<float32>(out, xhat, invstd, x, w, b, rows, cols, 1.0e-5f);
+        float32[] go = heap float32[rows * cols];
+        float32[] gx = heap float32[rows * cols];
+        float32[] gi = heap float32[rows];
+        out.download(go);
+        xhat.download(gx);
+        invstd.download(gi);
+        int64 r = 0L;
+        while (r < rows) {
+            float64 s = 0.0;
+            int64 j = 0L;
+            while (j < cols) { s = s + fx[(int32) (r * cols + j)]; j = j + 1L; }
+            float64 mu = s / (float64) cols;
+            float64 d2 = 0.0;
+            j = 0L;
+            while (j < cols) { float64 d = fx[(int32) (r * cols + j)] - mu; d2 = d2 + d * d; j = j + 1L; }
+            float64 iv = 1.0 / Math.sqrt(d2 / (float64) cols + 1.0e-5);
+            StructuredTest.stage = "layernormSaved invstd";
+            StructuredTest.close((float64) gi[(int32) r], iv, 0.0);
+            j = 0L;
+            while (j < cols) {
+                float64 xh = (fx[(int32) (r * cols + j)] - mu) * iv;
+                StructuredTest.stage = "layernormSaved xhat";
+                StructuredTest.close((float64) gx[(int32) (r * cols + j)], xh, 1.0e-5);
+                StructuredTest.stage = "layernormSaved out";
+                StructuredTest.close((float64) go[(int32) (r * cols + j)], fw[(int32) j] * xh + fb[(int32) j], 1.0e-5);
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void dropoutKeepsAboutHalfScalesSurvivorsAndRepeatsPerSeed() {
+        if (!StructuredTest.usable("dropout_float32")) { return; }
+        int64 n = 4000L;
+        float64[] fx = heap float64[n];
+        KernelBuffer<float32> x #= StructuredTest.upload(n, 53L, fx);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> mask = heap KernelBuffer<float32>((uint64) n);
+        int64[] m #= ValueCheck.mark();
+        Dropout.apply<float32>(out, mask, x, n, 0.5f, (uint64) 12345);
+        float32[] go = heap float32[n];
+        float32[] gm = heap float32[n];
+        out.download(go);
+        mask.download(gm);
+        int64 kept = 0L;
+        int64 i = 0L;
+        while (i < n) {
+            Assert.isTrue(gm[(int32) i] == 0.0f || gm[(int32) i] == 2.0f);
+            Assert.isTrue(go[(int32) i] == (float32) fx[(int32) i] * gm[(int32) i]);
+            if (gm[(int32) i] == 2.0f) { kept = kept + 1L; }
+            i = i + 1L;
+        }
+        Assert.isTrue(kept > 1800L && kept < 2200L);
+        Dropout.apply<float32>(out, mask, x, n, 0.5f, (uint64) 12345);
+        float32[] again = heap float32[n];
+        mask.download(again);
+        int64 differ = 0L;
+        i = 0L;
+        while (i < n) { if (again[(int32) i] != gm[(int32) i]) { differ = differ + 1L; } i = i + 1L; }
+        Assert.equals(0L, differ);
+        Dropout.apply<float32>(out, mask, x, n, 0.5f, (uint64) 12346);
+        mask.download(again);
+        i = 0L;
+        while (i < n) { if (again[(int32) i] != gm[(int32) i]) { differ = differ + 1L; } i = i + 1L; }
+        Assert.isTrue(differ > 1000L);
+        Dropout.apply<float32>(out, mask, x, n, 0.1f, (uint64) 5);
+        mask.download(gm);
+        kept = 0L;
+        i = 0L;
+        while (i < n) { if (gm[(int32) i] != 0.0f) { kept = kept + 1L; } i = i + 1L; }
+        Assert.isTrue(kept > 3450L && kept < 3750L);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void rowLossesMatchTheHost() {
+        if (!StructuredTest.usable("nll_float32") || !StructuredTest.usable("cosine_float32")) { return; }
+        int64 rows = 37L; int64 d = 300L;
+        float64[] fa = heap float64[rows * d];
+        float64[] fb = heap float64[rows * d];
+        KernelBuffer<float32> a #= StructuredTest.upload(rows * d, 59L, fa);
+        KernelBuffer<float32> b #= StructuredTest.upload(rows * d, 61L, fb);
+        float32[] ht = heap float32[rows];
+        int64 r = 0L;
+        while (r < rows) { ht[(int32) r] = (float32) ((r * 7L) % d); r = r + 1L; }
+        ht[3] = -1.0f;
+        KernelBuffer<float32> targets = heap KernelBuffer<float32>((uint64) rows);
+        targets.upload(ht);
+        KernelBuffer<float32> rowLoss = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> cos = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> cache = heap KernelBuffer<float32>((uint64) (rows * 3L));
+        int64[] m #= ValueCheck.mark();
+        // nll reads `a` shifted positive as a probability row
+        float32[] hp = heap float32[rows * d];
+        int64 i = 0L;
+        while (i < rows * d) { hp[(int32) i] = (float32) fa[(int32) i] + 1.6f; i = i + 1L; }
+        KernelBuffer<float32> probs = heap KernelBuffer<float32>((uint64) (rows * d));
+        probs.upload(hp);
+        Loss.nllRows<float32>(rowLoss, probs, targets, rows, d);
+        Loss.cosineRows<float32>(cos, cache, a, b, rows, d, 1.0e-8f);
+        float32[] gl = heap float32[rows];
+        float32[] gc = heap float32[rows];
+        float32[] gk = heap float32[rows * 3L];
+        rowLoss.download(gl);
+        cos.download(gc);
+        cache.download(gk);
+        r = 0L;
+        while (r < rows) {
+            if (r == 3L) {
+                Assert.isTrue(gl[3] != gl[3]);
+            } else {
+                int64 t = (r * 7L) % d;
+                StructuredTest.stage = "nll";
+                StructuredTest.close((float64) gl[(int32) r], 0.0 - Math.log((float64) hp[(int32) (r * d + t)]), 0.0);
+            }
+            float64 dot = 0.0; float64 na = 0.0; float64 nb = 0.0;
+            int64 j = 0L;
+            while (j < d) {
+                float64 av = fa[(int32) (r * d + j)];
+                float64 bv = fb[(int32) (r * d + j)];
+                dot = dot + av * bv; na = na + av * av; nb = nb + bv * bv;
+                j = j + 1L;
+            }
+            na = Math.sqrt(na); nb = Math.sqrt(nb);
+            float64 den = na * nb;
+            if (den < 1.0e-8) { den = 1.0e-8; }
+            StructuredTest.stage = "cosine";
+            StructuredTest.close((float64) gc[(int32) r], dot / den, 1.0e-5);
+            StructuredTest.close((float64) gk[(int32) (r * 3L)], na, 1.0e-4);
+            StructuredTest.close((float64) gk[(int32) (r * 3L + 1L)], nb, 1.0e-4);
+            StructuredTest.close((float64) gk[(int32) (r * 3L + 2L)], dot / den, 1.0e-5);
+            r = r + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void embeddingByFloatIdsMatchesTheHost() {
+        if (!StructuredTest.usable("embedF_float32")) { return; }
+        int64 vocab = 11L; int64 dim = 5L; int64 n = 9L;
+        float64[] ft = heap float64[vocab * dim];
+        KernelBuffer<float32> table #= StructuredTest.upload(vocab * dim, 67L, ft);
+        float32[] hi = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { hi[(int32) i] = (float32) ((i * 4L) % vocab); i = i + 1L; }
+        hi[8] = 11.0f;
+        KernelBuffer<float32> ids = heap KernelBuffer<float32>((uint64) n);
+        ids.upload(hi);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (n * dim));
+        int64[] m #= ValueCheck.mark();
+        Embed.rowsAt<float32>(out, table, ids, n, dim, vocab);
+        float32[] g = heap float32[n * dim];
+        out.download(g);
+        i = 0L;
+        while (i < n) {
+            int64 j = 0L;
+            while (j < dim) {
+                float64 want = 0.0;
+                if (i < 8L) { want = ft[(int32) (((i * 4L) % vocab) * dim + j)]; }
+                Assert.isTrue((float64) g[(int32) (i * dim + j)] == want);
+                j = j + 1L;
+            }
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void batchedTiledGemmMatchesTheHost() {
+        if (!StructuredTest.usable("gemmTiledBatched_float32")) { return; }
+        int64 batch = 3L; int64 mm = 5L; int64 nn = 7L; int64 kk = 33L;
+        float64[] fa = heap float64[batch * mm * kk];
+        float64[] fb = heap float64[batch * kk * nn];
+        KernelBuffer<float32> a #= StructuredTest.upload(batch * mm * kk, 71L, fa);
+        KernelBuffer<float32> b #= StructuredTest.upload(batch * kk * nn, 73L, fb);
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (batch * mm * nn));
+        int64[] m #= ValueCheck.mark();
+        Gemm.tiledBatched<float32>(c, a, b, mm, nn, kk, batch);
+        float32[] g = heap float32[batch * mm * nn];
+        c.download(g);
+        StructuredTest.stage = "gemmTiledBatched";
+        int64 bt = 0L;
+        while (bt < batch) {
+            int64 r = 0L;
+            while (r < mm) {
+                int64 col = 0L;
+                while (col < nn) {
+                    float64 acc = 0.0;
+                    int64 p = 0L;
+                    while (p < kk) { acc = acc + fa[(int32) (bt * mm * kk + r * kk + p)] * fb[(int32) (bt * kk * nn + p * nn + col)]; p = p + 1L; }
+                    StructuredTest.close((float64) g[(int32) (bt * mm * nn + r * nn + col)], acc, (float64) kk * 1.0e-7);
+                    col = col + 1L;
+                }
+                r = r + 1L;
+            }
+            bt = bt + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+}

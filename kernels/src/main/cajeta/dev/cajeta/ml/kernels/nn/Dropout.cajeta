@@ -1,0 +1,51 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * Inverted dropout (spec §6.6): element i is dropped when a per-(seed, i) murmur-style hash maps
+ * below p, otherwise scaled by 1/(1-p); the mask holds 0 or that scale. Deterministic per seed,
+ * the same on every backend; not torch's stream.
+ */
+public final class Dropout {
+    public Dropout() { return; }
+
+    @Device
+    static float32 uniform(uint32 i, uint32 seedLo, uint32 seedHi) {
+        uint32 h = i ^ seedLo;
+        h = h ^ (h >> 16);
+        h = h * (uint32) 2246822507L;
+        h = h ^ (h >> 13);
+        h = h ^ seedHi;
+        h = h * (uint32) 3266489909L;
+        h = h ^ (h >> 16);
+        h = h ^ 1540483477;
+        h = h * (uint32) 2246822507L;
+        h = h ^ (h >> 15);
+        return (float32) (h >> 8) * 0.000000059604645f;
+    }
+
+    @Kernel
+    public static void dropout<E>(KernelBuffer<E> out, KernelBuffer<E> mask, KernelBuffer<E> x, uint32 n,
+                                  float32 p, float32 scale, uint32 seedLo, uint32 seedHi) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            float32 m = scale;
+            if (Dropout.uniform(i, seedLo, seedHi) < p) { m = 0.0f; }
+            mask[i] = (E) m;
+            out[i] = (E) ((float32) x[i] * m);
+        }
+    }
+
+    /** out = x * mask with keep probability 1 - p and survivors scaled by 1/(1-p); synced. */
+    public static void apply<E>(KernelBuffer<E> out, KernelBuffer<E> mask, KernelBuffer<E> x, int64 n, float32 p, uint64 seed) {
+        uint32 un = (uint32) n;
+        uint32 lo = (uint32) (seed & 4294967295L);
+        uint32 hi = (uint32) (seed >> 32);
+        KernelStream s #= KernelStream.current();
+        dropout.launch(s, grid: [(un + 255) / 256], block: [256])(out, mask, x, un, p, 1.0f / (1.0f - p), lo, hi);
+        s.sync();
+    }
+}

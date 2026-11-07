@@ -27,4 +27,26 @@ public final class Embed {
         embed.launch(s, grid: [(uint32) n], block: [256])(out, table, ids, (uint32) dim);
         s.sync();
     }
+
+    /** out[i][j] = table[ids[i]][j] with ids carried as E values (exact below 2^24); an id outside the table reads as 0. */
+    @Kernel
+    public static void embedF<E>(KernelBuffer<E> out, KernelBuffer<E> table, KernelBuffer<E> ids, uint32 total, uint32 dim, uint32 vocab) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < total) {
+            uint32 row = t / dim;
+            uint32 j = t - row * dim;
+            float32 idf = (float32) ids[row];
+            E v = (E) 0;
+            if (idf >= 0.0f && idf < (float32) vocab) { v = table[(uint32) idf * dim + j]; }
+            out[t] = v;
+        }
+    }
+
+    /** out (n x dim) = the rows of `table` (vocab x dim) at the E-valued `ids`; synced. */
+    public static void rowsAt<E>(KernelBuffer<E> out, KernelBuffer<E> table, KernelBuffer<E> ids, int64 n, int64 dim, int64 vocab) {
+        uint32 total = (uint32) (n * dim);
+        KernelStream s #= KernelStream.current();
+        embedF.launch(s, grid: [(total + 255) / 256], block: [256])(out, table, ids, total, (uint32) dim, (uint32) vocab);
+        s.sync();
+    }
 }

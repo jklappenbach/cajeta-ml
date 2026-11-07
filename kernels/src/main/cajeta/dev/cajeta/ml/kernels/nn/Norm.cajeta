@@ -81,6 +81,49 @@ public final class Norm {
         }
     }
 
+    /** layernorm that also saves each element's xhat and each row's 1/std, the backward's state. */
+    @Kernel
+    public static void layernormSaved<E>(KernelBuffer<E> out, KernelBuffer<E> xhat, KernelBuffer<E> invstd, KernelBuffer<E> x,
+                                         KernelBuffer<E> w, KernelBuffer<E> b, uint32 cols, float32 eps) {
+        Shared<float32> part = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 row = Workgroup.x();
+        uint32 base = row * cols;
+        float32 acc = 0.0f;
+        uint32 i = lane;
+        while (i < cols) { acc = acc + (float32) x[base + i]; i = i + 256; }
+        part[lane] = acc;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 mu = part[0] / (float32) cols;
+        Barrier.workgroup();
+        float32 dev = 0.0f;
+        i = lane;
+        while (i < cols) { float32 d = (float32) x[base + i] - mu; dev = dev + d * d; i = i + 256; }
+        part[lane] = dev;
+        Barrier.workgroup();
+        s = 128;
+        while (s > 0) {
+            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 iv = 1.0f / Math.sqrt(part[0] / (float32) cols + eps);
+        if (lane == 0) { invstd[row] = (E) iv; }
+        uint32 j = lane;
+        while (j < cols) {
+            float32 xh = ((float32) x[base + j] - mu) * iv;
+            xhat[base + j] = (E) xh;
+            out[base + j] = (E) ((float32) w[j] * xh + (float32) b[j]);
+            j = j + 256;
+        }
+    }
+
     /** Each row scaled to unit L2 norm, the norm floored at `eps` so a zero row stays zero. */
     @Kernel
     public static void l2norm<E>(KernelBuffer<E> out, KernelBuffer<E> x, uint32 cols, float32 eps) {
@@ -123,6 +166,14 @@ public final class Norm {
     public static void layer<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         layernorm.launch(s, grid: [(uint32) rows], block: [256])(out, x, w, b, (uint32) cols, eps);
+        s.sync();
+    }
+
+    /** layernorm of each row with the saved xhat and per-row invstd; synced. */
+    public static void layerSaved<E>(KernelBuffer<E> out, KernelBuffer<E> xhat, KernelBuffer<E> invstd, KernelBuffer<E> x,
+                                     KernelBuffer<E> w, KernelBuffer<E> b, int64 rows, int64 cols, float32 eps) {
+        KernelStream s #= KernelStream.current();
+        layernormSaved.launch(s, grid: [(uint32) rows], block: [256])(out, xhat, invstd, x, w, b, (uint32) cols, eps);
         s.sync();
     }
 

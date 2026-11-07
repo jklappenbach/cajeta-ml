@@ -1,0 +1,60 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/** Direct 2-D convolution over NCHW input with an (O,C,KH,KW) kernel and a bias (spec §6.6): one lane per output element, float32 accumulation. */
+public final class Conv {
+    public Conv() { return; }
+
+    @Kernel
+    public static void conv2d<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
+                                 uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc, uint32 kh, uint32 kw,
+                                 uint32 oh, uint32 ow, int32 stride, int32 pad) {
+        uint32 t = KernelThread.globalIdX();
+        uint32 total = n * oc * oh * ow;
+        if (t < total) {
+            uint32 xx = t % ow;
+            uint32 q = t / ow;
+            uint32 y = q % oh;
+            q = q / oh;
+            uint32 o = q % oc;
+            uint32 bn = q / oc;
+            float32 acc = (float32) b[o];
+            uint32 ci = 0;
+            while (ci < c) {
+                uint32 a = 0;
+                while (a < kh) {
+                    int32 ih = (int32) y * stride - pad + (int32) a;
+                    if (ih >= 0 && ih < (int32) h) {
+                        uint32 e = 0;
+                        while (e < kw) {
+                            int32 iw = (int32) xx * stride - pad + (int32) e;
+                            if (iw >= 0 && iw < (int32) wd) {
+                                uint32 xi = ((bn * c + ci) * h + (uint32) ih) * wd + (uint32) iw;
+                                uint32 wi = ((o * c + ci) * kh + a) * kw + e;
+                                acc = acc + (float32) x[xi] * (float32) w[wi];
+                            }
+                            e = e + 1;
+                        }
+                    }
+                    a = a + 1;
+                }
+                ci = ci + 1;
+            }
+            out[t] = (E) acc;
+        }
+    }
+
+    /** `out` (n,oc,oh,ow) = conv2d of `x` (n,c,h,wd) with `w` (oc,c,kh,kw) plus `b` (oc); synced. */
+    public static void forward<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
+                                  int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
+                                  int64 oh, int64 ow, int32 stride, int32 pad) {
+        uint32 total = (uint32) (n * oc * oh * ow);
+        KernelStream s #= KernelStream.current();
+        conv2d.launch(s, grid: [(total + 255) / 256], block: [256])(out, x, w, b, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad);
+        s.sync();
+    }
+}

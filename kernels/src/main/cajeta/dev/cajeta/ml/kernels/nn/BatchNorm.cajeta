@@ -1,0 +1,97 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.lang.Math;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/** Batch normalisation over NCHW (spec §6.6): per-channel statistics as one workgroup per channel, then the normalise with the saved xhat and 1/std. */
+public final class BatchNorm {
+    public BatchNorm() { return; }
+
+    /** mean[ci] and the biased var[ci] over (n, hw), two shared-memory trees. */
+    @Kernel
+    public static void stats<E>(KernelBuffer<E> mean, KernelBuffer<E> var, KernelBuffer<E> x, uint32 n, uint32 c, uint32 hw) {
+        Shared<float32> part = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 ci = Workgroup.x();
+        uint32 count = n * hw;
+        float32 acc = 0.0f;
+        uint32 i = lane;
+        while (i < count) {
+            uint32 bn = i / hw;
+            uint32 p = i - bn * hw;
+            acc = acc + (float32) x[(bn * c + ci) * hw + p];
+            i = i + 256;
+        }
+        part[lane] = acc;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 mu = part[0] / (float32) count;
+        Barrier.workgroup();
+        float32 dev = 0.0f;
+        i = lane;
+        while (i < count) {
+            uint32 bn = i / hw;
+            uint32 p = i - bn * hw;
+            float32 d = (float32) x[(bn * c + ci) * hw + p] - mu;
+            dev = dev + d * d;
+            i = i + 256;
+        }
+        part[lane] = dev;
+        Barrier.workgroup();
+        s = 128;
+        while (s > 0) {
+            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        if (lane == 0) {
+            mean[ci] = (E) mu;
+            var[ci] = (E) (part[0] / (float32) count);
+        }
+    }
+
+    /** out = gamma * xhat + beta with xhat = (x - mean) / sqrt(var + eps); xhat and invstd saved. */
+    @Kernel
+    public static void normalize<E>(KernelBuffer<E> out, KernelBuffer<E> xhat, KernelBuffer<E> invstd, KernelBuffer<E> x,
+                                    KernelBuffer<E> gamma, KernelBuffer<E> beta, KernelBuffer<E> mean, KernelBuffer<E> var,
+                                    uint32 n, uint32 c, uint32 hw, float32 eps) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < n * c * hw) {
+            uint32 plane = t / hw;
+            uint32 ci = plane % c;
+            float32 iv = 1.0f / Math.sqrt((float32) var[ci] + eps);
+            float32 xh = ((float32) x[t] - (float32) mean[ci]) * iv;
+            xhat[t] = (E) xh;
+            out[t] = (E) ((float32) gamma[ci] * xh + (float32) beta[ci]);
+            if (t < c * hw && t - plane * hw == 0) { invstd[ci] = (E) iv; }
+        }
+    }
+
+    /** Per-channel mean and biased variance of `x` (n, c, hw); synced. */
+    public static void channelStats<E>(KernelBuffer<E> mean, KernelBuffer<E> var, KernelBuffer<E> x, int64 n, int64 c, int64 hw) {
+        KernelStream s #= KernelStream.current();
+        stats.launch(s, grid: [(uint32) c], block: [256])(mean, var, x, (uint32) n, (uint32) c, (uint32) hw);
+        s.sync();
+    }
+
+    /** The normalise with the given statistics, saving xhat and invstd; synced. */
+    public static void apply<E>(KernelBuffer<E> out, KernelBuffer<E> xhat, KernelBuffer<E> invstd, KernelBuffer<E> x,
+                                KernelBuffer<E> gamma, KernelBuffer<E> beta, KernelBuffer<E> mean, KernelBuffer<E> var,
+                                int64 n, int64 c, int64 hw, float32 eps) {
+        uint32 total = (uint32) (n * c * hw);
+        KernelStream s #= KernelStream.current();
+        normalize.launch(s, grid: [(total + 255) / 256], block: [256])(out, xhat, invstd, x, gamma, beta, mean, var,
+            (uint32) n, (uint32) c, (uint32) hw, eps);
+        s.sync();
+    }
+}

@@ -9,10 +9,17 @@ import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.kernels.Convert;
 import dev.cajeta.ml.kernels.Copy;
 import dev.cajeta.ml.kernels.Elementwise;
+import dev.cajeta.ml.kernels.Fill;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.ml.kernels.Reduce;
 import dev.cajeta.ml.kernels.nn.Act;
+import dev.cajeta.ml.kernels.nn.BatchNorm;
+import dev.cajeta.ml.kernels.nn.Conv;
+import dev.cajeta.ml.kernels.nn.Dropout;
+import dev.cajeta.ml.kernels.nn.Embed;
+import dev.cajeta.ml.kernels.nn.Loss;
 import dev.cajeta.ml.kernels.nn.Norm;
+import dev.cajeta.ml.kernels.nn.Pool;
 
 /**
  * The op dispatch layer — THE device seam (spec §3.3, designed in from
@@ -39,24 +46,17 @@ public final class Ops {
         return op > Op.LEAF && op < Op.COUNT;
     }
 
-    /** True when a GPU kernel exists for `op`: the elementwise, row, binary
-     *  reduction and shape groups (cajeta-ml-gpu 27.1.1) so far. */
+    /** True when a GPU kernel exists for `op`: every op of the table, at
+     *  float32 (cajeta-ml-gpu 27.1.1). */
     public static boolean hasGpu(int32 op) {
-        return op == Op.RELU || op == Op.NEG || op == Op.EXP || op == Op.LOG
-            || op == Op.SQRT || op == Op.TANH || op == Op.SIGMOID || op == Op.GELU
-            || op == Op.SOFTMAX || op == Op.LOGSOFTMAX || op == Op.POWS
-            || op == Op.ROWNORM || op == Op.ADD || op == Op.SUB || op == Op.MUL
-            || op == Op.DIV || op == Op.MATMUL || op == Op.SUM || op == Op.MEAN
-            || op == Op.SUMAXIS || op == Op.MEANAXIS || op == Op.MAXAXIS
-            || op == Op.TRANSPOSE || op == Op.TRANSPOSEB || op == Op.PERMUTE
-            || op == Op.RESHAPE || op == Op.SLICE || op == Op.CONCAT;
+        return op > Op.LEAF && op < Op.COUNT;
     }
 
     static void requireCpu<E extends Floating>(String opName, Tensor<E> t) {
         if (t.isOnGpu()) {
             throw heap MlException("ml.grad: '" + opName + "' input is "
-                + "GPU-resident but the op has no GPU kernel yet "
-                + "(cajeta-ml-gpu 27.1.1) — move it with .cpu()");
+                + "GPU-resident but the op has no GPU kernel yet (the "
+                + "backward column, cajeta-ml-gpu 29) — move it with .cpu()");
         }
     }
 
@@ -173,6 +173,32 @@ public final class Ops {
         return #out;
     }
 
+    /** A zero tensor of `shape` on `like`'s device: the tape's saved state follows its input. */
+    public static #Tensor<E> zerosOn<E extends Floating>(int64[] shape, Tensor<E> like) {
+        if (like.isOnGpu()) {
+            Tensor<E> dv #= Ewise.deviceOf<E>(shape);
+            Fill.with<E>(dv.deviceView("zeros"), dv.size(), (E) 0);
+            return #dv;
+        }
+        return Tensor.zeros<E>(shape);
+    }
+
+    /** A zero tensor shaped like `like`, on its device. */
+    public static #Tensor<E> zerosLike<E extends Floating>(Tensor<E> like) {
+        int64[] sh #= Ops.shapeOf<E>(like);
+        return Ops.zerosOn<E>(sh, like);
+    }
+
+    /** A copy of `t` on its own device. */
+    public static #Tensor<E> copyOf<E extends Floating>(Tensor<E> t) {
+        if (t.isOnGpu()) {
+            Tensor<E> dv #= Ewise.deviceLike<E>(t);
+            Copy.into<E>(dv.deviceView("copy"), t.deviceView("copy"), t.size());
+            return #dv;
+        }
+        return t.copy();
+    }
+
     /** C-order strides of `shape`. */
     static #int64[] contig(int64[] shape) {
         int32 nd = (int32) shape.count();
@@ -222,6 +248,19 @@ public final class Ops {
             int64[] shp = [m, n];
             Tensor<E> out #= Ewise.deviceOf<E>(shp);
             Gemm.tiled<E>(out.deviceView(name), a.deviceView(name), b.deviceView(name), m, n, k);
+            return #out;
+        }
+        if (op == Op.MATMULB) {
+            if (a.ndim() != 3 || b.ndim() != 3) {
+                throw heap MlException("ml.grad: matmulBatched expects rank-3 inputs, got " + a.ndim() + " and " + b.ndim());
+            }
+            int64 batch = a.shapeAt(0);
+            int64 m = a.shapeAt(1);
+            int64 k = a.shapeAt(2);
+            int64 n = b.shapeAt(2);
+            int64[] shp = [batch, m, n];
+            Tensor<E> out #= Ewise.deviceOf<E>(shp);
+            Gemm.tiledBatched<E>(out.deviceView(name), a.deviceView(name), b.deviceView(name), m, n, k, batch);
             return #out;
         }
         throw heap MlException("ml.grad: '" + name + "' has no GPU kernel");
@@ -342,7 +381,26 @@ public final class Ops {
                                                         int32 pad) {
         Ops.requireSame<E>("conv2d", x, w);
         Ops.requireSame<E>("conv2d", x, b);
-        Ops.requireCpu<E>("conv2d", x);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("conv2d");
+            int64 n = x.shapeAt(0);
+            int64 c = x.shapeAt(1);
+            int64 h = x.shapeAt(2);
+            int64 wd = x.shapeAt(3);
+            int64 oc = w.shapeAt(0);
+            int64 kh = w.shapeAt(2);
+            int64 kw = w.shapeAt(3);
+            if (w.shapeAt(1) != c) {
+                throw heap MlException("ml.grad: conv2d channel mismatch — input has " + c + ", weight expects " + w.shapeAt(1));
+            }
+            int64 oh = StructKernels.outExtent(h, (int32) kh, stride, pad);
+            int64 ow = StructKernels.outExtent(wd, (int32) kw, stride, pad);
+            int64[] osh = [n, oc, oh, ow];
+            Tensor<E> out #= Ewise.deviceOf<E>(osh);
+            Conv.forward<E>(out.deviceView("conv2d"), x.deviceView("conv2d"), w.deviceView("conv2d"), b.deviceView("conv2d"),
+                n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
+            return #out;
+        }
         return StructKernels.conv2d<E>(x, w, b, stride, pad);
     }
 
@@ -372,7 +430,15 @@ public final class Ops {
     public static #Tensor<E> maxPool2d<E extends Floating>(Tensor<E> x, int32 k,
                                                            int32 stride, int32 pad,
                                                            Tensor<E> argmax) {
-        Ops.requireCpu<E>("maxPool2d", x);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("maxPool2d");
+            Ops.requireSame<E>("maxPool2d", x, argmax);
+            int64[] osh #= Ops.poolShape<E>(x, k, stride, pad);
+            Tensor<E> out #= Ewise.deviceOf<E>(osh);
+            Pool.max<E>(out.deviceView("maxPool2d"), argmax.deviceView("maxPool2d"), x.deviceView("maxPool2d"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2), x.shapeAt(3), osh[2], osh[3], k, stride, pad);
+            return #out;
+        }
         return StructKernels.maxPool2d<E>(x, k, stride, pad, argmax);
     }
 
@@ -385,7 +451,14 @@ public final class Ops {
 
     public static #Tensor<E> avgPool2d<E extends Floating>(Tensor<E> x, int32 k,
                                                            int32 stride, int32 pad) {
-        Ops.requireCpu<E>("avgPool2d", x);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("avgPool2d");
+            int64[] osh #= Ops.poolShape<E>(x, k, stride, pad);
+            Tensor<E> out #= Ewise.deviceOf<E>(osh);
+            Pool.avg<E>(out.deviceView("avgPool2d"), x.deviceView("avgPool2d"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2), x.shapeAt(3), osh[2], osh[3], k, stride, pad);
+            return #out;
+        }
         return StructKernels.avgPool2d<E>(x, k, stride, pad);
     }
 
@@ -400,7 +473,14 @@ public final class Ops {
     public static #Tensor<E> adaptiveAvgPool2d<E extends Floating>(Tensor<E> x,
                                                                    int32 outH,
                                                                    int32 outW) {
-        Ops.requireCpu<E>("adaptiveAvgPool2d", x);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("adaptiveAvgPool2d");
+            int64[] osh = [x.shapeAt(0), x.shapeAt(1), (int64) outH, (int64) outW];
+            Tensor<E> out #= Ewise.deviceOf<E>(osh);
+            Pool.adaptive<E>(out.deviceView("adaptiveAvgPool2d"), x.deviceView("adaptiveAvgPool2d"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2), x.shapeAt(3), osh[2], osh[3]);
+            return #out;
+        }
         return StructKernels.adaptiveAvgPool2d<E>(x, outH, outW);
     }
 
@@ -412,13 +492,40 @@ public final class Ops {
     }
 
     public static #Tensor<E> channelMean<E extends Floating>(Tensor<E> x) {
-        Ops.requireCpu<E>("batchNorm2d", x);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("batchNorm2d");
+            Tensor<E> mean #= Ops.channelStatsGpu<E>(x, true);
+            return #mean;
+        }
         return StructKernels.channelMean<E>(x);
+    }
+
+    /** Both channel statistics on the device; `wantMean` picks which one is returned. */
+    static #Tensor<E> channelStatsGpu<E extends Floating>(Tensor<E> x, boolean wantMean) {
+        int64[] cs = [x.shapeAt(1)];
+        Tensor<E> mean #= Ewise.deviceOf<E>(cs);
+        Tensor<E> var #= Ewise.deviceOf<E>(cs);
+        BatchNorm.channelStats<E>(mean.deviceView("batchNorm2d"), var.deviceView("batchNorm2d"), x.deviceView("batchNorm2d"),
+            x.shapeAt(0), x.shapeAt(1), x.shapeAt(2) * x.shapeAt(3));
+        if (wantMean) { return #mean; }
+        return #var;
+    }
+
+    /** The pooled NCHW shape for a k/stride/pad window over `x`. */
+    static #int64[] poolShape<E extends Floating>(Tensor<E> x, int32 k, int32 stride, int32 pad) {
+        int64[] osh = [x.shapeAt(0), x.shapeAt(1),
+                       StructKernels.outExtent(x.shapeAt(2), k, stride, pad),
+                       StructKernels.outExtent(x.shapeAt(3), k, stride, pad)];
+        return #osh;
     }
 
     public static #Tensor<E> channelVar<E extends Floating>(Tensor<E> x, Tensor<E> mean) {
         Ops.requireSame<E>("batchNorm2d", x, mean);
-        Ops.requireCpu<E>("batchNorm2d", x);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("batchNorm2d");
+            Tensor<E> var #= Ops.channelStatsGpu<E>(x, false);
+            return #var;
+        }
         return StructKernels.channelVar<E>(x, mean);
     }
 
@@ -429,7 +536,17 @@ public final class Ops {
                                                              Tensor<E> invstd) {
         Ops.requireSame<E>("batchNorm2d", x, gamma);
         Ops.requireSame<E>("batchNorm2d", x, beta);
-        Ops.requireCpu<E>("batchNorm2d", x);
+        Ops.requireSame<E>("batchNorm2d", x, mean);
+        Ops.requireSame<E>("batchNorm2d", x, xhat);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("batchNorm2d");
+            Tensor<E> out #= Ewise.deviceLike<E>(x);
+            BatchNorm.apply<E>(out.deviceView("batchNorm2d"), xhat.deviceView("batchNorm2d"), invstd.deviceView("batchNorm2d"),
+                x.deviceView("batchNorm2d"), gamma.deviceView("batchNorm2d"), beta.deviceView("batchNorm2d"),
+                mean.deviceView("batchNorm2d"), var.deviceView("batchNorm2d"),
+                x.shapeAt(0), x.shapeAt(1), x.shapeAt(2) * x.shapeAt(3), (float32) eps);
+            return #out;
+        }
         return StructKernels.batchNorm2d<E>(x, gamma, beta, mean, var, eps, xhat, invstd);
     }
 
@@ -476,7 +593,16 @@ public final class Ops {
                                                            Tensor<E> invstd) {
         Ops.requireSame<E>("layerNorm", x, gamma);
         Ops.requireSame<E>("layerNorm", x, beta);
-        Ops.requireCpu<E>("layerNorm", x);
+        Ops.requireSame<E>("layerNorm", x, xhat);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("layerNorm");
+            int64 d = x.shapeAt(x.ndim() - 1);
+            int64 rows = x.size() / d;
+            Tensor<E> out #= Ewise.deviceLike<E>(x);
+            Norm.layerSaved<E>(out.deviceView("layerNorm"), xhat.deviceView("layerNorm"), invstd.deviceView("layerNorm"),
+                x.deviceView("layerNorm"), gamma.deviceView("layerNorm"), beta.deviceView("layerNorm"), rows, d, (float32) eps);
+            return #out;
+        }
         return StructKernels.layerNorm<E>(x, gamma, beta, eps, xhat, invstd);
     }
 
@@ -502,7 +628,15 @@ public final class Ops {
     }
 
     public static #Tensor<E> embedding<E extends Floating>(Tensor<E> w, Tensor<E> idx) {
-        Ops.requireCpu<E>("embedding", w);
+        Ops.requireSame<E>("embedding", w, idx);
+        if (w.isOnGpu()) {
+            Ops.requireF32<E>("embedding");
+            int64 rows = idx.size();
+            int64[] osh = [rows, w.shapeAt(1)];
+            Tensor<E> out #= Ewise.deviceOf<E>(osh);
+            Embed.rowsAt<E>(out.deviceView("embedding"), w.deviceView("embedding"), idx.deviceView("embedding"), rows, w.shapeAt(1), w.shapeAt(0));
+            return #out;
+        }
         return StructKernels.embedding<E>(w, idx);
     }
 
@@ -516,14 +650,37 @@ public final class Ops {
     public static #Tensor<E> dropout<E extends Floating>(Tensor<E> x, float64 p,
                                                          boolean training, uint64 seed,
                                                          Tensor<E> mask) {
-        Ops.requireCpu<E>("dropout", x);
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("dropout");
+            Ops.requireSame<E>("dropout", x, mask);
+            int64 n = x.size();
+            if (!training || p <= 0.0) {
+                Fill.with<E>(mask.deviceView("dropout"), n, (E) 1);
+                return Ops.copyOf<E>(x);
+            }
+            if (p >= 1.0) { throw heap MlException("ml.grad: dropout p must be < 1 (got " + p + ")"); }
+            Tensor<E> out #= Ewise.deviceLike<E>(x);
+            Dropout.apply<E>(out.deviceView("dropout"), mask.deviceView("dropout"), x.deviceView("dropout"), n, (float32) p, seed);
+            return #out;
+        }
         return StructKernels.dropout<E>(x, p, training, seed, mask);
     }
 
     public static #Tensor<E> crossEntropy<E extends Floating>(Tensor<E> logits,
                                                               Tensor<E> targets,
                                                               Tensor<E> probs) {
-        Ops.requireCpu<E>("crossEntropy", logits);
+        Ops.requireSame<E>("crossEntropy", logits, targets);
+        Ops.requireSame<E>("crossEntropy", logits, probs);
+        if (logits.isOnGpu()) {
+            Ops.requireF32<E>("crossEntropy");
+            int64 cls = logits.shapeAt(logits.ndim() - 1);
+            int64 rows = logits.size() / cls;
+            Act.softmaxRows<E>(probs.deviceView("crossEntropy"), logits.deviceView("crossEntropy"), rows, cls);
+            int64[] rs = [rows];
+            Tensor<E> rowLoss #= Ewise.deviceOf<E>(rs);
+            Loss.nllRows<E>(rowLoss.deviceView("crossEntropy"), probs.deviceView("crossEntropy"), targets.deviceView("crossEntropy"), rows, cls);
+            return Ops.reduceAllGpu<E>("crossEntropy", rowLoss, true);
+        }
         return StructKernels.crossEntropy<E>(logits, targets, probs);
     }
 
@@ -536,7 +693,19 @@ public final class Ops {
 
     public static #Tensor<E> mseLoss<E extends Floating>(Tensor<E> pred, Tensor<E> target) {
         Ops.requireSame<E>("mseLoss", pred, target);
-        Ops.requireCpu<E>("mseLoss", pred);
+        if (pred.isOnGpu()) {
+            Ops.requireF32<E>("mseLoss");
+            int64 n = pred.size();
+            if (target.size() != n) {
+                throw heap MlException("ml.grad: mseLoss shape mismatch — prediction has " + n
+                    + " elements, target has " + target.size() + " (a head emitting k outputs needs a k-wide target)");
+            }
+            int64[] ps #= Ops.shapeOf<E>(pred);
+            Tensor<E> tv #= Ops.reshape<E>(target, ps);
+            Tensor<E> diff #= Tensor.sub<E>(pred, tv);
+            Elementwise.map<E>(diff.deviceView("mseLoss"), diff.deviceView("mseLoss"), n, Elementwise.POW, 2.0f);
+            return Ops.reduceAllGpu<E>("mseLoss", diff, true);
+        }
         return StructKernels.mseLoss<E>(pred, target);
     }
 
@@ -551,7 +720,16 @@ public final class Ops {
     public static #Tensor<E> cosineSim<E extends Floating>(Tensor<E> a, Tensor<E> b,
                                                            float64 eps, Tensor<E> cache) {
         Ops.requireSame<E>("cosineSim", a, b);
-        Ops.requireCpu<E>("cosineSim", a);
+        if (a.isOnGpu()) {
+            Ops.requireF32<E>("cosineSim");
+            Ops.requireSame<E>("cosineSim", a, cache);
+            int64 d = a.shapeAt(a.ndim() - 1);
+            int64 rows = a.size() / d;
+            int64[] rs = [rows];
+            Tensor<E> out #= Ewise.deviceOf<E>(rs);
+            Loss.cosineRows<E>(out.deviceView("cosineSim"), cache.deviceView("cosineSim"), a.deviceView("cosineSim"), b.deviceView("cosineSim"), rows, d, (float32) eps);
+            return #out;
+        }
         return StructKernels.cosineSim<E>(a, b, eps, cache);
     }
 

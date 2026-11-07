@@ -497,6 +497,60 @@ public final class Gemm {
         if (gm < m && gn < n) { c[gm * n + gn] = (E) acc; }
     }
 
+    /** The plain tile over a leading batch axis: workgroup (batch, mi, nj). */
+    @Kernel
+    public static void gemmTiledBatched<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k) {
+        Shared<float32> sa = shared float32[256];
+        Shared<float32> sb = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 r = t / 16;
+        uint32 cc = t - r * 16;
+        uint32 mtiles = (m + 15) / 16;
+        uint32 ntiles = (n + 15) / 16;
+        uint32 tiles = mtiles * ntiles;
+        uint32 wid = Workgroup.x();
+        uint32 bt = wid / tiles;
+        uint32 rem = wid - bt * tiles;
+        uint32 mi = rem / ntiles;
+        uint32 nj = rem - mi * ntiles;
+        uint32 abase = bt * m * k;
+        uint32 bbase = bt * k * n;
+        uint32 gm = mi * 16 + r;
+        uint32 gn = nj * 16 + cc;
+        float32 acc = 0.0f;
+        uint32 ktiles = (k + 15) / 16;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            uint32 gk = kk * 16 + cc;
+            float32 va = 0.0f;
+            if (gm < m && gk < k) { va = (float32) a[abase + gm * k + gk]; }
+            sa[t] = va;
+            uint32 gk2 = kk * 16 + r;
+            float32 vb = 0.0f;
+            if (gk2 < k && gn < n) { vb = (float32) b[bbase + gk2 * n + gn]; }
+            sb[t] = vb;
+            Barrier.workgroup();
+            uint32 p = 0;
+            while (p < 16) {
+                acc = acc + sa[r * 16 + p] * sb[p * 16 + cc];
+                p = p + 1;
+            }
+            Barrier.workgroup();
+            kk = kk + 1;
+        }
+        if (gm < m && gn < n) { c[bt * m * n + gm * n + gn] = (E) acc; }
+    }
+
+    /** `c` (batch x m x n) = `a` (batch x m x k) . `b` (batch x k x n) at E through the plain tile; synced. */
+    public static void tiledBatched<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, int64 batch) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
+        KernelStream s #= KernelStream.current();
+        gemmTiledBatched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k);
+        s.sync();
+    }
+
     /** `c` (m x n) = `a` (m x k) . `b` (k x n), all at E, through the plain tile; synced. */
     public static void tiled<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
