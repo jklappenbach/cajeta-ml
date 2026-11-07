@@ -1,0 +1,30 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+
+/** The embedding row gather (spec §6.5): one workgroup per token id copies its row of the table into float32. llm's embedRow. */
+public final class Embed {
+    public Embed() { return; }
+
+    @Kernel
+    public static void embed<E>(KernelBuffer<float32> out, KernelBuffer<E> table, KernelBuffer<int32> ids, uint32 dim) {
+        uint32 lane = KernelThread.x();
+        uint32 w = Workgroup.x();
+        uint32 row = (uint32) ids[w];
+        uint32 e = lane;
+        while (e < dim) {
+            out[w * dim + e] = (float32) table[row * dim + e];
+            e = e + 256;
+        }
+    }
+
+    /** `out` (n x dim, float32) = the rows of `table` named by `ids`; synced. */
+    public static void rows<E>(KernelBuffer<float32> out, KernelBuffer<E> table, KernelBuffer<int32> ids, int64 n, int64 dim) {
+        KernelStream s #= KernelStream.current();
+        embed.launch(s, grid: [(uint32) n], block: [256])(out, table, ids, (uint32) dim);
+        s.sync();
+    }
+}

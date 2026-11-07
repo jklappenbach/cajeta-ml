@@ -1,0 +1,52 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.lang.Math;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * Rotary position embedding in place (spec §6.2) over `rows` of `nHeads x headDim`, each row
+ * at its own position: one lane per (row, head, pair), angle pos x invFreq[d]. `variant` 0 is
+ * llama's pairing (2d, 2d+1), 1 neox's split half (d, d+half); llm's ropeDecode is the latter.
+ */
+public final class Rope {
+    public Rope() { return; }
+
+    public static final int32 LLAMA = 0;
+    public static final int32 NEOX = 1;
+
+    @Kernel
+    public static void rope<E>(KernelBuffer<E> t, KernelBuffer<float32> invFreq, KernelBuffer<int32> pos,
+                               uint32 rows, uint32 nHeads, uint32 headDim, int32 variant) {
+        uint32 id = KernelThread.globalIdX();
+        uint32 half = headDim / 2;
+        uint32 perRow = nHeads * half;
+        if (id < rows * perRow) {
+            uint32 r = id / perRow;
+            uint32 rem = id - r * perRow;
+            uint32 h = rem / half;
+            uint32 d = rem - h * half;
+            uint32 base = (r * nHeads + h) * headDim;
+            float32 ang = (float32) pos[r] * invFreq[d];
+            float32 c = Math.cos(ang);
+            float32 s = Math.sin(ang);
+            uint32 i0 = base + d;
+            uint32 i1 = base + d + half;
+            if (variant == 0) { i0 = base + 2 * d; i1 = base + 2 * d + 1; }
+            float32 a = (float32) t[i0];
+            float32 b = (float32) t[i1];
+            t[i0] = (E) (a * c - b * s);
+            t[i1] = (E) (a * s + b * c);
+        }
+    }
+
+    /** Rotates `t` (rows x nHeads x headDim) in place at `pos[row]` with the pairing `variant`; synced. */
+    public static void apply<E>(KernelBuffer<E> t, KernelBuffer<float32> invFreq, KernelBuffer<int32> pos,
+                                int64 rows, int64 nHeads, int64 headDim, int32 variant) {
+        uint32 lanes = (uint32) (rows * nHeads * (headDim / 2L));
+        KernelStream s #= KernelStream.current();
+        rope.launch(s, grid: [(lanes + 255) / 256], block: [256])(t, invFreq, pos, (uint32) rows, (uint32) nHeads, (uint32) headDim, variant);
+        s.sync();
+    }
+}

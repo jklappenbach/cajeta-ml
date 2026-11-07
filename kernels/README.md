@@ -30,7 +30,8 @@ cajeta-xgboost are its first consumers.
   suite fails), `DeviceSkip` (a skip says why), `LaunchFailureBudget`.
 - `dev.cajeta.ml.kernels.nn` — `Norm` (rmsnorm, layernorm per row; spec §6.1) and
   `Act` (softmax per row; relu, silu, gelu, tanh, sigmoid; the gated unit; §6.3), generic over
-  f32, f16 and bf16 with float32 arithmetic inside.
+  f32, f16 and bf16 with float32 arithmetic inside; `Rope` (rotary embedding in llama's and
+  neox's pairings; §6.2); `Embed` (the embedding row gather; §6.5).
 - `dev.cajeta.ml.kernels.tune` — `TileShape`, `TileFamily<S>` (members pruned
   with a reason, the measured winner stored per problem, build and device) and
   `TuneMode`.

@@ -1,0 +1,159 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.nn.Embed;
+import dev.cajeta.ml.kernels.nn.Rope;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 25.1.1 (spec §6.2, §6.5): rotary embedding in llama's pairing (adjacent) and
+ * neox's (split half) against llm's host reference, f32 within 1e-4 (the backends' sin and cos)
+ * and f16 within 2e-3; the embedding gather for f16 and f32 tables, exact.
+ */
+public class RopeEmbedTest {
+    public RopeEmbedTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) (((i * 7919L) % 251L) - 125L) * 0.024f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 25.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 25.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    static boolean close(float64 got, float64 want, float64 rel) {
+        float64 d = got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        boolean ok = d <= rel * (w + 1.0);
+        if (!ok) { System.stdout.println("  got " + got + " want " + want); }
+        return ok;
+    }
+
+    /** llm's ropeRowHost generalised to both pairings: variant 0 rotates (2d, 2d+1), 1 rotates (d, d+half). */
+    static void hostRope(float64[] t, int64 rows, int64 nHeads, int64 headDim, float32[] invFreq, int32[] pos, int32 variant) {
+        int64 half = headDim / 2L;
+        int64 r = 0L;
+        while (r < rows) {
+            int64 h = 0L;
+            while (h < nHeads) {
+                int64 base = (r * nHeads + h) * headDim;
+                int64 d = 0L;
+                while (d < half) {
+                    float32 ang = (float32) pos[(int32) r] * invFreq[(int32) d];
+                    float64 c = (float64) Math.cos(ang);
+                    float64 s = (float64) Math.sin(ang);
+                    int64 i0 = base + d;
+                    int64 i1 = base + d + half;
+                    if (variant == 0) { i0 = base + 2L * d; i1 = base + 2L * d + 1L; }
+                    float64 a = t[(int32) i0];
+                    float64 b = t[(int32) i1];
+                    t[(int32) i0] = a * c - b * s;
+                    t[(int32) i1] = a * s + b * c;
+                    d = d + 1L;
+                }
+                h = h + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    static void ropeCase<E>(String kernel, float64 rel, int32 variant) {
+        int64 rows = 5L;
+        int64 nHeads = 4L;
+        int64 headDim = 64L;
+        int64 n = rows * nHeads * headDim;
+        E[] ht = heap E[n];
+        float64[] ft = heap float64[n];
+        int64 i = 0L;
+        while (i < n) { ht[(int32) i] = (E) RopeEmbedTest.pattern(i); ft[(int32) i] = (float64) ht[(int32) i]; i = i + 1L; }
+        float32[] invFreq = heap float32[headDim / 2L];
+        i = 0L;
+        while (i < headDim / 2L) { invFreq[(int32) i] = (float32) (1.0 / Math.pow(10000.0, (float64) (2L * i) / (float64) headDim)); i = i + 1L; }
+        int32[] pos = heap int32[rows];
+        i = 0L;
+        while (i < rows) { pos[(int32) i] = (int32) (i * 37L); i = i + 1L; }
+        KernelBuffer<E> t = heap KernelBuffer<E>((uint64) n);
+        KernelBuffer<float32> dInv = heap KernelBuffer<float32>((uint64) (headDim / 2L));
+        KernelBuffer<int32> dPos = heap KernelBuffer<int32>((uint64) rows);
+        t.upload(ht);
+        dInv.upload(invFreq);
+        dPos.upload(pos);
+        int64[] m #= ValueCheck.mark();
+        Rope.apply<E>(t, dInv, dPos, rows, nHeads, headDim, variant);
+        E[] got = heap E[n];
+        t.download(got);
+        RopeEmbedTest.hostRope(ft, rows, nHeads, headDim, invFreq, pos, variant);
+        i = 0L;
+        while (i < n) {
+            if (!RopeEmbedTest.close((float64) got[(int32) i], ft[(int32) i], rel)) {
+                System.stdout.println("  " + kernel + " variant " + variant + " [" + i + "]");
+                Assert.isTrue(false);
+            }
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void ropeMatchesTheHostInBothPairings() {
+        // 1e-4 at f32: Vulkan's sin and cos are not correctly rounded at large angles
+        // (3.2e-5 relative measured at 74 radians on RADV; hip and cpu sit within 1e-5).
+        if (RopeEmbedTest.usable("rope_float32")) {
+            RopeEmbedTest.ropeCase<float32>("rope_float32", 1.0e-4, 0);
+            RopeEmbedTest.ropeCase<float32>("rope_float32", 1.0e-4, 1);
+        }
+        if (RopeEmbedTest.usable("rope_float16")) {
+            RopeEmbedTest.ropeCase<float16>("rope_float16", 2.0e-3, 0);
+            RopeEmbedTest.ropeCase<float16>("rope_float16", 2.0e-3, 1);
+        }
+    }
+
+    static void embedCase<E>(String kernel) {
+        int64 vocab = 1000L;
+        int64 dim = 777L;
+        int64 n = 37L;
+        E[] table = heap E[vocab * dim];
+        int64 i = 0L;
+        while (i < vocab * dim) { table[(int32) i] = (E) RopeEmbedTest.pattern(i); i = i + 1L; }
+        int32[] ids = heap int32[n];
+        i = 0L;
+        while (i < n) { ids[(int32) i] = (int32) ((i * 7919L) % vocab); i = i + 1L; }
+        KernelBuffer<E> dTable = heap KernelBuffer<E>((uint64) (vocab * dim));
+        KernelBuffer<int32> dIds = heap KernelBuffer<int32>((uint64) n);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (n * dim));
+        dTable.upload(table);
+        dIds.upload(ids);
+        int64[] m #= ValueCheck.mark();
+        Embed.rows<E>(out, dTable, dIds, n, dim);
+        float32[] got = heap float32[n * dim];
+        out.download(got);
+        i = 0L;
+        while (i < n) {
+            int64 j = 0L;
+            while (j < dim) {
+                Assert.isTrue(got[(int32) (i * dim + j)] == (float32) table[(int32) ((int64) ids[(int32) i] * dim + j)]);
+                j = j + 1L;
+            }
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void embeddingRowsGatherExactly() {
+        if (RopeEmbedTest.usable("embed_float16")) { RopeEmbedTest.embedCase<float16>("embed_float16"); }
+        if (RopeEmbedTest.usable("embed_float32")) { RopeEmbedTest.embedCase<float32>("embed_float32"); }
+    }
+}
