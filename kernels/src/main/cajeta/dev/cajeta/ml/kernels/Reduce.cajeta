@@ -1,0 +1,273 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.GroupOp;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Workgroup;
+
+/**
+ * Reductions (spec §4.2): sum, min, max and sum of squares over a whole buffer or
+ * equal-length segments, as a two-kernel tree whose order never varies, so a result
+ * repeats bit for bit; and an exact sum in sign-split 320-bit fixed point, order-free
+ * by construction, rounded once to float32 (xgboost's clipWords, generalised).
+ */
+public final class Reduce {
+    public Reduce() { return; }
+
+    public static final int32 SUM = 0;
+    public static final int32 MIN = 1;
+    public static final int32 MAX = 2;
+    public static final int32 SUMSQ = 3;
+
+    @Device
+    static float32 identity(int32 op) {
+        if (op == 1) { return Cajeta.bitsToF32(2139095040); }
+        if (op == 2) { return Cajeta.bitsToF32(-8388608); }
+        return 0.0f;
+    }
+
+    @Device
+    static float32 combine(int32 op, float32 a, float32 b) {
+        if (op == 1) { if (b < a) { return b; } return a; }
+        if (op == 2) { if (b > a) { return b; } return a; }
+        return a + b;
+    }
+
+    /** Block (segment, chunk): its lanes stride the chunk, the group reduces, lane 0 writes the partial. */
+    @Kernel
+    public static void partial<E>(KernelBuffer<float32> out, KernelBuffer<E> in, uint32 segLen,
+                                  uint32 chunks, int32 op) {
+        uint32 b = Workgroup.x();
+        uint32 seg = b / chunks;
+        uint32 chunk = b - seg * chunks;
+        uint32 per = (segLen + chunks - 1) / chunks;
+        uint32 start = chunk * per;
+        uint32 end = start + per;
+        if (end > segLen) { end = segLen; }
+        uint32 base = seg * segLen;
+        float32 acc = Reduce.identity(op);
+        uint32 i = start + KernelThread.x();
+        while (i < end) {
+            float32 v = (float32) in[base + i];
+            if (op == 3) { v = v * v; }
+            acc = Reduce.combine(op, acc, v);
+            i = i + Workgroup.dimX();
+        }
+        float32 r = 0.0f;
+        if (op == 1) { r = Workgroup.reduce(GroupOp.Min, acc); }
+        else if (op == 2) { r = Workgroup.reduce(GroupOp.Max, acc); }
+        else { r = Workgroup.reduce(GroupOp.Add, acc); }
+        if (KernelThread.x() == 0) { out[b] = r; }
+    }
+
+    /** One lane per segment folds its partials in chunk order. */
+    @Kernel
+    public static void finish(KernelBuffer<float32> out, KernelBuffer<float32> partials, uint32 chunks,
+                              uint32 segments, int32 op) {
+        uint32 s = KernelThread.globalIdX();
+        if (s < segments) {
+            float32 acc = Reduce.identity(op);
+            uint32 c = 0;
+            while (c < chunks) {
+                acc = Reduce.combine(op, acc, partials[s * chunks + c]);
+                c = c + 1;
+            }
+            out[s] = acc;
+        }
+    }
+
+    /** Chunks per segment: one block of 256 lanes per 4096 elements, 1 to 64. */
+    static uint32 chunksFor(int64 segLen) {
+        int64 c = (segLen + 4095L) / 4096L;
+        if (c < 1L) { c = 1L; }
+        if (c > 64L) { c = 64L; }
+        return (uint32) c;
+    }
+
+    /** `out[s]` = `op` over segment `s` of `in`, `segments` segments of `segLen` elements; synced. */
+    public static void segments<E>(KernelBuffer<float32> out, KernelBuffer<E> in, int64 segLen,
+                                   int64 segments, int32 op) {
+        uint32 chunks = Reduce.chunksFor(segLen);
+        KernelBuffer<float32> parts = heap KernelBuffer<float32>((uint64) (segments * (int64) chunks));
+        KernelStream s #= KernelStream.current();
+        uint32 blocks = (uint32) segments * chunks;
+        partial.launch(s, grid: [blocks], block: [256])(parts, in, (uint32) segLen, chunks, op);
+        uint32 us = (uint32) segments;
+        finish.launch(s, grid: [(us + 63) / 64], block: [64])(out, parts, chunks, us, op);
+        s.sync();
+    }
+
+    /** `op` over `in[0..n)`, accumulated in float32. */
+    public static float32 all<E>(KernelBuffer<E> in, int64 n, int32 op) {
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(1);
+        Reduce.segments<E>(out, in, n, 1L, op);
+        float32[] h = heap float32[1];
+        out.download(h);
+        return h[0];
+    }
+
+    /**
+     * Slot `s*10 + w` (s 0 positive, 1 negative) accumulates word `w` of the fixed-point
+     * sum of its sign: a value's 24-bit mantissa lands at bit `exponent - 1`, so bit k is
+     * worth 2^(k-149). `words[20]` counts infinities and NaNs.
+     */
+    @Kernel
+    public static void exactWords<E>(KernelBuffer<int64> words, KernelBuffer<E> in, uint32 n, uint32 perSlot) {
+        uint32 t = KernelThread.globalIdX();
+        uint32 slot = t / perSlot;
+        if (slot < 20) {
+            uint32 s = slot / 10;
+            uint32 w = slot - s * 10;
+            uint32 r = t - slot * perSlot;
+            int64 acc = 0L;
+            int64 bad = 0L;
+            while (r < n) {
+                float32 v = (float32) in[r];
+                int32 vb = Cajeta.f32ToBits(v);
+                int32 mag = vb & 2147483647;
+                if (mag != 0) {
+                    int32 e = (mag >> 23) & 255;
+                    boolean neg = vb < 0;
+                    boolean wantNeg = s == 1;
+                    if (e == 255) {
+                        bad = bad + 1L;
+                    } else if (neg == wantNeg) {
+                        int64 m = (int64) (mag & 8388607);
+                        int32 p = 0;
+                        if (e != 0) { m = m | 8388608L; p = e - 1; }
+                        uint32 wi = (uint32) p / 32;
+                        int64 sh = m << (int64) ((uint32) p - wi * 32);
+                        if (wi == w) { acc = acc + (sh & 4294967295L); }
+                        if (wi + 1 == w) { acc = acc + (sh >> 32L); }
+                    }
+                }
+                r = r + perSlot;
+            }
+            if (acc != 0L) { words.atomicAdd(slot, acc); }
+            if (slot == 0 && bad != 0L) { words.atomicAdd(20, bad); }
+        }
+    }
+
+    static int64 blocksPerSlot(int64 n) {
+        int64 b = (n + 255L) / 256L;
+        if (b > 16L) { b = 16L; }
+        if (b < 1L) { b = 1L; }
+        return b;
+    }
+
+    static float64 pow2(int64 e) {
+        return Cajeta.bitsToF64((e + 1023L) << 52L);
+    }
+
+    /** Carry-propagated 32-bit digits of the ten words at `from`, eleventh digit the carry out. */
+    static #int64[] digits(int64[] w, int32 from) {
+        int64[] d = heap int64[11];
+        int64 carry = 0L;
+        int32 i = 0;
+        while (i < 10) {
+            int64 v = w[from + i] + carry;
+            d[i] = v & 4294967295L;
+            carry = v >> 32L;
+            i = i + 1;
+        }
+        d[10] = carry;
+        return #d;
+    }
+
+    /** -1, 0 or 1 comparing two digit arrays. */
+    static int32 compareDigits(int64[] a, int64[] b) {
+        int32 i = 10;
+        while (i >= 0) {
+            if (a[i] > b[i]) { return 1; }
+            if (a[i] < b[i]) { return -1; }
+            i = i - 1;
+        }
+        return 0;
+    }
+
+    /** `a - b` digit-wise with borrow, `a >= b`. */
+    static #int64[] subtractDigits(int64[] a, int64[] b) {
+        int64[] d = heap int64[11];
+        int64 borrow = 0L;
+        int32 i = 0;
+        while (i <= 10) {
+            int64 v = a[i] - b[i] - borrow;
+            borrow = 0L;
+            if (v < 0L) { v = v + 4294967296L; borrow = 1L; }
+            d[i] = v;
+            i = i + 1;
+        }
+        return #d;
+    }
+
+    static int64 bitAt(int64[] d, int64 k) {
+        return (d[(int32) (k / 32L)] >> (k - (k / 32L) * 32L)) & 1L;
+    }
+
+    /** The magnitude `d` (bit k worth 2^(k-149)) rounded once to float32, to nearest even. */
+    static float32 roundDigits(int64[] d) {
+        int64 top = -1L;
+        int32 i = 10;
+        while (i >= 0 && top < 0L) {
+            if (d[i] != 0L) {
+                int64 b = 31L;
+                while (b >= 0L && top < 0L) {
+                    if (((d[i] >> b) & 1L) != 0L) { top = (int64) i * 32L + b; }
+                    b = b - 1L;
+                }
+            }
+            i = i - 1;
+        }
+        if (top < 0L) { return 0.0f; }
+        if (top < 24L) {
+            return (float32) ((float64) d[0] * Reduce.pow2(-149L));
+        }
+        int64 shift = top - 23L;
+        int64 mant = 0L;
+        int64 k = top;
+        while (k > top - 24L) {
+            mant = (mant << 1L) | Reduce.bitAt(d, k);
+            k = k - 1L;
+        }
+        int64 half = Reduce.bitAt(d, top - 24L);
+        boolean sticky = false;
+        k = top - 25L;
+        while (k >= 0L && !sticky) {
+            if (Reduce.bitAt(d, k) != 0L) { sticky = true; }
+            k = k - 1L;
+        }
+        if (half != 0L && (sticky || (mant & 1L) != 0L)) {
+            mant = mant + 1L;
+            if (mant == 16777216L) { mant = 8388608L; shift = shift + 1L; }
+        }
+        return (float32) ((float64) mant * Reduce.pow2(shift - 149L));
+    }
+
+    /**
+     * The sum of `in[0..n)` as if computed exactly and rounded once to float32: the same bits
+     * in every run and on every backend. A non-finite input falls back to the tree sum, which
+     * propagates it.
+     */
+    public static float32 exactSum<E>(KernelBuffer<E> in, int64 n) {
+        KernelBuffer<int64> words = heap KernelBuffer<int64>(21);
+        int64[] w = heap int64[21];
+        words.upload(w);
+        uint32 blocks = (uint32) Reduce.blocksPerSlot(n);
+        KernelStream s #= KernelStream.current();
+        exactWords.launch(s, grid: [20 * blocks], block: [256])(words, in, (uint32) n, blocks * 256);
+        s.sync();
+        words.download(w);
+        if (w[20] != 0L) { return Reduce.all<E>(in, n, Reduce.SUM); }
+        int64[] pos #= Reduce.digits(w, 0);
+        int64[] neg #= Reduce.digits(w, 10);
+        int32 c = Reduce.compareDigits(pos, neg);
+        if (c == 0) { return 0.0f; }
+        if (c > 0) {
+            int64[] m #= Reduce.subtractDigits(pos, neg);
+            return Reduce.roundDigits(m);
+        }
+        int64[] m #= Reduce.subtractDigits(neg, pos);
+        return 0.0f - Reduce.roundDigits(m);
+    }
+}

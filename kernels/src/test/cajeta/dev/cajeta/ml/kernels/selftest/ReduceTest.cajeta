@@ -1,0 +1,216 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.collection.Sort;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Reduce;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 12.1.1 (spec §4.2): sum, min, max and sum of squares, whole and per
+ * segment, against a host loop; repeated runs bit-identical; the exact sum bit-identical
+ * to a sorted compensated host sum.
+ */
+public class ReduceTest {
+    public ReduceTest() { return; }
+
+    static int64 sizeAt(int32 k) {
+        if (k == 0) { return 1L; }
+        if (k == 1) { return 255L; }
+        if (k == 2) { return 256L; }
+        if (k == 3) { return 1000000L; }
+        return 777L;
+    }
+
+    /** Values in [-93.75, 93.75] stepping by 0.75: exact in f16, bf16 and f32, and a sum exact in float64. */
+    static float32 pattern(int64 i) {
+        return (float32) (((i * 7919L) % 251L) - 125L) * 0.75f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 12.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 12.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** The host's float64 reduction of `v[from..to)` with `op` (0 sum, 1 min, 2 max, 3 sum of squares). */
+    static float64 host(float32[] v, int64 from, int64 to, int32 op) {
+        float64 acc = 0.0;
+        if (op == Reduce.MIN) { acc = (float64) v[(int32) from]; }
+        if (op == Reduce.MAX) { acc = (float64) v[(int32) from]; }
+        int64 i = from;
+        while (i < to) {
+            float64 x = (float64) v[(int32) i];
+            if (op == Reduce.SUM) { acc = acc + x; }
+            if (op == Reduce.MIN && x < acc) { acc = x; }
+            if (op == Reduce.MAX && x > acc) { acc = x; }
+            if (op == Reduce.SUMSQ) { acc = acc + x * x; }
+            i = i + 1L;
+        }
+        return acc;
+    }
+
+    /** min and max are exact; a float32 sum or sum of squares is within 1e-5 relative. */
+    static void close(float32 got, float64 want, int32 op) {
+        if (op == Reduce.MIN || op == Reduce.MAX) {
+            Assert.isTrue((float64) got == want);
+            return;
+        }
+        float64 d = (float64) got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        if (!(d <= 1.0e-5 * (w + 1.0))) {
+            System.stdout.println("reduce op " + op + ": got " + (float64) got + " want " + want);
+        }
+        Assert.isTrue(d <= 1.0e-5 * (w + 1.0));
+    }
+
+    @Test
+    public void wholeArrayReductionsMatchTheHostAndRepeatBitForBit() {
+        if (!ReduceTest.usable("partial_float32") || !ReduceTest.usable("finish")) { return; }
+        int32 k = 0;
+        while (k < 5) {
+            int64 n = ReduceTest.sizeAt(k);
+            float32[] src = heap float32[n];
+            int64 i = 0L;
+            while (i < n) { src[(int32) i] = ReduceTest.pattern(i); i = i + 1L; }
+            KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+            in.upload(src);
+            int32 op = 0;
+            while (op < 4) {
+                int64[] m #= ValueCheck.mark();
+                float32 r1 = Reduce.all<float32>(in, n, op);
+                float32 r2 = Reduce.all<float32>(in, n, op);
+                float32 r3 = Reduce.all<float32>(in, n, op);
+                Assert.isTrue(Cajeta.f32ToBits(r1) == Cajeta.f32ToBits(r2));
+                Assert.isTrue(Cajeta.f32ToBits(r1) == Cajeta.f32ToBits(r3));
+                ReduceTest.close(r1, ReduceTest.host(src, 0L, n, op), op);
+                ValueCheck.credit(m);
+                op = op + 1;
+            }
+            k = k + 1;
+        }
+    }
+
+    @Test
+    public void aHalfPrecisionSumAccumulatesInFloat32() {
+        if (!ReduceTest.usable("partial_float16")) { return; }
+        int64 n = 777L;
+        float16[] src = heap float16[n];
+        float32[] wide = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = (float16) ReduceTest.pattern(i); wide[(int32) i] = ReduceTest.pattern(i); i = i + 1L; }
+        KernelBuffer<float16> in = heap KernelBuffer<float16>((uint64) n);
+        in.upload(src);
+        int64[] m #= ValueCheck.mark();
+        float32 r = Reduce.all<float16>(in, n, Reduce.SUM);
+        ReduceTest.close(r, ReduceTest.host(wide, 0L, n, Reduce.SUM), Reduce.SUM);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void segmentsReduceIndependentlyAndRepeatBitForBit() {
+        if (!ReduceTest.usable("partial_float32") || !ReduceTest.usable("finish")) { return; }
+        int64 segments = 37L;
+        int64 segLen = 1000L;
+        int64 n = segments * segLen;
+        float32[] src = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = ReduceTest.pattern(i); i = i + 1L; }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        in.upload(src);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) segments);
+        int32 op = 0;
+        while (op < 4) {
+            int64[] m #= ValueCheck.mark();
+            Reduce.segments<float32>(out, in, segLen, segments, op);
+            float32[] got = heap float32[segments];
+            out.download(got);
+            Reduce.segments<float32>(out, in, segLen, segments, op);
+            float32[] again = heap float32[segments];
+            out.download(again);
+            int64 s = 0L;
+            while (s < segments) {
+                Assert.isTrue(Cajeta.f32ToBits(got[(int32) s]) == Cajeta.f32ToBits(again[(int32) s]));
+                ReduceTest.close(got[(int32) s], ReduceTest.host(src, s * segLen, (s + 1L) * segLen, op), op);
+                s = s + 1L;
+            }
+            ValueCheck.credit(m);
+            op = op + 1;
+        }
+    }
+
+    /** The sorted compensated (Neumaier) float64 sum of `v[0..n)`, rounded once to float32. */
+    static float32 sortedCompensated(float32[] v, int64 n) {
+        float32[] a = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { a[(int32) i] = v[(int32) i]; i = i + 1L; }
+        Sort.sort<float32>(a, (int32) n);
+        float64 sum = 0.0;
+        float64 comp = 0.0;
+        i = 0L;
+        while (i < n) {
+            float64 x = (float64) a[(int32) i];
+            float64 t = sum + x;
+            float64 as = sum; if (as < 0.0) { as = 0.0 - as; }
+            float64 ax = x; if (ax < 0.0) { ax = 0.0 - ax; }
+            if (as >= ax) { comp = comp + ((sum - t) + x); } else { comp = comp + ((x - t) + sum); }
+            sum = t;
+            i = i + 1L;
+        }
+        return (float32) (sum + comp);
+    }
+
+    @Test
+    public void theExactSumIsTheSortedCompensatedHostSumBitForBit() {
+        if (!ReduceTest.usable("exactWords_float32")) { return; }
+        int32 k = 0;
+        while (k < 5) {
+            int64 n = ReduceTest.sizeAt(k);
+            float32[] src = heap float32[n];
+            int64 i = 0L;
+            while (i < n) { src[(int32) i] = ReduceTest.pattern(i); i = i + 1L; }
+            KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+            in.upload(src);
+            int64[] m #= ValueCheck.mark();
+            float32 got = Reduce.exactSum<float32>(in, n);
+            float32 want = ReduceTest.sortedCompensated(src, n);
+            if (Cajeta.f32ToBits(got) != Cajeta.f32ToBits(want)) {
+                System.stdout.println("exactSum n=" + n + ": got " + (float64) got + " want " + (float64) want);
+            }
+            Assert.isTrue(Cajeta.f32ToBits(got) == Cajeta.f32ToBits(want));
+            ValueCheck.credit(m);
+            k = k + 1;
+        }
+    }
+
+    /** Cancellation a float32 tree sum loses: a thousand each of 1e8, 1 and -1e8 sum to 1000 exactly. */
+    @Test
+    public void theExactSumSurvivesCancellation() {
+        if (!ReduceTest.usable("exactWords_float32")) { return; }
+        int64 n = 3000L;
+        float32[] src = heap float32[n];
+        int64 i = 0L;
+        while (i < n) {
+            float32 v = 1.0f;
+            if (i % 3L == 0L) { v = 1.0e8f; }
+            if (i % 3L == 2L) { v = -1.0e8f; }
+            src[(int32) i] = v;
+            i = i + 1L;
+        }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        in.upload(src);
+        int64[] m #= ValueCheck.mark();
+        float32 got = Reduce.exactSum<float32>(in, n);
+        if (Cajeta.f32ToBits(got) != Cajeta.f32ToBits(1000.0f)) { System.stdout.println("exactSum cancellation: got " + (float64) got); }
+        Assert.isTrue(Cajeta.f32ToBits(got) == Cajeta.f32ToBits(1000.0f));
+        ValueCheck.credit(m);
+    }
+}
