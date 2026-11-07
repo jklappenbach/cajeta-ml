@@ -204,4 +204,67 @@ public class PrimitivesTest {
         if (!Device.kernelAvailable("transpose_int8")) { DeviceSkip.noKernel("transpose_int8", "cajeta-ml-gpu 11.2.1"); return; }
         PrimitivesTest.transposeCase<int8>("transpose_int8", 255L, 3L);
     }
+
+    /** The strided copy as a permute (3x7x5 -> 5x3x7), a slice of the middle axis, and a
+     *  concatenate's second half along axis 1, each against the host index arithmetic. */
+    @Test
+    public void stridedCopyPermutesSlicesAndConcatenates() {
+        if (!PrimitivesTest.usable("strided_float32")) { return; }
+        int64 n = 105L;
+        float32[] src = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = (float32) i * 0.5f; i = i + 1L; }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        in.upload(src);
+        int64[] m #= ValueCheck.mark();
+        // permute [2, 0, 1]: out[k][r][c] = in[r][c][k]
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) n);
+        int64[] dims = [5L, 3L, 7L];
+        int64[] is = [1L, 35L, 5L];
+        int64[] os = [21L, 7L, 1L];
+        Copy.stridedInto<float32>(out, in, dims, is, os, 0L, 0L);
+        float32[] got = heap float32[n];
+        out.download(got);
+        int64 k = 0L;
+        while (k < 5L) {
+            int64 r = 0L;
+            while (r < 3L) {
+                int64 c = 0L;
+                while (c < 7L) { Assert.isTrue(got[(int32) (k * 21L + r * 7L + c)] == src[(int32) (r * 35L + c * 5L + k)]); c = c + 1L; }
+                r = r + 1L;
+            }
+            k = k + 1L;
+        }
+        // slice axis 1 [2, 5): 3x3x5
+        KernelBuffer<float32> sl = heap KernelBuffer<float32>(45);
+        int64[] sdims = [3L, 3L, 5L];
+        int64[] sis = [35L, 5L, 1L];
+        int64[] sos = [15L, 5L, 1L];
+        Copy.stridedInto<float32>(sl, in, sdims, sis, sos, 10L, 0L);
+        float32[] sg = heap float32[45];
+        sl.download(sg);
+        i = 0L;
+        while (i < 45L) {
+            int64 r = i / 15L;
+            int64 rem = i - r * 15L;
+            Assert.isTrue(sg[(int32) i] == src[(int32) (r * 35L + 10L + rem)]);
+            i = i + 1L;
+        }
+        // concatenate along axis 1: in is the second part of a 3x14x5 result
+        KernelBuffer<float32> cat = heap KernelBuffer<float32>(210);
+        int64[] cdims = [3L, 7L, 5L];
+        int64[] cis = [35L, 5L, 1L];
+        int64[] cos = [70L, 5L, 1L];
+        Copy.stridedInto<float32>(cat, in, cdims, cis, cos, 0L, 35L);
+        float32[] cg = heap float32[210];
+        cat.download(cg);
+        i = 0L;
+        while (i < n) {
+            int64 r = i / 35L;
+            int64 rem = i - r * 35L;
+            Assert.isTrue(cg[(int32) (r * 70L + 35L + rem)] == src[(int32) i]);
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
 }

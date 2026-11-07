@@ -294,17 +294,13 @@ public final class GradTape<E extends Floating> {
 
     /** Reshape (records the input shape for the backward). */
     public GradTensor reshape(GradTensor a, int64[] newShape) {
-        Tensor<E> src = this.values.get(a.idx);
-        Tensor<E> vw #= src.reshape(newShape);
-        Tensor<E> v #= vw.copy();
+        Tensor<E> v #= Ops.reshape<E>(this.values.get(a.idx), newShape);
         return this.push(Op.RESHAPE, a.idx, -1, 0, 0.0, #v);
     }
 
     /** Slice one axis, [start, stop). */
     public GradTensor slice(GradTensor a, int32 axis, int64 start, int64 stop) {
-        Tensor<E> src = this.values.get(a.idx);
-        Tensor<E> vw #= src.slice(axis, start, stop);
-        Tensor<E> v #= vw.copy();
+        Tensor<E> v #= Ops.slice<E>(this.values.get(a.idx), axis, start, stop);
         GradTensor t = this.push(Op.SLICE, a.idx, -1, axis, 0.0, #v);
         // start rides the scalar payload (stop derives from the shapes).
         this.cs[t.idx] = (float64) start;
@@ -313,10 +309,7 @@ public final class GradTape<E extends Floating> {
 
     /** Concatenate two nodes along `axis`. */
     public GradTensor concat(GradTensor a, GradTensor b, int32 axis) {
-        Tensor<E>[] parts = heap Tensor<E>[2];
-        parts[0] = this.values.get(a.idx);
-        parts[1] = this.values.get(b.idx);
-        Tensor<E> v #= Tensor.concatenate<E>(parts, axis);
+        Tensor<E> v #= Ops.concat<E>(this.values.get(a.idx), this.values.get(b.idx), axis);
         return this.push(Op.CONCAT, a.idx, b.idx, axis, 0.0, #v);
     }
 

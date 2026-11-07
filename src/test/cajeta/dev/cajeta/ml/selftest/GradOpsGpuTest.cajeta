@@ -9,7 +9,7 @@ import dev.cajeta.ml.grad.Ops;
 
 /**
  * cajeta-ml-gpu 27.1.1 and 27.1.2 (spec §6.6, §6.7): the device column of the op seam. Each
- * op's forward (elementwise, row, binary and reduction groups so far) on device-resident inputs matches the CPU column within float32's tolerance,
+ * op's forward (elementwise, row, binary, reduction and shape groups so far) on device-resident inputs matches the CPU column within float32's tolerance,
  * `Ops.hasGpu` answers true for it, and mixed residency fails by name.
  */
 public class GradOpsGpuTest {
@@ -136,6 +136,56 @@ public class GradOpsGpuTest {
         }
         GradOpsGpuTest.reduce(Op.SUMAXIS, big, 0);
         GradOpsGpuTest.reduce(Op.MAXAXIS, big, 1);
+    }
+
+    @Test
+    public void shapeOpsRunOnTheDevice() {
+        Tensor<float32> a #= GradOpsGpuTest.fill(3L, 7L, 13L, false);
+        GradOpsGpuTest.unary(Op.TRANSPOSE, false, 0.0f);
+        Tensor<float32> t #= GradOpsGpuTest.fill3(3L, 7L, 5L, 17L);
+        Tensor<float32> td #= GradOpsGpuTest.onDevice(t);
+        Tensor<float32> ad #= GradOpsGpuTest.onDevice(a);
+        // transposeBatch
+        Tensor<float32> w1 #= Ops.run1<float32>(Op.TRANSPOSEB, t, 0, 0.0f);
+        Tensor<float32> g1 #= Ops.run1<float32>(Op.TRANSPOSEB, td, 0, 0.0f);
+        GradOpsGpuTest.same("transposeBatch", w1, g1);
+        Assert.isTrue(Ops.hasGpu(Op.TRANSPOSEB));
+        // permute
+        int32[] perm = [2, 0, 1];
+        Tensor<float32> w2 #= Ops.permute<float32>(t, perm);
+        Tensor<float32> g2 #= Ops.permute<float32>(td, perm);
+        GradOpsGpuTest.same("permute", w2, g2);
+        Assert.equals(5L, g2.shapeAt(0));
+        Assert.isTrue(Ops.hasGpu(Op.PERMUTE));
+        // reshape
+        int64[] ns = [7L, 3L];
+        Tensor<float32> w3 #= Ops.reshape<float32>(a, ns);
+        Tensor<float32> g3 #= Ops.reshape<float32>(ad, ns);
+        GradOpsGpuTest.same("reshape", w3, g3);
+        Assert.equals(7L, g3.shapeAt(0));
+        Assert.isTrue(Ops.hasGpu(Op.RESHAPE));
+        // slice, each axis
+        Tensor<float32> w4 #= Ops.slice<float32>(t, 1, 2L, 5L);
+        Tensor<float32> g4 #= Ops.slice<float32>(td, 1, 2L, 5L);
+        GradOpsGpuTest.same("slice axis 1", w4, g4);
+        Tensor<float32> w5 #= Ops.slice<float32>(t, 2, 1L, 4L);
+        Tensor<float32> g5 #= Ops.slice<float32>(td, 2, 1L, 4L);
+        GradOpsGpuTest.same("slice axis 2", w5, g5);
+        Tensor<float32> w6 #= Ops.slice<float32>(t, 0, 1L, 3L);
+        Tensor<float32> g6 #= Ops.slice<float32>(td, 0, 1L, 3L);
+        GradOpsGpuTest.same("slice axis 0", w6, g6);
+        Assert.isTrue(Ops.hasGpu(Op.SLICE));
+        // concat, each axis
+        Tensor<float32> u #= GradOpsGpuTest.fill3(3L, 7L, 5L, 29L);
+        Tensor<float32> ud #= GradOpsGpuTest.onDevice(u);
+        int32 ax = 0;
+        while (ax < 3) {
+            Tensor<float32> w7 #= Ops.concat<float32>(t, u, ax);
+            Tensor<float32> g7 #= Ops.concat<float32>(td, ud, ax);
+            GradOpsGpuTest.same("concat axis " + ax, w7, g7);
+            ax = ax + 1;
+        }
+        Assert.isTrue(Ops.hasGpu(Op.CONCAT));
     }
 
     static void binary(int32 op, Tensor<float32> a, Tensor<float32> b) {

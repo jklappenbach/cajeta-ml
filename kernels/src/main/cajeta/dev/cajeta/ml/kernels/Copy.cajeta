@@ -4,7 +4,7 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 
-/** Device-to-device copy at any dtype (spec §4.1). */
+/** Device-to-device copy at any dtype, contiguous or strided (spec §4.1). */
 public final class Copy {
     public Copy() { return; }
 
@@ -12,6 +12,60 @@ public final class Copy {
     public static void copy<E>(KernelBuffer<E> out, KernelBuffer<E> in, uint32 n) {
         uint32 i = KernelThread.globalIdX();
         if (i < n) { out[i] = in[i]; }
+    }
+
+    /**
+     * Strided copy over a logical shape of up to four axes (r0..r3, r0 the slowest): element
+     * (i0,i1,i2,i3) is read at inOff + sum(i*is) and written at outOff + sum(i*os). One kernel
+     * for transpose, permute, slice and concatenate: the strides say which.
+     */
+    @Kernel
+    public static void strided<E>(KernelBuffer<E> out, KernelBuffer<E> in, uint32 n,
+                                  uint32 r1, uint32 r2, uint32 r3,
+                                  uint32 is0, uint32 is1, uint32 is2, uint32 is3,
+                                  uint32 os0, uint32 os1, uint32 os2, uint32 os3,
+                                  uint32 inOff, uint32 outOff) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < n) {
+            uint32 i3 = t % r3;
+            uint32 q = t / r3;
+            uint32 i2 = q % r2;
+            q = q / r2;
+            uint32 i1 = q % r1;
+            uint32 i0 = q / r1;
+            uint32 src = inOff + i0 * is0 + i1 * is1 + i2 * is2 + i3 * is3;
+            uint32 dst = outOff + i0 * os0 + i1 * os1 + i2 * os2 + i3 * os3;
+            out[dst] = in[src];
+        }
+    }
+
+    /**
+     * The strided copy over `dims` (1 to 4 axes, padded on the left) with per-axis input and
+     * output strides and base offsets; synced.
+     */
+    public static void stridedInto<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64[] dims,
+                                      int64[] inStrides, int64[] outStrides, int64 inOff, int64 outOff) {
+        int32 nd = (int32) dims.count();
+        uint32[] r = heap uint32[4];
+        uint32[] si = heap uint32[4];
+        uint32[] so = heap uint32[4];
+        int32 k = 0;
+        while (k < 4) { r[k] = 1; si[k] = 0; so[k] = 0; k = k + 1; }
+        int64 n = 1;
+        k = 0;
+        while (k < nd) {
+            int32 slot = 4 - nd + k;
+            r[slot] = (uint32) dims[k];
+            si[slot] = (uint32) inStrides[k];
+            so[slot] = (uint32) outStrides[k];
+            n = n * dims[k];
+            k = k + 1;
+        }
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        strided.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, un, r[1], r[2], r[3],
+            si[0], si[1], si[2], si[3], so[0], so[1], so[2], so[3], (uint32) inOff, (uint32) outOff);
+        s.sync();
     }
 
     /** `out[0..n)` = `in[0..n)`: one launch, synced. */

@@ -7,6 +7,7 @@ import cajeta.math.stats.Stats;
 import cajeta.xpu.KernelBuffer;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.kernels.Convert;
+import dev.cajeta.ml.kernels.Copy;
 import dev.cajeta.ml.kernels.Elementwise;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.ml.kernels.Reduce;
@@ -39,14 +40,16 @@ public final class Ops {
     }
 
     /** True when a GPU kernel exists for `op`: the elementwise, row, binary
-     *  and reduction groups (cajeta-ml-gpu 27.1.1) so far. */
+     *  reduction and shape groups (cajeta-ml-gpu 27.1.1) so far. */
     public static boolean hasGpu(int32 op) {
         return op == Op.RELU || op == Op.NEG || op == Op.EXP || op == Op.LOG
             || op == Op.SQRT || op == Op.TANH || op == Op.SIGMOID || op == Op.GELU
             || op == Op.SOFTMAX || op == Op.LOGSOFTMAX || op == Op.POWS
             || op == Op.ROWNORM || op == Op.ADD || op == Op.SUB || op == Op.MUL
             || op == Op.DIV || op == Op.MATMUL || op == Op.SUM || op == Op.MEAN
-            || op == Op.SUMAXIS || op == Op.MEANAXIS || op == Op.MAXAXIS;
+            || op == Op.SUMAXIS || op == Op.MEANAXIS || op == Op.MAXAXIS
+            || op == Op.TRANSPOSE || op == Op.TRANSPOSEB || op == Op.PERMUTE
+            || op == Op.RESHAPE || op == Op.SLICE || op == Op.CONCAT;
     }
 
     static void requireCpu<E extends Floating>(String opName, Tensor<E> t) {
@@ -108,6 +111,8 @@ public final class Ops {
         String name #= Ops.name(op);
         Ops.requireF32<E>(name);
         if (op == Op.SUM || op == Op.MEAN) { return Ops.reduceAllGpu<E>(name, a, op == Op.MEAN); }
+        if (op == Op.TRANSPOSE) { int32[] p2 = [1, 0]; return Ops.permuteGpu<E>(name, a, p2); }
+        if (op == Op.TRANSPOSEB) { int32[] p3 = [0, 2, 1]; return Ops.permuteGpu<E>(name, a, p3); }
         if (op == Op.SUMAXIS || op == Op.MEANAXIS || op == Op.MAXAXIS) {
             int32 rop = Reduce.SUM;
             if (op == Op.MEANAXIS) { rop = Reduce.MEAN; }
@@ -168,6 +173,40 @@ public final class Ops {
         return #out;
     }
 
+    /** C-order strides of `shape`. */
+    static #int64[] contig(int64[] shape) {
+        int32 nd = (int32) shape.count();
+        int64[] st = heap int64[nd];
+        int64 acc = 1;
+        int32 d = nd - 1;
+        while (d >= 0) { st[d] = acc; acc = acc * shape[d]; d = d - 1; }
+        return #st;
+    }
+
+    static #int64[] shapeOf<E extends Floating>(Tensor<E> a) {
+        int32 nd = a.ndim();
+        int64[] sh = heap int64[nd];
+        int32 d = 0;
+        while (d < nd) { sh[d] = a.shapeAt(d); d = d + 1; }
+        return #sh;
+    }
+
+    /** Axis permutation on the device through the strided copy (rank <= 4). */
+    static #Tensor<E> permuteGpu<E extends Floating>(String name, Tensor<E> a, int32[] perm) {
+        int32 nd = a.ndim();
+        if (nd > 4) { throw heap MlException("ml.grad: '" + name + "' on the device handles rank <= 4, got " + nd); }
+        int64[] inShape #= Ops.shapeOf<E>(a);
+        int64[] inStrides #= Ops.contig(inShape);
+        int64[] dims = heap int64[nd];
+        int64[] is = heap int64[nd];
+        int32 k = 0;
+        while (k < nd) { dims[k] = inShape[perm[k]]; is[k] = inStrides[perm[k]]; k = k + 1; }
+        int64[] os #= Ops.contig(dims);
+        Tensor<E> out #= Ewise.deviceOf<E>(dims);
+        Copy.stridedInto<E>(out.deviceView(name), a.deviceView(name), dims, is, os, 0L, 0L);
+        return #out;
+    }
+
     /** The binary GPU column. The arithmetic rides Tensor's own device routing. */
     static #Tensor<E> run2Gpu<E extends Floating>(int32 op, Tensor<E> a, Tensor<E> b) {
         String name #= Ops.name(op);
@@ -205,10 +244,69 @@ public final class Ops {
         throw heap MlException("ml.grad: unknown binary op " + op);
     }
 
+    /** Reshape, materialized (records nothing: the tape keeps the input shape). */
+    public static #Tensor<E> reshape<E extends Floating>(Tensor<E> a, int64[] newShape) {
+        if (a.isOnGpu()) {
+            Ops.requireF32<E>("reshape");
+            Tensor<E> dv #= Ewise.deviceOf<E>(newShape);
+            Copy.into<E>(dv.deviceView("reshape"), a.deviceView("reshape"), a.size());
+            return #dv;
+        }
+        Tensor<E> vw #= a.reshape(newShape);
+        Tensor<E> out #= vw.copy();
+        return #out;
+    }
+
+    /** Slice `[start, stop)` along `axis`, materialized. */
+    public static #Tensor<E> slice<E extends Floating>(Tensor<E> a, int32 axis, int64 start, int64 stop) {
+        if (a.isOnGpu()) {
+            Ops.requireF32<E>("slice");
+            if (a.ndim() > 4) { throw heap MlException("ml.grad: 'slice' on the device handles rank <= 4, got " + a.ndim()); }
+            int64[] dims #= Ops.shapeOf<E>(a);
+            int64[] is #= Ops.contig(dims);
+            dims[axis] = stop - start;
+            int64[] os #= Ops.contig(dims);
+            Tensor<E> dv #= Ewise.deviceOf<E>(dims);
+            Copy.stridedInto<E>(dv.deviceView("slice"), a.deviceView("slice"), dims, is, os, start * is[axis], 0L);
+            return #dv;
+        }
+        Tensor<E> vw #= a.slice(axis, start, stop);
+        Tensor<E> out #= vw.copy();
+        return #out;
+    }
+
+    /** Concatenate two tensors along `axis`. */
+    public static #Tensor<E> concat<E extends Floating>(Tensor<E> a, Tensor<E> b, int32 axis) {
+        Ops.requireSame<E>("concat", a, b);
+        if (a.isOnGpu()) {
+            Ops.requireF32<E>("concat");
+            int32 nd = a.ndim();
+            if (nd > 4) { throw heap MlException("ml.grad: 'concat' on the device handles rank <= 4, got " + nd); }
+            int32 ax = axis;
+            if (ax < 0) { ax = ax + nd; }
+            int64[] da #= Ops.shapeOf<E>(a);
+            int64[] db #= Ops.shapeOf<E>(b);
+            int64[] outShape #= Ops.shapeOf<E>(a);
+            outShape[ax] = da[ax] + db[ax];
+            int64[] os #= Ops.contig(outShape);
+            int64[] isa #= Ops.contig(da);
+            int64[] isb #= Ops.contig(db);
+            Tensor<E> dv #= Ewise.deviceOf<E>(outShape);
+            Copy.stridedInto<E>(dv.deviceView("concat"), a.deviceView("concat"), da, isa, os, 0L, 0L);
+            Copy.stridedInto<E>(dv.deviceView("concat"), b.deviceView("concat"), db, isb, os, 0L, da[ax] * os[ax]);
+            return #dv;
+        }
+        Tensor<E>[] parts = heap Tensor<E>[2];
+        parts[0] = a;
+        parts[1] = b;
+        return Tensor.concatenate<E>(parts, axis);
+    }
+
     /** Permute a tensor's axes (rank <= 4), materialized — the permuted
      *  result is a view over the source's storage, which a tape node must
      *  not alias. */
     public static #Tensor<E> permute<E extends Floating>(Tensor<E> a, int32[] perm) {
+        if (a.isOnGpu()) { Ops.requireF32<E>("permute"); return Ops.permuteGpu<E>("permute", a, perm); }
         Tensor<E> vw #= a.transposeAxes(perm);
         Tensor<E> out #= vw.copy();
         return #out;
