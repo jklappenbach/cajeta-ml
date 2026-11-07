@@ -27,9 +27,21 @@ public final class Elementwise {
         if (kind == 1) { return Math.exp(x); }
         if (kind == 2) { return Math.log(x); }
         if (kind == 3) { return Math.sqrt(x); }
-        if (kind == 4) { return Math.pow(x, c); }
+        if (kind == 4) { return Elementwise.power(x, c); }
         if (kind == 5) { return 1.0f / x; }
         return x * c;
+    }
+
+    /** x^c as the host computes it: a negative base with an integer exponent keeps its sign rule, and x^2 is x*x. */
+    @Device
+    static float32 power(float32 x, float32 c) {
+        if (c == 2.0f) { return x * x; }
+        if (x >= 0.0f) { return Math.pow(x, c); }
+        int32 k = (int32) c;
+        if ((float32) k != c) { return 0.0f / 0.0f; }
+        float32 r = Math.pow(0.0f - x, c);
+        if (k - (k / 2) * 2 != 0) { return 0.0f - r; }
+        return r;
     }
 
     @Kernel

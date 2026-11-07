@@ -225,6 +225,16 @@ public class NormActTest {
             hp[(int32) i] = (E) (v + 0.5f); fp[(int32) i] = (float64) hp[(int32) i]; i = i + 1L;
         }
         xp.upload(hp);
+        // pow over the signed input with integer exponents 3 and 2: the sign rule the host applies
+        NormActTest.stage = "map pow negative base";
+        Elementwise.map<E>(out, x, n, 4, 3.0f);
+        out.download(got);
+        i = 0L;
+        while (i < n) { Assert.isTrue(NormActTest.close((float64) got[(int32) i], fx[(int32) i] * fx[(int32) i] * fx[(int32) i], rel)); i = i + 1L; }
+        Elementwise.map<E>(out, x, n, 4, 2.0f);
+        out.download(got);
+        i = 0L;
+        while (i < n) { Assert.isTrue(NormActTest.close((float64) got[(int32) i], fx[(int32) i] * fx[(int32) i], rel)); i = i + 1L; }
         int32 mk = 0;
         while (mk < 7) {
             NormActTest.stage = "map " + mk;

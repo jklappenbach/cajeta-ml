@@ -720,8 +720,8 @@ public final class Ops {
             int64[] ps #= Ops.shapeOf<E>(pred);
             Tensor<E> tv #= Ops.reshape<E>(target, ps);
             Tensor<E> diff #= Tensor.sub<E>(pred, tv);
-            Elementwise.map<E>(diff.deviceView("mseLoss"), diff.deviceView("mseLoss"), n, Elementwise.POW, 2.0f);
-            return Ops.reduceAllGpu<E>("mseLoss", diff, true);
+            Tensor<E> sq #= Tensor.mul<E>(diff, diff);
+            return Ops.reduceAllGpu<E>("mseLoss", sq, true);
         }
         return StructKernels.mseLoss<E>(pred, target);
     }
