@@ -1,0 +1,14 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.KernelBuffer;
+
+/** A consumer's epilogue: bias per column, then relu. */
+public final class BiasRelu {
+    public BiasRelu() { return; }
+    @Device
+    public static float32 apply(float32 acc, uint32 row, uint32 col, KernelBuffer<float32> aux0, KernelBuffer<float32> aux1, uint32 n) {
+        float32 v = acc + aux0[col];
+        if (v < 0.0f) { v = 0.0f; }
+        return v;
+    }
+}

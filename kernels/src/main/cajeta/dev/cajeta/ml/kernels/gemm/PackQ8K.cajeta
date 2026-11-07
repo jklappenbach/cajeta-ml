@@ -1,0 +1,68 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.Barrier;
+import cajeta.xpu.GroupOp;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/**
+ * llm's q8_K pack of a GEMM's rows (spec §5.4, a pack epilogue): each 256-element block of
+ * a row becomes 320 bytes, the 256 int8 quants, eight int32 sub-block sums and the float32
+ * scale at byte 288, byte for byte what the host packer writes. One workgroup of 256 lanes
+ * per block, the block maximum a group reduction.
+ */
+public final class PackQ8K {
+    public PackQ8K() { return; }
+
+    @Kernel
+    public static void packQ8K(KernelBuffer<int8> out, KernelBuffer<float32> x, uint32 blocks, uint32 nbRow, uint32 cols) {
+        Shared<int32> sums = shared int32[8];
+        uint32 lane = KernelThread.x();
+        uint32 blk = Workgroup.x();
+        if (lane < 8) { sums[lane] = 0; }
+        Barrier.workgroup();
+        if (blk < blocks) {
+            uint32 row = blk / nbRow;
+            uint32 bb = blk - row * nbRow;
+            uint32 xi = row * cols + bb * 256 + lane;
+            uint32 ob = blk * 320;
+            float32 v = x[xi];
+            float32 av = v;
+            if (v < 0.0f) { av = 0.0f - v; }
+            float32 bmax = Workgroup.reduce(GroupOp.Max, av);
+            float32 inv = 0.0f;
+            if (bmax > 0.0f) { inv = 127.0f / bmax; }
+            int32 q = (int32) Math.round(v * inv);
+            out[ob + lane] = (int8) q;
+            sums.atomicAdd(lane / 32, q);
+            Barrier.workgroup();
+            if (lane < 8) {
+                int32 tot = sums[lane];
+                uint32 so = ob + 256 + lane * 4;
+                out[so] = (int8) (tot & 255);
+                out[so + 1] = (int8) ((tot >> 8) & 255);
+                out[so + 2] = (int8) ((tot >> 16) & 255);
+                out[so + 3] = (int8) ((tot >> 24) & 255);
+            }
+            if (lane == 0) {
+                int32 db = Cajeta.f32ToBits(bmax / 127.0f);
+                out[ob + 288] = (int8) (db & 255);
+                out[ob + 289] = (int8) ((db >> 8) & 255);
+                out[ob + 290] = (int8) ((db >> 16) & 255);
+                out[ob + 291] = (int8) ((db >> 24) & 255);
+            }
+        }
+    }
+
+    /** `out` = the q8_K pack of `rows` rows of `cols` floats (cols a multiple of 256), 320 bytes a block; synced. */
+    public static void rows(KernelBuffer<int8> out, KernelBuffer<float32> x, int64 rows, int64 cols) {
+        uint32 nbRow = (uint32) (cols / 256L);
+        uint32 blocks = (uint32) rows * nbRow;
+        KernelStream s #= KernelStream.current();
+        packQ8K.launch(s, grid: [blocks], block: [256])(out, x, blocks, nbRow, (uint32) cols);
+        s.sync();
+    }
+}

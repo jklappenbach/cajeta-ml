@@ -1,0 +1,12 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.KernelBuffer;
+
+/** A consumer's epilogue: bias per column, then a residual add. */
+public final class BiasResidual {
+    public BiasResidual() { return; }
+    @Device
+    public static float32 apply(float32 acc, uint32 row, uint32 col, KernelBuffer<float32> aux0, KernelBuffer<float32> aux1, uint32 n) {
+        return acc + aux0[col] + aux1[row * n + col];
+    }
+}

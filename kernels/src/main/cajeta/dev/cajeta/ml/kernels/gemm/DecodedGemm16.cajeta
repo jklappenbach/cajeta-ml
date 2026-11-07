@@ -1,0 +1,83 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.Barrier;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/**
+ * The staged tile skeleton with a consumer's decode step (spec §5.5): C = A (f16, m x k) .
+ * W^T where W is the consumer's own format, decoded element by element at staging through
+ * D.decode(w, k, n, cols) into the f16 B tile; the skeleton owns the tiling, the staging and
+ * the matrix cores.
+ */
+public final class DecodedGemm16<D> {
+    public DecodedGemm16() { return; }
+
+    @Kernel
+    public static void gemm(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<int8> w,
+                            uint32 m, uint32 n, uint32 k) {
+        Shared<float16> sa = shared float16[256];
+        Shared<float16> sb = shared float16[256];
+        Shared<float32> sc = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 ntiles = (n + 15) / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid - mi * ntiles;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<float16,16,16,0> ma;
+        CooperativeMatrix<float16,16,16,1> mb;
+        uint32 ktiles = (k + 15) / 16;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            uint32 idx = t;
+            while (idx < 256) {
+                uint32 r = idx / 16;
+                uint32 cc = idx - r * 16;
+                uint32 gm = mi * 16 + r;
+                uint32 gk = kk * 16 + cc;
+                float16 va = (float16) 0.0f;
+                if (gm < m && gk < k) { va = a[gm * k + gk]; }
+                sa[idx] = va;
+                uint32 gk2 = kk * 16 + r;
+                uint32 gn = nj * 16 + cc;
+                float16 vb = (float16) 0.0f;
+                if (gk2 < k && gn < n) { vb = D.decode(w, gk2, gn, k); }
+                sb[idx] = vb;
+                idx = idx + Workgroup.dimX();
+            }
+            Barrier.workgroup();
+            ma.load(sa, 0, 0, 16);
+            mb.load(sb, 0, 0, 16);
+            mc.mma(ma, mb);
+            Barrier.workgroup();
+            kk = kk + 1;
+        }
+        mc.store(sc, 0, 0, 16);
+        Barrier.workgroup();
+        uint32 o = t;
+        while (o < 256) {
+            uint32 orow = o / 16;
+            uint32 ocol = o - orow * 16;
+            uint32 gm = mi * 16 + orow;
+            uint32 gn = nj * 16 + ocol;
+            if (gm < m && gn < n) { c[gm * n + gn] = sc[o]; }
+            o = o + Workgroup.dimX();
+        }
+    }
+
+    /** `c` (m x n) = `a` (m x k) . W^T, W the consumer's n rows of k decoded by D; synced. */
+    public void run(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<int8> w, int64 m, int64 n, int64 k) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
+        KernelStream s #= KernelStream.current();
+        gemm.launch(s, grid: [tiles], block: [64])(c, a, w, um, un, (uint32) k);
+        s.sync();
+    }
+}

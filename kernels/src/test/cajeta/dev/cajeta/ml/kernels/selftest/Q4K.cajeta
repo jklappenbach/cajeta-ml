@@ -1,0 +1,62 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.KernelBuffer;
+
+/** A consumer's decode step: llm's Q4_K block, 144 bytes { f16 d; f16 dmin; u8 scales[12]; u8 qs[128] }, element (k, n) of W^T, W stored n rows of k/256 blocks. */
+public final class Q4K {
+    public Q4K() { return; }
+
+    /** IEEE half bits to float32, the normal, subnormal and infinite cases. */
+    @Device
+    public static float32 halfBitsToF32(int32 h) {
+        int32 sign = (h >> 15) & 1;
+        int32 exp = (h >> 10) & 31;
+        int32 mant = h & 1023;
+        int32 bits = 0;
+        if (exp == 0) {
+            if (mant == 0) { bits = sign << 31; }
+            else {
+                int32 e = -1;
+                int32 mm = mant;
+                while ((mm & 1024) == 0) { mm = mm << 1; e = e + 1; }
+                bits = (sign << 31) | ((113 - e) << 23) | ((mm & 1023) << 13);
+            }
+        } else if (exp == 31) {
+            bits = (sign << 31) | 2139095040 | (mant << 13);
+        } else {
+            bits = (sign << 31) | ((exp + 112) << 23) | (mant << 13);
+        }
+        return Cajeta.bitsToF32(bits);
+    }
+
+    @Device
+    public static float16 decode(KernelBuffer<int8> w, uint32 k, uint32 n, uint32 cols) {
+        uint32 bpr = cols / 256;
+        uint32 b = k / 256;
+        uint32 e = k - b * 256;
+        uint32 ro = (n * bpr + b) * 144;
+        int32 d16 = ((int32) w[ro] & 255) | (((int32) w[ro + 1] & 255) << 8);
+        int32 m16 = ((int32) w[ro + 2] & 255) | (((int32) w[ro + 3] & 255) << 8);
+        float32 d = Q4K.halfBitsToF32(d16);
+        float32 dmin = Q4K.halfBitsToF32(m16);
+        uint32 sb = e / 32;
+        int32 sc = 0;
+        int32 mn = 0;
+        if (sb < 4) {
+            sc = (int32) w[ro + 4 + sb] & 63;
+            mn = (int32) w[ro + 8 + sb] & 63;
+        } else {
+            int32 dj = (int32) w[ro + 4 + (sb - 4)] & 255;
+            int32 mj = (int32) w[ro + 8 + (sb - 4)] & 255;
+            int32 kj = (int32) w[ro + 12 + (sb - 4)] & 255;
+            sc = (kj & 15) | ((dj >> 2) & 48);
+            mn = (kj >> 4) | ((mj >> 2) & 48);
+        }
+        uint32 g = e / 64;
+        uint32 rr = e - g * 64;
+        uint32 s = rr / 32;
+        uint32 l = rr - s * 32;
+        int32 q = (((int32) w[ro + 16 + 32 * g + l] & 255) >> (4 * s)) & 15;
+        return (float16) (d * (float32) sc * (float32) q - dmin * (float32) mn);
+    }
+}

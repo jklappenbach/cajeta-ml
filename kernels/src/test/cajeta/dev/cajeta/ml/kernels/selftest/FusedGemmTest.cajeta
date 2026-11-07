@@ -1,0 +1,294 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.DecodedGemm16;
+import dev.cajeta.ml.kernels.gemm.FusedGemm;
+import dev.cajeta.ml.kernels.gemm.PackQ8K;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 22.1.1 and 22.1.2 (spec §5.4, §5.5): a GEMM with a consumer's epilogue (bias
+ * and relu; bias and residual add) matches the unfused sequence; the q8_K pack of its output
+ * matches the host packer byte for byte; a consumer's Q4_K decode step inside the library's
+ * tile skeleton matches a host dequantise-then-GEMM.
+ */
+public class FusedGemmTest {
+    public FusedGemmTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) ((((i * 7919L) % 251L) - 125L) % 5L) * 0.5f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 22.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 22.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    static boolean close(float32 got, float64 want, int64 k) {
+        float64 d = (float64) got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        boolean ok = d <= 1.0e-5 * (w + 1.0) + (float64) k * 1.0e-7;
+        if (!ok) { System.stdout.println("  got " + (float64) got + " want " + want); }
+        return ok;
+    }
+
+    /** The backward-error form for large operands: within 2^-22 of the dot product's L1 norm plus 1e-5 relative. */
+    static boolean closeL1(float32 got, float64 want, float64 l1) {
+        float64 d = (float64) got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        boolean ok = d <= 1.0e-5 * (w + 1.0) + l1 * 2.384185791015625e-7;
+        if (!ok) { System.stdout.println("  got " + (float64) got + " want " + want + " l1 " + l1); }
+        return ok;
+    }
+
+    @Test
+    public void biasReluAndResidualEpiloguesMatchTheUnfusedSequence() {
+        if (!FusedGemmTest.usable("FusedGemm_dev_cajeta_ml_kernels_selftest_BiasRelu_gemm")) { return; }
+        int64 m = 33L;
+        int64 n = 1024L;
+        int64 k = 129L;
+        float16[] ha = heap float16[m * k];
+        float16[] hb = heap float16[k * n];
+        float32[] fa = heap float32[m * k];
+        float32[] fb = heap float32[k * n];
+        float32[] bias = heap float32[n];
+        float32[] resid = heap float32[m * n];
+        int64 i = 0L;
+        while (i < m * k) { fa[(int32) i] = FusedGemmTest.pattern(i); ha[(int32) i] = (float16) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = FusedGemmTest.pattern(i + 17L); hb[(int32) i] = (float16) fb[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < n) { bias[(int32) i] = FusedGemmTest.pattern(i + 5L); i = i + 1L; }
+        i = 0L;
+        while (i < m * n) { resid[(int32) i] = FusedGemmTest.pattern(i + 9L); i = i + 1L; }
+        KernelBuffer<float16> a = heap KernelBuffer<float16>((uint64) (m * k));
+        KernelBuffer<float16> b = heap KernelBuffer<float16>((uint64) (k * n));
+        KernelBuffer<float32> dBias = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> dResid = heap KernelBuffer<float32>((uint64) (m * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        dBias.upload(bias);
+        dResid.upload(resid);
+        int64[] mk #= ValueCheck.mark();
+        FusedGemm<BiasRelu> relu = heap FusedGemm<BiasRelu>();
+        relu.run(c, a, b, dBias, dResid, m, n, k);
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        int64 r = 0L;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 want = acc + (float64) bias[(int32) col];
+                if (want < 0.0) { want = 0.0; }
+                Assert.isTrue(FusedGemmTest.close(got[(int32) (r * n + col)], want, k));
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        FusedGemm<BiasResidual> res = heap FusedGemm<BiasResidual>();
+        res.run(c, a, b, dBias, dResid, m, n, k);
+        c.download(got);
+        r = 0L;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 want = acc + (float64) bias[(int32) col] + (float64) resid[(int32) (r * n + col)];
+                Assert.isTrue(FusedGemmTest.close(got[(int32) (r * n + col)], want, k));
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(mk);
+    }
+
+    /** llm's q8_K pack of one row on the host: 320 bytes a 256-block, q, eight sub-block sums, the scale bits. */
+    static void hostPackRow(float32[] x, int64 xo, int64 blocks, int8[] out, int64 oo) {
+        int64 b = 0L;
+        while (b < blocks) {
+            float32 amax = 0.0f;
+            int64 e = 0L;
+            while (e < 256L) {
+                float32 v = x[(int32) (xo + b * 256L + e)];
+                if (v < 0.0f) { v = 0.0f - v; }
+                if (v > amax) { amax = v; }
+                e = e + 1L;
+            }
+            float32 inv = 0.0f;
+            if (amax > 0.0f) { inv = 127.0f / amax; }
+            int64 ob = oo + b * 320L;
+            int32[] sums = heap int32[8];
+            e = 0L;
+            while (e < 256L) {
+                int32 q = (int32) Math.round(x[(int32) (xo + b * 256L + e)] * inv);
+                out[(int32) (ob + e)] = (int8) q;
+                sums[(int32) (e / 32L)] = sums[(int32) (e / 32L)] + q;
+                e = e + 1L;
+            }
+            int32 sb = 0;
+            while (sb < 8) {
+                int32 tot = sums[sb];
+                int64 so = ob + 256L + (int64) (sb * 4);
+                out[(int32) so] = (int8) (tot & 255);
+                out[(int32) (so + 1L)] = (int8) ((tot >> 8) & 255);
+                out[(int32) (so + 2L)] = (int8) ((tot >> 16) & 255);
+                out[(int32) (so + 3L)] = (int8) ((tot >> 24) & 255);
+                sb = sb + 1;
+            }
+            int32 db = Cajeta.f32ToBits(amax / 127.0f);
+            out[(int32) (ob + 288L)] = (int8) (db & 255);
+            out[(int32) (ob + 289L)] = (int8) ((db >> 8) & 255);
+            out[(int32) (ob + 290L)] = (int8) ((db >> 16) & 255);
+            out[(int32) (ob + 291L)] = (int8) ((db >> 24) & 255);
+            b = b + 1L;
+        }
+    }
+
+    @Test
+    public void theQ8KPackMatchesTheHostPackerByteForByte() {
+        if (!FusedGemmTest.usable("packQ8K")) { return; }
+        int64 rows = 7L;
+        int64 cols = 1024L;
+        float32[] x = heap float32[rows * cols];
+        int64 i = 0L;
+        while (i < rows * cols) { x[(int32) i] = FusedGemmTest.pattern(i) * 1.7f + (float32) (i % 13L) * 0.01f; i = i + 1L; }
+        KernelBuffer<float32> dx = heap KernelBuffer<float32>((uint64) (rows * cols));
+        dx.upload(x);
+        int64 blocks = cols / 256L;
+        KernelBuffer<int8> packed = heap KernelBuffer<int8>((uint64) (rows * blocks * 320L));
+        int64[] mk #= ValueCheck.mark();
+        PackQ8K.rows(packed, dx, rows, cols);
+        int8[] got = heap int8[rows * blocks * 320L];
+        packed.download(got);
+        int8[] want = heap int8[rows * blocks * 320L];
+        int64 r = 0L;
+        while (r < rows) { FusedGemmTest.hostPackRow(x, r * cols, blocks, want, r * blocks * 320L); r = r + 1L; }
+        i = 0L;
+        int32 bad = 0;
+        while (i < rows * blocks * 320L) {
+            if (i % 320L < 292L && got[(int32) i] != want[(int32) i]) {
+                if (bad < 3) { System.stdout.println("packQ8K: byte " + i + " got " + got[(int32) i] + " want " + want[(int32) i]); }
+                bad = bad + 1;
+            }
+            i = i + 1L;
+        }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(mk);
+    }
+
+    /** d, dmin and the 6-bit scales and mins of block `ro` of `raw`, as llm's headK4 unpacks them. */
+    static void hostHeadK4(int8[] raw, int64 ro, float32[] ds, int32[] sc, int32[] mn) {
+        ds[0] = Q4K.halfBitsToF32(((int32) raw[(int32) ro] & 255) | (((int32) raw[(int32) (ro + 1L)] & 255) << 8));
+        ds[1] = Q4K.halfBitsToF32(((int32) raw[(int32) (ro + 2L)] & 255) | (((int32) raw[(int32) (ro + 3L)] & 255) << 8));
+        int32 j = 0;
+        while (j < 4) {
+            int32 dj = (int32) raw[(int32) (ro + 4L + (int64) j)] & 255;
+            int32 mj = (int32) raw[(int32) (ro + 8L + (int64) j)] & 255;
+            int32 kj = (int32) raw[(int32) (ro + 12L + (int64) j)] & 255;
+            sc[j] = dj & 63;
+            mn[j] = mj & 63;
+            sc[j + 4] = (kj & 15) | ((dj >> 2) & 48);
+            mn[j + 4] = (kj >> 4) | ((mj >> 2) & 48);
+            j = j + 1;
+        }
+    }
+
+    @Test
+    public void aQ4KDecodeStepInsideTheTileSkeletonMatchesHostDequantiseThenGemm() {
+        if (!FusedGemmTest.usable("DecodedGemm16_dev_cajeta_ml_kernels_selftest_Q4K_gemm")) { return; }
+        int64 m = 17L;
+        int64 n = 48L;       // output rows of W, each a row of k/256 Q4_K blocks
+        int64 k = 512L;
+        int64 bpr = k / 256L;
+        int8[] raw = heap int8[n * bpr * 144L];
+        int64 i = 0L;
+        while (i < n * bpr * 144L) {
+            int64 pos = i % 144L;
+            int8 v = (int8) ((i * 7919L) % 251L);
+            if (pos == 0L) { v = (int8) 0; }      // d = 1.0 (0x3C00) and dmin = 0.5 (0x3800)
+            if (pos == 1L) { v = (int8) 60; }
+            if (pos == 2L) { v = (int8) 0; }
+            if (pos == 3L) { v = (int8) 56; }
+            raw[(int32) i] = v;
+            i = i + 1L;
+        }
+        float16[] ha = heap float16[m * k];
+        float32[] fa = heap float32[m * k];
+        i = 0L;
+        while (i < m * k) { fa[(int32) i] = FusedGemmTest.pattern(i); ha[(int32) i] = (float16) fa[(int32) i]; i = i + 1L; }
+        // the host: dequantise W (n rows of k) through f16, then C = A . W^T
+        float32[] w = heap float32[n * k];
+        int64 row = 0L;
+        while (row < n) {
+            int64 b = 0L;
+            while (b < bpr) {
+                int64 ro = (row * bpr + b) * 144L;
+                float32[] ds = heap float32[2];
+                int32[] sc = heap int32[8];
+                int32[] mn = heap int32[8];
+                FusedGemmTest.hostHeadK4(raw, ro, ds, sc, mn);
+                int32 e = 0;
+                while (e < 256) {
+                    int32 g = e / 64;
+                    int32 rr = e - g * 64;
+                    int32 s = rr / 32;
+                    int32 l = rr - s * 32;
+                    int32 q = (((int32) raw[(int32) (ro + 16L + (int64) (32 * g + l))] & 255) >> (4 * s)) & 15;
+                    int32 sb = e / 32;
+                    float32 val = ds[0] * (float32) sc[sb] * (float32) q - ds[1] * (float32) mn[sb];
+                    w[(int32) (row * k + b * 256L + (int64) e)] = (float32) ((float16) val);
+                    e = e + 1;
+                }
+                b = b + 1L;
+            }
+            row = row + 1L;
+        }
+        KernelBuffer<float16> a = heap KernelBuffer<float16>((uint64) (m * k));
+        KernelBuffer<int8> dw = heap KernelBuffer<int8>((uint64) (n * bpr * 144L));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        dw.upload(raw);
+        int64[] mk #= ValueCheck.mark();
+        DecodedGemm16<Q4K> g = heap DecodedGemm16<Q4K>();
+        g.run(c, a, dw, m, n, k);
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        int64 r = 0L;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                float64 l1 = 0.0;
+                int64 d = 0L;
+                while (d < k) {
+                    float64 pr = (float64) fa[(int32) (r * k + d)] * (float64) w[(int32) (col * k + d)];
+                    acc = acc + pr;
+                    if (pr < 0.0) { l1 = l1 - pr; } else { l1 = l1 + pr; }
+                    d = d + 1L;
+                }
+                Assert.isTrue(FusedGemmTest.closeL1(got[(int32) (r * n + col)], acc, l1));
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(mk);
+    }
+}
