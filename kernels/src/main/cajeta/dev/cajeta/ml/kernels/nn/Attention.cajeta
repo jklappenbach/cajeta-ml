@@ -1,0 +1,87 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.lang.Math;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Workgroup;
+
+/**
+ * Flash attention over f32 queries and f16 K/V pools (spec §6.4), grouped-query heads, head
+ * sizes 64, 128 and 256: one 32-lane wave per (query row, head), each lane owning hd/32 strided
+ * dimensions; the score of each causal position is one wave reduction and the online softmax
+ * keeps the running max and sum (wave-uniform) and the lane's accumulators, as llm's
+ * attnFlashPrefill does. No barrier: the cpu backend's barrier fission cannot carry a lane's
+ * accumulator across one inside the loop. Q is rows x nH x hd; K and V are position-major,
+ * nKv x hd a position.
+ */
+public final class Attention {
+    public Attention() { return; }
+
+    @Kernel @Wave(width = 32)
+    public static void flash(KernelBuffer<float32> out, KernelBuffer<float32> q, KernelBuffer<float16> k, KernelBuffer<float16> v,
+                             uint32 rows, uint32 nH, uint32 nKv, uint32 hd, uint32 startPos, float32 scale) {
+        Shared<float32> accS = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 wg = Workgroup.x();
+        uint32 r = wg / nH;
+        uint32 h = wg - r * nH;
+        uint32 group = nH / nKv;
+        uint32 kvh = h / group;
+        uint32 kvDim = nKv * hd;
+        uint32 qBase = r * nH * hd + h * hd;
+        uint32 count = startPos + r + 1;
+        uint32 per = hd / 32;
+        uint32 j = 0;
+        while (j < per) { accS[lane + 32 * j] = 0.0f; j = j + 1; }
+        float32 m = -3.4028235e38f;
+        float32 l = 0.0f;
+        uint32 t = 0;
+        while (t < count) {
+            uint32 kRow = t * kvDim + kvh * hd;
+            float32 pd = 0.0f;
+            j = 0;
+            while (j < per) {
+                uint32 d = lane + 32 * j;
+                pd = pd + q[qBase + d] * (float32) k[kRow + d];
+                j = j + 1;
+            }
+            float32 score = Wave.reduceSumF32(pd) * scale;
+            float32 mNew = m;
+            if (score > mNew) { mNew = score; }
+            float32 corr = Math.exp(m - mNew);
+            float32 p = Math.exp(score - mNew);
+            l = l * corr + p;
+            j = 0;
+            while (j < per) {
+                uint32 d = lane + 32 * j;
+                accS[d] = accS[d] * corr + p * (float32) v[kRow + d];
+                j = j + 1;
+            }
+            m = mNew;
+            t = t + 1;
+        }
+        j = 0;
+        while (j < per) {
+            uint32 d = lane + 32 * j;
+            out[qBase + d] = accS[d] / l;
+            j = j + 1;
+        }
+    }
+
+    /** `out` (rows x nH x hd) = attention of the `rows` queries at positions startPos.., each over its causal prefix of the pools; hd a multiple of 32; synced. */
+    public static void prefill(KernelBuffer<float32> out, KernelBuffer<float32> q, KernelBuffer<float16> k, KernelBuffer<float16> v,
+                               int64 rows, int64 nH, int64 nKv, int64 hd, int64 startPos, float32 scale) {
+        KernelStream s #= KernelStream.current();
+        flash.launch(s, grid: [(uint32) (rows * nH)], block: [32])(out, q, k, v, (uint32) rows, (uint32) nH, (uint32) nKv, (uint32) hd, (uint32) startPos, scale);
+        s.sync();
+    }
+
+    /** `out` (nH x hd) = attention of one query over the first `count` positions; synced. */
+    public static void decode(KernelBuffer<float32> out, KernelBuffer<float32> q, KernelBuffer<float16> k, KernelBuffer<float16> v,
+                              int64 nH, int64 nKv, int64 hd, int64 count, float32 scale) {
+        Attention.prefill(out, q, k, v, 1L, nH, nKv, hd, count - 1L, scale);
+    }
+}

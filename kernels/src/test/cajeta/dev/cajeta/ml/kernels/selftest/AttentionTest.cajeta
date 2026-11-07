@@ -1,0 +1,167 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.nn.Attention;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 26.1.1 (spec §6.4): flash prefill and decode over f32 Q and f16 K/V, GQA
+ * groups 1, 2, 4 and 8, head sizes 64, 128 and 256, against llm's host floor (the same
+ * arithmetic: scaled scores, softmax over the causal count, the weighted V sum).
+ */
+public class AttentionTest {
+    public AttentionTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) (((i * 7919L) % 251L) - 125L) * 0.008f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 26.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 26.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** llm's attendDecodeHost in float64: one query row of nH heads against `count` positions of the pools. */
+    static void hostRow(float64[] out, int64 oOff, float64[] q, int64 qOff, float64[] k, float64[] v,
+                        int64 nH, int64 nKv, int64 hd, int64 count, float64 scale) {
+        int64 group = nH / nKv;
+        int64 kvDim = nKv * hd;
+        float64[] sc = heap float64[count];
+        int64 h = 0L;
+        while (h < nH) {
+            int64 kvHead = (h / group) * hd;
+            int64 qBase = qOff + h * hd;
+            float64 mx = -1.0e300;
+            int64 t = 0L;
+            while (t < count) {
+                float64 s = 0.0;
+                int64 kRow = t * kvDim + kvHead;
+                int64 d = 0L;
+                while (d < hd) { s = s + q[(int32) (qBase + d)] * k[(int32) (kRow + d)]; d = d + 1L; }
+                s = s * scale;
+                sc[(int32) t] = s;
+                if (s > mx) { mx = s; }
+                t = t + 1L;
+            }
+            float64 sum = 0.0;
+            t = 0L;
+            while (t < count) { sc[(int32) t] = Math.exp(sc[(int32) t] - mx); sum = sum + sc[(int32) t]; t = t + 1L; }
+            int64 d = 0L;
+            while (d < hd) {
+                float64 acc = 0.0;
+                t = 0L;
+                while (t < count) { acc = acc + sc[(int32) t] * v[(int32) (t * kvDim + kvHead + d)]; t = t + 1L; }
+                out[(int32) (oOff + h * hd + d)] = acc / sum;
+                d = d + 1L;
+            }
+            h = h + 1L;
+        }
+    }
+
+    static boolean close(float32 got, float64 want) {
+        float64 d = (float64) got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        boolean ok = d <= 1.0e-4 * (w + 0.01);
+        if (!ok) { System.stdout.println("  got " + (float64) got + " want " + want); }
+        return ok;
+    }
+
+    /** Prefill of `rows` queries at startPos over nKv kv heads x group, head size hd, and the decode of one more. */
+    static void shape(int64 nKv, int64 group, int64 hd) {
+        int64 nH = nKv * group;
+        int64 rows = 5L;
+        int64 startPos = 11L;
+        int64 tMax = startPos + rows + 1L;
+        int64 kvDim = nKv * hd;
+        float32[] hq = heap float32[(rows + 1L) * nH * hd];
+        float16[] hk = heap float16[tMax * kvDim];
+        float16[] hv = heap float16[tMax * kvDim];
+        float64[] fq = heap float64[(rows + 1L) * nH * hd];
+        float64[] fk = heap float64[tMax * kvDim];
+        float64[] fv = heap float64[tMax * kvDim];
+        int64 i = 0L;
+        while (i < (rows + 1L) * nH * hd) { hq[(int32) i] = AttentionTest.pattern(i); fq[(int32) i] = (float64) hq[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < tMax * kvDim) {
+            hk[(int32) i] = (float16) AttentionTest.pattern(i + 13L); fk[(int32) i] = (float64) hk[(int32) i];
+            hv[(int32) i] = (float16) AttentionTest.pattern(i + 29L); fv[(int32) i] = (float64) hv[(int32) i];
+            i = i + 1L;
+        }
+        float32 scale = 1.0f / Math.sqrt((float32) hd);
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) ((rows + 1L) * nH * hd));
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (tMax * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (tMax * kvDim));
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (rows * nH * hd));
+        q.upload(hq);
+        k.upload(hk);
+        v.upload(hv);
+        int64[] m #= ValueCheck.mark();
+        Attention.prefill(out, q, k, v, rows, nH, nKv, hd, startPos, scale);
+        float32[] got = heap float32[rows * nH * hd];
+        out.download(got);
+        float64[] want = heap float64[rows * nH * hd];
+        int64 r = 0L;
+        while (r < rows) {
+            AttentionTest.hostRow(want, r * nH * hd, fq, r * nH * hd, fk, fv, nH, nKv, hd, startPos + r + 1L, (float64) scale);
+            r = r + 1L;
+        }
+        i = 0L;
+        while (i < rows * nH * hd) {
+            if (!AttentionTest.close(got[(int32) i], want[(int32) i])) {
+                System.stdout.println("  prefill nKv=" + nKv + " group=" + group + " hd=" + hd + " [" + i + "]");
+                Assert.isTrue(false);
+            }
+            i = i + 1L;
+        }
+        // decode: the row after the prefill, at position tMax - 1, over every position
+        KernelBuffer<float32> qd = heap KernelBuffer<float32>((uint64) (nH * hd));
+        float32[] hqd = heap float32[nH * hd];
+        i = 0L;
+        while (i < nH * hd) { hqd[(int32) i] = hq[(int32) (rows * nH * hd + i)]; i = i + 1L; }
+        qd.upload(hqd);
+        KernelBuffer<float32> od = heap KernelBuffer<float32>((uint64) (nH * hd));
+        Attention.decode(od, qd, k, v, nH, nKv, hd, tMax, scale);
+        float32[] gd = heap float32[nH * hd];
+        od.download(gd);
+        float64[] wd = heap float64[nH * hd];
+        AttentionTest.hostRow(wd, 0L, fq, rows * nH * hd, fk, fv, nH, nKv, hd, tMax, (float64) scale);
+        i = 0L;
+        while (i < nH * hd) {
+            if (!AttentionTest.close(gd[(int32) i], wd[(int32) i])) {
+                System.stdout.println("  decode nKv=" + nKv + " group=" + group + " hd=" + hd + " [" + i + "]");
+                Assert.isTrue(false);
+            }
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void flashPrefillAndDecodeMatchTheHostFloorAcrossGroupsAndHeadSizes() {
+        if (!AttentionTest.usable("flash")) { return; }
+        int64[] groups = heap int64[4];
+        groups[0] = 1L; groups[1] = 2L; groups[2] = 4L; groups[3] = 8L;
+        int64[] sizes = heap int64[3];
+        sizes[0] = 64L; sizes[1] = 128L; sizes[2] = 256L;
+        int32 g = 0;
+        while (g < 4) {
+            int32 s = 0;
+            while (s < 3) {
+                AttentionTest.shape(2L, groups[g], sizes[s]);
+                s = s + 1;
+            }
+            g = g + 1;
+        }
+    }
+}
