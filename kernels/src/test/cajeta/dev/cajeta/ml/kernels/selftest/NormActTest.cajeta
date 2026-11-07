@@ -263,6 +263,97 @@ public class NormActTest {
             }
             kind = kind + 1;
         }
+        // the VJPs: act derivatives against finite differences of the host activation, the softmax
+        // and log-softmax VJPs and the row-normalisation VJP against their closed forms
+        KernelBuffer<E> gbuf = heap KernelBuffer<E>((uint64) n);
+        E[] hg = heap E[n];
+        float64[] fg = heap float64[n];
+        i = 0L;
+        while (i < n) { hg[(int32) i] = (E) (NormActTest.pattern(i + 5L) * 0.3f); fg[(int32) i] = (float64) hg[(int32) i]; i = i + 1L; }
+        gbuf.upload(hg);
+        KernelBuffer<E> ybuf = heap KernelBuffer<E>((uint64) n);
+        int32[] kinds = [0, 1, 2, 3, 4, 5];
+        int32 kk = 0;
+        while (kk < 6) {
+            int32 kd = kinds[kk];
+            NormActTest.stage = "actBack " + kd;
+            Act.apply<E>(ybuf, x, n, kd);
+            Act.backward<E>(out, gbuf, x, ybuf, n, kd);
+            out.download(got);
+            i = 0L;
+            while (i < n) {
+                float64 xv = fx[(int32) i];
+                float64 h = 1.0e-4;
+                float64 want = (NormActTest.hostAct(kd, xv + h) - NormActTest.hostAct(kd, xv - h)) / (2.0 * h);
+                if (kd == 0 && xv > -0.001 && xv < 0.001) { want = 0.0; if (xv > 0.0) { want = 1.0; } }
+                float64 tolB = rel;
+                if (tolB < 1.0e-4) { tolB = 1.0e-4; }
+                Assert.isTrue(NormActTest.close((float64) got[(int32) i], fg[(int32) i] * want, tolB * 5.0));
+                i = i + 1L;
+            }
+            kk = kk + 1;
+        }
+        NormActTest.stage = "softmaxBack";
+        Act.softmaxRows<E>(ybuf, x, rows, cols);
+        E[] hy = heap E[n];
+        ybuf.download(hy);
+        Act.softmaxBackward<E>(out, ybuf, gbuf, rows, cols, false);
+        out.download(got);
+        r = 0L;
+        while (r < rows) {
+            float64 dot = 0.0;
+            int64 c = 0L;
+            while (c < cols) { dot = dot + fg[(int32) (r * cols + c)] * (float64) hy[(int32) (r * cols + c)]; c = c + 1L; }
+            c = 0L;
+            while (c < cols) {
+                float64 sv = (float64) hy[(int32) (r * cols + c)];
+                Assert.isTrue(NormActTest.close((float64) got[(int32) (r * cols + c)], sv * (fg[(int32) (r * cols + c)] - dot), rel));
+                c = c + 1L;
+            }
+            r = r + 1L;
+        }
+        NormActTest.stage = "logSoftmaxBack";
+        Act.logSoftmaxRows<E>(ybuf, x, rows, cols);
+        ybuf.download(hy);
+        Act.softmaxBackward<E>(out, ybuf, gbuf, rows, cols, true);
+        out.download(got);
+        r = 0L;
+        while (r < rows) {
+            float64 gsum = 0.0;
+            int64 c = 0L;
+            while (c < cols) { gsum = gsum + fg[(int32) (r * cols + c)]; c = c + 1L; }
+            c = 0L;
+            while (c < cols) {
+                float64 sm = Math.exp((float64) hy[(int32) (r * cols + c)]);
+                Assert.isTrue(NormActTest.close((float64) got[(int32) (r * cols + c)], fg[(int32) (r * cols + c)] - sm * gsum, rel));
+                c = c + 1L;
+            }
+            r = r + 1L;
+        }
+        NormActTest.stage = "l2normBack";
+        Norm.l2rows<E>(ybuf, x, rows, cols, 1.0e-8f);
+        ybuf.download(hy);
+        Norm.l2rowsBack<E>(out, x, ybuf, gbuf, rows, cols, 1.0e-8f);
+        out.download(got);
+        r = 0L;
+        while (r < rows) {
+            float64 sq = 0.0;
+            float64 dot = 0.0;
+            int64 c = 0L;
+            while (c < cols) {
+                sq = sq + fx[(int32) (r * cols + c)] * fx[(int32) (r * cols + c)];
+                dot = dot + fg[(int32) (r * cols + c)] * (float64) hy[(int32) (r * cols + c)];
+                c = c + 1L;
+            }
+            float64 nrm = Math.sqrt(sq);
+            if (nrm < 1.0e-8) { nrm = 1.0e-8; }
+            c = 0L;
+            while (c < cols) {
+                Assert.isTrue(NormActTest.close((float64) got[(int32) (r * cols + c)], (fg[(int32) (r * cols + c)] - (float64) hy[(int32) (r * cols + c)] * dot) / nrm, rel));
+                c = c + 1L;
+            }
+            r = r + 1L;
+        }
         // glu: act(x) * (x shifted by one row's worth) with silu and gelu
         KernelBuffer<E> u = heap KernelBuffer<E>((uint64) n);
         E[] hu = heap E[n];

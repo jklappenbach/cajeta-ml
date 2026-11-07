@@ -113,6 +113,32 @@ public final class Reduce {
         s.sync();
     }
 
+    /** The max-along-axis VJP: g[o][i] lands on the first j where in[o][j][i] equals mx[o][i]; the rest 0. */
+    @Kernel
+    public static void axisMaxBack<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<E> mx, KernelBuffer<E> g, uint32 outer, uint32 axisLen, uint32 inner) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < outer * inner) {
+            uint32 o = t / inner;
+            uint32 i = t - o * inner;
+            E target = mx[t];
+            boolean found = false;
+            uint32 j = 0;
+            while (j < axisLen) {
+                uint32 idx = (o * axisLen + j) * inner + i;
+                if (!found && in[idx] == target) { out[idx] = g[t]; found = true; } else { out[idx] = (E) 0; }
+                j = j + 1;
+            }
+        }
+    }
+
+    /** The max-along-axis VJP over (outer, axisLen, inner); synced. */
+    public static void alongAxisMaxBack<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<E> mx, KernelBuffer<E> g, int64 outer, int64 axisLen, int64 inner) {
+        uint32 total = (uint32) (outer * inner);
+        KernelStream s #= KernelStream.current();
+        axisMaxBack.launch(s, grid: [(total + 255) / 256], block: [256])(out, in, mx, g, (uint32) outer, (uint32) axisLen, (uint32) inner);
+        s.sync();
+    }
+
     /** Chunks per segment: one block of 256 lanes per 4096 elements, 1 to 64. */
     static uint32 chunksFor(int64 segLen) {
         int64 c = (segLen + 4095L) / 4096L;

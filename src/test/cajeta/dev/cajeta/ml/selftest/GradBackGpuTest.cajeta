@@ -1,0 +1,193 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Op;
+
+/**
+ * cajeta-ml-gpu 29.1.1 (spec §6.6): the backward column. For each op, `tape.backward` on
+ * device leaves yields the CPU column's gradients within 1e-4 relative.
+ */
+public class GradBackGpuTest {
+    public GradBackGpuTest() { return; }
+
+    static #Tensor<float32> fill(int64[] shape, int64 seed, boolean positive) {
+        Tensor<float32> t #= Tensor.full<float32>(shape, 0.0f);
+        int64 n = t.size();
+        int64 f = 0;
+        while (f < n) {
+            float32 v = (float32) ((((f + seed) * 7919L) % 251L) - 125L) * 0.012f;
+            if (positive) { v = v + 1.6f; }
+            t.flatSet(f, v);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    static #Tensor<float32> onDevice(Tensor<float32> t) {
+        Tensor<float32> d #= t.copy();
+        d.gpu();
+        return #d;
+    }
+
+    static void sameGrad(String what, Tensor<float32> want, Tensor<float32> got) {
+        Assert.isTrue(got.isOnGpu());
+        got.cpu();
+        Assert.equals(want.size(), got.size());
+        int64 i = 0;
+        while (i < want.size()) {
+            float64 w = (float64) want.flatGet(i);
+            float64 g = (float64) got.flatGet(i);
+            float64 d = g - w;
+            if (d < 0.0) { d = 0.0 - d; }
+            float64 aw = w;
+            if (aw < 0.0) { aw = 0.0 - aw; }
+            if (!(d <= 1.0e-4 * (aw + 1.0))) {
+                System.stdout.println("  " + what + " grad [" + i + "] device " + g + " cpu " + w);
+                Assert.isTrue(false);
+            }
+            i = i + 1;
+        }
+    }
+
+    static GradTensor apply1(GradTape<float32> t, int32 op, GradTensor a, int32 axis, float32 c) {
+        if (op == Op.RELU) { return t.relu(a); }
+        if (op == Op.NEG) { return t.neg(a); }
+        if (op == Op.EXP) { return t.exp(a); }
+        if (op == Op.LOG) { return t.log(a); }
+        if (op == Op.SQRT) { return t.sqrt(a); }
+        if (op == Op.TANH) { return t.tanh(a); }
+        if (op == Op.SIGMOID) { return t.sigmoid(a); }
+        if (op == Op.GELU) { return t.gelu(a); }
+        if (op == Op.SOFTMAX) { return t.softmax(a); }
+        if (op == Op.LOGSOFTMAX) { return t.logSoftmax(a); }
+        if (op == Op.POWS) { return t.powScalar(a, c); }
+        if (op == Op.ROWNORM) { return t.rowNorm(a); }
+        if (op == Op.SUM) { return t.sum(a); }
+        if (op == Op.MEAN) { return t.mean(a); }
+        if (op == Op.SUMAXIS) { return t.sumAxis(a, axis); }
+        if (op == Op.MEANAXIS) { return t.meanAxis(a, axis); }
+        if (op == Op.MAXAXIS) { return t.maxAxis(a, axis); }
+        if (op == Op.TRANSPOSE) { return t.transpose2d(a); }
+        if (op == Op.TRANSPOSEB) { return t.transposeBatch(a); }
+        if (op == Op.PERMUTE) { int32[] perm = [2, 0, 1]; return t.permute(a, perm); }
+        if (op == Op.RESHAPE) { int64[] sh = [7L, 3L]; return t.reshape(a, sh); }
+        if (op == Op.SLICE) { return t.slice(a, axis, 1L, 3L); }
+        return a;
+    }
+
+    static void unary(String what, int32 op, Tensor<float32> a, int32 axis, float32 c) {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor la = t.leaf(a, true);
+        GradTensor y = GradBackGpuTest.apply1(t, op, la, axis, c);
+        t.backward(y);
+        Tensor<float32> want = t.gradOf(la);
+        Tensor<float32> ad #= GradBackGpuTest.onDevice(a);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor ld = d.leaf(ad, true);
+        GradTensor yd = GradBackGpuTest.apply1(d, op, ld, axis, c);
+        d.backward(yd);
+        GradBackGpuTest.sameGrad(what, want, d.gradOf(ld));
+    }
+
+    @Test
+    public void elementwiseAndRowBackwardsMatchTheCpu() {
+        int64[] s = [3L, 7L];
+        Tensor<float32> a #= GradBackGpuTest.fill(s, 3L, false);
+        Tensor<float32> p #= GradBackGpuTest.fill(s, 5L, true);
+        GradBackGpuTest.unary("relu", Op.RELU, a, 0, 0.0f);
+        GradBackGpuTest.unary("neg", Op.NEG, a, 0, 0.0f);
+        GradBackGpuTest.unary("exp", Op.EXP, a, 0, 0.0f);
+        GradBackGpuTest.unary("log", Op.LOG, p, 0, 0.0f);
+        GradBackGpuTest.unary("sqrt", Op.SQRT, p, 0, 0.0f);
+        GradBackGpuTest.unary("tanh", Op.TANH, a, 0, 0.0f);
+        GradBackGpuTest.unary("sigmoid", Op.SIGMOID, a, 0, 0.0f);
+        GradBackGpuTest.unary("gelu", Op.GELU, a, 0, 0.0f);
+        GradBackGpuTest.unary("softmax", Op.SOFTMAX, a, 0, 0.0f);
+        GradBackGpuTest.unary("logSoftmax", Op.LOGSOFTMAX, a, 0, 0.0f);
+        GradBackGpuTest.unary("powScalar 3", Op.POWS, a, 0, 3.0f);
+        GradBackGpuTest.unary("powScalar 2.5", Op.POWS, p, 0, 2.5f);
+        GradBackGpuTest.unary("rowNorm", Op.ROWNORM, a, 0, 0.0f);
+    }
+
+    @Test
+    public void reductionAndShapeBackwardsMatchTheCpu() {
+        int64[] s = [3L, 7L];
+        Tensor<float32> a #= GradBackGpuTest.fill(s, 7L, false);
+        GradBackGpuTest.unary("sum", Op.SUM, a, 0, 0.0f);
+        GradBackGpuTest.unary("mean", Op.MEAN, a, 0, 0.0f);
+        GradBackGpuTest.unary("sumAxis 0", Op.SUMAXIS, a, 0, 0.0f);
+        GradBackGpuTest.unary("sumAxis 1", Op.SUMAXIS, a, 1, 0.0f);
+        GradBackGpuTest.unary("meanAxis 0", Op.MEANAXIS, a, 0, 0.0f);
+        GradBackGpuTest.unary("meanAxis 1", Op.MEANAXIS, a, 1, 0.0f);
+        GradBackGpuTest.unary("maxAxis 0", Op.MAXAXIS, a, 0, 0.0f);
+        GradBackGpuTest.unary("maxAxis 1", Op.MAXAXIS, a, 1, 0.0f);
+        GradBackGpuTest.unary("transpose", Op.TRANSPOSE, a, 0, 0.0f);
+        GradBackGpuTest.unary("reshape", Op.RESHAPE, a, 0, 0.0f);
+        GradBackGpuTest.unary("slice axis 0", Op.SLICE, a, 0, 0.0f);
+        GradBackGpuTest.unary("slice axis 1", Op.SLICE, a, 1, 0.0f);
+        int64[] s3 = [3L, 7L, 5L];
+        Tensor<float32> t3 #= GradBackGpuTest.fill(s3, 11L, false);
+        GradBackGpuTest.unary("transposeBatch", Op.TRANSPOSEB, t3, 0, 0.0f);
+        GradBackGpuTest.unary("permute", Op.PERMUTE, t3, 0, 0.0f);
+        GradBackGpuTest.unary("sumAxis -1 rank 3", Op.SUMAXIS, t3, -1, 0.0f);
+        GradBackGpuTest.unary("meanAxis 1 rank 3", Op.MEANAXIS, t3, 1, 0.0f);
+    }
+
+    static GradTensor apply2(GradTape<float32> t, int32 op, GradTensor a, GradTensor b, int32 axis) {
+        if (op == Op.ADD) { return t.add(a, b); }
+        if (op == Op.SUB) { return t.sub(a, b); }
+        if (op == Op.MUL) { return t.mul(a, b); }
+        if (op == Op.DIV) { return t.div(a, b); }
+        if (op == Op.MATMUL) { return t.matmul(a, b); }
+        if (op == Op.MATMULB) { return t.matmulBatched(a, b); }
+        if (op == Op.CONCAT) { return t.concat(a, b, axis); }
+        return a;
+    }
+
+    static void binary(String what, int32 op, Tensor<float32> a, Tensor<float32> b, int32 axis) {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor la = t.leaf(a, true);
+        GradTensor lb = t.leaf(b, true);
+        GradTensor y = GradBackGpuTest.apply2(t, op, la, lb, axis);
+        t.backward(y);
+        Tensor<float32> ad #= GradBackGpuTest.onDevice(a);
+        Tensor<float32> bd #= GradBackGpuTest.onDevice(b);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor lda = d.leaf(ad, true);
+        GradTensor ldb = d.leaf(bd, true);
+        GradTensor yd = GradBackGpuTest.apply2(d, op, lda, ldb, axis);
+        d.backward(yd);
+        GradBackGpuTest.sameGrad(what + " dA", t.gradOf(la), d.gradOf(lda));
+        GradBackGpuTest.sameGrad(what + " dB", t.gradOf(lb), d.gradOf(ldb));
+    }
+
+    @Test
+    public void binaryBackwardsMatchTheCpu() {
+        int64[] s = [3L, 7L];
+        int64[] row = [1L, 7L];
+        Tensor<float32> a #= GradBackGpuTest.fill(s, 13L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(s, 17L, true);
+        Tensor<float32> r #= GradBackGpuTest.fill(row, 19L, true);
+        GradBackGpuTest.binary("add", Op.ADD, a, b, 0);
+        GradBackGpuTest.binary("sub", Op.SUB, a, b, 0);
+        GradBackGpuTest.binary("mul", Op.MUL, a, b, 0);
+        GradBackGpuTest.binary("div", Op.DIV, a, b, 0);
+        GradBackGpuTest.binary("add broadcast", Op.ADD, a, r, 0);
+        GradBackGpuTest.binary("mul broadcast", Op.MUL, a, r, 0);
+        GradBackGpuTest.binary("div broadcast", Op.DIV, a, r, 0);
+        GradBackGpuTest.binary("concat axis 0", Op.CONCAT, a, b, 0);
+        GradBackGpuTest.binary("concat axis 1", Op.CONCAT, a, b, 1);
+        int64[] ws = [7L, 5L];
+        Tensor<float32> w #= GradBackGpuTest.fill(ws, 23L, false);
+        GradBackGpuTest.binary("matmul", Op.MATMUL, a, w, 0);
+        int64[] ba = [2L, 3L, 7L];
+        int64[] bb = [2L, 7L, 5L];
+        Tensor<float32> xa #= GradBackGpuTest.fill(ba, 29L, false);
+        Tensor<float32> xb #= GradBackGpuTest.fill(bb, 31L, false);
+        GradBackGpuTest.binary("matmulBatched", Op.MATMULB, xa, xb, 0);
+    }
+}

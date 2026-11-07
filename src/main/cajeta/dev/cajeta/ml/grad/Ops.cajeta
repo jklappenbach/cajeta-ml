@@ -209,6 +209,252 @@ public final class Ops {
         Ewise.arithInto<E>(name, running, running, tmp, 0);
     }
 
+    /** A tensor of `shape` filled with `v` on `like`'s device. */
+    public static #Tensor<E> fullOn<E extends Floating>(int64[] shape, Tensor<E> like, E v) {
+        if (like.isOnGpu()) {
+            Tensor<E> dv #= Ewise.deviceOf<E>(shape);
+            Fill.with<E>(dv.deviceView("full"), dv.size(), v);
+            return #dv;
+        }
+        return Tensor.full<E>(shape, v);
+    }
+
+    /** `t * s` elementwise, on `t`'s device. */
+    public static #Tensor<E> scale<E extends Floating>(Tensor<E> t, E s) {
+        if (t.isOnGpu()) {
+            Ops.requireF32<E>("scale");
+            Tensor<E> out #= Ewise.deviceLike<E>(t);
+            Elementwise.map<E>(out.deviceView("scale"), t.deviceView("scale"), t.size(), Elementwise.SCALE, (float32) s);
+            return #out;
+        }
+        return Tensor.mulScalar<E>(t, s);
+    }
+
+    /** `g` broadcast (right-aligned, numpy rules) to `shape` and materialised, on its device. */
+    public static #Tensor<E> broadcastCopy<E extends Floating>(Tensor<E> g, int64[] shape) {
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("broadcast");
+            int32 nd = (int32) shape.count();
+            if (nd > 4) { throw heap MlException("ml.grad: 'broadcast' on the device handles rank <= 4, got " + nd); }
+            int32 gd = g.ndim();
+            int64[] gs #= Ops.shapeOf<E>(g);
+            int64[] gst #= Ops.contig(gs);
+            int64[] is = heap int64[nd];
+            int32 d = 0;
+            while (d < nd) {
+                int32 src = d - (nd - gd);
+                is[d] = 0;
+                if (src >= 0 && gs[src] != 1) { is[d] = gst[src]; }
+                d = d + 1;
+            }
+            int64[] os #= Ops.contig(shape);
+            Tensor<E> out #= Ewise.deviceOf<E>(shape);
+            Copy.stridedInto<E>(out.deviceView("broadcast"), g.deviceView("broadcast"), shape, is, os, 0L, 0L);
+            return #out;
+        }
+        Tensor<E> vw #= g.broadcastTo(shape);
+        Tensor<E> out #= vw.copy();
+        return #out;
+    }
+
+    /** `g` summed down to `like`'s shape (the broadcast VJP), on its device. */
+    public static #Tensor<E> sumTo<E extends Floating>(Tensor<E> g, Tensor<E> like) {
+        if (!g.isOnGpu()) { return Tensor.sumTo<E>(g, like); }
+        Ops.requireSame<E>("sumTo", g, like);
+        Ops.requireF32<E>("sumTo");
+        int32 gd = g.ndim();
+        int32 ld = like.ndim();
+        Tensor<E> cur #= Ops.copyOf<E>(g);
+        // leading axes `like` does not have: reduce axis 0 and drop it
+        while (cur.ndim() > ld) {
+            Tensor<E> red #= Ops.reduceAxisGpu<E>("sumTo", cur, 0, Reduce.SUM);
+            int64[] sh #= Ops.shapeOf<E>(red);
+            int64[] dropped = heap int64[red.ndim() - 1];
+            int32 k = 1;
+            while (k < red.ndim()) { dropped[k - 1] = sh[k]; k = k + 1; }
+            cur #= Ops.reshape<E>(red, dropped);
+        }
+        int32 d = 0;
+        while (d < ld) {
+            if (like.shapeAt(d) == 1 && cur.shapeAt(d) != 1) {
+                cur #= Ops.reduceAxisGpu<E>("sumTo", cur, d, Reduce.SUM);
+            }
+            d = d + 1;
+        }
+        return #cur;
+    }
+
+    /** The activation VJP g * kind'(x), `y` the forward output; kinds as `Act`'s. */
+    public static #Tensor<E> actBack<E extends Floating>(int32 op, Tensor<E> g, Tensor<E> x, Tensor<E> y) {
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("actBack");
+            int32 kind = Act.RELU;
+            if (op == Op.TANH) { kind = Act.TANH; }
+            if (op == Op.SIGMOID) { kind = Act.SIGMOID; }
+            if (op == Op.GELU) { kind = Act.GELU_ERF; }
+            Tensor<E> out #= Ewise.deviceLike<E>(g);
+            Act.backward<E>(out.deviceView("actBack"), g.deviceView("actBack"), x.deviceView("actBack"), y.deviceView("actBack"), g.size(), kind);
+            return #out;
+        }
+        if (op == Op.RELU) {
+            Tensor<E> m #= Tensor.reluMask<E>(x);
+            return Tensor.mul<E>(g, m);
+        }
+        if (op == Op.TANH) {
+            Tensor<E> o2 #= Tensor.mul<E>(y, y);
+            Tensor<E> one #= Tensor.onesLike<E>(y);
+            Tensor<E> dd #= Tensor.sub<E>(one, o2);
+            return Tensor.mul<E>(g, dd);
+        }
+        if (op == Op.SIGMOID) {
+            Tensor<E> one #= Tensor.onesLike<E>(y);
+            Tensor<E> om #= Tensor.sub<E>(one, y);
+            Tensor<E> dd #= Tensor.mul<E>(y, om);
+            return Tensor.mul<E>(g, dd);
+        }
+        return Ops.geluBackCpu<E>(x, g);
+    }
+
+    /** GELU'(x) = Φ(x) + x·φ(x), Φ the standard-normal CDF (the CPU column). */
+    static #Tensor<E> geluBackCpu<E extends Floating>(Tensor<E> x, Tensor<E> g) {
+        Tensor<E> out #= x.copy();
+        int64 n = Ops.countOf<E>(out);
+        int64 i = 0;
+        while (i < n) {
+            float64 xv = (float64) x.flatGet(i);
+            float64 cdf = 0.5 * (1.0 + Stats.erf(xv / 1.4142135623730951));
+            float64 pdf = 0.3989422804014327 * Math.exp(-0.5 * xv * xv);
+            float64 gr = (float64) g.flatGet(i) * (cdf + xv * pdf);
+            out.flatSet(i, (E) gr);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** The softmax VJP s ⊙ (g − ⟨g, s⟩) per row, or the log-softmax VJP g − exp(ls) ⊙ Σg when `logForm`. */
+    public static #Tensor<E> softmaxBack<E extends Floating>(Tensor<E> y, Tensor<E> g, boolean logForm) {
+        int64 cols = y.shapeAt(y.ndim() - 1);
+        int64 rows = y.size() / cols;
+        if (g.isOnGpu()) {
+            Ops.requireF32<E>("softmaxBack");
+            Tensor<E> out #= Ewise.deviceLike<E>(g);
+            Act.softmaxBackward<E>(out.deviceView("softmaxBack"), y.deviceView("softmaxBack"), g.deviceView("softmaxBack"), rows, cols, logForm);
+            return #out;
+        }
+        Tensor<E> out #= y.copy();
+        int64 r = 0;
+        while (r < rows) {
+            float64 tot = 0.0;
+            int64 j = 0;
+            while (j < cols) {
+                float64 gv = (float64) g.flatGet(r * cols + j);
+                if (logForm) { tot = tot + gv; } else { tot = tot + gv * (float64) y.flatGet(r * cols + j); }
+                j = j + 1;
+            }
+            j = 0;
+            while (j < cols) {
+                float64 yv = (float64) y.flatGet(r * cols + j);
+                float64 gv = (float64) g.flatGet(r * cols + j);
+                float64 res = yv * (gv - tot);
+                if (logForm) { res = gv - Math.exp(yv) * tot; }
+                out.flatSet(r * cols + j, (E) res);
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+
+    /** The max-along-axis VJP: the cotangent lands on the first maximum of each slice. */
+    public static #Tensor<E> maxAxisBack<E extends Floating>(Tensor<E> x, Tensor<E> mx, Tensor<E> g, int32 axis) {
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("maxAxisBack");
+            int32 nd = x.ndim();
+            int32 ax = axis;
+            if (ax < 0) { ax = ax + nd; }
+            int64 outer = 1;
+            int64 inner = 1;
+            int32 d = 0;
+            while (d < nd) {
+                if (d < ax) { outer = outer * x.shapeAt(d); }
+                if (d > ax) { inner = inner * x.shapeAt(d); }
+                d = d + 1;
+            }
+            Tensor<E> out #= Ewise.deviceLike<E>(x);
+            Reduce.alongAxisMaxBack<E>(out.deviceView("maxAxisBack"), x.deviceView("maxAxisBack"), mx.deviceView("maxAxisBack"),
+                g.deviceView("maxAxisBack"), outer, x.shapeAt(ax), inner);
+            return #out;
+        }
+        return Ops.maxAxisBackCpu<E>(x, mx, g);
+    }
+
+    /** The CPU column's rank-2 max VJP. */
+    static #Tensor<E> maxAxisBackCpu<E extends Floating>(Tensor<E> x, Tensor<E> mx, Tensor<E> g) {
+        Tensor<E> out #= Tensor.zerosLike<E>(x);
+        if (x.ndim() != 2) {
+            throw heap MlException("GradTape.maxAxis backward: rank-2 only in v3");
+        }
+        int64 rows = x.shapeAt(0);
+        int64 cols = x.shapeAt(1);
+        int64 r = 0;
+        if (mx.shapeAt(1) == 1) {
+            while (r < rows) {
+                E target = mx.get2(r, 0);
+                int64 jj = 0;
+                while (jj < cols) {
+                    if (x.get2(r, jj) == target) { out.flatSet(r * cols + jj, g.get2(r, 0)); jj = cols; } else { jj = jj + 1; }
+                }
+                r = r + 1;
+            }
+        } else {
+            int64 jj = 0;
+            while (jj < cols) {
+                E target = mx.get2(0, jj);
+                r = 0;
+                while (r < rows) {
+                    if (x.get2(r, jj) == target) { out.flatSet(r * cols + jj, g.get2(0, jj)); r = rows; } else { r = r + 1; }
+                }
+                jj = jj + 1;
+            }
+        }
+        return #out;
+    }
+
+    /** The slice VJP: `g` scattered into zeros of `x`'s shape at `start` along `axis`. */
+    public static #Tensor<E> sliceBack<E extends Floating>(Tensor<E> x, Tensor<E> g, int32 axis, int64 start) {
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("sliceBack");
+            if (x.ndim() > 4) { throw heap MlException("ml.grad: 'sliceBack' on the device handles rank <= 4, got " + x.ndim()); }
+            Tensor<E> out #= Ops.zerosLike<E>(x);
+            int64[] dims #= Ops.shapeOf<E>(g);
+            int64[] is #= Ops.contig(dims);
+            int64[] xs #= Ops.shapeOf<E>(x);
+            int64[] os #= Ops.contig(xs);
+            Copy.stridedInto<E>(out.deviceView("sliceBack"), g.deviceView("sliceBack"), dims, is, os, 0L, start * os[axis]);
+            return #out;
+        }
+        Tensor<E> out #= Tensor.zerosLike<E>(x);
+        if (x.ndim() != 2) {
+            throw heap MlException("GradTape.slice backward: rank-2 only in v3");
+        }
+        int64 gr = g.shapeAt(0);
+        int64 gc = g.shapeAt(1);
+        int64 cols = x.shapeAt(1);
+        int64 r = 0;
+        while (r < gr) {
+            int64 j = 0;
+            while (j < gc) {
+                int64 rr = r;
+                int64 cc = j;
+                if (axis == 0) { rr = r + start; } else { cc = j + start; }
+                out.flatSet(rr * cols + cc, g.get2(r, j));
+                j = j + 1;
+            }
+            r = r + 1;
+        }
+        return #out;
+    }
+
     /** C-order strides of `shape`. */
     static #int64[] contig(int64[] shape) {
         int32 nd = (int32) shape.count();
@@ -373,6 +619,7 @@ public final class Ops {
         perm[0] = 0;
         perm[1] = 2;
         perm[2] = 1;
+        if (a.isOnGpu()) { Ops.requireF32<E>("transposeBatch"); return Ops.permuteGpu<E>("transposeBatch", a, perm); }
         Tensor<E> vw #= a.transposeAxes(perm);
         Tensor<E> out #= vw.copy();
         return #out;
@@ -837,6 +1084,14 @@ public final class Ops {
      *  receiving a gradient component that would only change its length. */
     static #Tensor<E> rowNormBack<E extends Floating>(Tensor<E> x, Tensor<E> y,
                                                       Tensor<E> g) {
+        if (x.isOnGpu()) {
+            Ops.requireF32<E>("rowNormBack");
+            int64 cols = x.shapeAt(x.ndim() - 1);
+            Tensor<E> dv #= Ewise.deviceLike<E>(x);
+            Norm.l2rowsBack<E>(dv.deviceView("rowNormBack"), x.deviceView("rowNormBack"), y.deviceView("rowNormBack"), g.deviceView("rowNormBack"),
+                x.size() / cols, cols, 0.00000001f);
+            return #dv;
+        }
         Tensor<E> out #= x.copy();
         int64 cols = x.shapeAt(x.ndim() - 1);
         int64 rows = Ops.countOf<E>(x) / cols;
@@ -871,6 +1126,7 @@ public final class Ops {
 
     /** Elementwise a/b with broadcasting (via mul + reciprocal). */
     static #Tensor<E> divK<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        if (a.isOnGpu()) { return Tensor.div<E>(a, b); }
         Tensor<E> rb #= Ops.recipK<E>(b);
         return Tensor.mul<E>(a, rb);
     }
@@ -938,6 +1194,11 @@ public final class Ops {
     }
 
     static #Tensor<E> powScalarK<E extends Floating>(Tensor<E> a, E c) {
+        if (a.isOnGpu()) {
+            Tensor<E> dv #= Ewise.deviceLike<E>(a);
+            Elementwise.map<E>(dv.deviceView("powScalar"), a.deviceView("powScalar"), a.size(), Elementwise.POW, (float32) c);
+            return #dv;
+        }
         Tensor<E> out #= a.copy();
         float64 cc = (float64) c;
         int64 n = Ops.countOf<E>(out);

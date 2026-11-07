@@ -207,6 +207,51 @@ public class ReduceTest {
         }
     }
 
+    /** The max VJP routes each cotangent to the first maximum along the axis and nowhere else. */
+    @Test
+    public void axisMaxBackRoutesToTheFirstMaximum() {
+        if (!ReduceTest.usable("axisMaxBack_float32")) { return; }
+        int64 outer = 3L; int64 axisLen = 7L; int64 inner = 5L;
+        int64 n = outer * axisLen * inner;
+        float32[] src = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = (float32) ((i * 7L) % 4L); i = i + 1L; }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        in.upload(src);
+        KernelBuffer<float32> mx = heap KernelBuffer<float32>((uint64) (outer * inner));
+        KernelBuffer<float32> g = heap KernelBuffer<float32>((uint64) (outer * inner));
+        float32[] hg = heap float32[outer * inner];
+        i = 0L;
+        while (i < outer * inner) { hg[(int32) i] = (float32) (i + 1L); i = i + 1L; }
+        g.upload(hg);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) n);
+        int64[] m #= ValueCheck.mark();
+        Reduce.alongAxis<float32>(mx, in, outer, axisLen, inner, Reduce.MAX);
+        Reduce.alongAxisMaxBack<float32>(out, in, mx, g, outer, axisLen, inner);
+        float32[] got = heap float32[n];
+        out.download(got);
+        int64 o = 0L;
+        while (o < outer) {
+            int64 ii = 0L;
+            while (ii < inner) {
+                float32 best = src[(int32) ((o * axisLen) * inner + ii)];
+                int64 at = 0L;
+                int64 j = 1L;
+                while (j < axisLen) { float32 v = src[(int32) ((o * axisLen + j) * inner + ii)]; if (v > best) { best = v; at = j; } j = j + 1L; }
+                j = 0L;
+                while (j < axisLen) {
+                    float32 want = 0.0f;
+                    if (j == at) { want = hg[(int32) (o * inner + ii)]; }
+                    Assert.isTrue(got[(int32) ((o * axisLen + j) * inner + ii)] == want);
+                    j = j + 1L;
+                }
+                ii = ii + 1L;
+            }
+            o = o + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
     /** The sorted compensated (Neumaier) float64 sum of `v[0..n)`, rounded once to float32. */
     static float32 sortedCompensated(float32[] v, int64 n) {
         float32[] a = heap float32[n];

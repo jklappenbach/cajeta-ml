@@ -155,6 +155,41 @@ public final class Norm {
         }
     }
 
+    /** The row-normalisation VJP: (g - y <g, y>) / max(|x|, eps), with y the normalised row. */
+    @Kernel
+    public static void l2normBack<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> y, KernelBuffer<E> g, uint32 cols, float32 eps) {
+        Shared<float32> ps = shared float32[256];
+        Shared<float32> pd = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 base = Workgroup.x() * cols;
+        float32 sq = 0.0f;
+        float32 dot = 0.0f;
+        uint32 i = lane;
+        while (i < cols) {
+            float32 xv = (float32) x[base + i];
+            sq = sq + xv * xv;
+            dot = dot + (float32) g[base + i] * (float32) y[base + i];
+            i = i + 256;
+        }
+        ps[lane] = sq;
+        pd[lane] = dot;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { ps[lane] = ps[lane] + ps[lane + s]; pd[lane] = pd[lane] + pd[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 nrm = Math.sqrt(ps[0]);
+        if (nrm < eps) { nrm = eps; }
+        float32 d = pd[0];
+        uint32 j = lane;
+        while (j < cols) {
+            out[base + j] = (E) (((float32) g[base + j] - (float32) y[base + j] * d) / nrm);
+            j = j + 256;
+        }
+    }
+
     /** `out` = rmsnorm of each of `rows` rows of `x` (rows x cols) scaled by `w`; synced. */
     public static void rms<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
@@ -174,6 +209,13 @@ public final class Norm {
                                      KernelBuffer<E> w, KernelBuffer<E> b, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         layernormSaved.launch(s, grid: [(uint32) rows], block: [256])(out, xhat, invstd, x, w, b, (uint32) cols, eps);
+        s.sync();
+    }
+
+    /** The row-normalisation VJP over `rows` rows, `y` the normalised rows; synced. */
+    public static void l2rowsBack<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> y, KernelBuffer<E> g, int64 rows, int64 cols, float32 eps) {
+        KernelStream s #= KernelStream.current();
+        l2normBack.launch(s, grid: [(uint32) rows], block: [256])(out, x, y, g, (uint32) cols, eps);
         s.sync();
     }
 
