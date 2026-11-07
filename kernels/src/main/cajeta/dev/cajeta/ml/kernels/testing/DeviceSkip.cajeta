@@ -1,0 +1,41 @@
+package dev.cajeta.ml.kernels.testing;
+
+import cajeta.lang.String;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import dev.cajeta.unit.Skip;
+
+/**
+ * The two kinds of device skip, and no third. A test that cannot run on this
+ * backend or this box says which: `cannot` is a fact about the world (no backend,
+ * a wave width the kernel was not written for); `tracked` is a defect wearing a
+ * skip's clothing, and names the plan item that retires it. Both throw through
+ * `Skip.because`, so the suite counts them as SKIPPED, never PASSED.
+ */
+public final class DeviceSkip {
+    public DeviceSkip() { return; }
+
+    /** The backend or the box truly cannot; `what` says why. */
+    public static void cannot(String what) {
+        System.stdout.println("  [device-skip] [cannot] (skipped: " + what + ")");
+        Skip.because(what);
+    }
+
+    /** A defect or a route gap; `item` is the plan line that retires it. */
+    public static void tracked(String what, String item) {
+        System.stdout.println("  [device-skip] [tracked: " + item + "] (skipped: " + what + ")");
+        Skip.because(what);
+    }
+
+    /** `kernel` cannot be launched here: not a target by design (cannot), or no device
+     *  code on this backend (tracked under `item`). */
+    public static void noKernel(String kernel, String item) {
+        String backend #= Device.activeBackend();
+        String reason #= Device.kernelUnavailableReason(kernel);
+        if (reason.equals("not a target")) {
+            DeviceSkip.cannot(kernel + " is not a target on " + backend + " (@Kernel(targets))");
+            return;
+        }
+        DeviceSkip.tracked(kernel + " does not lower on " + backend, item);
+    }
+}

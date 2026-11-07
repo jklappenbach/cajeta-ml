@@ -1,0 +1,121 @@
+# dev.cajeta.ml.kernels (kernels/): the cpu leg on every push that touches it, and
+# the publish on a `kernels-v*` tag (GitHub Release + Olla). The GPU legs run on
+# proton by hand (XPU_BACKEND=vulkan|amdgpu kernels/run-tests.sh): the self-hosted
+# runner is registered to cajeta-llm, not this repository.
+name: kernels
+on:
+  push:
+    branches: [main]
+    paths: ['kernels/**', '.github/workflows/kernels.yml']
+    tags: ['kernels-v*']
+  workflow_dispatch:
+    inputs:
+      cajeta-version:
+        description: 'cajeta release tag to test against (empty: kernels/.cajeta-version)'
+        required: false
+        default: ''
+permissions:
+  contents: write
+  id-token: write
+concurrency:
+  group: kernels-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  cpu:
+    name: kernels cpu (x86_64-linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Install the pinned cajeta toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.cajeta-version }}
+        run: |
+          set -euo pipefail
+          V="${INPUT_VERSION:-$(tr -d '[:space:]' < kernels/.cajeta-version)}"
+          gh release download "$V" --repo jklappenbach/cajeta --pattern 'cajeta_*_amd64.deb' --dir /tmp
+          sudo apt-get update
+          sudo apt-get install -y /tmp/cajeta_*_amd64.deb
+          cajeta --version
+          echo "cajeta: $V" >> "$GITHUB_STEP_SUMMARY"
+      - name: The suite and the census, cpu, gated
+        env:
+          XPU_BACKEND: cpu
+        run: |
+          set -euo pipefail
+          cd kernels
+          ./run-tests.sh 2>&1 | tee ../kernels-cpu.log
+      - name: Summarise
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f kernels-cpu.log ] || { echo "::error::no leg log was written"; exit 1; }
+          {
+            echo "### kernels cpu leg"
+            echo ""
+            echo '```'
+            grep -E '^Tests: |kernel census|uncovered|stale|xpu-kernel-skipped' kernels-cpu.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -qE '^Tests: [1-9][0-9]* passed' kernels-cpu.log || { echo "::error::no pass line; the leg ran nothing"; exit 1; }
+      - name: Upload the log and the census table
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernels-cpu
+          path: |
+            kernels-cpu.log
+            kernels/build/census-cpu.tsv
+          if-no-files-found: ignore
+  publish:
+    name: publish (kernels-v* tag)
+    needs: cpu
+    if: startsWith(github.ref, 'refs/tags/kernels-v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - name: Install the pinned cajeta toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="$(tr -d '[:space:]' < kernels/.cajeta-version)"
+          gh release download "$V" --repo jklappenbach/cajeta --pattern 'cajeta_*_amd64.deb' --dir /tmp
+          sudo apt-get update
+          sudo apt-get install -y /tmp/cajeta_*_amd64.deb
+          cajeta --version
+      - name: Build the release .cja
+        id: build
+        run: |
+          set -euo pipefail
+          cd kernels
+          VERSION="$(cajeta info | awk '/^[[:space:]]*version:/{print $2; exit}')"
+          [ -n "$VERSION" ] || { echo "::error::could not read version from kernels/cajeta.json" >&2; exit 1; }
+          tag_version="${GITHUB_REF_NAME#kernels-v}"
+          if [ "$tag_version" != "$VERSION" ]; then
+            echo "::error::tag kernels-v${tag_version} disagrees with kernels/cajeta.json version ${VERSION}: bump the manifest or retag" >&2
+            exit 1
+          fi
+          cajeta build
+          art="$(cajeta artifact-path)"
+          [ -f "$art" ] || { echo "::error::expected $art after cajeta build" >&2; exit 1; }
+          echo "artifact=kernels/${art#"$PWD"/}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: cajeta-ml kernels ${{ steps.build.outputs.version }}
+          generate_release_notes: true
+          files: ${{ steps.build.outputs.artifact }}
+      - name: Publish to Olla
+        uses: jklappenbach/cajeta/.github/actions/olla-publish@main
+        with:
+          cja-path: ${{ steps.build.outputs.artifact }}
+          manifest-path: kernels/cajeta.json
+          readme-path: kernels/README.md
+          version: ${{ steps.build.outputs.version }}

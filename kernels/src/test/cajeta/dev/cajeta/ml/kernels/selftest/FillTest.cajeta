@@ -1,0 +1,33 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Fill;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** cajeta-ml-gpu 8.1.1: the smoke kernel value-checks on the active backend. */
+public class FillTest {
+    public FillTest() { return; }
+
+    @Test
+    public void fillWritesEveryElement() {
+        if (!Device.kernelAvailable("fillF32")) {
+            DeviceSkip.noKernel("fillF32", "cajeta-ml-gpu 8.2.1");
+            return;
+        }
+        int64 n = 1000L;
+        KernelBuffer<float32> buf = heap KernelBuffer<float32>((uint64) n);
+        int64[] m #= ValueCheck.mark();
+        Fill.f32(buf, n, 3.5f);
+        float32[] got = heap float32[n];
+        buf.download(got);
+        int64 i = 0L;
+        while (i < n) {
+            Assert.isTrue(got[(int32) i] == 3.5f);
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+}

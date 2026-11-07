@@ -1,0 +1,46 @@
+{
+  "access": [
+    {
+      "kind": "kernelBuffer",
+      "mode": "write",
+      "origin": "derived",
+      "param": "out"
+    }
+  ],
+  "captureSafe": false,
+  "drainsDevice": false,
+  "footprint": {
+    "block": [
+      64,
+      1,
+      1
+    ],
+    "ldsStaticBytes": 0
+  },
+  "identity": {
+    "codeHash": "sha256:3a5f0265c96d8f2b1bed8669b0420ec9e12148da986d53b5d68f52e0e67d5cf9",
+    "compilerVersion": "0.52.0",
+    "instrumented": false,
+    "kernel": "dev.cajeta.ml.kernels.Fill.fillF32",
+    "target": "spirv/vulkan1.3",
+    "xpuAbiVersion": 3
+  },
+  "nativeOps": [],
+  "restartable": true,
+  "schemaVersion": 1,
+  "work": {
+    "buffers": [
+      {
+        "bytesRead": "0",
+        "bytesWritten": "4",
+        "param": "out",
+        "storedBits": 32
+      }
+    ],
+    "costUnit": "item",
+    "intOps": "0",
+    "matrixMacs": "0",
+    "vectorMacs": "0",
+    "workAxisParam": "n"
+  }
+}

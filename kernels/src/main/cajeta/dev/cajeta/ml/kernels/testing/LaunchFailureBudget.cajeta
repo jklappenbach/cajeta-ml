@@ -1,0 +1,22 @@
+package dev.cajeta.ml.kernels.testing;
+
+/**
+ * A suite fails when `Device.launchFailures()` is above the budget at exit. A test
+ * that forces a failure on purpose declares it here first; the counter itself
+ * is monotonic, so nobody absorbs another test's failure by resetting it.
+ */
+public final class LaunchFailureBudget {
+    static int64 exp;
+
+    public LaunchFailureBudget() { return; }
+
+    /** Declare `n` deliberate launch failures, before forcing them. */
+    public static void expect(int64 n) {
+        LaunchFailureBudget.exp = LaunchFailureBudget.exp + n;
+        return;
+    }
+
+    public static int64 expected() {
+        return LaunchFailureBudget.exp;
+    }
+}

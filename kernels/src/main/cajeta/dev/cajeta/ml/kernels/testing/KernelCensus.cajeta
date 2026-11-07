@@ -1,0 +1,191 @@
+package dev.cajeta.ml.kernels.testing;
+
+import cajeta.lang.String;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelManifest;
+
+/**
+ * The kernel census gate. A green suite says every assertion held, not which
+ * kernels the assertions were about. After the suite, for EVERY kernel
+ * registered on the active backend, one of these must hold, or the gate fails:
+ *
+ *   CHECKED        it launched under a test that compared its output (ValueCheck);
+ *   RAN-UNCHECKED  it launched and nothing compared its output: fails unless
+ *                  `unchecked` names it with the item that will give it a check;
+ *   SKIP           `tracked` names it with the item that will make it run, and
+ *                  it did NOT run (a named kernel that ran is STALE and fails);
+ *   PROBE          a measurement kernel the suite does not run (`probes`);
+ *   EXTERNAL       a cajeta stdlib kernel this library links (`external`);
+ *   VARIANT        a compiler variant (`name$vN`, `name$sw`) this device does not take;
+ *   UNAVAILABLE    registered, but the runtime refuses it here (shared memory).
+ *
+ * Anything else is UNCOVERED. The gate also fails when nothing ran. The lists are
+ * `|`-delimited chains the suite owns: `tracked` and `unchecked` hold
+ * `backend:kernel=item` entries, `probes` and `external` hold kernel names.
+ */
+public final class KernelCensus {
+    public KernelCensus() { return; }
+
+    // The suite's chains for the gate in progress; one-parameter lookups can
+    // return a borrow into them, a two-parameter one could not.
+    static String trackedChain;
+    static String uncheckedChain;
+
+    /** The item after `|key=` in the tracked chain, as a borrow into it, or "". */
+    static String tracked(String key) {
+        String chain = KernelCensus.trackedChain;
+        String k #= "|" + key + "=";
+        int64 at = chain.indexOf(k);
+        if (at < 0L) { return ""; }
+        int64 from = at + k.count();
+        int64 end = chain.indexOfFrom("|", from);
+        if (end < 0L) { end = chain.count(); }
+        return chain.substring((int32) from, (int32) end);
+    }
+
+    /** The item after `|key=` in the unchecked chain, as a borrow into it, or "". */
+    static String unchecked(String key) {
+        String chain = KernelCensus.uncheckedChain;
+        String k #= "|" + key + "=";
+        int64 at = chain.indexOf(k);
+        if (at < 0L) { return ""; }
+        int64 from = at + k.count();
+        int64 end = chain.indexOfFrom("|", from);
+        if (end < 0L) { end = chain.count(); }
+        return chain.substring((int32) from, (int32) end);
+    }
+
+    static boolean listed(String chain, String name) {
+        return chain.contains("|" + name + "|");
+    }
+
+    /** The kernel a compiler variant was emitted from (`name$vN`, `name$sw`), else "". */
+    static String variantBase(String name) {
+        int64 d = name.indexOf("$");
+        if (d <= 0L) { return ""; }
+        return name.substring(0, (int32) d);
+    }
+
+    /** Runs the census; 0 when every registered kernel is accounted for. */
+    public static int32 gate(String tracked, String unchecked, String probes, String external) {
+        KernelCensus.trackedChain = tracked;
+        KernelCensus.uncheckedChain = unchecked;
+        String backend #= Device.activeBackend();
+        int32 n = Device.registeredKernelCount();
+        int32 ran = 0;
+        int32 checked = 0;
+        int32 unverified = 0;
+        int32 excused = 0;
+        int32 skipped = 0;
+        int32 probeN = 0;
+        int32 externalN = 0;
+        int32 variants = 0;
+        int32 unavailable = 0;
+        int32 uncovered = 0;
+        int32 stale = 0;
+        int32 noManifest = 0;
+        int32 i = 0;
+        while (i < n) {
+            String name #= Device.registeredKernel(i);
+            int64 launches = Device.kernelLaunchCount(name);
+            String key #= backend + ":" + name;
+            String why #= KernelCensus.tracked(key);
+            KernelManifest m #= KernelManifest.of(name);
+            String manifestCol = "manifest";
+            if (m == null) {
+                noManifest = noManifest + 1;
+                manifestCol = "no-manifest";
+            }
+            String cls = "";
+            if (launches > 0L) {
+                if (why.count() > 0L) {
+                    stale = stale + 1;
+                    cls = "STALE-SKIP";
+                    System.stdout.println("  STALE-SKIP " + name + " ran " + launches
+                        + " time(s); drop its entry (" + why + ")");
+                } else {
+                    ran = ran + 1;
+                    String owe #= KernelCensus.unchecked(key);
+                    if (ValueCheck.checks(name) > 0L) {
+                        checked = checked + 1;
+                        cls = "CHECKED";
+                        if (owe.count() > 0L) {
+                            stale = stale + 1;
+                            cls = "STALE-UNCHECKED";
+                            System.stdout.println("  STALE-UNCHECKED " + name
+                                + " is value-checked now; drop its entry (" + owe + ")");
+                        }
+                    } else if (owe.count() > 0L) {
+                        excused = excused + 1;
+                        cls = "RAN-UNCHECKED";
+                        why #= owe;
+                        System.stdout.println("  RAN-UNCHECKED " + name + ": " + owe);
+                    } else {
+                        unverified = unverified + 1;
+                        cls = "RAN-UNCHECKED";
+                        System.stdout.println("  RAN-UNCHECKED " + name + " launched " + launches
+                            + " time(s) and no test compared its output against a reference");
+                    }
+                }
+            } else if (why.count() > 0L) {
+                skipped = skipped + 1;
+                cls = "SKIP";
+                System.stdout.println("  SKIP       " + name + ": " + why);
+            } else if (KernelCensus.listed(probes, name)) {
+                probeN = probeN + 1;
+                cls = "PROBE";
+                System.stdout.println("  PROBE      " + name + " (measurement kernel, not a shipped kernel)");
+            } else if (KernelCensus.listed(external, name)) {
+                externalN = externalN + 1;
+                cls = "EXTERNAL";
+                System.stdout.println("  EXTERNAL   " + name + " (cajeta stdlib; gated by cajeta's own suites)");
+            } else if (KernelCensus.variantBase(name).count() > 0L) {
+                variants = variants + 1;
+                cls = "VARIANT";
+                why #= KernelCensus.variantBase(name);
+                System.stdout.println("  VARIANT    " + name + " of " + why
+                    + " (a compiler fallback this device does not take)");
+            } else if (!Device.kernelAvailable(name)) {
+                unavailable = unavailable + 1;
+                cls = "UNAVAILABLE";
+                System.stdout.println("  UNAVAILABLE " + name
+                    + " (its shared memory exceeds this device's limit)");
+            } else {
+                uncovered = uncovered + 1;
+                cls = "UNCOVERED";
+                System.stdout.println("  UNCOVERED  " + name);
+            }
+            // One machine-readable row per kernel: run-tests.sh collects them.
+            System.stdout.println("census-row\t" + backend + "\t" + name + "\t" + cls
+                + "\t" + launches + "\t" + ValueCheck.checks(name) + "\t" + manifestCol + "\t" + why);
+            i = i + 1;
+        }
+        int32 offTarget = Device.offTargetKernelCount();
+        int32 j = 0;
+        while (j < offTarget) {
+            String name #= Device.offTargetKernel(j);
+            System.stdout.println("  OUT-OF-TARGET " + name);
+            System.stdout.println("census-row\t" + backend + "\t" + name + "\tOUT-OF-TARGET\t0\t0\t-\t");
+            j = j + 1;
+        }
+        System.stdout.println("kernel census (" + backend + "): registered " + n
+            + ", ran " + ran + " (value-checked " + checked + ", unchecked and tracked " + excused
+            + ", unchecked and untracked " + unverified + "), tracked skips " + skipped + ", probes " + probeN
+            + ", external " + externalN + ", variants " + variants
+            + ", unavailable " + unavailable + ", out of target " + offTarget + ", uncovered " + uncovered
+            + ", stale " + stale + ", without manifest " + noManifest);
+        if (ran == 0) {
+            System.stdout.println("KERNEL CENSUS: nothing ran on " + backend
+                + " — an empty census is not a clean one");
+            return 1;
+        }
+        if (uncovered > 0 || stale > 0 || unverified > 0) {
+            System.stdout.println("KERNEL CENSUS: " + uncovered + " uncovered, " + unverified
+                + " ran without a value check, " + stale + " stale entr(ies) on " + backend
+                + " — failing the suite");
+            return 1;
+        }
+        return 0;
+    }
+}

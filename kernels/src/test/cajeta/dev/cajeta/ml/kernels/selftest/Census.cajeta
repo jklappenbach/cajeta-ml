@@ -1,0 +1,17 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.String;
+
+/** This suite's census lists (see dev.cajeta.ml.kernels.testing.KernelCensus). */
+public final class Census {
+    public Census() { return; }
+
+    /** `backend:kernel=item` entries for kernels that do not run here yet. */
+    public static final String TRACKED = "||";
+    /** `backend:kernel=item` entries for kernels that run without a value check yet. */
+    public static final String UNCHECKED = "||";
+    /** Measurement kernels the suite does not run. */
+    public static final String PROBES = "||";
+    /** cajeta stdlib kernels this library links. */
+    public static final String EXTERNAL = "||";
+}

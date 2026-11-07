@@ -1,0 +1,59 @@
+{
+    // dev.cajeta.ml.kernels — the GPU kernel package of cajeta-ml (cajeta-ml-gpu
+    // spec §10): compute primitives, dense linear algebra, nn ops and the kernel
+    // support (families, tuning, test tooling), general purpose, with cajeta-llm
+    // and cajeta-xgboost as the first consumers. A LIBRARY: no entry-method.
+    "details": {
+        "name":               "dev.cajeta.ml.kernels",
+        "version":            "0.1.0",
+        "description":        "cajeta-ml kernels — GPU compute primitives, dense linear algebra, nn ops and kernel support for cajeta.xpu, general purpose",
+        "license":            "Apache-2.0",
+        "authors":            ["Julian Klappenbach"],
+        "cajeta-lang-version": "1.0"
+    },
+    "settings": {
+        "capabilities": [],
+        // dev.cajeta.unit is a regular dependency: the `testing` package
+        // (census, value check, device skip) is shipped for consumers' suites.
+        "dependencies": {
+            "dev.cajeta.unit": "0.3.6"
+        },
+        "dev-dependencies": {},
+        "repositories": [
+            { "name": "central", "url": "https://olla.cajeta.dev",
+              "priority": 0 }
+        ],
+        "build": {
+            "source-root": "src/main/cajeta",
+            "target": "host"
+        }
+    },
+    "tasks": {
+        "build": {
+            "description": "Compile sources to a .cja library archive",
+            "actions": [
+                { "action": "build", "flavor": "debug", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+        "test": {
+            "description": "Build + run the kernel suite (XPU_BACKEND selects the backend; cpu by default)",
+            "actions": [
+                { "action": "exec", "command": "./run-tests.sh" }
+            ]
+        },
+        "release": {
+            "description": "Release build of the .cja",
+            "actions": [
+                { "action": "build", "flavor": "release", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+        "clean": {
+            "description": "Remove build outputs",
+            "actions": [
+                { "action": "exec", "command": "rm", "args": ["-rf", "build"] }
+            ]
+        }
+    }
+}

@@ -1,0 +1,31 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import dev.cajeta.unit.Runner;
+import dev.cajeta.ml.kernels.testing.KernelCensus;
+import dev.cajeta.ml.kernels.testing.LaunchFailureBudget;
+
+/**
+ * Test entry: every `@Test` in the binary, then the two suite gates: no launch
+ * failed beyond the declared budget, and the kernel census is clean. A filtered
+ * run (CAJETA_UNIT_FILTER) is not a suite, so the census stands down for it.
+ */
+public final class TestMain {
+    public static int32 run() {
+        System.stdout.println("runtime backend: " + Device.activeBackend());
+        int32 rc = Runner.runAll();
+        int64 lf = Device.launchFailures() - LaunchFailureBudget.expected();
+        if (lf > 0L) {
+            System.stdout.println("LAUNCH FAILURES: " + lf
+                + " undeclared kernel dispatch(es) never ran — failing the suite");
+            if (rc == 0) { rc = 1; }
+        }
+        if (Runner.filtered()) {
+            System.stdout.println("kernel census: not taken, the run was filtered (CAJETA_UNIT_FILTER)");
+        } else if (KernelCensus.gate(Census.TRACKED, Census.UNCHECKED, Census.PROBES, Census.EXTERNAL) != 0) {
+            if (rc == 0) { rc = 1; }
+        }
+        return rc;
+    }
+}
