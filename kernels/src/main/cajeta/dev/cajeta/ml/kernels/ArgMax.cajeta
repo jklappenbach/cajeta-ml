@@ -1,0 +1,59 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/** Per-row arg-max (spec §4.4): a strictly greater value wins and a tie keeps the lower index, so the answer is the host's. llm's argmaxRow. */
+public final class ArgMax {
+    public ArgMax() { return; }
+
+    /** Block r: its lanes stride row r keeping their best (value, index), then a shared-memory tree; a greater value wins, a tie the lower index. */
+    @Kernel
+    public static void argmax<E>(KernelBuffer<int32> idx, KernelBuffer<E> in, uint32 cols) {
+        Shared<E> bv = shared E[256];
+        Shared<int32> bi = shared int32[256];
+        uint32 t = KernelThread.x();
+        uint32 r = Workgroup.x();
+        E best = (E) 0;
+        int32 bestI = -1;
+        uint32 c = t;
+        while (c < cols) {
+            E x = in[r * cols + c];
+            if (bestI < 0 || x > best) { best = x; bestI = (int32) c; }
+            c = c + 256;
+        }
+        bv[t] = best;
+        bi[t] = bestI;
+        Barrier.workgroup();
+        uint32 rs = 128;
+        while (rs > 0) {
+            if (t < rs) {
+                E ov = bv[t + rs];
+                int32 oi = bi[t + rs];
+                E mv = bv[t];
+                int32 mi = bi[t];
+                boolean take = false;
+                if (oi >= 0) {
+                    if (mi < 0) { take = true; }
+                    else if (ov > mv) { take = true; }
+                    else if (ov == mv && oi < mi) { take = true; }
+                }
+                if (take) { bv[t] = ov; bi[t] = oi; }
+            }
+            Barrier.workgroup();
+            rs = rs / 2;
+        }
+        if (t == 0) { idx[r] = bi[0]; }
+    }
+
+    /** `idx[r]` = the arg-max of row r of the row-major `rows` x `cols` buffer; synced. */
+    public static void rows<E>(KernelBuffer<int32> idx, KernelBuffer<E> in, int64 rows, int64 cols) {
+        KernelStream s #= KernelStream.current();
+        argmax.launch(s, grid: [(uint32) rows], block: [256])(idx, in, (uint32) cols);
+        s.sync();
+    }
+}

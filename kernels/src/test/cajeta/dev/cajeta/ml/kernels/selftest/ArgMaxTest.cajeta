@@ -1,0 +1,141 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.ArgMax;
+import dev.cajeta.ml.kernels.TopK;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** cajeta-ml-gpu 14.1.1 (spec §4.4): per-row arg-max and top-k, ties to the first index, k from 1 to 64. */
+public class ArgMaxTest {
+    public ArgMaxTest() { return; }
+
+    /** Many duplicates: values in [-125, 125] stepping by 1, repeating every 251 elements. */
+    static int64 pattern(int64 i) {
+        return ((i * 7919L) % 251L) - 125L;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 14.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 14.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** The host's arg-max of row `r`: a strictly greater value wins, so a tie keeps the first index. */
+    static int32 hostArgMax<E>(E[] v, int64 r, int64 cols) {
+        int64 best = 0L;
+        int64 c = 1L;
+        while (c < cols) {
+            if (v[(int32) (r * cols + c)] > v[(int32) (r * cols + best)]) { best = c; }
+            c = c + 1L;
+        }
+        return (int32) best;
+    }
+
+    /** The host's top-k of row `r` by repeated selection: descending value, ascending index among equals. */
+    static #int32[] hostTopK<E>(E[] v, int64 r, int64 cols, int64 k) {
+        int32[] out = heap int32[k];
+        boolean[] taken = heap boolean[cols];
+        int64 j = 0L;
+        while (j < k) {
+            int64 best = -1L;
+            int64 c = 0L;
+            while (c < cols) {
+                if (!taken[(int32) c]) {
+                    if (best < 0L || v[(int32) (r * cols + c)] > v[(int32) (r * cols + best)]) { best = c; }
+                }
+                c = c + 1L;
+            }
+            taken[(int32) best] = true;
+            out[(int32) j] = (int32) best;
+            j = j + 1L;
+        }
+        return #out;
+    }
+
+    static void argmaxCase<E>(String kernel, int64 rows, int64 cols) {
+        int64 n = rows * cols;
+        E[] src = heap E[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = (E) ArgMaxTest.pattern(i); i = i + 1L; }
+        KernelBuffer<E> in = heap KernelBuffer<E>((uint64) n);
+        in.upload(src);
+        KernelBuffer<int32> idx = heap KernelBuffer<int32>((uint64) rows);
+        int64[] m #= ValueCheck.mark();
+        ArgMax.rows<E>(idx, in, rows, cols);
+        int32[] got = heap int32[rows];
+        idx.download(got);
+        int64 r = 0L;
+        while (r < rows) {
+            int32 want = ArgMaxTest.hostArgMax<E>(src, r, cols);
+            if (got[(int32) r] != want) {
+                System.stdout.println(kernel + " rows=" + rows + " cols=" + cols + ": row " + r + " got " + got[(int32) r] + " want " + want);
+            }
+            Assert.isTrue(got[(int32) r] == want);
+            r = r + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void argMaxKeepsTheFirstIndexOnTies() {
+        if (ArgMaxTest.usable("argmax_float32")) {
+            ArgMaxTest.argmaxCase<float32>("argmax_float32", 37L, 1L);
+            ArgMaxTest.argmaxCase<float32>("argmax_float32", 37L, 255L);
+            ArgMaxTest.argmaxCase<float32>("argmax_float32", 37L, 256L);
+            ArgMaxTest.argmaxCase<float32>("argmax_float32", 7L, 100003L);
+            ArgMaxTest.argmaxCase<float32>("argmax_float32", 37L, 777L);
+        }
+        if (ArgMaxTest.usable("argmax_int32")) {
+            ArgMaxTest.argmaxCase<int32>("argmax_int32", 37L, 1000L);
+        }
+    }
+
+    static void topkCase<E>(String kernel, int64 rows, int64 cols, int64 k) {
+        int64 n = rows * cols;
+        E[] src = heap E[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = (E) ArgMaxTest.pattern(i); i = i + 1L; }
+        KernelBuffer<E> in = heap KernelBuffer<E>((uint64) n);
+        in.upload(src);
+        KernelBuffer<int32> idx = heap KernelBuffer<int32>((uint64) (rows * k));
+        int64[] m #= ValueCheck.mark();
+        TopK.rows<E>(idx, in, rows, cols, k);
+        int32[] got = heap int32[rows * k];
+        idx.download(got);
+        int64 r = 0L;
+        while (r < rows) {
+            int32[] want #= ArgMaxTest.hostTopK<E>(src, r, cols, k);
+            int64 j = 0L;
+            while (j < k) {
+                if (got[(int32) (r * k + j)] != want[(int32) j]) {
+                    System.stdout.println(kernel + " cols=" + cols + " k=" + k + ": row " + r + " [" + j + "] got " + got[(int32) (r * k + j)] + " want " + want[(int32) j]);
+                }
+                Assert.isTrue(got[(int32) (r * k + j)] == want[(int32) j]);
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void topKOrdersByValueThenFirstIndexForKUpTo64() {
+        if (ArgMaxTest.usable("topk_float32")) {
+            ArgMaxTest.topkCase<float32>("topk_float32", 37L, 1L, 1L);
+            ArgMaxTest.topkCase<float32>("topk_float32", 37L, 255L, 2L);
+            ArgMaxTest.topkCase<float32>("topk_float32", 37L, 256L, 7L);
+            ArgMaxTest.topkCase<float32>("topk_float32", 5L, 10007L, 64L);
+            ArgMaxTest.topkCase<float32>("topk_float32", 37L, 777L, 64L);
+        }
+        if (ArgMaxTest.usable("topk_int32")) {
+            ArgMaxTest.topkCase<int32>("topk_int32", 37L, 1000L, 8L);
+        }
+    }
+}
