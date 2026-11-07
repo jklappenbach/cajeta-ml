@@ -1,0 +1,38 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/** Scatter by index (spec §4.8): `out[idx[i]] = in[i]`, or `+=` with an atomic for the adding form. xgboost's addLeaves. */
+public final class Scatter {
+    public Scatter() { return; }
+
+    @Kernel
+    public static void scatter<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[(uint32) idx[i]] = in[i]; }
+    }
+
+    @Kernel
+    public static void scatterAdd<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out.atomicAdd((uint32) idx[i], in[i]); }
+    }
+
+    /** `out[idx[i]] = in[i]` for i in [0, n); synced. */
+    public static void by<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, int64 n) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        scatter.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, idx, un);
+        s.sync();
+    }
+
+    /** `out[idx[i]] += in[i]` for i in [0, n), duplicates summed; synced. */
+    public static void add<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, int64 n) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        scatterAdd.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, idx, un);
+        s.sync();
+    }
+}

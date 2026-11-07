@@ -1,0 +1,194 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Bucketize;
+import dev.cajeta.ml.kernels.Gather;
+import dev.cajeta.ml.kernels.Partition;
+import dev.cajeta.ml.kernels.Scatter;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 16.1.1 (spec §4.6-§4.8): a stable segmented partition by a predicate,
+ * bucketize to the upper-bound bucket, gather, scatter and scatter-add, each against the
+ * host.
+ */
+public class PartitionTest {
+    public PartitionTest() { return; }
+
+    static int64 pattern(int64 i) {
+        return ((i * 7919L) % 251L) - 125L;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 16.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 16.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** Partition `segments` segments of `segLen` by "value is even": the host's stable order per segment. */
+    static void partitionCase(int64 segLen, int64 segments) {
+        int64 n = segLen * segments;
+        int32[] src = heap int32[n];
+        int32[] flags = heap int32[n];
+        int64 i = 0L;
+        while (i < n) {
+            src[(int32) i] = (int32) PartitionTest.pattern(i);
+            flags[(int32) i] = 0;
+            if (src[(int32) i] % 2 == 0) { flags[(int32) i] = 1; }
+            i = i + 1L;
+        }
+        KernelBuffer<int32> in = heap KernelBuffer<int32>((uint64) n);
+        in.upload(src);
+        KernelBuffer<int32> dFlags = heap KernelBuffer<int32>((uint64) n);
+        dFlags.upload(flags);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>((uint64) n);
+        KernelBuffer<int32> counts = heap KernelBuffer<int32>((uint64) segments);
+        int64[] m #= ValueCheck.mark();
+        Partition.stable<int32>(out, counts, in, dFlags, segLen, segments);
+        int32[] got = heap int32[n];
+        out.download(got);
+        int32[] gotCounts = heap int32[segments];
+        counts.download(gotCounts);
+        int64 s = 0L;
+        while (s < segments) {
+            int64 base = s * segLen;
+            int32 left = 0;
+            int64 j = 0L;
+            while (j < segLen) { if (flags[(int32) (base + j)] != 0) { left = left + 1; } j = j + 1L; }
+            Assert.isTrue(gotCounts[(int32) s] == left);
+            int64 l = 0L;
+            int64 r = (int64) left;
+            j = 0L;
+            while (j < segLen) {
+                int64 dst = r;
+                if (flags[(int32) (base + j)] != 0) { dst = l; l = l + 1L; } else { r = r + 1L; }
+                if (got[(int32) (base + dst)] != src[(int32) (base + j)]) {
+                    System.stdout.println("partition seg=" + segLen + ": s " + s + " j " + j + " got " + got[(int32) (base + dst)] + " want " + src[(int32) (base + j)]);
+                }
+                Assert.isTrue(got[(int32) (base + dst)] == src[(int32) (base + j)]);
+                j = j + 1L;
+            }
+            s = s + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void aPartitionIsStablePerSegment() {
+        if (!PartitionTest.usable("partitionScatter_int32")) { return; }
+        PartitionTest.partitionCase(1000L, 37L);
+        PartitionTest.partitionCase(1L, 5L);
+        PartitionTest.partitionCase(255L, 3L);
+        PartitionTest.partitionCase(256L, 3L);
+        PartitionTest.partitionCase(777L, 7L);
+    }
+
+    /** The host's upper bound: the count of edges at most `v`. */
+    static int32 hostBucket(float32[] edges, int64 m, float32 v) {
+        int32 k = 0;
+        while ((int64) k < m && edges[k] <= v) { k = k + 1; }
+        return k;
+    }
+
+    @Test
+    public void bucketizeLandsOnTheUpperBound() {
+        if (!PartitionTest.usable("bucketize_float32")) { return; }
+        int64 m = 17L;
+        float32[] edges = heap float32[m];
+        int64 i = 0L;
+        while (i < m) { edges[(int32) i] = (float32) (i * 15L) - 120.0f; i = i + 1L; }
+        int64 n = 100003L;
+        float32[] vals = heap float32[n];
+        i = 0L;
+        while (i < n) { vals[(int32) i] = (float32) PartitionTest.pattern(i) * 1.25f; i = i + 1L; }
+        KernelBuffer<float32> dEdges = heap KernelBuffer<float32>((uint64) m);
+        dEdges.upload(edges);
+        KernelBuffer<float32> dVals = heap KernelBuffer<float32>((uint64) n);
+        dVals.upload(vals);
+        KernelBuffer<int32> out = heap KernelBuffer<int32>((uint64) n);
+        int64[] mk #= ValueCheck.mark();
+        Bucketize.upperBound<float32>(out, dVals, dEdges, m, n);
+        int32[] got = heap int32[n];
+        out.download(got);
+        i = 0L;
+        while (i < n) {
+            int32 want = PartitionTest.hostBucket(edges, m, vals[(int32) i]);
+            if (got[(int32) i] != want) {
+                System.stdout.println("bucketize: [" + i + "] v " + (float64) vals[(int32) i] + " got " + got[(int32) i] + " want " + want);
+            }
+            Assert.isTrue(got[(int32) i] == want);
+            i = i + 1L;
+        }
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void gatherScatterAndScatterAddMatchTheHost() {
+        if (!PartitionTest.usable("gather_float32") || !PartitionTest.usable("scatter_float32") || !PartitionTest.usable("scatterAdd_float32")) { return; }
+        int64 n = 100003L;
+        int64 width = 1009L;
+        float32[] src = heap float32[n];
+        int32[] idx = heap int32[n];
+        int64 i = 0L;
+        while (i < n) {
+            src[(int32) i] = (float32) PartitionTest.pattern(i);
+            idx[(int32) i] = (int32) ((i * 7919L) % width);
+            i = i + 1L;
+        }
+        KernelBuffer<float32> dSrc = heap KernelBuffer<float32>((uint64) n);
+        dSrc.upload(src);
+        KernelBuffer<int32> dIdx = heap KernelBuffer<int32>((uint64) n);
+        dIdx.upload(idx);
+        int64[] m #= ValueCheck.mark();
+        // gather: out[i] = table[idx[i]] over a table of `width` entries
+        float32[] table = heap float32[width];
+        i = 0L;
+        while (i < width) { table[(int32) i] = (float32) (i * 3L); i = i + 1L; }
+        KernelBuffer<float32> dTable = heap KernelBuffer<float32>((uint64) width);
+        dTable.upload(table);
+        KernelBuffer<float32> gathered = heap KernelBuffer<float32>((uint64) n);
+        Gather.by<float32>(gathered, dTable, dIdx, n);
+        float32[] g = heap float32[n];
+        gathered.download(g);
+        i = 0L;
+        while (i < n) { Assert.isTrue(g[(int32) i] == table[idx[(int32) i]]); i = i + 1L; }
+        // scatter-add: sums[idx[i]] += src[i], exact in float32 for these small integers
+        KernelBuffer<float32> sums = heap KernelBuffer<float32>((uint64) width);
+        float32[] zero = heap float32[width];
+        sums.upload(zero);
+        Scatter.add<float32>(sums, dSrc, dIdx, n);
+        float32[] gs = heap float32[width];
+        sums.download(gs);
+        float32[] want = heap float32[width];
+        i = 0L;
+        while (i < n) { want[idx[(int32) i]] = want[idx[(int32) i]] + src[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < width) {
+            if (gs[(int32) i] != want[(int32) i]) {
+                System.stdout.println("scatterAdd: [" + i + "] got " + (float64) gs[(int32) i] + " want " + (float64) want[(int32) i]);
+            }
+            Assert.isTrue(gs[(int32) i] == want[(int32) i]);
+            i = i + 1L;
+        }
+        // scatter with a permutation: out[perm[i]] = src[i]
+        int32[] perm = heap int32[n];
+        i = 0L;
+        while (i < n) { perm[(int32) i] = (int32) ((i * 7919L) % n); i = i + 1L; }
+        KernelBuffer<int32> dPerm = heap KernelBuffer<int32>((uint64) n);
+        dPerm.upload(perm);
+        KernelBuffer<float32> scattered = heap KernelBuffer<float32>((uint64) n);
+        Scatter.by<float32>(scattered, dSrc, dPerm, n);
+        float32[] sc = heap float32[n];
+        scattered.download(sc);
+        i = 0L;
+        while (i < n) { Assert.isTrue(sc[perm[(int32) i]] == src[(int32) i]); i = i + 1L; }
+        ValueCheck.credit(m);
+    }
+}

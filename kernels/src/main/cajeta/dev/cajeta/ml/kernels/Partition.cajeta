@@ -1,0 +1,54 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * A stable segmented partition by a predicate (spec §4.6): within each segment the
+ * flagged elements come first in their original order, then the rest in theirs. An
+ * exclusive segmented scan of the flags (Unit 13) gives each flagged element its slot and
+ * each segment its left count; one scatter places everything. xgboost's GpuPartition.
+ */
+public final class Partition {
+    public Partition() { return; }
+
+    /** Lane per segment: its left count is the exclusive prefix at its last element plus that flag. */
+    @Kernel
+    public static void segmentCounts(KernelBuffer<int32> counts, KernelBuffer<int32> prefix, KernelBuffer<int32> flags,
+                                     uint32 segLen, uint32 segments) {
+        uint32 s = KernelThread.globalIdX();
+        if (s < segments) {
+            uint32 last = s * segLen + segLen - 1;
+            counts[s] = prefix[last] + flags[last];
+        }
+    }
+
+    /** Element i lands at its segment's base plus its flagged rank, or past the left count at its unflagged rank. */
+    @Kernel
+    public static void partitionScatter<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> flags,
+                                           KernelBuffer<int32> prefix, KernelBuffer<int32> counts, uint32 n, uint32 segLen) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            uint32 s = i / segLen;
+            uint32 j = i - s * segLen;
+            uint32 dst = s * segLen + (uint32) counts[s] + (j - (uint32) prefix[i]);
+            if (flags[i] != 0) { dst = s * segLen + (uint32) prefix[i]; }
+            out[dst] = in[i];
+        }
+    }
+
+    /** `out` = `in` partitioned by `flags` (nonzero goes left) within each of `segments` segments of `segLen`; `counts[s]` = the left count; synced. */
+    public static void stable<E>(KernelBuffer<E> out, KernelBuffer<int32> counts, KernelBuffer<E> in, KernelBuffer<int32> flags,
+                                 int64 segLen, int64 segments) {
+        int64 n = segLen * segments;
+        KernelBuffer<int32> prefix = heap KernelBuffer<int32>((uint64) n);
+        Scan.segmented<int32>(prefix, flags, segLen, segments, false);
+        uint32 un = (uint32) n;
+        uint32 us = (uint32) segments;
+        KernelStream s #= KernelStream.current();
+        segmentCounts.launch(s, grid: [(us + 63) / 64], block: [64])(counts, prefix, flags, (uint32) segLen, us);
+        partitionScatter.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, flags, prefix, counts, un, (uint32) segLen);
+        s.sync();
+    }
+}

@@ -14,7 +14,9 @@ cajeta-xgboost are its first consumers.
   first index, k up to 64; spec §4.4), `Histogram` with `HistShared<TR>`
   (segmented integer histograms; the global-atomic variant and three shared-tile
   heights form a tile family timed at first use and remembered; spec §4.5),
-  `Scale<TM>` (a tile family member), `gemm/DecodedGemm<D>` (a
+  `Partition` (stable, segmented, by a predicate; spec §4.6), `Bucketize` (the
+  upper-bound bucket against sorted edges; §4.7), `Gather` and `Scatter`
+  (scatter-add included; §4.8), `Scale<TM>` (a tile family member), `gemm/DecodedGemm<D>` (a
   consumer-supplied decode step inside the tile skeleton).
 - `dev.cajeta.ml.kernels.testing` — what a consumer's suite needs to account
   for every kernel it registers: `ValueCheck` (a launch is not a check),

@@ -1,0 +1,24 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/** Gather by index (spec §4.8): `out[i] = in[idx[i]]`. */
+public final class Gather {
+    public Gather() { return; }
+
+    @Kernel
+    public static void gather<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[i] = in[(uint32) idx[i]]; }
+    }
+
+    /** `out[0..n)` gathered from `in` at `idx`; synced. */
+    public static void by<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, int64 n) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        gather.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, idx, un);
+        s.sync();
+    }
+}
