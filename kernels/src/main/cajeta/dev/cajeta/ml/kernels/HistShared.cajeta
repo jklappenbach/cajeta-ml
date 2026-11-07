@@ -1,0 +1,56 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/**
+ * The shared-memory histogram variant (spec §4.5), one member per tile height TR: block
+ * (segment, tile) counts TR elements of its segment in int32 shared bins and merges each
+ * nonzero bin once with a global atomic. int32 shared counters keep gfx1151's int64
+ * LDS-atomic cost out of the inner loop (xgboost's histTiles). nbins at most 4096.
+ */
+public final class HistShared<uint32 TR> {
+    public HistShared() { return; }
+
+    @Kernel
+    public static void tile(KernelBuffer<int64> hist, KernelBuffer<int32> bins, uint32 segLen,
+                            uint32 tiles, uint32 nbins) {
+        Shared<int32> acc = shared int32[4096];
+        uint32 t = KernelThread.x();
+        uint32 b = Workgroup.x();
+        uint32 s = b / tiles;
+        uint32 tl = b - s * tiles;
+        uint32 i = t;
+        while (i < nbins) { acc[i] = 0; i = i + 256; }
+        Barrier.workgroup();
+        uint32 start = tl * TR;
+        uint32 end = start + TR;
+        if (end > segLen) { end = segLen; }
+        uint32 base = s * segLen;
+        i = start + t;
+        while (i < end) {
+            int32 bn = bins[base + i];
+            if (bn >= 0) { acc.atomicAdd((uint32) bn, 1); }
+            i = i + 256;
+        }
+        Barrier.workgroup();
+        i = t;
+        while (i < nbins) {
+            int32 c = acc[i];
+            if (c != 0) { hist.atomicAdd(s * nbins + i, (int64) c); }
+            i = i + 256;
+        }
+    }
+
+    /** Adds the counts of `segments` segments of `segLen` into `hist` (segments x nbins); synced. */
+    public void run(KernelBuffer<int64> hist, KernelBuffer<int32> bins, int64 segLen, int64 segments, int64 nbins) {
+        uint32 tiles = ((uint32) segLen + TR - 1) / TR;
+        KernelStream s #= KernelStream.current();
+        tile.launch(s, grid: [(uint32) segments * tiles], block: [256])(hist, bins, (uint32) segLen, tiles, (uint32) nbins);
+        s.sync();
+    }
+}

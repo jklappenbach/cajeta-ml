@@ -1,0 +1,125 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.io.file.Path;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Histogram;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+import dev.cajeta.ml.kernels.tune.TuneMode;
+
+/**
+ * cajeta-ml-gpu 15.1.1 (spec §4.5): segmented integer histograms, the shared-memory tile
+ * variants and the global variant, against a host count; the variant chosen by
+ * measurement and stored.
+ */
+public class HistogramTest {
+    public HistogramTest() { return; }
+
+    /** Bin of element i over `nbins` bins, every 97th element unbinned (-1). */
+    static int32 binOf(int64 i, int64 nbins) {
+        if (i % 97L == 13L) { return -1; }
+        return (int32) ((i * 7919L) % nbins);
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 15.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 15.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** The host count of segment s, bin b, over `bins`. */
+    static #int64[] hostCounts(int32[] bins, int64 segLen, int64 segments, int64 nbins) {
+        int64[] h = heap int64[segments * nbins];
+        int64 i = 0L;
+        while (i < segLen * segments) {
+            int32 b = bins[(int32) i];
+            if (b >= 0) {
+                int64 s = i / segLen;
+                h[(int32) (s * nbins + (int64) b)] = h[(int32) (s * nbins + (int64) b)] + 1L;
+            }
+            i = i + 1L;
+        }
+        return #h;
+    }
+
+    static void check(String what, KernelBuffer<int64> hist, int64[] want, int64 n) {
+        int64[] got = heap int64[n];
+        hist.download(got);
+        int64 i = 0L;
+        while (i < n) {
+            if (got[(int32) i] != want[(int32) i]) {
+                System.stdout.println(what + ": [" + i + "] got " + got[(int32) i] + " want " + want[(int32) i]);
+            }
+            Assert.isTrue(got[(int32) i] == want[(int32) i]);
+            i = i + 1L;
+        }
+    }
+
+    /** Every variant, by name, at one problem. */
+    static void variants(int64 segLen, int64 segments, int64 nbins) {
+        int64 n = segLen * segments;
+        int32[] bins = heap int32[n];
+        int64 i = 0L;
+        while (i < n) { bins[(int32) i] = HistogramTest.binOf(i, nbins); i = i + 1L; }
+        KernelBuffer<int32> dBins = heap KernelBuffer<int32>((uint64) n);
+        dBins.upload(bins);
+        int64[] want #= HistogramTest.hostCounts(bins, segLen, segments, nbins);
+        KernelBuffer<int64> hist = heap KernelBuffer<int64>((uint64) (segments * nbins));
+        int32 v = 0;
+        while (v < Histogram.variantCount()) {
+            String kernel #= Histogram.variantKernel(v);
+            if (HistogramTest.usable(kernel) && Histogram.variantFits(v, segLen, nbins)) {
+                int64[] m #= ValueCheck.mark();
+                Histogram.runVariant(v, hist, dBins, segLen, segments, nbins);
+                HistogramTest.check(kernel + " seg=" + segLen + " nbins=" + nbins, hist, want, segments * nbins);
+                ValueCheck.credit(m);
+            }
+            v = v + 1;
+        }
+    }
+
+    @Test
+    public void everyVariantCountsAsTheHostDoes() {
+        HistogramTest.variants(1000L, 37L, 16L);
+        HistogramTest.variants(1000L, 37L, 1000L);
+        HistogramTest.variants(4097L, 13L, 4096L);
+        HistogramTest.variants(1L, 5L, 7L);
+        HistogramTest.variants(777L, 3L, 9000L);
+    }
+
+    /** The family times its members at first use and remembers the winner under the store. */
+    @Test
+    public void theVariantIsChosenByMeasurementAndRemembered() {
+        if (!HistogramTest.usable(Histogram.variantKernel(0))) { return; }
+        int64 segLen = 20000L;
+        int64 segments = 8L;
+        int64 nbins = 256L;
+        int64 n = segLen * segments;
+        int32[] bins = heap int32[n];
+        int64 i = 0L;
+        while (i < n) { bins[(int32) i] = HistogramTest.binOf(i, nbins); i = i + 1L; }
+        KernelBuffer<int32> dBins = heap KernelBuffer<int32>((uint64) n);
+        dBins.upload(bins);
+        int64[] want #= HistogramTest.hostCounts(bins, segLen, segments, nbins);
+        KernelBuffer<int64> hist = heap KernelBuffer<int64>((uint64) (segments * nbins));
+        String store #= "build/tune-test-" + Clock.nanoTime();
+        Path dir #= Path.of(store);
+        dir.mkdirs();
+        TuneMode.setUntimed(false);
+        int64[] m #= ValueCheck.mark();
+        int32 chosen = Histogram.segments(hist, dBins, segLen, segments, nbins, store);
+        Assert.isTrue(chosen >= 0);
+        HistogramTest.check("chosen " + Histogram.variantKernel(chosen), hist, want, segments * nbins);
+        int32 again = Histogram.segments(hist, dBins, segLen, segments, nbins, store);
+        Assert.equals((int64) chosen, (int64) again);
+        Assert.isTrue(Histogram.lastChoiceTimed() == false);
+        ValueCheck.credit(m);
+    }
+}

@@ -1,0 +1,134 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.lang.String;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.ShapeFilter;
+import cajeta.xpu.ShapeProbe;
+import dev.cajeta.ml.kernels.tune.TileFamily;
+import dev.cajeta.ml.kernels.tune.TileShape;
+
+/**
+ * Segmented integer histograms (spec §4.5): `hist[s * nbins + b]` counts the elements of
+ * segment s whose bin is b (a negative bin is skipped). Four variants, a tile family: the
+ * global-atomic kernel and {@link HistShared} at 256, 1024 and 4096 rows a tile; the
+ * family times the members that fit at first use and remembers the winner in the store.
+ */
+public final class Histogram {
+    public Histogram() { return; }
+
+    /** One lane per element, a global atomic per binned element: the variant that always fits. */
+    @Kernel
+    public static void histGlobal(KernelBuffer<int64> hist, KernelBuffer<int32> bins, uint32 n, uint32 segLen, uint32 nbins) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            int32 b = bins[i];
+            if (b >= 0) { hist.atomicAdd((i / segLen) * nbins + (uint32) b, 1L); }
+        }
+    }
+
+    static TileFamily<HistShape> fam;
+    static boolean lastTimed = false;
+
+    static TileFamily<HistShape> family() {
+        if (Histogram.fam == null) {
+            Histogram.fam = heap TileFamily<HistShape>("histogram");
+            int32 v = 0;
+            while (v < 4) { Histogram.fam.add(#heap HistShape(v)); v = v + 1; }
+        }
+        return Histogram.fam;
+    }
+
+    public static int32 variantCount() { return 4; }
+
+    /** The registered kernel of variant `v`: 0 global, 1 to 3 the shared tiles of 256, 1024 and 4096 rows. */
+    public static #String variantKernel(int32 v) {
+        if (v == 1) { return "HistShared_256_tile"; }
+        if (v == 2) { return "HistShared_1024_tile"; }
+        if (v == 3) { return "HistShared_4096_tile"; }
+        return "histGlobal";
+    }
+
+    /** Whether variant `v` can run the problem: a shared tile needs nbins within its 4096 counters. */
+    public static boolean variantFits(int32 v, int64 segLen, int64 nbins) {
+        if (v == 0) { return true; }
+        return nbins <= 4096L;
+    }
+
+    /** Zeroes `hist` and runs variant `v` over the problem; synced. */
+    public static void runVariant(int32 v, KernelBuffer<int64> hist, KernelBuffer<int32> bins, int64 segLen,
+                                  int64 segments, int64 nbins) {
+        Fill.with<int64>(hist, segments * nbins, 0L);
+        if (v == 1) { HistShared<256> h = heap HistShared<256>(); h.run(hist, bins, segLen, segments, nbins); return; }
+        if (v == 2) { HistShared<1024> h = heap HistShared<1024>(); h.run(hist, bins, segLen, segments, nbins); return; }
+        if (v == 3) { HistShared<4096> h = heap HistShared<4096>(); h.run(hist, bins, segLen, segments, nbins); return; }
+        uint32 n = (uint32) (segLen * segments);
+        KernelStream s #= KernelStream.current();
+        histGlobal.launch(s, grid: [(n + 255) / 256], block: [256])(hist, bins, n, (uint32) segLen, (uint32) nbins);
+        s.sync();
+    }
+
+    /** Whether the last {@link #segments} timed its members (false when the store, an override or a lone survivor answered). */
+    public static boolean lastChoiceTimed() { return Histogram.lastTimed; }
+
+    /**
+     * The histogram of `segments` segments of `segLen` over `nbins` bins into `hist`, by the
+     * variant the family chooses for this problem, device and build (timed at first use,
+     * remembered under `tuneDir`); returns the variant.
+     */
+    public static int32 segments(KernelBuffer<int64> hist, KernelBuffer<int32> bins, int64 segLen, int64 segments,
+                                 int64 nbins, String tuneDir) {
+        TileFamily<HistShape> f = Histogram.family();
+        ShapeFilter flt #= f.filterFor(segLen, nbins, segments);
+        HistProbe probe = heap HistProbe(bins, flt, f, segLen, segments, nbins);
+        int32 v = f.chooseWith(tuneDir, flt, probe, segLen, nbins, segments);
+        Histogram.lastTimed = probe.timed > 0;
+        Histogram.runVariant(v, hist, bins, segLen, segments, nbins);
+        return v;
+    }
+}
+
+/** A histogram variant as a tile family member. */
+final class HistShape implements TileShape {
+    int32 v;
+    public HistShape(int32 v) { this.v = v; }
+    public #String kernel() { return Histogram.variantKernel(this.v); }
+    /** Rows a block covers: the shared tile's height, or the global variant's 256 lanes. */
+    public int32 tileM() { if (this.v == 2) { return 1024; } if (this.v == 3) { return 4096; } return 256; }
+    public int32 tileN() { return 1; }
+    public int32 threads() { return 256; }
+    public boolean fits(int64 rows, int64 outDim, int64 cols) { return Histogram.variantFits(this.v, rows, outDim); }
+}
+
+/** Times one surviving variant at the probe's problem into a scratch histogram. */
+final class HistProbe implements ShapeProbe {
+    KernelBuffer<int32> bins;
+    ShapeFilter filter;
+    TileFamily<HistShape> fam;
+    KernelBuffer<int64> scratch;
+    int64 segLen;
+    int64 segments;
+    int64 nbins;
+    public int32 timed = 0;
+
+    public HistProbe(^KernelBuffer<int32> bins, ^ShapeFilter filter, ^TileFamily<HistShape> fam,
+                     int64 segLen, int64 segments, int64 nbins) {
+        this.bins = bins;
+        this.filter = filter;
+        this.fam = fam;
+        this.segLen = segLen;
+        this.segments = segments;
+        this.nbins = nbins;
+        this.scratch = heap KernelBuffer<int64>((uint64) (segments * nbins));
+    }
+
+    public int64 timeNanos(int32 i) {
+        this.timed = this.timed + 1;
+        int32 v = this.fam.indexOf(this.filter.survivor(i).candidate.kernel);
+        int64 t0 = Clock.nanoTime();
+        Histogram.runVariant(v, this.scratch, this.bins, this.segLen, this.segments, this.nbins);
+        return Clock.nanoTime() - t0;
+    }
+}

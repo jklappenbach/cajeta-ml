@@ -11,7 +11,10 @@ cajeta-xgboost are its first consumers.
   tree whose order never varies, and an exact sum in fixed point rounded once;
   spec §4.2), `Scan` (inclusive and exclusive prefix sums, plain or segmented,
   as reduce-then-scan; spec §4.3), `ArgMax` and `TopK` (per row, ties to the
-  first index, k up to 64; spec §4.4), `Scale<TM>` (a tile family member), `gemm/DecodedGemm<D>` (a
+  first index, k up to 64; spec §4.4), `Histogram` with `HistShared<TR>`
+  (segmented integer histograms; the global-atomic variant and three shared-tile
+  heights form a tile family timed at first use and remembered; spec §4.5),
+  `Scale<TM>` (a tile family member), `gemm/DecodedGemm<D>` (a
   consumer-supplied decode step inside the tile skeleton).
 - `dev.cajeta.ml.kernels.testing` — what a consumer's suite needs to account
   for every kernel it registers: `ValueCheck` (a launch is not a check),
