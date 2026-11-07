@@ -1,0 +1,210 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.nn.Act;
+import dev.cajeta.ml.kernels.nn.Norm;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 24.1.1 (spec §6.1, §6.3): rmsnorm, layernorm, softmax, silu, gelu, glu,
+ * relu, tanh and sigmoid per row against float64 host references, over f32, f16 and bf16,
+ * each type within its own tolerance.
+ */
+public class NormActTest {
+    public NormActTest() { return; }
+
+    /** Values in [-3, 3] with a fraction, so the activations bend and the norms have variance. */
+    static float32 pattern(int64 i) {
+        return (float32) (((i * 7919L) % 251L) - 125L) * 0.024f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 24.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 24.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** The relative tolerance of a type's output: f32 1e-5, f16 2e-3, bf16 1.2e-2 (`bits` is the mantissa width). */
+    static float64 tol(int32 bits) {
+        if (bits >= 24) { return 1.0e-5; }
+        if (bits >= 11) { return 2.0e-3; }
+        return 1.2e-2;
+    }
+
+    static String stage = "";
+
+    static boolean close(float64 got, float64 want, float64 rel) {
+        float64 d = got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        boolean ok = d <= rel * (w + 1.0);
+        if (!ok) { System.stdout.println("  " + NormActTest.stage + ": got " + got + " want " + want); }
+        return ok;
+    }
+
+    static float64 hostAct(int32 kind, float64 x) {
+        if (kind == 0) { if (x < 0.0) { return 0.0; } return x; }
+        if (kind == 1) { return x / (1.0 + Math.exp(0.0 - x)); }
+        if (kind == 2) {
+            float64 t = 0.7978845608 * (x + 0.044715 * x * x * x);
+            float64 th = 1.0 - 2.0 / (Math.exp(2.0 * t) + 1.0);
+            return 0.5 * x * (1.0 + th);
+        }
+        if (kind == 3) { return 1.0 - 2.0 / (Math.exp(2.0 * x) + 1.0); }
+        return 1.0 / (1.0 + Math.exp(0.0 - x));
+    }
+
+    static void rows<E>(int32 bits, int64 rows, int64 cols) {
+        int64 n = rows * cols;
+        E[] hx = heap E[n];
+        E[] hw = heap E[cols];
+        E[] hb = heap E[cols];
+        float64[] fx = heap float64[n];
+        float64[] fw = heap float64[cols];
+        float64[] fb = heap float64[cols];
+        int64 i = 0L;
+        while (i < n) { hx[(int32) i] = (E) NormActTest.pattern(i); fx[(int32) i] = (float64) hx[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < cols) {
+            hw[(int32) i] = (E) (1.0f + NormActTest.pattern(i + 3L) * 0.1f); fw[(int32) i] = (float64) hw[(int32) i];
+            hb[(int32) i] = (E) (NormActTest.pattern(i + 11L) * 0.1f); fb[(int32) i] = (float64) hb[(int32) i];
+            i = i + 1L;
+        }
+        KernelBuffer<E> x = heap KernelBuffer<E>((uint64) n);
+        KernelBuffer<E> w = heap KernelBuffer<E>((uint64) cols);
+        KernelBuffer<E> b = heap KernelBuffer<E>((uint64) cols);
+        KernelBuffer<E> out = heap KernelBuffer<E>((uint64) n);
+        x.upload(hx);
+        w.upload(hw);
+        b.upload(hb);
+        E[] got = heap E[n];
+        float64 rel = NormActTest.tol(bits);
+        int64[] m #= ValueCheck.mark();
+        // rmsnorm
+        NormActTest.stage = "rmsnorm";
+        Norm.rms<E>(out, x, w, rows, cols, 1.0e-5f);
+        out.download(got);
+        int64 r = 0L;
+        while (r < rows) {
+            float64 ss = 0.0;
+            int64 c = 0L;
+            while (c < cols) { ss = ss + fx[(int32) (r * cols + c)] * fx[(int32) (r * cols + c)]; c = c + 1L; }
+            float64 scale = 1.0 / Math.sqrt(ss / (float64) cols + 1.0e-5);
+            c = 0L;
+            while (c < cols) {
+                if (!NormActTest.close((float64) got[(int32) (r * cols + c)], fx[(int32) (r * cols + c)] * scale * fw[(int32) c], rel)) {
+                    System.stdout.println("  rmsnorm r=" + r + " c=" + c + " x=" + fx[(int32) (r * cols + c)] + " w=" + fw[(int32) c] + " scale=" + scale);
+                    Assert.isTrue(false);
+                }
+                c = c + 1L;
+            }
+            r = r + 1L;
+        }
+        // layernorm
+        NormActTest.stage = "layernorm";
+        Norm.layer<E>(out, x, w, b, rows, cols, 1.0e-5f);
+        out.download(got);
+        r = 0L;
+        while (r < rows) {
+            float64 mean = 0.0;
+            int64 c = 0L;
+            while (c < cols) { mean = mean + fx[(int32) (r * cols + c)]; c = c + 1L; }
+            mean = mean / (float64) cols;
+            float64 var = 0.0;
+            c = 0L;
+            while (c < cols) { float64 dd = fx[(int32) (r * cols + c)] - mean; var = var + dd * dd; c = c + 1L; }
+            var = var / (float64) cols;
+            float64 inv = 1.0 / Math.sqrt(var + 1.0e-5);
+            c = 0L;
+            while (c < cols) {
+                Assert.isTrue(NormActTest.close((float64) got[(int32) (r * cols + c)], (fx[(int32) (r * cols + c)] - mean) * inv * fw[(int32) c] + fb[(int32) c], rel));
+                c = c + 1L;
+            }
+            r = r + 1L;
+        }
+        // softmax
+        NormActTest.stage = "softmax";
+        Act.softmaxRows<E>(out, x, rows, cols);
+        out.download(got);
+        r = 0L;
+        while (r < rows) {
+            float64 mx = fx[(int32) (r * cols)];
+            int64 c = 1L;
+            while (c < cols) { if (fx[(int32) (r * cols + c)] > mx) { mx = fx[(int32) (r * cols + c)]; } c = c + 1L; }
+            float64 sum = 0.0;
+            c = 0L;
+            while (c < cols) { sum = sum + Math.exp(fx[(int32) (r * cols + c)] - mx); c = c + 1L; }
+            c = 0L;
+            while (c < cols) {
+                Assert.isTrue(NormActTest.close((float64) got[(int32) (r * cols + c)], Math.exp(fx[(int32) (r * cols + c)] - mx) / sum, rel));
+                c = c + 1L;
+            }
+            r = r + 1L;
+        }
+        // relu, silu, gelu, tanh, sigmoid
+        int32 kind = 0;
+        while (kind < 5) {
+            NormActTest.stage = "act " + kind;
+            Act.apply<E>(out, x, n, kind);
+            out.download(got);
+            i = 0L;
+            while (i < n) {
+                Assert.isTrue(NormActTest.close((float64) got[(int32) i], NormActTest.hostAct(kind, fx[(int32) i]), rel));
+                i = i + 1L;
+            }
+            kind = kind + 1;
+        }
+        // glu: act(x) * (x shifted by one row's worth) with silu and gelu
+        KernelBuffer<E> u = heap KernelBuffer<E>((uint64) n);
+        E[] hu = heap E[n];
+        float64[] fu = heap float64[n];
+        i = 0L;
+        while (i < n) { hu[(int32) i] = (E) NormActTest.pattern(i + 7L); fu[(int32) i] = (float64) hu[(int32) i]; i = i + 1L; }
+        u.upload(hu);
+        kind = 1;
+        while (kind <= 2) {
+            NormActTest.stage = "glu " + kind;
+            Act.gated<E>(out, x, u, n, kind);
+            out.download(got);
+            i = 0L;
+            while (i < n) {
+                if (!NormActTest.close((float64) got[(int32) i], NormActTest.hostAct(kind, fx[(int32) i]) * fu[(int32) i], rel)) {
+                    System.stdout.println("  glu i=" + i + " x=" + fx[(int32) i] + " u=" + fu[(int32) i] + " swapped=" + (NormActTest.hostAct(kind, fu[(int32) i]) * fx[(int32) i]));
+                    Assert.isTrue(false);
+                }
+                i = i + 1L;
+            }
+            kind = kind + 1;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void f32RowsMatchTheHost() {
+        if (!NormActTest.usable("rmsnorm_float32") || !NormActTest.usable("act_float32")) { return; }
+        NormActTest.rows<float32>(24, 37L, 1000L);
+        NormActTest.rows<float32>(24, 3L, 1L);
+        NormActTest.rows<float32>(24, 2L, 4096L);
+    }
+
+    @Test
+    public void f16RowsMatchTheHost() {
+        if (!NormActTest.usable("rmsnorm_float16") || !NormActTest.usable("act_float16")) { return; }
+        NormActTest.rows<float16>(11, 37L, 1000L);
+    }
+
+    @Test
+    public void bf16RowsMatchTheHost() {
+        if (!NormActTest.usable("rmsnorm_bfloat16") || !NormActTest.usable("act_bfloat16")) { return; }
+        NormActTest.rows<bfloat16>(8, 37L, 1000L);
+    }
+}

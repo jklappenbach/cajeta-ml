@@ -1,0 +1,97 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.lang.Math;
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/** Row normalisations (spec §6.1): one workgroup of 256 lanes per row, the statistics a shared-memory tree, float32 arithmetic at any E. llm's rmsnormRow. */
+public final class Norm {
+    public Norm() { return; }
+
+    @Kernel
+    public static void rmsnorm<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, uint32 cols, float32 eps) {
+        Shared<float32> part = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 base = Workgroup.x() * cols;
+        float32 ss = 0.0f;
+        uint32 i = lane;
+        while (i < cols) {
+            float32 v = (float32) x[base + i];
+            ss = ss + v * v;
+            i = i + 256;
+        }
+        part[lane] = ss;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 scale = 1.0f / Math.sqrt(part[0] / (float32) cols + eps);
+        uint32 j = lane;
+        while (j < cols) {
+            out[base + j] = (E) ((float32) x[base + j] * scale * (float32) w[j]);
+            j = j + 256;
+        }
+    }
+
+    @Kernel
+    public static void layernorm<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b, uint32 cols, float32 eps) {
+        Shared<float32> part = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 base = Workgroup.x() * cols;
+        float32 sum = 0.0f;
+        uint32 i = lane;
+        while (i < cols) { sum = sum + (float32) x[base + i]; i = i + 256; }
+        part[lane] = sum;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 mean = part[0] / (float32) cols;
+        Barrier.workgroup();
+        float32 sq = 0.0f;
+        i = lane;
+        while (i < cols) {
+            float32 d = (float32) x[base + i] - mean;
+            sq = sq + d * d;
+            i = i + 256;
+        }
+        part[lane] = sq;
+        Barrier.workgroup();
+        s = 128;
+        while (s > 0) {
+            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 inv = 1.0f / Math.sqrt(part[0] / (float32) cols + eps);
+        uint32 j = lane;
+        while (j < cols) {
+            out[base + j] = (E) (((float32) x[base + j] - mean) * inv * (float32) w[j] + (float32) b[j]);
+            j = j + 256;
+        }
+    }
+
+    /** `out` = rmsnorm of each of `rows` rows of `x` (rows x cols) scaled by `w`; synced. */
+    public static void rms<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, int64 rows, int64 cols, float32 eps) {
+        KernelStream s #= KernelStream.current();
+        rmsnorm.launch(s, grid: [(uint32) rows], block: [256])(out, x, w, (uint32) cols, eps);
+        s.sync();
+    }
+
+    /** `out` = layernorm of each row of `x` with scale `w` and shift `b`; synced. */
+    public static void layer<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b, int64 rows, int64 cols, float32 eps) {
+        KernelStream s #= KernelStream.current();
+        layernorm.launch(s, grid: [(uint32) rows], block: [256])(out, x, w, b, (uint32) cols, eps);
+        s.sync();
+    }
+}

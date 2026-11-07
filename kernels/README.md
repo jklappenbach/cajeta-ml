@@ -28,6 +28,9 @@ cajeta-xgboost are its first consumers.
   for every kernel it registers: `ValueCheck` (a launch is not a check),
   `KernelCensus` (run and value-checked, a probe, or a tracked skip, or the
   suite fails), `DeviceSkip` (a skip says why), `LaunchFailureBudget`.
+- `dev.cajeta.ml.kernels.nn` — `Norm` (rmsnorm, layernorm per row; spec §6.1) and
+  `Act` (softmax per row; relu, silu, gelu, tanh, sigmoid; the gated unit; §6.3), generic over
+  f32, f16 and bf16 with float32 arithmetic inside.
 - `dev.cajeta.ml.kernels.tune` — `TileShape`, `TileFamily<S>` (members pruned
   with a reason, the measured winner stored per problem, build and device) and
   `TuneMode`.
