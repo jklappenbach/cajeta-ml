@@ -81,6 +81,37 @@ public final class Norm {
         }
     }
 
+    /** Each row scaled to unit L2 norm, the norm floored at `eps` so a zero row stays zero. */
+    @Kernel
+    public static void l2norm<E>(KernelBuffer<E> out, KernelBuffer<E> x, uint32 cols, float32 eps) {
+        Shared<float32> part = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 base = Workgroup.x() * cols;
+        float32 ss = 0.0f;
+        uint32 i = lane;
+        while (i < cols) {
+            float32 v = (float32) x[base + i];
+            ss = ss + v * v;
+            i = i + 256;
+        }
+        part[lane] = ss;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 nrm = Math.sqrt(part[0]);
+        if (nrm < eps) { nrm = eps; }
+        float32 scale = 1.0f / nrm;
+        uint32 j = lane;
+        while (j < cols) {
+            out[base + j] = (E) ((float32) x[base + j] * scale);
+            j = j + 256;
+        }
+    }
+
     /** `out` = rmsnorm of each of `rows` rows of `x` (rows x cols) scaled by `w`; synced. */
     public static void rms<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
@@ -92,6 +123,13 @@ public final class Norm {
     public static void layer<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         layernorm.launch(s, grid: [(uint32) rows], block: [256])(out, x, w, b, (uint32) cols, eps);
+        s.sync();
+    }
+
+    /** `out` = each of `rows` rows of `x` scaled to unit L2 norm, the norm floored at `eps`; synced. */
+    public static void l2rows<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 rows, int64 cols, float32 eps) {
+        KernelStream s #= KernelStream.current();
+        l2norm.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, eps);
         s.sync();
     }
 }

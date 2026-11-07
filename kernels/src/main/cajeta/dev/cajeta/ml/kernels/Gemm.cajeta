@@ -15,7 +15,7 @@ import dev.cajeta.ml.kernels.tune.TileFamily;
 import dev.cajeta.ml.kernels.tune.TileShape;
 
 /**
- * GEMM at f16, bf16 and f32 into float32, and int8 into int32 (spec §5.1): C[m][n] = A[m][k] . B[k][n], all row-major,
+ * GEMM at f16, bf16 and f32 into float32, int8 into int32, and the plain f32 tile at E (spec §5.1): C[m][n] = A[m][k] . B[k][n], all row-major,
  * through the device's matrix cores (the portable software tile where it has none). The
  * 16x16 member stages each K-slab of A and B through zero-filled shared tiles, so a shape
  * that is no multiple of the tile runs; the torch-recipe tile (amdgpu) and llm's X3 shape
@@ -455,6 +455,55 @@ public final class Gemm {
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
         KernelStream s #= KernelStream.current();
         gemm16Batched.launch(s, grid: [tiles * (uint32) batch], block: [64])(c, a, b, um, un, (uint32) k);
+        s.sync();
+    }
+
+    /** Workgroup (mi, nj): one 16x16 tile of C at E, each lane one element, the K loop staged
+     *  through float32 shared tiles and summed in k order, so it matches a sequential float32 sum. */
+    @Kernel
+    public static void gemmTiled<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k) {
+        Shared<float32> sa = shared float32[256];
+        Shared<float32> sb = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 r = t / 16;
+        uint32 cc = t - r * 16;
+        uint32 ntiles = (n + 15) / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid - mi * ntiles;
+        uint32 gm = mi * 16 + r;
+        uint32 gn = nj * 16 + cc;
+        float32 acc = 0.0f;
+        uint32 ktiles = (k + 15) / 16;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            uint32 gk = kk * 16 + cc;
+            float32 va = 0.0f;
+            if (gm < m && gk < k) { va = (float32) a[gm * k + gk]; }
+            sa[t] = va;
+            uint32 gk2 = kk * 16 + r;
+            float32 vb = 0.0f;
+            if (gk2 < k && gn < n) { vb = (float32) b[gk2 * n + gn]; }
+            sb[t] = vb;
+            Barrier.workgroup();
+            uint32 p = 0;
+            while (p < 16) {
+                acc = acc + sa[r * 16 + p] * sb[p * 16 + cc];
+                p = p + 1;
+            }
+            Barrier.workgroup();
+            kk = kk + 1;
+        }
+        if (gm < m && gn < n) { c[gm * n + gn] = (E) acc; }
+    }
+
+    /** `c` (m x n) = `a` (m x k) . `b` (k x n), all at E, through the plain tile; synced. */
+    public static void tiled<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
+        KernelStream s #= KernelStream.current();
+        gemmTiled.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
         s.sync();
     }
 

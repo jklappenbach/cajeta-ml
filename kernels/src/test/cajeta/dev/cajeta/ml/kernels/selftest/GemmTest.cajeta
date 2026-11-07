@@ -78,6 +78,59 @@ public class GemmTest {
         ValueCheck.credit(mk);
     }
 
+    /** C = A . B through the plain tile at E, against the host in float64. */
+    static void tiledCase<E>(String kernel, int64 m, int64 n, int64 k) {
+        E[] ha = heap E[m * k];
+        E[] hb = heap E[k * n];
+        float32[] fa = heap float32[m * k];
+        float32[] fb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < m * k) { fa[(int32) i] = GemmTest.pattern(i); ha[(int32) i] = (E) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = GemmTest.pattern(i + 17L); hb[(int32) i] = (E) fb[(int32) i]; i = i + 1L; }
+        KernelBuffer<E> a = heap KernelBuffer<E>((uint64) (m * k));
+        KernelBuffer<E> b = heap KernelBuffer<E>((uint64) (k * n));
+        KernelBuffer<E> c = heap KernelBuffer<E>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        int64[] mk #= ValueCheck.mark();
+        Gemm.tiled<E>(c, a, b, m, n, k);
+        E[] got = heap E[m * n];
+        c.download(got);
+        int64 r = 0L;
+        int32 bad = 0;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 df = (float64) got[(int32) (r * n + col)] - acc;
+                if (df < 0.0) { df = 0.0 - df; }
+                float64 w = acc;
+                if (w < 0.0) { w = 0.0 - w; }
+                if (df > 1.0e-5 * (w + 1.0) + (float64) k * 1.0e-7) {
+                    if (bad < 3) { System.stdout.println(kernel + " " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + (float64) got[(int32) (r * n + col)] + " want " + acc); }
+                    bad = bad + 1;
+                }
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void f32TiledGemmMatchesTheHost() {
+        if (!GemmTest.usable("gemmTiled_float32")) { return; }
+        GemmTest.tiledCase<float32>("gemmTiled_float32", 16L, 16L, 16L);
+        GemmTest.tiledCase<float32>("gemmTiled_float32", 3L, 5L, 7L);
+        GemmTest.tiledCase<float32>("gemmTiled_float32", 100L, 100L, 100L);
+        GemmTest.tiledCase<float32>("gemmTiled_float32", 257L, 33L, 129L);
+        GemmTest.tiledCase<float32>("gemmTiled_float32", 7L, 1000L, 2049L);
+    }
+
     @Test
     public void f16GemmMatchesTheHostAtSquareAndLlmShapes() {
         if (!GemmTest.usable("gemm16_float16")) { return; }

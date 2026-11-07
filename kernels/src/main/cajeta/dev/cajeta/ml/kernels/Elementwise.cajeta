@@ -1,0 +1,48 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.lang.Math;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * Elementwise unary maps (spec §6.3), float32 arithmetic at any E. `kind`: 0 neg, 1 exp,
+ * 2 log, 3 sqrt, 4 pow by the scalar `c`, 5 reciprocal, 6 scale by `c`. The op seam's
+ * NEG, EXP, LOG, SQRT and POWS column.
+ */
+public final class Elementwise {
+    public Elementwise() { return; }
+
+    public static final int32 NEG = 0;
+    public static final int32 EXP = 1;
+    public static final int32 LOG = 2;
+    public static final int32 SQRT = 3;
+    public static final int32 POW = 4;
+    public static final int32 RECIP = 5;
+    public static final int32 SCALE = 6;
+
+    @Device
+    static float32 of(int32 kind, float32 x, float32 c) {
+        if (kind == 0) { return 0.0f - x; }
+        if (kind == 1) { return Math.exp(x); }
+        if (kind == 2) { return Math.log(x); }
+        if (kind == 3) { return Math.sqrt(x); }
+        if (kind == 4) { return Math.pow(x, c); }
+        if (kind == 5) { return 1.0f / x; }
+        return x * c;
+    }
+
+    @Kernel
+    public static void unary<E>(KernelBuffer<E> out, KernelBuffer<E> x, uint32 n, int32 kind, float32 c) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[i] = (E) Elementwise.of(kind, (float32) x[i], c); }
+    }
+
+    /** `out[i]` = the map `kind` of `x[i]` with scalar `c`; synced. */
+    public static void map<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 n, int32 kind, float32 c) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        unary.launch(s, grid: [(un + 255) / 256], block: [256])(out, x, un, kind, c);
+        s.sync();
+    }
+}

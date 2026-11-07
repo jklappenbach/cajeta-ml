@@ -10,7 +10,7 @@ import cajeta.xpu.Workgroup;
 
 /**
  * Softmax per row and the elementwise activations (spec §6.3), float32 arithmetic at any E.
- * `kind`: 0 relu, 1 silu, 2 gelu (the tanh form), 3 tanh, 4 sigmoid; tanh and the sigmoid are
+ * `kind`: 0 relu, 1 silu, 2 gelu (the tanh form), 3 tanh, 4 sigmoid, 5 gelu (the erf form); tanh and the sigmoid are
  * spelled through exp, the verb every backend lowers. llm's glu.
  */
 public final class Act {
@@ -21,6 +21,7 @@ public final class Act {
     public static final int32 GELU = 2;
     public static final int32 TANH = 3;
     public static final int32 SIGMOID = 4;
+    public static final int32 GELU_ERF = 5;
 
     @Device
     static float32 of(int32 kind, float32 x) {
@@ -32,11 +33,23 @@ public final class Act {
             return 0.5f * x * (1.0f + th);
         }
         if (kind == 3) { return 1.0f - 2.0f / (Math.exp(2.0f * x) + 1.0f); }
+        if (kind == 5) { return 0.5f * x * (1.0f + Act.erf(x * 0.70710678f)); }
         return 1.0f / (1.0f + Math.exp(0.0f - x));
     }
 
+    /** erf by Abramowitz and Stegun 7.1.26, within 1.5e-7 everywhere. */
+    @Device
+    static float32 erf(float32 x) {
+        float32 ax = x;
+        if (ax < 0.0f) { ax = 0.0f - ax; }
+        float32 t = 1.0f / (1.0f + 0.3275911f * ax);
+        float32 y = 1.0f - (((((1.061405429f * t - 1.453152027f) * t) + 1.421413741f) * t - 0.284496736f) * t + 0.254829592f) * t * Math.exp(0.0f - ax * ax);
+        if (x < 0.0f) { return 0.0f - y; }
+        return y;
+    }
+
     @Kernel
-    public static void softmax<E>(KernelBuffer<E> out, KernelBuffer<E> x, uint32 cols) {
+    public static void softmax<E>(KernelBuffer<E> out, KernelBuffer<E> x, uint32 cols, int32 logOut) {
         Shared<float32> part = shared float32[256];
         uint32 lane = KernelThread.x();
         uint32 base = Workgroup.x() * cols;
@@ -69,9 +82,11 @@ public final class Act {
             s = s / 2;
         }
         float32 inv = 1.0f / part[0];
+        float32 lse = Math.log(part[0]);
         uint32 j = lane;
         while (j < cols) {
-            out[base + j] = (E) (Math.exp((float32) x[base + j] - rowMax) * inv);
+            float32 d = (float32) x[base + j] - rowMax;
+            if (logOut != 0) { out[base + j] = (E) (d - lse); } else { out[base + j] = (E) (Math.exp(d) * inv); }
             j = j + 256;
         }
     }
@@ -94,7 +109,14 @@ public final class Act {
     /** `out` = softmax of each of `rows` rows of `x`; synced. */
     public static void softmaxRows<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
-        softmax.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols);
+        softmax.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, 0);
+        s.sync();
+    }
+
+    /** `out` = log-softmax of each of `rows` rows of `x`, as `x - max - log(sum exp)`; synced. */
+    public static void logSoftmaxRows<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 rows, int64 cols) {
+        KernelStream s #= KernelStream.current();
+        softmax.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, 1);
         s.sync();
     }
 
