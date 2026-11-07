@@ -3,6 +3,7 @@ package dev.cajeta.ml.nn;
 import cajeta.math.Tensor;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Ops;
 
 /**
  * Shared plumbing for the {@link dev.cajeta.ml.Predictor} adapters — the
@@ -81,14 +82,12 @@ public final class Nets {
     /** Reshape a `(n,)` target to the `(n, 1)` a single-output head emits. */
     public static #Tensor<float32> asColumn(Tensor<float32> y) {
         if (y.ndim() == 2) {
-            return y.copy();
+            return Ops.copyOf<float32>(y);
         }
         int64[] sh = heap int64[2];
         sh[0] = y.shapeAt(0);
         sh[1] = 1;
-        Tensor<float32> vw #= y.reshape(sh);
-        Tensor<float32> out #= vw.copy();
-        return #out;
+        return Ops.reshape<float32>(y, sh);
     }
 
     /**
@@ -108,9 +107,9 @@ public final class Nets {
         int32 i = 0;
         while (i < n) {
             if (ps[i].isTrainable()) {
-                gs[i] #= tape.gradOf(ps[i].node()).copy();
+                gs[i] #= Ops.copyOf<float32>(tape.gradOf(ps[i].node()));
             } else {
-                gs[i] #= Tensor.zerosLike<float32>(ps[i].get());
+                gs[i] #= Ops.zerosLike<float32>(ps[i].get());
             }
             i = i + 1;
         }

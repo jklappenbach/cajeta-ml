@@ -1,0 +1,115 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Optim;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** cajeta-ml-gpu 30.1.1 (spec §6.6): the SGD and Adam steps against the host rules over three steps. */
+public class OptimTest {
+    public OptimTest() { return; }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 30.1.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 30.1.1");
+            return false;
+        }
+        return true;
+    }
+
+    static void close(String what, float64 got, float64 want) {
+        float64 d = got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        if (d > 1.0e-5 * (w + 1.0)) {
+            System.stdout.println("  " + what + ": got " + got + " want " + want);
+            Assert.isTrue(false);
+        }
+    }
+
+    @Test
+    public void sgdAndAdamStepsMatchTheHost() {
+        if (!OptimTest.usable("sgd_float32") || !OptimTest.usable("adam_float32")) { return; }
+        int64 n = 1000L;
+        float32[] hp = heap float32[n];
+        float32[] hg = heap float32[n];
+        float64[] p1 = heap float64[n];
+        float64[] p2 = heap float64[n];
+        float64[] vel = heap float64[n];
+        float64[] m = heap float64[n];
+        float64[] v = heap float64[n];
+        int64 i = 0L;
+        while (i < n) {
+            hp[(int32) i] = (float32) (((i * 7919L) % 251L) - 125L) * 0.012f;
+            p1[(int32) i] = (float64) hp[(int32) i];
+            p2[(int32) i] = (float64) hp[(int32) i];
+            vel[(int32) i] = 0.0; m[(int32) i] = 0.0; v[(int32) i] = 0.0;
+            i = i + 1L;
+        }
+        KernelBuffer<float32> pa = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> pb = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> g = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> va = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> ma = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> vb = heap KernelBuffer<float32>((uint64) n);
+        pa.upload(hp);
+        pb.upload(hp);
+        float32[] zero = heap float32[n];
+        i = 0L;
+        while (i < n) { zero[(int32) i] = 0.0f; i = i + 1L; }
+        va.upload(zero);
+        ma.upload(zero);
+        vb.upload(zero);
+        int64[] mk #= ValueCheck.mark();
+        float64 b1p = 1.0;
+        float64 b2p = 1.0;
+        int32 step = 0;
+        while (step < 3) {
+            i = 0L;
+            while (i < n) { hg[(int32) i] = (float32) ((((i + (int64) step * 17L) * 7919L) % 251L) - 125L) * 0.004f; i = i + 1L; }
+            g.upload(hg);
+            b1p = b1p * 0.9;
+            b2p = b2p * 0.999;
+            float32 c1 = (float32) (1.0 - b1p);
+            float32 c2 = (float32) (1.0 - b2p);
+            Optim.sgdStep<float32>(pa, va, g, n, 0.05f, 0.9f);
+            Optim.adamStep<float32>(pb, ma, vb, g, n, 0.01f, c1, c2, 0.01f);
+            i = 0L;
+            while (i < n) {
+                float64 gv = (float64) hg[(int32) i];
+                vel[(int32) i] = 0.9 * vel[(int32) i] + gv;
+                p1[(int32) i] = p1[(int32) i] - 0.05 * vel[(int32) i];
+                m[(int32) i] = 0.9 * m[(int32) i] + 0.1 * gv;
+                v[(int32) i] = 0.999 * v[(int32) i] + 0.001 * gv * gv;
+                float64 mhat = m[(int32) i] / (float64) c1;
+                float64 vhat = v[(int32) i] / (float64) c2;
+                p2[(int32) i] = p2[(int32) i] - 0.01 * (mhat / (Math.sqrt(vhat) + 1.0e-8) + 0.01 * p2[(int32) i]);
+                i = i + 1L;
+            }
+            step = step + 1;
+        }
+        float32[] ga = heap float32[n];
+        float32[] gb = heap float32[n];
+        pa.download(ga);
+        pb.download(gb);
+        i = 0L;
+        while (i < n) {
+            OptimTest.close("sgd", (float64) ga[(int32) i], p1[(int32) i]);
+            OptimTest.close("adamw", (float64) gb[(int32) i], p2[(int32) i]);
+            i = i + 1L;
+        }
+        // plain SGD leaves the velocity untouched
+        Optim.sgdStep<float32>(pa, va, g, n, 0.05f, 0.0f);
+        float32[] gv2 = heap float32[n];
+        va.download(gv2);
+        i = 0L;
+        while (i < n) { OptimTest.close("sgd velocity kept", (float64) gv2[(int32) i], vel[(int32) i]); i = i + 1L; }
+        ValueCheck.credit(mk);
+    }
+}

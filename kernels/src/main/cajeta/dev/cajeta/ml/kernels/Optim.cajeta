@@ -1,0 +1,65 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.lang.Math;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * Optimizer steps (spec §6.6), one lane per parameter element, in place on the parameter and
+ * its state. SGD with momentum (v = m*v + g; p -= lr*v) and Adam (bias-corrected moments,
+ * decoupled weight decay when `wd` is nonzero, as AdamW), both as cajeta-ml's host rules.
+ */
+public final class Optim {
+    public Optim() { return; }
+
+    @Kernel
+    public static void sgd<E>(KernelBuffer<E> p, KernelBuffer<E> v, KernelBuffer<E> g, uint32 n, float32 lr, float32 momentum, int32 useMomentum) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            float32 gv = (float32) g[i];
+            if (useMomentum != 0) {
+                float32 vv = momentum * (float32) v[i] + gv;
+                v[i] = (E) vv;
+                gv = vv;
+            }
+            p[i] = (E) ((float32) p[i] - lr * gv);
+        }
+    }
+
+    @Kernel
+    public static void adam<E>(KernelBuffer<E> p, KernelBuffer<E> m, KernelBuffer<E> v, KernelBuffer<E> g, uint32 n,
+                               float32 lr, float32 c1, float32 c2, float32 wd) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            float32 gv = (float32) g[i];
+            float32 mv = 0.9f * (float32) m[i] + 0.1f * gv;
+            float32 vv = 0.999f * (float32) v[i] + 0.001f * gv * gv;
+            m[i] = (E) mv;
+            v[i] = (E) vv;
+            float32 mhat = mv / c1;
+            float32 vhat = vv / c2;
+            float32 pv = (float32) p[i];
+            p[i] = (E) (pv - lr * (mhat / (Math.sqrt(vhat) + 0.00000001f) + wd * pv));
+        }
+    }
+
+    /** One SGD step over `n` elements; `v` is read and written only when `momentum` is nonzero; synced. */
+    public static void sgdStep<E>(KernelBuffer<E> p, KernelBuffer<E> v, KernelBuffer<E> g, int64 n, float32 lr, float32 momentum) {
+        uint32 un = (uint32) n;
+        int32 um = 0;
+        if (momentum != 0.0f) { um = 1; }
+        KernelStream s #= KernelStream.current();
+        sgd.launch(s, grid: [(un + 255) / 256], block: [256])(p, v, g, un, lr, momentum, um);
+        s.sync();
+    }
+
+    /** One Adam step with bias corrections `c1 = 1 - b1^t`, `c2 = 1 - b2^t` and decoupled decay `wd` (0 for Adam); synced. */
+    public static void adamStep<E>(KernelBuffer<E> p, KernelBuffer<E> m, KernelBuffer<E> v, KernelBuffer<E> g, int64 n,
+                                   float32 lr, float32 c1, float32 c2, float32 wd) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        adam.launch(s, grid: [(un + 255) / 256], block: [256])(p, m, v, g, un, lr, c1, c2, wd);
+        s.sync();
+    }
+}

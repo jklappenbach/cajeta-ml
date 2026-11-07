@@ -2,6 +2,8 @@ package dev.cajeta.ml.optim;
 
 import cajeta.math.Tensor;
 import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.grad.Ops;
+import dev.cajeta.ml.kernels.Optim;
 
 /**
  * Adam (Kingma & Ba) — adaptive moments (spec §5.1):
@@ -42,8 +44,8 @@ public final class Adam implements Optimizer {
             boolean[] ac = heap boolean[n];
             int32 j = 0;
             while (j < n) {
-                ms[j] #= Tensor.zerosLike<float32>(this.params[j].get());
-                vs[j] #= Tensor.zerosLike<float32>(this.params[j].get());
+                ms[j] #= Ops.zerosLike<float32>(this.params[j].get());
+                vs[j] #= Ops.zerosLike<float32>(this.params[j].get());
                 b1[j] = 1.0f;
                 b2[j] = 1.0f;
                 ac[j] = true;
@@ -85,6 +87,10 @@ public final class Adam implements Optimizer {
     static void updateOne(Tensor<float32> p, Tensor<float32> g,
                           Tensor<float32> m, Tensor<float32> v,
                           float32 lr, float32 c1, float32 c2) {
+        if (p.isOnGpu()) {
+            Optim.adamStep<float32>(p.deviceView("adam"), m.deviceView("adam"), v.deviceView("adam"), g.deviceView("adam"), p.size(), lr, c1, c2, 0.0f);
+            return;
+        }
         int64[] shape #= Tensor.shapeOf<float32>(p);
         int32 nd = (int32) shape.count();
         int64 total = Tensor.productOf(shape);

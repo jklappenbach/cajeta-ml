@@ -2,6 +2,8 @@ package dev.cajeta.ml.optim;
 
 import cajeta.math.Tensor;
 import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.grad.Ops;
+import dev.cajeta.ml.kernels.Optim;
 
 /**
  * SGD — stochastic gradient descent with optional momentum (spec §5.1):
@@ -54,7 +56,7 @@ public final class SGD implements Optimizer {
             Tensor<float32>[] vel = heap Tensor<float32>[n];
             int32 j = 0;
             while (j < n) {
-                vel[j] #= Tensor.zerosLike<float32>(this.params[j].get());
+                vel[j] #= Ops.zerosLike<float32>(this.params[j].get());
                 j = j + 1;
             }
             boolean[] ac = heap boolean[n];
@@ -77,9 +79,14 @@ public final class SGD implements Optimizer {
                     this.active[i] = true;
                 }
                 Tensor<float32> v = this.velocity[i];
-                Updates.axpyInto(v, v, this.momentum - 1.0f);   // v *= momentum
-                Updates.axpyInto(v, grads[i], 1.0f);            // v += g
-                Updates.axpyInto(this.params[i].get(), v, -this.lr);
+                Tensor<float32> p = this.params[i].get();
+                if (p.isOnGpu()) {
+                    Optim.sgdStep<float32>(p.deviceView("sgd"), v.deviceView("sgd"), grads[i].deviceView("sgd"), p.size(), this.lr, this.momentum);
+                } else {
+                    Updates.axpyInto(v, v, this.momentum - 1.0f);   // v *= momentum
+                    Updates.axpyInto(v, grads[i], 1.0f);            // v += g
+                    Updates.axpyInto(p, v, -this.lr);
+                }
             } else {
                 this.active[i] = false;
             }

@@ -5,6 +5,9 @@ import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.data.Batches;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Ops;
+import dev.cajeta.ml.kernels.Elementwise;
+import dev.cajeta.ml.kernels.Reduce;
 import dev.cajeta.ml.nn.Module;
 import dev.cajeta.ml.nn.Nets;
 import dev.cajeta.ml.nn.Parameter;
@@ -94,6 +97,11 @@ public class BackpropTrainer {
                           Parameter[] ps) {
         GradTape<float32> tape = heap GradTape<float32>();
         this.net.bindParameters(tape);
+        // a model on the device takes its batches there (the inputs are the trainer's own copies)
+        if (ps.count() > 0 && ps[0].get().isOnGpu()) {
+            if (!xb.isOnGpu()) { xb.gpu(); }
+            if (!yb.isOnGpu()) { yb.gpu(); }
+        }
         GradTensor x = tape.leaf(xb, false);
         GradTensor out = this.net.forward(tape, x);
         if (this.lossKind != Loss.CROSS_ENTROPY && this.lossKind != Loss.MSE) {
@@ -107,7 +115,7 @@ public class BackpropTrainer {
             GradTensor target = tape.leaf(Nets.asColumn(yb), false);
             loss = tape.mseLoss(out, target);
         }
-        float64 value = (float64) tape.valueOf(loss).flatGet(0);
+        float64 value = BackpropTrainer.scalarOf(tape.valueOf(loss));
         tape.backward(loss);
         Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
         if (this.clipNorm > 0.0f) {
@@ -124,8 +132,42 @@ public class BackpropTrainer {
      * the norm BEFORE clipping (torch's return value), which is the
      * number worth logging when a run diverges.
      */
+    /** The one value of a (1,) tensor, read from the device when it lives there. */
+    static float64 scalarOf(Tensor<float32> t) {
+        if (t.isOnGpu()) {
+            Tensor<float32> h #= Ops.copyOf<float32>(t);
+            h.cpu();
+            return (float64) h.flatGet(0);
+        }
+        return (float64) t.flatGet(0);
+    }
+
+    /** The clip over device-resident gradients: squared norms by the reduction tree, the scale in place. */
+    static float64 clipOnDevice(Tensor<float32>[] grads, float32 maxNorm) {
+        float64 sq = 0.0;
+        int32 i = 0;
+        while (i < (int32) grads.count()) {
+            sq = sq + (float64) Reduce.all<float32>(grads[i].deviceView("clip"), grads[i].size(), Reduce.SUMSQ);
+            i = i + 1;
+        }
+        float64 total = Math.sqrt(sq);
+        if (total <= (float64) maxNorm || total == 0.0) {
+            return total;
+        }
+        float32 scale = (float32) ((float64) maxNorm / total);
+        i = 0;
+        while (i < (int32) grads.count()) {
+            Elementwise.map<float32>(grads[i].deviceView("clip"), grads[i].deviceView("clip"), grads[i].size(), Elementwise.SCALE, scale);
+            i = i + 1;
+        }
+        return total;
+    }
+
     public static float64 clipByGlobalNorm(Tensor<float32>[] grads,
                                            float32 maxNorm) {
+        if (grads.count() > 0 && grads[0].isOnGpu()) {
+            return BackpropTrainer.clipOnDevice(grads, maxNorm);
+        }
         float64 sq = 0.0;
         int32 i = 0;
         while (i < (int32) grads.count()) {

@@ -1,0 +1,118 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.data.Batches;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.optim.Adam;
+import dev.cajeta.ml.optim.AdamW;
+import dev.cajeta.ml.optim.Optimizer;
+import dev.cajeta.ml.optim.SGD;
+import dev.cajeta.ml.train.BackpropTrainer;
+import dev.cajeta.ml.train.Loss;
+import dev.cajeta.ml.train.TrainHistory;
+import dev.cajeta.ml.zoo.Mlp;
+import dev.cajeta.ml.zoo.SmallCnn;
+
+/**
+ * cajeta-ml-gpu 30.1.1 (spec §6.6): the zoo trains on the device. A model moved with
+ * `toDevice()` fits through `BackpropTrainer` with each optimizer, its per-epoch losses match
+ * the CPU run within float32's accumulation noise, and its parameters stay on the device.
+ */
+public class TrainDeviceTest {
+    public TrainDeviceTest() { return; }
+
+    static #Optimizer optimizer(int32 kind, #Parameter[] ps) {
+        if (kind == 0) { return heap SGD(#ps, 0.05f, 0.9f); }
+        if (kind == 1) { return heap Adam(#ps, 0.01f); }
+        return heap AdamW(#ps, 0.01f, 0.01f);
+    }
+
+    static void closeCurves(String what, TrainHistory want, TrainHistory got) {
+        Assert.equals((int64) want.epochs(), (int64) got.epochs());
+        int32 e = 0;
+        while (e < want.epochs()) {
+            float64 w = want.lossAt(e);
+            float64 g = got.lossAt(e);
+            float64 d = g - w;
+            if (d < 0.0) { d = 0.0 - d; }
+            if (!(d <= 0.002 * (w + 1.0))) {
+                System.stdout.println("  " + what + " epoch " + e + " device loss " + g + " cpu loss " + w);
+                Assert.isTrue(false);
+            }
+            e = e + 1;
+        }
+    }
+
+    static void mlpWith(int32 kind) {
+        int64[] hidden = [16L];
+        Tensor<float32> x #= Digits.images(12, 4, 0.25f, 5L);
+        Tensor<float32> y #= Digits.labels(12, 4);
+        Mlp cpu = heap Mlp(64L, hidden, 4L, 11L);
+        Optimizer oc #= TrainDeviceTest.optimizer(kind, cpu.parameters());
+        BackpropTrainer tc = heap BackpropTrainer(cpu, #oc, Loss.CROSS_ENTROPY, 1.0f);
+        Batches dc = heap Batches(x, y, 8, 13L);
+        TrainHistory want #= tc.fit(dc, 6);
+        Mlp dev = heap Mlp(64L, hidden, 4L, 11L);
+        dev.toDevice();
+        Optimizer od #= TrainDeviceTest.optimizer(kind, dev.parameters());
+        Parameter[] pd #= dev.parameters();
+        BackpropTrainer td = heap BackpropTrainer(dev, #od, Loss.CROSS_ENTROPY, 1.0f);
+        Batches dd = heap Batches(x, y, 8, 13L);
+        TrainHistory got #= td.fit(dd, 6);
+        TrainDeviceTest.closeCurves("mlp optimizer " + kind, want, got);
+        Assert.isTrue(got.finalLoss() < got.lossAt(0) * 0.7);
+        int32 k = 0;
+        while (k < (int32) pd.count()) { Assert.isTrue(pd[k].get().isOnGpu()); k = k + 1; }
+    }
+
+    @Test
+    public void mlpTrainsOnTheDeviceWithEachOptimizer() {
+        TrainDeviceTest.mlpWith(0);
+        TrainDeviceTest.mlpWith(1);
+        TrainDeviceTest.mlpWith(2);
+    }
+
+    @Test
+    public void smallCnnTrainsOnTheDevice() {
+        Tensor<float32> flatX #= Digits.images(6, 4, 0.2f, 23L);
+        int64[] is = [24L, 1L, 8L, 8L];
+        Tensor<float32> vw #= flatX.reshape(is);
+        Tensor<float32> x #= vw.copy();
+        Tensor<float32> y #= Digits.labels(6, 4);
+        SmallCnn cpu = heap SmallCnn(1L, 4L, 4L, 17L);
+        Optimizer oc = heap Adam(cpu.parameters(), 0.02f);
+        BackpropTrainer tc = heap BackpropTrainer(cpu, #oc, Loss.CROSS_ENTROPY, 1.0f);
+        Batches dc = heap Batches(x, y, 8, 29L);
+        TrainHistory want #= tc.fit(dc, 5);
+        SmallCnn dev = heap SmallCnn(1L, 4L, 4L, 17L);
+        dev.toDevice();
+        Optimizer od = heap Adam(dev.parameters(), 0.02f);
+        BackpropTrainer td = heap BackpropTrainer(dev, #od, Loss.CROSS_ENTROPY, 1.0f);
+        Batches dd = heap Batches(x, y, 8, 29L);
+        TrainHistory got #= td.fit(dd, 5);
+        TrainDeviceTest.closeCurves("smallCnn", want, got);
+        Assert.isTrue(got.finalLoss() < got.lossAt(0) * 0.8);
+    }
+
+    @Test
+    public void mseRegressionTrainsOnTheDevice() {
+        int64[] hidden = [8L];
+        Tensor<float32> x #= Digits.images(10, 4, 0.1f, 31L);
+        Tensor<float32> y #= Digits.labels(10, 4);
+        Mlp cpu = heap Mlp(64L, hidden, 1L, 37L);
+        Optimizer oc = heap SGD(cpu.parameters(), 0.01f, 0.0f);
+        BackpropTrainer tc = heap BackpropTrainer(cpu, #oc, Loss.MSE, 0.0f);
+        Batches dc = heap Batches(x, y, 10, 41L);
+        TrainHistory want #= tc.fit(dc, 4);
+        Mlp dev = heap Mlp(64L, hidden, 1L, 37L);
+        dev.toDevice();
+        Optimizer od = heap SGD(dev.parameters(), 0.01f, 0.0f);
+        BackpropTrainer td = heap BackpropTrainer(dev, #od, Loss.MSE, 0.0f);
+        Batches dd = heap Batches(x, y, 10, 41L);
+        TrainHistory got #= td.fit(dd, 4);
+        TrainDeviceTest.closeCurves("mlp mse", want, got);
+    }
+}
