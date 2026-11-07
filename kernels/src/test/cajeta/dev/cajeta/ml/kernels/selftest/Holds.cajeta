@@ -1,0 +1,19 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.KernelCap;
+
+/**
+ * Kernels that lower on a backend but were measured wrong there, held by name until
+ * the item that owns the defect ships (cajeta.xpu.KernelCap, spec §7.1). Every hold
+ * has a row in Census.TRACKED so the census reads the skip as accounted for.
+ */
+public final class Holds {
+    public Holds() { return; }
+
+    public static void apply() {
+        // cajeta's SPIR-V path truncates a float32 or integer narrowed to bfloat16 where
+        // the host rounds to nearest even (cajeta-ml-gpu 11.2.2); lifts with the pin.
+        KernelCap.hold("vulkan", "iota_bfloat16", "cajeta-ml-gpu 11.2.2");
+        KernelCap.hold("vulkan", "convert_float32_bfloat16", "cajeta-ml-gpu 11.2.2");
+    }
+}

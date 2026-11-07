@@ -1,0 +1,24 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/** Device-to-device copy at any dtype (spec §4.1). */
+public final class Copy {
+    public Copy() { return; }
+
+    @Kernel
+    public static void copy<E>(KernelBuffer<E> out, KernelBuffer<E> in, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[i] = in[i]; }
+    }
+
+    /** `out[0..n)` = `in[0..n)`: one launch, synced. */
+    public static void into<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 n) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        copy.launch(s, grid: [(un + 63) / 64], block: [64])(out, in, un);
+        s.sync();
+    }
+}

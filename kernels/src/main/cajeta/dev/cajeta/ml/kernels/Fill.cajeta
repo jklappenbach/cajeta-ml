@@ -4,21 +4,26 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 
-/** Fill a buffer with one value: the first primitive (spec §4.1) and the package's smoke kernel. */
+/** Fill a buffer with one value, at any dtype (spec §4.1); the package's smoke kernel. */
 public final class Fill {
     public Fill() { return; }
 
     @Kernel
-    public static void fillF32(KernelBuffer<float32> out, uint32 n, float32 v) {
+    public static void fill<E>(KernelBuffer<E> out, uint32 n, E v) {
         uint32 i = KernelThread.globalIdX();
         if (i < n) { out[i] = v; }
     }
 
     /** `out[0..n)` = `v` on the device: one launch, synced. */
-    public static void f32(KernelBuffer<float32> out, int64 n, float32 v) {
+    public static void with<E>(KernelBuffer<E> out, int64 n, E v) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
-        fillF32.launch(s, grid: [(un + 63) / 64], block: [64])(out, un, v);
+        fill.launch(s, grid: [(un + 63) / 64], block: [64])(out, un, v);
         s.sync();
+    }
+
+    /** {@link #with} at float32. */
+    public static void f32(KernelBuffer<float32> out, int64 n, float32 v) {
+        Fill.with<float32>(out, n, v);
     }
 }

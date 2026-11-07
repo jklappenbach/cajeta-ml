@@ -42,8 +42,8 @@ public class ArenaTest {
 
     @Test
     public void aViewIsTheBlocksElementsAtItsOffset() {
-        if (!Device.kernelAvailable("fillF32")) {
-            DeviceSkip.noKernel("fillF32", "cajeta-ml-gpu 8.2.1");
+        if (!Device.kernelAvailable("fill_float32")) {
+            DeviceSkip.noKernel("fill_float32", "cajeta-ml-gpu 8.2.1");
             return;
         }
         Arena<float32> arena = heap Arena<float32>((uint64) 256);

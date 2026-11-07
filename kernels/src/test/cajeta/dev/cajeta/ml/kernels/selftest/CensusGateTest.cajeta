@@ -20,8 +20,8 @@ public class CensusGateTest {
 
     @Test
     public void aStaleTrackedEntryFailsTheGateAndACleanCensusPasses() {
-        if (!Device.kernelAvailable("fillF32")) {
-            DeviceSkip.noKernel("fillF32", "cajeta-ml-gpu 8.2.1");
+        if (!Device.kernelAvailable("fill_float32")) {
+            DeviceSkip.noKernel("fill_float32", "cajeta-ml-gpu 8.2.1");
             return;
         }
         KernelBuffer<float32> buf = heap KernelBuffer<float32>(64L);
@@ -31,16 +31,16 @@ public class CensusGateTest {
         buf.download(got);
         Assert.isTrue(got[0] == 1.0f && got[63] == 1.0f);
         ValueCheck.credit(m);
-        String stale #= "|" + Device.activeBackend() + ":fillF32=some plan item|";
+        String stale #= "|" + Device.activeBackend() + ":fill_float32=some plan item|";
         Assert.equals(1, KernelCensus.gate(stale, "||", "||", "||"));
         // The clean arm: every other registered kernel that has not run yet in this
-        // process is tracked, so only fillF32's check decides the verdict.
+        // process is tracked, so only fill_float32's check decides the verdict.
         String others #= "|";
         int32 n = Device.registeredKernelCount();
         int32 i = 0;
         while (i < n) {
             String name #= Device.registeredKernel(i);
-            if (!name.equals("fillF32") && Device.kernelLaunchCount(name) == 0L) {
+            if (!name.equals("fill_float32") && Device.kernelLaunchCount(name) == 0L) {
                 others #= others + Device.activeBackend() + ":" + name + "=not yet run in this test|";
             }
             i = i + 1;

@@ -13,8 +13,8 @@ public class FillTest {
 
     @Test
     public void fillWritesEveryElement() {
-        if (!Device.kernelAvailable("fillF32")) {
-            DeviceSkip.noKernel("fillF32", "cajeta-ml-gpu 8.2.1");
+        if (!Device.kernelAvailable("fill_float32")) {
+            DeviceSkip.noKernel("fill_float32", "cajeta-ml-gpu 8.2.1");
             return;
         }
         int64 n = 1000L;

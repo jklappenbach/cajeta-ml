@@ -1,0 +1,207 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Convert;
+import dev.cajeta.ml.kernels.Copy;
+import dev.cajeta.ml.kernels.Fill;
+import dev.cajeta.ml.kernels.Iota;
+import dev.cajeta.ml.kernels.Transpose;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 11.1.1 (spec §4.1, §4.10): fill, copy, iota, convert and transpose
+ * against a host loop at sizes 1, 255, 256, 1e6 and an odd one; a conversion is
+ * bit-exact to the host cast.
+ */
+public class PrimitivesTest {
+    public PrimitivesTest() { return; }
+
+    static int64 sizeAt(int32 k) {
+        if (k == 0) { return 1L; }
+        if (k == 1) { return 255L; }
+        if (k == 2) { return 256L; }
+        if (k == 3) { return 1000000L; }
+        return 777L;
+    }
+
+    /** A host pattern in [-125, 125] with fractions, exact in every dtype under test after its cast. */
+    static float32 pattern(int64 i) {
+        return (float32) ((i % 251L) - 125L) * 0.75f;
+    }
+
+    static void fillCase<E>(String kernel, E v) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 11.2.1"); return; }
+        int32 k = 0;
+        while (k < 5) {
+            int64 n = PrimitivesTest.sizeAt(k);
+            KernelBuffer<E> out = heap KernelBuffer<E>((uint64) n);
+            int64[] m #= ValueCheck.mark();
+            Fill.with<E>(out, n, v);
+            E[] got = heap E[n];
+            out.download(got);
+            int64 i = 0L;
+            while (i < n) { Assert.isTrue(got[(int32) i] == v); i = i + 1L; }
+            ValueCheck.credit(m);
+            k = k + 1;
+        }
+    }
+
+    @Test
+    public void fillWritesOneValueAtEverySize() {
+        PrimitivesTest.fillCase<float32>("fill_float32", 3.5f);
+        PrimitivesTest.fillCase<float16>("fill_float16", (float16) 1.5f);
+        PrimitivesTest.fillCase<bfloat16>("fill_bfloat16", (bfloat16) (-2.0f));
+        PrimitivesTest.fillCase<int8>("fill_int8", (int8) 7);
+    }
+
+    static void copyCase<E>(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 11.2.1"); return; }
+        int32 k = 0;
+        while (k < 5) {
+            int64 n = PrimitivesTest.sizeAt(k);
+            E[] src = heap E[n];
+            int64 i = 0L;
+            while (i < n) { src[(int32) i] = (E) PrimitivesTest.pattern(i); i = i + 1L; }
+            KernelBuffer<E> in = heap KernelBuffer<E>((uint64) n);
+            in.upload(src);
+            KernelBuffer<E> out = heap KernelBuffer<E>((uint64) n);
+            int64[] m #= ValueCheck.mark();
+            Copy.into<E>(out, in, n);
+            E[] got = heap E[n];
+            out.download(got);
+            i = 0L;
+            while (i < n) { Assert.isTrue(got[(int32) i] == src[(int32) i]); i = i + 1L; }
+            ValueCheck.credit(m);
+            k = k + 1;
+        }
+    }
+
+    @Test
+    public void copyMovesEveryElement() {
+        PrimitivesTest.copyCase<float32>("copy_float32");
+        PrimitivesTest.copyCase<float16>("copy_float16");
+        PrimitivesTest.copyCase<bfloat16>("copy_bfloat16");
+        PrimitivesTest.copyCase<int8>("copy_int8");
+    }
+
+    /** Skips a case the backend cannot run or a hold excuses (a recorded defect, by name). */
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 11.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 11.2.2");
+            return false;
+        }
+        return true;
+    }
+
+    static void iotaCase<E>(String kernel) {
+        if (!PrimitivesTest.usable(kernel)) { return; }
+        int32 k = 0;
+        while (k < 5) {
+            int64 n = PrimitivesTest.sizeAt(k);
+            KernelBuffer<E> out = heap KernelBuffer<E>((uint64) n);
+            int64[] m #= ValueCheck.mark();
+            Iota.into<E>(out, n);
+            E[] got = heap E[n];
+            out.download(got);
+            int64 i = 0L;
+            while (i < n) {
+                if (!(got[(int32) i] == (E) i)) {
+                    System.stdout.println(kernel + ": [" + i + "] got " + (float64) got[(int32) i] + " want " + (float64) ((E) i));
+                }
+                Assert.isTrue(got[(int32) i] == (E) i);
+                i = i + 1L;
+            }
+            ValueCheck.credit(m);
+            k = k + 1;
+        }
+    }
+
+    @Test
+    public void iotaCountsAsTheHostCastDoes() {
+        PrimitivesTest.iotaCase<float32>("iota_float32");
+        PrimitivesTest.iotaCase<float16>("iota_float16");
+        PrimitivesTest.iotaCase<int32>("iota_int32");
+        PrimitivesTest.iotaCase<bfloat16>("iota_bfloat16");
+    }
+
+    static void convertCase<F, T>(String kernel) {
+        if (!PrimitivesTest.usable(kernel)) { return; }
+        int32 k = 0;
+        while (k < 5) {
+            int64 n = PrimitivesTest.sizeAt(k);
+            F[] src = heap F[n];
+            int64 i = 0L;
+            while (i < n) { src[(int32) i] = (F) PrimitivesTest.pattern(i); i = i + 1L; }
+            KernelBuffer<F> in = heap KernelBuffer<F>((uint64) n);
+            in.upload(src);
+            KernelBuffer<T> out = heap KernelBuffer<T>((uint64) n);
+            int64[] m #= ValueCheck.mark();
+            Convert.into<F, T>(out, in, n);
+            T[] got = heap T[n];
+            out.download(got);
+            i = 0L;
+            while (i < n) {
+                if (!(got[(int32) i] == (T) src[(int32) i])) {
+                    System.stdout.println(kernel + ": [" + i + "] src " + (float64) src[(int32) i] + " got " + (float64) got[(int32) i] + " want " + (float64) ((T) src[(int32) i]));
+                }
+                Assert.isTrue(got[(int32) i] == (T) src[(int32) i]);
+                i = i + 1L;
+            }
+            ValueCheck.credit(m);
+            k = k + 1;
+        }
+    }
+
+    @Test
+    public void convertMatchesTheHostCastBitForBit() {
+        PrimitivesTest.convertCase<float32, float16>("convert_float32_float16");
+        PrimitivesTest.convertCase<float32, int8>("convert_float32_int8");
+        PrimitivesTest.convertCase<float16, float32>("convert_float16_float32");
+        PrimitivesTest.convertCase<bfloat16, float32>("convert_bfloat16_float32");
+        PrimitivesTest.convertCase<int8, float32>("convert_int8_float32");
+        PrimitivesTest.convertCase<float32, bfloat16>("convert_float32_bfloat16");
+    }
+
+    static void transposeCase<E>(String kernel, int64 rows, int64 cols) {
+        int64 n = rows * cols;
+        E[] src = heap E[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = (E) PrimitivesTest.pattern(i); i = i + 1L; }
+        KernelBuffer<E> in = heap KernelBuffer<E>((uint64) n);
+        in.upload(src);
+        KernelBuffer<E> out = heap KernelBuffer<E>((uint64) n);
+        int64[] m #= ValueCheck.mark();
+        Transpose.into<E>(out, in, rows, cols);
+        E[] got = heap E[n];
+        out.download(got);
+        int64 r = 0L;
+        while (r < rows) {
+            int64 c = 0L;
+            while (c < cols) {
+                Assert.isTrue(got[(int32) (c * rows + r)] == src[(int32) (r * cols + c)]);
+                c = c + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void transposeMovesEveryElementToItsMirror() {
+        if (!Device.kernelAvailable("transpose_float32")) { DeviceSkip.noKernel("transpose_float32", "cajeta-ml-gpu 11.2.1"); return; }
+        PrimitivesTest.transposeCase<float32>("transpose_float32", 1L, 1L);
+        PrimitivesTest.transposeCase<float32>("transpose_float32", 3L, 85L);
+        PrimitivesTest.transposeCase<float32>("transpose_float32", 16L, 16L);
+        PrimitivesTest.transposeCase<float32>("transpose_float32", 1000L, 1000L);
+        PrimitivesTest.transposeCase<float32>("transpose_float32", 7L, 111L);
+        if (!Device.kernelAvailable("transpose_float16")) { DeviceSkip.noKernel("transpose_float16", "cajeta-ml-gpu 11.2.1"); return; }
+        PrimitivesTest.transposeCase<float16>("transpose_float16", 33L, 65L);
+        if (!Device.kernelAvailable("transpose_int8")) { DeviceSkip.noKernel("transpose_int8", "cajeta-ml-gpu 11.2.1"); return; }
+        PrimitivesTest.transposeCase<int8>("transpose_int8", 255L, 3L);
+    }
+}

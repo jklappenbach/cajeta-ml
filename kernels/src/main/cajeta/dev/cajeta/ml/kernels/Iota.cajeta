@@ -1,0 +1,24 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/** `out[i] = (E) i` (spec §4.1): the index cast as the host casts it. */
+public final class Iota {
+    public Iota() { return; }
+
+    @Kernel
+    public static void iota<E>(KernelBuffer<E> out, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[i] = (E) i; }
+    }
+
+    /** `out[0..n)` = 0, 1, 2, … at `E`: one launch, synced. */
+    public static void into<E>(KernelBuffer<E> out, int64 n) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        iota.launch(s, grid: [(un + 63) / 64], block: [64])(out, un);
+        s.sync();
+    }
+}
