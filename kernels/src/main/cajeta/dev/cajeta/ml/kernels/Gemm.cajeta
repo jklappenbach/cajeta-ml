@@ -1,0 +1,86 @@
+package dev.cajeta.ml.kernels;
+
+import cajeta.xpu.Barrier;
+import cajeta.xpu.CooperativeMatrix;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/**
+ * GEMM at f16 and bf16 (spec §5.1): C[m][n] in float32 = A[m][k] . B[k][n], all row-major,
+ * through the device's matrix cores (the portable software tile where it has none). The
+ * 16x16 member stages each K-slab of A and B through zero-filled shared tiles, so a shape
+ * that is no multiple of the tile runs; the torch-recipe tile (amdgpu) and llm's X3 shape
+ * join the family when they are measured. A native matrix core accumulates in its own order
+ * and precision: within 1e-5 relative of a sequential float32 sum (bit-exact on the portable tile).
+ */
+public final class Gemm {
+    public Gemm() { return; }
+
+    /** Workgroup (mi, nj): one 16x16 tile of C, the K loop staged through shared memory. */
+    @Kernel
+    public static void gemm16<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k) {
+        Shared<E> sa = shared E[256];
+        Shared<E> sb = shared E[256];
+        Shared<float32> sc = shared float32[256];
+        uint32 t = KernelThread.x();
+        uint32 ntiles = (n + 15) / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid - mi * ntiles;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<E,16,16,0> ma;
+        CooperativeMatrix<E,16,16,1> mb;
+        uint32 ktiles = (k + 15) / 16;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            uint32 idx = t;
+            while (idx < 256) {
+                uint32 r = idx / 16;
+                uint32 cc = idx - r * 16;
+                uint32 gm = mi * 16 + r;
+                uint32 gk = kk * 16 + cc;
+                E va = (E) 0;
+                if (gm < m && gk < k) { va = a[gm * k + gk]; }
+                sa[idx] = va;
+                uint32 gk2 = kk * 16 + r;
+                uint32 gn = nj * 16 + cc;
+                E vb = (E) 0;
+                if (gk2 < k && gn < n) { vb = b[gk2 * n + gn]; }
+                sb[idx] = vb;
+                idx = idx + Workgroup.dimX();
+            }
+            Barrier.workgroup();
+            ma.load(sa, 0, 0, 16);
+            mb.load(sb, 0, 0, 16);
+            mc.mma(ma, mb);
+            Barrier.workgroup();
+            kk = kk + 1;
+        }
+        mc.store(sc, 0, 0, 16);
+        Barrier.workgroup();
+        uint32 o = t;
+        while (o < 256) {
+            uint32 orow = o / 16;
+            uint32 ocol = o - orow * 16;
+            uint32 gm = mi * 16 + orow;
+            uint32 gn = nj * 16 + ocol;
+            if (gm < m && gn < n) { c[gm * n + gn] = sc[o]; }
+            o = o + Workgroup.dimX();
+        }
+    }
+
+    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E; synced. */
+    public static void run<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 uk = (uint32) k;
+        uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
+        KernelStream s #= KernelStream.current();
+        gemm16.launch(s, grid: [tiles], block: [64])(c, a, b, um, un, uk);
+        s.sync();
+    }
+}

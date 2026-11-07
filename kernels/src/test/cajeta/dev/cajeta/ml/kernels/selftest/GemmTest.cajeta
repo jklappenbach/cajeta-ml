@@ -1,0 +1,100 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 19.1.1 (spec §5.1): f16 and bf16 GEMM at square and LLM shapes against a
+ * host f32 GEMM within the documented tolerance, 1e-5 relative (the matrix cores accumulate
+ * in their own order and precision; the portable tile is bit-exact). Inputs step by a half
+ * in [-2, 2]; shapes that are not multiples of the tile included.
+ */
+public class GemmTest {
+    public GemmTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) ((((i * 7919L) % 251L) - 125L) % 5L) * 0.5f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 19.2.1"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 19.2.1");
+            return false;
+        }
+        return true;
+    }
+
+    /** C = A[m][k] . B[k][n] on the device at E against the host in float64, element for element. */
+    static void gemmCase<E>(String kernel, int64 m, int64 n, int64 k) {
+        E[] ha = heap E[m * k];
+        E[] hb = heap E[k * n];
+        float32[] fa = heap float32[m * k];
+        float32[] fb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < m * k) { fa[(int32) i] = GemmTest.pattern(i); ha[(int32) i] = (E) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = GemmTest.pattern(i + 17L); hb[(int32) i] = (E) fb[(int32) i]; i = i + 1L; }
+        KernelBuffer<E> a = heap KernelBuffer<E>((uint64) (m * k));
+        KernelBuffer<E> b = heap KernelBuffer<E>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        int64[] mk #= ValueCheck.mark();
+        Gemm.run<E>(c, a, b, m, n, k);
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        int64 r = 0L;
+        int32 bad = 0;
+        float64 worst = 0.0;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 d = (float64) got[(int32) (r * n + col)] - acc;
+                if (d < 0.0) { d = 0.0 - d; }
+                float64 w = acc;
+                if (w < 0.0) { w = 0.0 - w; }
+                if (d > worst) { worst = d; }
+                if (d > 1.0e-5 * (w + 1.0)) {
+                    if (bad < 3) {
+                        System.stdout.println(kernel + " " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + (float64) got[(int32) (r * n + col)] + " want " + acc);
+                    }
+                    bad = bad + 1;
+                }
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        if (worst > 0.0) { System.stdout.println("  " + kernel + " " + m + "x" + n + "x" + k + ": largest difference " + worst); }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void f16GemmMatchesTheHostAtSquareAndLlmShapes() {
+        if (!GemmTest.usable("gemm16_float16")) { return; }
+        GemmTest.gemmCase<float16>("gemm16_float16", 16L, 16L, 16L);
+        GemmTest.gemmCase<float16>("gemm16_float16", 64L, 64L, 64L);
+        GemmTest.gemmCase<float16>("gemm16_float16", 100L, 100L, 100L);
+        GemmTest.gemmCase<float16>("gemm16_float16", 257L, 33L, 129L);
+        GemmTest.gemmCase<float16>("gemm16_float16", 1L, 4096L, 2048L);
+        GemmTest.gemmCase<float16>("gemm16_float16", 7L, 1000L, 2049L);
+        GemmTest.gemmCase<float16>("gemm16_float16", 4L, 256L, 14336L);
+        GemmTest.gemmCase<float16>("gemm16_float16", 4096L, 64L, 2048L);
+    }
+
+    @Test
+    public void bf16GemmMatchesTheHost() {
+        if (!GemmTest.usable("gemm16_bfloat16")) { return; }
+        GemmTest.gemmCase<bfloat16>("gemm16_bfloat16", 100L, 100L, 100L);
+        GemmTest.gemmCase<bfloat16>("gemm16_bfloat16", 7L, 1000L, 2049L);
+    }
+}
