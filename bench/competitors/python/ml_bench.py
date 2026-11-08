@@ -177,10 +177,47 @@ def run_classical(name, variant, d):
 
 # ---------------------------------------------------------------- neural
 
+def torch_accel():
+    """The accelerator torch was built for: ("hip", "ROCm x.y") on a ROCm wheel,
+    ("cuda", "CUDA x.y") otherwise. Reads build metadata only; no driver call."""
+    import torch
+    hip = getattr(torch.version, "hip", None)
+    if hip:
+        return "hip", f"ROCm {hip}"
+    return "cuda", f"CUDA {torch.version.cuda}"
+
+
+_TORCH_DEVICE_OK = None
+
+
+def torch_device_ok():
+    """Whether torch can allocate on its accelerator, probed in a child process: a
+    runtime that segfaults on the first device allocation (the rocm7.2 wheel on
+    gfx1151, 2026-11-08) must not take the whole run down. Memoized; the result
+    is "" when it works, else the reason."""
+    global _TORCH_DEVICE_OK
+    if _TORCH_DEVICE_OK is None:
+        import subprocess
+        code = "import torch; x = torch.ones(4, device='cuda'); print(int((x + 1).sum().item()))"
+        try:
+            r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                               timeout=120)
+            if r.returncode == 0 and r.stdout.strip() == "8":
+                _TORCH_DEVICE_OK = ""
+            else:
+                tail = (r.stderr.strip().splitlines() or [""])[-1][:120]
+                _TORCH_DEVICE_OK = (f"torch cannot run on this device: probe exited "
+                                    f"{r.returncode}" + (f" ({tail})" if tail else ""))
+        except subprocess.TimeoutExpired:
+            _TORCH_DEVICE_OK = "torch cannot run on this device: probe timed out"
+    return _TORCH_DEVICE_OK
+
+
 def torch_meta(device):
     import torch
+    label = torch_accel()[0] if device else "cpu"
     m = dict(library="torch", library_version=torch.__version__,
-             platform=f"torch {torch.__version__} {'cuda' if device else 'cpu'}")
+             platform=f"torch {torch.__version__} {label}")
     return m
 
 
@@ -197,21 +234,25 @@ def run_neural(name, variant, d):
         import torch
         return bc.skipped_row(bc.GPU_HELD, backend="gpu", library="torch",
                               library_version=torch.__version__,
-                              platform=f"torch {torch.__version__} cuda", **meta)
+                              platform=f"torch {torch.__version__} {torch_accel()[0]}", **meta)
     import torch
     import torch.nn.functional as F
     import twins
 
     dev = torch.device("cpu")
     if device:
+        # torch's device namespace is "cuda" on ROCm builds too.
         if not torch.cuda.is_available():
-            return bc.skipped_row("no CUDA device visible to torch", backend="cuda", **meta,
-                                  **torch_meta(True))
+            return bc.skipped_row(f"no {torch_accel()[0]} device visible to torch",
+                                  backend=torch_accel()[0], **meta, **torch_meta(True))
+        broken = torch_device_ok()
+        if broken:
+            return bc.skipped_row(broken, backend=torch_accel()[0], **meta, **torch_meta(True))
         dev = torch.device("cuda")
     meta.update(torch_meta(device))
-    meta["backend"] = "cuda" if device else "cpu"
+    meta["backend"] = torch_accel()[0] if device else "cpu"
     if device:
-        meta["driver"] = f"CUDA {torch.version.cuda}"
+        meta["driver"] = torch_accel()[1]
 
     def sync():
         if device:

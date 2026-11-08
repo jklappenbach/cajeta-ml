@@ -10,7 +10,8 @@ import dev.cajeta.ml.zoo.SmallCnn;
 
 /**
  * The six neural rows: {mlp, cnn, transformer-block} x {train step, inference},
- * each with a `cpu` and a `device` variant.
+ * each with a `cpu` and a `device` variant; on `device` the model, the batch and the
+ * optimizer state live on the active backend (dev.cajeta.ml 0.11.1).
  *
  * The model is built from <kind>/config.npy and its weights imported from the
  * torch checkpoint <kind>/model.pt that gen_data.py wrote, so this side and the
@@ -137,6 +138,11 @@ public class NeuralBench extends MlBenchmark {
         this.nIn = this.x.shapeAt(0);
         this.steps = Data.intAt("config/train.npy", (int64) 0);
         this.ds = d + " batch " + Data.shape32(this.x) + " seed " + Data.SEED;
+        if (v.equals("device")) {
+            this.net.toDevice();
+            this.x.gpu();
+            this.y.gpu();
+        }
         if (this.training) {
             this.net.train();
             this.opt = heap Adam(#this.net.parameters(), 0.001f);
@@ -177,6 +183,9 @@ public class NeuralBench extends MlBenchmark {
             tol = Tol.TRANSFORMER_OUT;
         }
         Tensor<float32> ref #= Data.f32(refName);
+        if (this.out.isOnGpu()) {
+            this.out.cpu();
+        }
         if (ref.size() != this.out.size()) {
             this.note = "output size " + this.out.size() + " != torch's " + ref.size();
             return false;

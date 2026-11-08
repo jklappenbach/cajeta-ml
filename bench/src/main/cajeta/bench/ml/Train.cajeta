@@ -3,6 +3,7 @@ package bench.ml;
 import cajeta.math.Tensor;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.io.Checkpoints;
 import dev.cajeta.ml.io.ImportReport;
 import dev.cajeta.ml.io.PtReader;
@@ -33,7 +34,7 @@ public final class Train {
         } else {
             loss = tape.crossEntropy(out, y);
         }
-        float64 v = (float64) tape.valueOf(loss).flatGet(0);
+        float64 v = Train.scalarOf(tape.valueOf(loss));
         tape.backward(loss);
         Parameter[] ps #= net.parameters();
         Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
@@ -47,6 +48,16 @@ public final class Train {
      * to cajeta layout (rank-2 `.weight` transposed) and import it strictly:
      * every parameter filled, every key consumed. Returns the applied count.
      */
+    /** The first element of `t`, read through a host copy when `t` lives on the device. */
+    static float64 scalarOf(Tensor<float32> t) {
+        if (t.isOnGpu()) {
+            Tensor<float32> h #= Ops.copyOf<float32>(t);
+            h.cpu();
+            return (float64) h.flatGet(0);
+        }
+        return (float64) t.flatGet(0);
+    }
+
     public static int32 importPt(Module net, String path) {
         StateDict raw #= PtReader.read(path);
         StateDict mapped #= Checkpoints.torchToCajeta(raw);

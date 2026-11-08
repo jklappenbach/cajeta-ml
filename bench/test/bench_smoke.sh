@@ -13,7 +13,8 @@
 #     same data, training rows with a decreasing loss, inference rows with
 #     logits within epsilon of torch's on the same weights;
 #   * every `device` row is `skipped` while the GPU is held
-#     (CAJETA_BENCH_NO_GPU=1), on both sides;
+#     (CAJETA_BENCH_NO_GPU=1), on both sides; with the GPU on, a torch device row
+#     skipped because torch cannot run on this box's device is reported as a gap;
 #   * both CSVs carry the harness's exact schema-v2 header, every row is
 #     tagged smoke, and cajeta-bench's tools/verify-fidelity.py passes.
 #

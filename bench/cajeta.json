@@ -35,7 +35,7 @@
         // in .. first, which puts it in ~/.olla where this resolves.
         "dependencies": {
             "dev.cajeta.bench": "0.1.5",
-            "dev.cajeta.ml":    "0.10.6"
+            "dev.cajeta.ml":    "0.11.1"
         },
 
         "repositories": [
@@ -55,7 +55,8 @@
             "description": "Release build of the benchmark binary (build/ml-bench)",
             "actions": [
                 { "action": "build",
-                  "flavor": { "base": "release", "opt": "O3", "cpu": "native" },
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "nvptx,amdgpu,vulkan,cpu" },
                   "output-path": "build/ml-bench", "id": "art" }
             ],
             "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
@@ -65,7 +66,8 @@
             "description": "Build and measure every benchmark into build/results.csv (data from ./bench.sh)",
             "actions": [
                 { "action": "build",
-                  "flavor": { "base": "release", "opt": "O3", "cpu": "native" },
+                  "flavor": { "base": "release", "opt": "O3", "cpu": "native",
+                              "xpu-backend": "nvptx,amdgpu,vulkan,cpu" },
                   "output-path": "build/ml-bench", "id": "art" },
                 // exec does not split its command string: arguments go in args.
                 { "action": "exec", "command": "${art.path}",

@@ -37,6 +37,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 CAJETA="${CAJETA:-$(command -v cajeta || echo "$here/../../cajeta/build/src/cajeta")}"
+# The fork's bin first: a released compiler takes PATH's ld.lld for --lto=thin, and
+# another LLVM's lld (ROCm's) rejects its bitcode summary (cajeta lld-lookup-path-only).
+FORK_BIN="${CAJETA_LLVM_BIN:-$here/../../cajeta-llvm/llvm-install/bin}"
+[[ -x "$FORK_BIN/ld.lld" ]] && export PATH="$FORK_BIN:$PATH"
+# NVPTX device code needs ptxas newer than CUDA 12.0 (cajeta CLAUDE.md).
+[[ -z "${CUDA_PATH:-}" && -x /usr/local/cuda/bin/ptxas ]] && export CUDA_PATH=/usr/local/cuda
 PY="${BENCH_PYTHON:-$here/../../cajeta/bench/competitors/python/.venv/bin/python}"
 [[ -x "$PY" ]] || PY="$(command -v python3)"
 
@@ -108,7 +114,7 @@ fi
 {
     echo "python,$("$PY" -c 'import platform; print(platform.python_version())')"
     "$PY" -c 'import numpy, sklearn, torch; print(f"numpy,{numpy.__version__}\nscikit-learn,{sklearn.__version__}\ntorch,{torch.__version__}")'
-    echo "dev.cajeta.ml,0.10.6"
+    echo "dev.cajeta.ml,0.11.1"
     echo "loadavg,\"$(cut -d' ' -f1-3 /proc/loadavg)\""
     if [[ "${CAJETA_BENCH_NO_GPU:-}" =~ ^(1|true|yes)$ ]]; then
         echo "gpu,not probed (CAJETA_BENCH_NO_GPU=1: held by another session)"

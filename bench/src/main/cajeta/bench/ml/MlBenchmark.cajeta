@@ -1,5 +1,6 @@
 package bench.ml;
 
+import cajeta.xpu.Device;
 import dev.cajeta.bench.Benchmark;
 import dev.cajeta.ml.grad.Op;
 import dev.cajeta.ml.grad.Ops;
@@ -10,13 +11,11 @@ import dev.cajeta.ml.grad.Ops;
  * variant leaves for the harness to read back (dataset, input size, the
  * check's detail for notes), and the device rule.
  *
- * A `device` variant is skipped, with the reason on the row, when
- * CAJETA_BENCH_NO_GPU=1 (the GPU belongs to another session), or when
- * dev.cajeta.ml has no device kernels to run it on: its Ops dispatch seam has
- * an empty GPU column in 0.10.6 (Ops.hasGpu answers false for every op).
- * The decision and its reason are functions of the variant (supportsVariant,
- * skipReasonFor, backendFor); nothing is stashed between harness calls.
- * Every subclass's prepare(v) starts with begin(v).
+ * A `device` variant is skipped, with the reason on the row, when the GPU is held
+ * (CAJETA_BENCH_NO_GPU=1) or dev.cajeta.ml has no device MATMUL on this backend;
+ * otherwise the model and the batch live on the device and the row's backend is
+ * the runtime's (hip, vulkan, cuda). Everything per variant is recomputed from the
+ * harness's calls (whyNot, skipReasonFor, backendFor); nothing is stashed between them.
  */
 public class MlBenchmark extends Benchmark {
 
@@ -41,11 +40,11 @@ public class MlBenchmark extends Benchmark {
     }
 
     public String libraryVersion() {
-        return "0.10.6";
+        return "0.11.1";
     }
 
     public String platform() {
-        return "dev.cajeta.ml 0.10.6";
+        return "dev.cajeta.ml 0.11.1";
     }
 
     public String competitorNote() {
@@ -70,7 +69,7 @@ public class MlBenchmark extends Benchmark {
 
     public String backendFor(String v) {
         if (v.equals("device")) {
-            return "gpu";
+            return Device.activeBackend();
         }
         return "cpu";
     }
@@ -94,8 +93,11 @@ public class MlBenchmark extends Benchmark {
             if (Data.noGpu()) {
                 return "GPU held by another session (CAJETA_BENCH_NO_GPU=1)";
             }
+            if (Device.activeBackend().equals("none")) {
+                return "no device backend in this build or on this box";
+            }
             if (!Ops.hasGpu(Op.MATMUL)) {
-                return "dev.cajeta.ml 0.10.6 has no device kernels (the Ops GPU column is empty)";
+                return "dev.cajeta.ml has no device kernel for MATMUL on " + Device.activeBackend();
             }
         }
         String need = this.probe(v);

@@ -36,6 +36,9 @@ EXPECTED = {
     "checkpoint-load":          (["cpu"], "torch"),
 }
 GPU_HELD = "GPU held by another session (CAJETA_BENCH_NO_GPU=1)"
+# A competitor whose runtime cannot run on this box's device is a recorded gap, not a
+# failed smoke: the row says so (ml_bench.py probes torch in a child process first).
+TORCH_BROKEN = "torch cannot run on this device"
 
 failures = []
 
@@ -87,6 +90,9 @@ def main(run_dir, list_out):
                 if v == "device" and no_gpu:
                     check(r["status"] == "skipped" and GPU_HELD in r["notes"],
                           f"{label}: skipped while the GPU is held ({r['status']}: {r['notes']})")
+                elif (v == "device" and side != "cajeta" and r["status"] == "skipped"
+                      and TORCH_BROKEN in r["notes"]):
+                    print(f"  [GAP]  {label}: {r['notes']}")
                 else:
                     check(r["status"] == "ok" and r["check_ok"] == "true",
                           f"{label}: ok and checked ({r['status']} check_ok={r['check_ok']}: {r['notes']})")

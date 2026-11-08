@@ -50,7 +50,7 @@ scikit-learn 1.9.1, torch 2.14.1+cu130, numpy).
 ## The rows
 
 `area` is `ml` and `benchmark` the page slug, so every row id is `ml/<name>`.
-The Cajeta rows have `platform` `dev.cajeta.ml 0.10.6`; the competitor rows
+The Cajeta rows have `platform` `dev.cajeta.ml 0.11.1`; the competitor rows
 `scikit-learn 1.9.1` or `torch 2.14.1+cu130 cpu|cuda`, `language` `python`.
 
 | id | variants | one iteration | check (against the competitor, same data) |
@@ -88,11 +88,12 @@ with `PtReader.read` → `Checkpoints.torchToCajeta` → `importTorch` (strict).
 That is what lets an inference row compare logits and the autodiff row compare
 gradients.
 
-**Device variants.** A `device` row is skipped with its reason in `notes`:
-`GPU held by another session (CAJETA_BENCH_NO_GPU=1)` when that is set, and
-otherwise, on the Cajeta side, `dev.cajeta.ml 0.10.6 has no device kernels`:
-its `Ops` dispatch seam has an empty GPU column (`Ops.hasGpu` is false for
-every op), so there is nothing to run. torch's device rows run on CUDA when the
+**Device variants.** A `device` row runs with the model, the batch and the
+optimizer state on the active backend (`dev.cajeta.ml` 0.11.1's device column;
+the row's `backend` is the runtime's: hip, vulkan or cuda). It is skipped with
+its reason in `notes` when `CAJETA_BENCH_NO_GPU=1` (`GPU held by another
+session`) or when the library has no device MATMUL on this backend. torch's
+device rows run on CUDA, or on ROCm from a ROCm wheel (backend `hip`), when the
 GPU is free.
 
 ## Tolerances, and why
@@ -135,7 +136,7 @@ full run is hours; announce it with that estimate.
 
 ## Notes from building this
 
-- `dev.cajeta.ml` is a version dependency (`0.10.6`, this checkout's
+- `dev.cajeta.ml` is a version dependency (`0.11.1`, this checkout's
   `details.version`), resolved from `~/.olla` or Olla. A `{ "path": ".." }`
   dependency parses but resolves nothing on cajeta 0.46.3, so a working tree
   ahead of its release has to be `cajeta install`ed in `..` first.

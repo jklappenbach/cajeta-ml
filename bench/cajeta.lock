@@ -1,31 +1,45 @@
 {
   "generator": {
     "tool": "cajeta",
-    "version": "0.46.3"
+    "version": "0.53.1"
   },
   "lockfile-version": 1,
-  "manifest-checksum": "sha256:051da6f49de34c88c77a5a91a2696525e4535f5f22e82de0fd66f8d875044216",
+  "manifest-checksum": "sha256:942de9984e8074c4cb877e271a3fb30f616df8928b827a52abe05672343e7654",
   "melts": [],
   "overrides": [],
   "packages": [
     {
-      "checksum": "sha256:7b6d5e91a871bb82b5e50a6198d40dabce8c52387bfa823604f83a8866abebba",
+      "checksum": "sha256:9bc031f8bf47374521527f203aff5f21316ea4610515ba9ffdc173cb732a3e39",
       "name": "dev.cajeta.ml",
       "provided-by": "explicit",
       "resolved-from": "olla",
-      "version": "0.10.6"
+      "version": "0.11.1"
     },
     {
-      "checksum": "sha256:2708245655f5d249324a1f089123dffe012e997d1df62fe5e10c86eea2d19d62",
+      "checksum": "sha256:512376bc69855e92ffbb9351f1317b3c20997d36a91cd8ac3fee1477a4a2cfa2",
       "name": "dev.cajeta.bench",
       "provided-by": "explicit",
       "resolved-from": "olla",
       "version": "0.1.5"
+    },
+    {
+      "checksum": "sha256:8b164c5f316817cd7be8bbc69c28198dab202dbb5e68f945d099e30ead719e7c",
+      "name": "dev.cajeta.ml.kernels",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.2.0"
+    },
+    {
+      "checksum": "sha256:a02c568dd00c5773bdd9f3bd233edc0cd2fe2c7130a1b2c191b36cf13366655f",
+      "name": "dev.cajeta.unit",
+      "provided-by": "explicit",
+      "resolved-from": "olla",
+      "version": "0.3.6"
     }
   ],
   "plugins": [],
   "properties": {
-    "cajeta.version": "0.46.3",
+    "cajeta.version": "0.53.1",
     "details.group": "",
     "details.library": "ml-bench",
     "details.name": "ml-bench",
@@ -35,5 +49,5 @@
     "target": "",
     "workspace.root": ""
   },
-  "resolved-at": "2026-10-25T22:21:10Z"
+  "resolved-at": "2026-11-08T06:50:08Z"
 }
