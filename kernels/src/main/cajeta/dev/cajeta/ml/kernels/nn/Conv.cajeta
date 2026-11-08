@@ -16,6 +16,9 @@ public final class Conv {
     /** The LDS words the tiled kernel stages weights in: 16 output channels x a chunk of input channels x the window. */
     public static int64 TILE_WORDS = 8192L;
 
+    /** The tiled form: a workgroup owns 256 lanes x two output columns (a half-row apart, so neighbouring lanes
+     *  stay coalesced) x 16 output channels; the weights of a channel chunk sit in LDS and each lane keeps 32
+     *  accumulators, so one LDS read of a weight feeds two multiply-adds and one input load feeds sixteen. */
     @Kernel
     @Occupancy(maxThreads = 256)
     public static void conv2dTiled<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
@@ -23,20 +26,24 @@ public final class Conv {
                                       uint32 oh, uint32 ow, int32 stride, int32 pad, uint32 chunk) {
         Shared<float32> sw = shared float32[8192];
         uint32 tid = KernelThread.x();
+        uint32 owHalf = (ow + 1) / 2;
         uint32 p = Workgroup.x() * 256 + tid;
         uint32 ocBase = Workgroup.y() * 16;
-        uint32 positions = n * oh * ow;
+        uint32 positions = n * oh * owHalf;
         boolean active = p < positions;
-        uint32 xx = 0;
+        uint32 xx0 = 0;
         uint32 y = 0;
         uint32 bn = 0;
         if (active) {
-            xx = p % ow;
-            uint32 q = p / ow;
+            xx0 = p % owHalf;
+            uint32 q = p / owHalf;
             y = q % oh;
             bn = q / oh;
         }
+        uint32 xx1 = xx0 + owHalf;
+        boolean col1 = active && xx1 < ow;
         float32 a0 = 0.0f; float32 a1 = 0.0f; float32 a2 = 0.0f; float32 a3 = 0.0f; float32 a4 = 0.0f; float32 a5 = 0.0f; float32 a6 = 0.0f; float32 a7 = 0.0f; float32 a8 = 0.0f; float32 a9 = 0.0f; float32 a10 = 0.0f; float32 a11 = 0.0f; float32 a12 = 0.0f; float32 a13 = 0.0f; float32 a14 = 0.0f; float32 a15 = 0.0f;
+        float32 c0 = 0.0f; float32 c1 = 0.0f; float32 c2 = 0.0f; float32 c3 = 0.0f; float32 c4 = 0.0f; float32 c5 = 0.0f; float32 c6 = 0.0f; float32 c7 = 0.0f; float32 c8 = 0.0f; float32 c9 = 0.0f; float32 c10 = 0.0f; float32 c11 = 0.0f; float32 c12 = 0.0f; float32 c13 = 0.0f; float32 c14 = 0.0f; float32 c15 = 0.0f;
         uint32 kk = kh * kw;
         uint32 ci0 = 0;
         while (ci0 < c) {
@@ -64,29 +71,33 @@ public final class Conv {
                     while (a < kh) {
                         int32 ih = (int32) y * stride - pad + (int32) a;
                         if (ih >= 0 && ih < (int32) h) {
+                            uint32 row = rowBase + (uint32) ih * wd;
                             uint32 e = 0;
                             while (e < kw) {
-                                int32 iw = (int32) xx * stride - pad + (int32) e;
-                                if (iw >= 0 && iw < (int32) wd) {
-                                    float32 xv = (float32) x[rowBase + (uint32) ih * wd + (uint32) iw];
-                                    uint32 base = (cl * kk + a * kw + e) * 16;
-                                    a0 = a0 + xv * sw[base + 0];
-                                    a1 = a1 + xv * sw[base + 1];
-                                    a2 = a2 + xv * sw[base + 2];
-                                    a3 = a3 + xv * sw[base + 3];
-                                    a4 = a4 + xv * sw[base + 4];
-                                    a5 = a5 + xv * sw[base + 5];
-                                    a6 = a6 + xv * sw[base + 6];
-                                    a7 = a7 + xv * sw[base + 7];
-                                    a8 = a8 + xv * sw[base + 8];
-                                    a9 = a9 + xv * sw[base + 9];
-                                    a10 = a10 + xv * sw[base + 10];
-                                    a11 = a11 + xv * sw[base + 11];
-                                    a12 = a12 + xv * sw[base + 12];
-                                    a13 = a13 + xv * sw[base + 13];
-                                    a14 = a14 + xv * sw[base + 14];
-                                    a15 = a15 + xv * sw[base + 15];
-                                }
+                                int32 iw0 = (int32) xx0 * stride - pad + (int32) e;
+                                int32 iw1 = (int32) xx1 * stride - pad + (int32) e;
+                                float32 xv0 = 0.0f;
+                                float32 xv1 = 0.0f;
+                                if (iw0 >= 0 && iw0 < (int32) wd) { xv0 = (float32) x[row + (uint32) iw0]; }
+                                if (col1 && iw1 >= 0 && iw1 < (int32) wd) { xv1 = (float32) x[row + (uint32) iw1]; }
+                                uint32 base = (cl * kk + a * kw + e) * 16;
+                                float32 wv = 0.0f;
+                                wv = sw[base + 0]; a0 = a0 + xv0 * wv; c0 = c0 + xv1 * wv;
+                                wv = sw[base + 1]; a1 = a1 + xv0 * wv; c1 = c1 + xv1 * wv;
+                                wv = sw[base + 2]; a2 = a2 + xv0 * wv; c2 = c2 + xv1 * wv;
+                                wv = sw[base + 3]; a3 = a3 + xv0 * wv; c3 = c3 + xv1 * wv;
+                                wv = sw[base + 4]; a4 = a4 + xv0 * wv; c4 = c4 + xv1 * wv;
+                                wv = sw[base + 5]; a5 = a5 + xv0 * wv; c5 = c5 + xv1 * wv;
+                                wv = sw[base + 6]; a6 = a6 + xv0 * wv; c6 = c6 + xv1 * wv;
+                                wv = sw[base + 7]; a7 = a7 + xv0 * wv; c7 = c7 + xv1 * wv;
+                                wv = sw[base + 8]; a8 = a8 + xv0 * wv; c8 = c8 + xv1 * wv;
+                                wv = sw[base + 9]; a9 = a9 + xv0 * wv; c9 = c9 + xv1 * wv;
+                                wv = sw[base + 10]; a10 = a10 + xv0 * wv; c10 = c10 + xv1 * wv;
+                                wv = sw[base + 11]; a11 = a11 + xv0 * wv; c11 = c11 + xv1 * wv;
+                                wv = sw[base + 12]; a12 = a12 + xv0 * wv; c12 = c12 + xv1 * wv;
+                                wv = sw[base + 13]; a13 = a13 + xv0 * wv; c13 = c13 + xv1 * wv;
+                                wv = sw[base + 14]; a14 = a14 + xv0 * wv; c14 = c14 + xv1 * wv;
+                                wv = sw[base + 15]; a15 = a15 + xv0 * wv; c15 = c15 + xv1 * wv;
                                 e = e + 1;
                             }
                         }
@@ -100,7 +111,7 @@ public final class Conv {
         }
         if (active) {
             uint32 plane = oh * ow;
-            uint32 o0 = (bn * oc + ocBase) * plane + y * ow + xx;
+            uint32 o0 = (bn * oc + ocBase) * plane + y * ow + xx0;
             if (ocBase + 0 < oc) { out[o0 + 0 * plane] = (E) (a0 + (float32) b[ocBase + 0]); }
             if (ocBase + 1 < oc) { out[o0 + 1 * plane] = (E) (a1 + (float32) b[ocBase + 1]); }
             if (ocBase + 2 < oc) { out[o0 + 2 * plane] = (E) (a2 + (float32) b[ocBase + 2]); }
@@ -117,6 +128,25 @@ public final class Conv {
             if (ocBase + 13 < oc) { out[o0 + 13 * plane] = (E) (a13 + (float32) b[ocBase + 13]); }
             if (ocBase + 14 < oc) { out[o0 + 14 * plane] = (E) (a14 + (float32) b[ocBase + 14]); }
             if (ocBase + 15 < oc) { out[o0 + 15 * plane] = (E) (a15 + (float32) b[ocBase + 15]); }
+            if (col1) {
+                uint32 o1 = o0 + owHalf;
+                if (ocBase + 0 < oc) { out[o1 + 0 * plane] = (E) (c0 + (float32) b[ocBase + 0]); }
+                if (ocBase + 1 < oc) { out[o1 + 1 * plane] = (E) (c1 + (float32) b[ocBase + 1]); }
+                if (ocBase + 2 < oc) { out[o1 + 2 * plane] = (E) (c2 + (float32) b[ocBase + 2]); }
+                if (ocBase + 3 < oc) { out[o1 + 3 * plane] = (E) (c3 + (float32) b[ocBase + 3]); }
+                if (ocBase + 4 < oc) { out[o1 + 4 * plane] = (E) (c4 + (float32) b[ocBase + 4]); }
+                if (ocBase + 5 < oc) { out[o1 + 5 * plane] = (E) (c5 + (float32) b[ocBase + 5]); }
+                if (ocBase + 6 < oc) { out[o1 + 6 * plane] = (E) (c6 + (float32) b[ocBase + 6]); }
+                if (ocBase + 7 < oc) { out[o1 + 7 * plane] = (E) (c7 + (float32) b[ocBase + 7]); }
+                if (ocBase + 8 < oc) { out[o1 + 8 * plane] = (E) (c8 + (float32) b[ocBase + 8]); }
+                if (ocBase + 9 < oc) { out[o1 + 9 * plane] = (E) (c9 + (float32) b[ocBase + 9]); }
+                if (ocBase + 10 < oc) { out[o1 + 10 * plane] = (E) (c10 + (float32) b[ocBase + 10]); }
+                if (ocBase + 11 < oc) { out[o1 + 11 * plane] = (E) (c11 + (float32) b[ocBase + 11]); }
+                if (ocBase + 12 < oc) { out[o1 + 12 * plane] = (E) (c12 + (float32) b[ocBase + 12]); }
+                if (ocBase + 13 < oc) { out[o1 + 13 * plane] = (E) (c13 + (float32) b[ocBase + 13]); }
+                if (ocBase + 14 < oc) { out[o1 + 14 * plane] = (E) (c14 + (float32) b[ocBase + 14]); }
+                if (ocBase + 15 < oc) { out[o1 + 15 * plane] = (E) (c15 + (float32) b[ocBase + 15]); }
+            }
         }
     }
 
@@ -169,13 +199,8 @@ public final class Conv {
             Conv.forwardDirect<E>(out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
             return;
         }
-        int64 chunk = Conv.TILE_WORDS / perChannel;
-        if (chunk > c) { chunk = c; }
-        uint32 positions = (uint32) (n * oh * ow);
-        uint32 ocTiles = (uint32) ((oc + 15L) / 16L);
         KernelStream s #= KernelStream.current();
-        conv2dTiled.launch(s, grid: [(positions + 255) / 256, ocTiles], block: [256])(out, x, w, b, (uint32) n, (uint32) c, (uint32) h,
-            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad, (uint32) chunk);
+        Conv.launchTiled<E>(s, out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
         s.sync();
     }
 
@@ -183,11 +208,30 @@ public final class Conv {
     public static void forwardDirect<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
                                         int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
                                         int64 oh, int64 ow, int32 stride, int32 pad) {
-        uint32 total = (uint32) (n * oc * oh * ow);
         KernelStream s #= KernelStream.current();
+        Conv.launchDirect<E>(s, out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
+        s.sync();
+    }
+
+    /** Queues the tiled kernel on `s` without syncing; the caller must know 16 * kh * kw <= TILE_WORDS. */
+    public static void launchTiled<E>(KernelStream s, KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
+                                      int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
+                                      int64 oh, int64 ow, int32 stride, int32 pad) {
+        int64 chunk = Conv.TILE_WORDS / (16L * kh * kw);
+        if (chunk > c) { chunk = c; }
+        uint32 positions = (uint32) (n * oh * ((ow + 1L) / 2L));
+        uint32 ocTiles = (uint32) ((oc + 15L) / 16L);
+        conv2dTiled.launch(s, grid: [(positions + 255) / 256, ocTiles], block: [256])(out, x, w, b, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad, (uint32) chunk);
+    }
+
+    /** Queues the one-lane-per-output kernel on `s` without syncing. */
+    public static void launchDirect<E>(KernelStream s, KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
+                                       int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
+                                       int64 oh, int64 ow, int32 stride, int32 pad) {
+        uint32 total = (uint32) (n * oc * oh * ow);
         conv2d.launch(s, grid: [(total + 255) / 256], block: [256])(out, x, w, b, (uint32) n, (uint32) c, (uint32) h,
             (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad);
-        s.sync();
     }
 
     /** dx[bn][ci][ih][iw] = sum over the outputs whose window covers it of g * w, one lane per input element. */
