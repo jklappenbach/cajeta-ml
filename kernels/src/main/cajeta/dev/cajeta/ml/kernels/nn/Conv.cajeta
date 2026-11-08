@@ -14,7 +14,7 @@ public final class Conv {
     public Conv() { return; }
 
     /** The LDS words the tiled kernel stages weights in: 16 output channels x a chunk of input channels x the window. */
-    public static int64 TILE_WORDS = 8192L;
+    public static int64 TILE_WORDS = 4096L;
 
     /** The tiled form: a workgroup owns 256 lanes x two output columns (a half-row apart, so neighbouring lanes
      *  stay coalesced) x 16 output channels; the weights of a channel chunk sit in LDS and each lane keeps 32
@@ -24,7 +24,7 @@ public final class Conv {
     public static void conv2dTiled<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
                                       uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc, uint32 kh, uint32 kw,
                                       uint32 oh, uint32 ow, int32 stride, int32 pad, uint32 chunk) {
-        Shared<float32> sw = shared float32[8192];
+        Shared<float32> sw = shared float32[4096];
         uint32 tid = KernelThread.x();
         uint32 owHalf = (ow + 1) / 2;
         uint32 p = Workgroup.x() * 256 + tid;
