@@ -7,6 +7,7 @@ import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
 import dev.cajeta.ml.nn.Parameter;
 import dev.cajeta.ml.zoo.Mlp;
+import dev.cajeta.ml.zoo.EncoderBlock;
 import dev.cajeta.ml.zoo.SmallCnn;
 
 /**
@@ -67,6 +68,24 @@ public class ModuleDeviceTest {
         while (k < (int32) ps.count()) { Assert.isFalse(ps[k].get().isOnGpu()); k = k + 1; }
         Tensor<float32> back #= net.predict(x);
         ModuleDeviceTest.same("mlp back on the host", want, back, 0.0);
+    }
+
+    /** cajeta-ml-gpu 28.1.1: the bench's transformer-block device row failed on "'mul' inputs
+     *  live on different devices": a host-made constant inside the block's forward. */
+    @Test
+    public void encoderBlockPredictsTheSameOnTheDevice() {
+        EncoderBlock net = heap EncoderBlock(8L, 2, 16L, 13L);
+        net.eval();
+        int64[] xs = [2L, 3L, 8L];
+        Tensor<float32> x #= ModuleDeviceTest.input(xs, 5L);
+        Tensor<float32> want #= net.predict(x);
+        net.toDevice();
+        Tensor<float32> xd #= x.copy();
+        xd.gpu();
+        Tensor<float32> got #= net.predict(xd);
+        Assert.isTrue(got.isOnGpu());
+        got.cpu();
+        ModuleDeviceTest.same("encoder block", want, got, 1.0e-4);
     }
 
     @Test

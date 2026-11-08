@@ -4,6 +4,7 @@ import cajeta.math.Tensor;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Ops;
 
 /**
  * A Linear with a low-rank adapter (spec §7):
@@ -120,7 +121,7 @@ public class LoraLinear extends Module {
                                      this.loraB.node());
         int64[] one = heap int64[1];
         one[0] = 1;
-        Tensor<float32> s #= Tensor.full<float32>(one, this.scale);
+        Tensor<float32> s #= Ops.fullOn<float32>(one, tape.valueOf(low), this.scale);
         return tape.add(base, tape.mul(low, tape.leaf(s, false)));
     }
 

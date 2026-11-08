@@ -4,6 +4,7 @@ import cajeta.math.Tensor;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Ops;
 
 /**
  * Scaled dot-product self-attention with multiple heads, over
@@ -226,13 +227,22 @@ public class MultiheadAttention extends Module {
         int64[] one = heap int64[1];
         one[0] = 1;
         float32 inv = 1.0f / Math.sqrt((float32) d);
-        GradTensor scale = tape.leaf(Tensor.full<float32>(one, inv), false);
+        // The constants live where the scores do: a host leaf against device scores
+        // is the mixed-device `mul` the device column refuses.
+        GradTensor scale = tape.leaf(Ops.fullOn<float32>(one, tape.valueOf(scores), inv), false);
         GradTensor scaled = tape.mul(scores, scale);
         if (hasMask) {
             // Tile (B, Tq, Tk) per head: (B·H, Tq, Tk), a constant leaf.
             int64[] ms #= MultiheadAttention.shape3(
                 b * (int64) this.heads, tq, tk);
             Tensor<float32> tiled #= Tensor.zeros<float32>(ms);
+            Tensor<float32> src = mask;
+            Tensor<float32> hostMask;
+            if (mask.isOnGpu()) {
+                hostMask #= Ops.copyOf<float32>(mask);
+                hostMask.cpu();
+                src = hostMask;
+            }
             int64 bi = 0;
             while (bi < b) {
                 int64 h = 0;
@@ -240,12 +250,15 @@ public class MultiheadAttention extends Module {
                     int64 e = 0;
                     while (e < tq * tk) {
                         tiled.flatSet(((bi * (int64) this.heads + h)
-                            * tq * tk) + e, mask.flatGet(bi * tq * tk + e));
+                            * tq * tk) + e, src.flatGet(bi * tq * tk + e));
                         e = e + 1;
                     }
                     h = h + 1;
                 }
                 bi = bi + 1;
+            }
+            if (tape.valueOf(scores).isOnGpu()) {
+                tiled.gpu();
             }
             GradTensor maskLeaf = tape.leaf(tiled, false);
             scaled = tape.add(scaled, maskLeaf);
