@@ -47,4 +47,20 @@ public class CensusGateTest {
         }
         Assert.equals(0, KernelCensus.gate(others, "||", "||", "||"));
     }
+
+    @Test
+    public void aCompilerVariantNamesTheKernelItWasEmittedFrom() {
+        String v16 #= KernelCensus.variantBase("rmsnormPackRowF32$v16");
+        Assert.isTrue(v16.equals("rmsnormPackRowF32"));
+        String sw #= KernelCensus.variantBase("traceKernel$sw");
+        Assert.isTrue(sw.equals("traceKernel"));
+        String plain #= KernelCensus.variantBase("rmsnormPackRowF32");
+        Assert.isTrue(plain.count() == 0L);
+        String bare #= KernelCensus.variantBase("rmsnormPackRowF32$v");
+        Assert.isTrue(bare.count() == 0L);
+        String other #= KernelCensus.variantBase("rmsnormPackRowF32$x16");
+        Assert.isTrue(other.count() == 0L);
+        String lead #= KernelCensus.variantBase("$v16");
+        Assert.isTrue(lead.count() == 0L);
+    }
 }

@@ -18,7 +18,9 @@ import cajeta.xpu.KernelManifest;
  *   PROBE          a measurement kernel the suite does not run (`probes`);
  *   EXTERNAL       a cajeta stdlib kernel this library links (`external`);
  *   VARIANT        a compiler variant (`name$vN`, `name$sw`) this device does not take;
- *   UNAVAILABLE    registered, but the runtime refuses it here (shared memory).
+ *   UNAVAILABLE    registered, but the runtime refuses it here (shared memory);
+ *   OUT-OF-TARGET  its @Kernel(targets) leave this backend out; a `tracked` entry
+ *                  for it is STALE.
  *
  * Anything else is UNCOVERED. The gate also fails when nothing ran. The lists are
  * `|`-delimited chains the suite owns: `tracked` and `unchecked` hold
@@ -60,11 +62,25 @@ public final class KernelCensus {
         return chain.contains("|" + name + "|");
     }
 
-    /** The kernel a compiler variant was emitted from (`name$vN`, `name$sw`), else "". */
-    static String variantBase(String name) {
-        int64 d = name.indexOf("$");
-        if (d <= 0L) { return ""; }
-        return name.substring(0, (int32) d);
+    /** The kernel a compiler variant was emitted from (`name$vN`, a Vulkan virtual-subgroup
+     *  fallback, or `name$sw`, a software-BVH ray query), else "". */
+    public static #String variantBase(String name) {
+        int64 at = name.indexOf("$");
+        if (at < 1L) { return ""; }
+        int32 end = (int32) name.count();
+        String suffix #= name.substring((int32) at + 1, end);
+        boolean variant = suffix.equals("sw");
+        if (!variant && suffix.count() > 1L && suffix.byteAt(0) == (int8) 118) {
+            variant = true;
+            int32 i = 1;
+            while (i < (int32) suffix.count()) {
+                int8 c = suffix.byteAt(i);
+                if (c < (int8) 48 || c > (int8) 57) { variant = false; }
+                i = i + 1;
+            }
+        }
+        if (!variant) { return ""; }
+        return name.substring(0, (int32) at);
     }
 
     /** Runs the census; 0 when every registered kernel is accounted for. */
@@ -156,20 +172,33 @@ public final class KernelCensus {
                 cls = "UNCOVERED";
                 System.stdout.println("  UNCOVERED  " + name);
             }
-            // One machine-readable row per kernel: run-tests.sh collects them.
+            // One machine-readable row per kernel: run-tests.sh collects them. The level
+            // column is the ISA level a cpu kernel resolved to, `-` on a device backend.
+            String level #= "-";
+            if (backend.equals("cpu")) { level #= Device.cpuLevelName(Device.cpuKernelLevel(name)); }
             System.stdout.println("census-row\t" + backend + "\t" + name + "\t" + cls
-                + "\t" + launches + "\t" + ValueCheck.checks(name) + "\t" + manifestCol + "\t" + why);
+                + "\t" + launches + "\t" + ValueCheck.checks(name) + "\t" + manifestCol + "\t" + level + "\t" + why);
             i = i + 1;
         }
         int32 offTarget = Device.offTargetKernelCount();
         int32 j = 0;
         while (j < offTarget) {
             String name #= Device.offTargetKernel(j);
-            System.stdout.println("  OUT-OF-TARGET " + name);
-            System.stdout.println("census-row\t" + backend + "\t" + name + "\tOUT-OF-TARGET\t0\t0\t-\t");
+            String key #= backend + ":" + name;
+            String why #= KernelCensus.tracked(key);
+            if (why.count() > 0L) {
+                stale = stale + 1;
+                System.stdout.println("  STALE-SKIP " + name + " is not a target on " + backend
+                    + "; drop its entry (" + why + ")");
+            } else {
+                System.stdout.println("  OUT-OF-TARGET " + name);
+            }
+            System.stdout.println("census-row\t" + backend + "\t" + name + "\tOUT-OF-TARGET\t0\t0\t-\t-\t" + why);
             j = j + 1;
         }
-        System.stdout.println("kernel census (" + backend + "): registered " + n
+        String hostLevel #= "";
+        if (backend.equals("cpu")) { hostLevel #= ", level " + Device.cpuLevelName(Device.cpuLevel()); }
+        System.stdout.println("kernel census (" + backend + hostLevel + "): registered " + n
             + ", ran " + ran + " (value-checked " + checked + ", unchecked and tracked " + excused
             + ", unchecked and untracked " + unverified + "), tracked skips " + skipped + ", probes " + probeN
             + ", external " + externalN + ", variants " + variants
