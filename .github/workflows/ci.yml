@@ -80,7 +80,7 @@ env:
   # v0.36.0 extends that rule to holders passed with `#`, so ml gates on it.
   # v0.39.0 is the release the fleet republishes on. v0.53.0 is the kernel
   # package's pin (kernels/.cajeta-version): generic kernel instantiation.
-  CAJETA_VERSION: v0.53.0
+  CAJETA_VERSION: v0.53.1
 
 jobs:
   build-test:

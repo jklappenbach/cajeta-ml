@@ -7,7 +7,7 @@ public final class Census {
     public Census() { return; }
 
     /** `backend:kernel=item` entries for kernels that do not run here yet. */
-    public static final String TRACKED = "|vulkan:iota_bfloat16=cajeta-ml-gpu 11.2.2|vulkan:convert_float32_bfloat16=cajeta-ml-gpu 11.2.2|vulkan:gemm16_float32=cajeta-ml-gpu 20.2.2|";
+    public static final String TRACKED = "||";
     /** `backend:kernel=item` entries for kernels that run without a value check yet. */
     public static final String UNCHECKED = "||";
     /** Measurement kernels the suite does not run. */

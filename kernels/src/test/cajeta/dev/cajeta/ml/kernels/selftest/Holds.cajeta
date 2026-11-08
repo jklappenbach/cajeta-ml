@@ -11,12 +11,8 @@ public final class Holds {
     public Holds() { return; }
 
     public static void apply() {
-        // cajeta's SPIR-V path truncates a float32 or integer narrowed to bfloat16 where
-        // the host rounds to nearest even (cajeta-ml-gpu 11.2.2); lifts with the pin.
-        KernelCap.hold("vulkan", "iota_bfloat16", "cajeta-ml-gpu 11.2.2");
-        KernelCap.hold("vulkan", "convert_float32_bfloat16", "cajeta-ml-gpu 11.2.2");
-        // cajeta's SPIR-V lowering tiers an f32 x f32 cooperative multiply as native, which RADV
-        // has no configuration for: the driver segfaults compiling it (cajeta-ml-gpu 20.2.2).
-        KernelCap.hold("vulkan", "gemm16_float32", "cajeta-ml-gpu 20.2.2");
+        // No holds at the v0.53.1 pin: the SPIR-V bfloat16 narrowing (cajeta-ml-gpu 11.2.2)
+        // and the f32 cooperative operand tier (20.2.2) shipped in cajeta v0.53.1.
+        return;
     }
 }
