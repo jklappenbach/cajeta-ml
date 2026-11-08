@@ -3,6 +3,7 @@ package dev.cajeta.ml.kernels.selftest;
 import cajeta.lang.System;
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.Convert;
 import dev.cajeta.ml.kernels.Copy;
@@ -263,6 +264,32 @@ public class PrimitivesTest {
             int64 r = i / 35L;
             int64 rem = i - r * 35L;
             Assert.isTrue(cg[(int32) (r * 70L + 35L + rem)] == src[(int32) i]);
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    /** The unsynced entries pipeline on one stream: iota, then a copy of it, then a fill over the source, synced once. */
+    @Test
+    public void unsyncedEntriesPipelineOnOneStream() {
+        if (!PrimitivesTest.usable("iota_int32") || !PrimitivesTest.usable("copy_int32") || !PrimitivesTest.usable("fill_int32")) { return; }
+        int64 n = 5000L;
+        KernelBuffer<int32> a = heap KernelBuffer<int32>((uint64) n);
+        KernelBuffer<int32> b = heap KernelBuffer<int32>((uint64) n);
+        int64[] m #= ValueCheck.mark();
+        KernelStream s #= KernelStream.current();
+        Iota.on<int32>(s, a, n);
+        Copy.on<int32>(s, b, a, n);
+        Fill.on<int32>(s, a, n, 7);
+        s.sync();
+        int32[] ga = heap int32[n];
+        int32[] gb = heap int32[n];
+        a.download(ga);
+        b.download(gb);
+        int64 i = 0L;
+        while (i < n) {
+            Assert.isTrue(gb[(int32) i] == (int32) i);
+            Assert.isTrue(ga[(int32) i] == 7);
             i = i + 1L;
         }
         ValueCheck.credit(m);

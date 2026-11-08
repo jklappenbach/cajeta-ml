@@ -26,4 +26,10 @@ public final class Fill {
     public static void f32(KernelBuffer<float32> out, int64 n, float32 v) {
         Fill.with<float32>(out, n, v);
     }
+
+    /** `out[0..n)` = `v`, launched on `s` with no sync: for a caller that pipelines on its own stream. */
+    public static void on<E>(KernelStream s, KernelBuffer<E> out, int64 n, E v) {
+        uint32 un = (uint32) n;
+        fill.launch(s, grid: [(un + 255) / 256], block: [256])(out, un, v);
+    }
 }

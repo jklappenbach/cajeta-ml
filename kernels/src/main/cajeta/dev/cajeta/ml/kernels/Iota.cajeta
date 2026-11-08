@@ -21,4 +21,10 @@ public final class Iota {
         iota.launch(s, grid: [(un + 63) / 64], block: [64])(out, un);
         s.sync();
     }
+
+    /** `out[i] = i`, launched on `s` with no sync. */
+    public static void on<E>(KernelStream s, KernelBuffer<E> out, int64 n) {
+        uint32 un = (uint32) n;
+        iota.launch(s, grid: [(un + 255) / 256], block: [256])(out, un);
+    }
 }
