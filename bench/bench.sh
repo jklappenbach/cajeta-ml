@@ -101,7 +101,12 @@ prc=0
 if [[ $competitors -eq 1 ]]; then
     t=$(date +%s)
     step "python: ml_bench.py${bench:+ --bench $bench}"
-    ( cd "$here/competitors/python" && "$PY" ml_bench.py --data "$data" --out "$run_dir/python.csv" ${bench:+--bench "$bench"} )
+    # torch's bundled HIP runtime takes its device bitcode from HIP_DEVICE_LIB_PATH
+    # when set, and the box's ROCm exports it for its own toolchain; the mismatch
+    # fails the runtime's blit-kernel link and torch segfaults on its first device
+    # allocation. It must not share ~/.cache/comgr with the box's ROCm either: a
+    # failed link leaves entries that poison every later run (proton, 2026-11-08).
+    ( cd "$here/competitors/python" && env -u HIP_DEVICE_LIB_PATH AMD_COMGR_CACHE_DIR="$here/build/comgr-cache-torch" "$PY" ml_bench.py --data "$data" --out "$run_dir/python.csv" ${bench:+--bench "$bench"} )
     prc=$?
     echo "   python: $(secs $t) s (exit $prc)"
 fi
