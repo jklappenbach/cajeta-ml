@@ -6,7 +6,8 @@ import dev.cajeta.bench.BenchMain;
 
 /**
  * The dev.cajeta.ml benchmark entry: one Benchmark per id on the compiler
- * repo's bench/ml/Classical.md and bench/ml/Neural.md, in page order.
+ * repo's bench/ml/Classical.md and bench/ml/Neural.md, in page order; the
+ * per-op rows (OpBench) follow the autodiff row.
  * `--list`, `--run`, `--area`, `--bench`, `--out` are dev.cajeta.bench's.
  */
 public final class MlBench {
@@ -25,6 +26,11 @@ public final class MlBench {
         b.add(heap NeuralBench(NeuralBench.TRANSFORMER, true));
         b.add(heap NeuralBench(NeuralBench.TRANSFORMER, false));
         b.add(heap AutodiffBench());
+        int32 k = 0;
+        while (k < OpBench.COUNT) {
+            b.add(heap OpBench(k));
+            k = k + 1;
+        }
         b.add(heap CheckpointLoadBench());
         return BenchMain.run(args, b);
     }

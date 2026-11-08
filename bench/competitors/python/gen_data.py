@@ -8,7 +8,8 @@ Both sides read these files and nothing else: the Cajeta benchmarks through
 cajeta.math.npio.Npy and dev.cajeta.ml.io.PtReader, the Python runner through
 numpy and torch.load. The reference results are what the Cajeta rows' checks
 compare against (spec §7.2: scikit-learn's metric is the reference for the
-classical rows; torch's logits and gradients for the neural ones).
+classical rows; torch's logits and gradients for the neural ones, and its
+forward of each op for the per-op rows).
 
 Sizes follow the pages (bench/ml/Classical.md, Neural.md) unless
 CAJETA_BENCH_SMOKE=1, which shrinks them (recorded in manifest.tsv and in each
@@ -230,6 +231,53 @@ def neural(o, s, rng):
         o.f32("ref/transformer-out.npy", blk(torch.from_numpy(xt)).numpy())
 
 
+def ops(o, s, rng):
+    """The per-op rows' inputs and torch's forward on each (ml/op-<name>): the
+    transformer-shaped activation, its rows against a d x ff weight, the
+    CNN-shaped activation with a 3x3 weight, and rows x d logits with targets.
+    Weights are scaled so every output is O(1) and an absolute tolerance means
+    the same thing on every row."""
+    import torch
+    import torch.nn.functional as F
+
+    e, _heads, ff, t, bt = s["tfm"]
+    c, wd, _cls, hh, ww, bc = s["cnn"]
+    x = rng.standard_normal((bt, t, e)).astype(np.float32)
+    y = rng.standard_normal((bt, t, e)).astype(np.float32)
+    gamma = rng.uniform(0.5, 1.5, e).astype(np.float32)
+    beta = (0.1 * rng.standard_normal(e)).astype(np.float32)
+    x2 = x.reshape(bt * t, e)
+    w = (rng.standard_normal((e, ff)) / np.sqrt(e)).astype(np.float32)
+    cx = rng.standard_normal((bc, wd, hh, ww)).astype(np.float32)
+    cw = (rng.standard_normal((wd, wd, 3, 3)) / np.sqrt(9 * wd)).astype(np.float32)
+    cb = (0.1 * rng.standard_normal(wd)).astype(np.float32)
+    logits = (2.0 * rng.standard_normal((bt * t, e))).astype(np.float32)
+    targets = rng.integers(0, e, bt * t).astype(np.float32)
+    for k, v in dict(x=x, y=y, gamma=gamma, beta=beta, x2=x2, w=w, conv_x=cx, conv_w=cw,
+                     conv_b=cb, logits=logits, targets=targets).items():
+        o.f32(f"ops/{k}.npy", v)
+
+    tx, ty = torch.from_numpy(x), torch.from_numpy(y)
+    with torch.no_grad():
+        refs = {
+            "add": tx + ty,
+            "relu": F.relu(tx),
+            "gelu": F.gelu(tx),
+            "tanh": torch.tanh(tx),
+            "sigmoid": torch.sigmoid(tx),
+            "softmax": F.softmax(tx, dim=-1),
+            "layernorm": F.layer_norm(tx, (e,), torch.from_numpy(gamma), torch.from_numpy(beta), 1e-5),
+            "matmul": torch.from_numpy(x2) @ torch.from_numpy(w),
+            "conv2d": F.conv2d(torch.from_numpy(cx), torch.from_numpy(cw), torch.from_numpy(cb),
+                               stride=1, padding=1),
+            "maxpool2d": F.max_pool2d(torch.from_numpy(cx), 2),
+            "cross-entropy": F.cross_entropy(torch.from_numpy(logits),
+                                             torch.from_numpy(targets).long()).reshape(1),
+        }
+    for k, v in refs.items():
+        o.f32(f"ref/op-{k}.npy", v.numpy())
+
+
 def main(out):
     smoke = benchcsv.smoke()
     s = sizes(smoke)
@@ -238,6 +286,7 @@ def main(out):
     rng = np.random.default_rng(SEED)
     classical(o, s, rng)
     neural(o, s, rng)
+    ops(o, s, rng)
     with open(os.path.join(out, "manifest.tsv"), "w") as f:
         f.write(f"# dev.cajeta.ml bench data, seed {SEED}, scale {'smoke' if smoke else 'full'}\n")
         f.write(f"# sizes {s}\n")

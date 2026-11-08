@@ -69,6 +69,13 @@ The Cajeta rows have `platform` `dev.cajeta.ml 0.11.1`; the competitor rows
 | `ml/transformer-block-infer` | cpu, device | eval forward | outputs within 1e-3 |
 | `ml/autodiff-overhead` | cpu | forward + backward of the MLP; notes carry backward/forward | every gradient within 1e-4 of torch autograd's |
 | `ml/checkpoint-load` | cpu | read the MLP's torch `.pt` and import it, 100 times | weights equal to torch's, bit for bit |
+| `ml/op-add`, `op-relu`, `op-tanh`, `op-sigmoid`, `op-softmax` | cpu, device | one forward over the 64×128×512 activation (softmax over the last axis) | output within 1e-6 of torch's |
+| `ml/op-gelu` | cpu, device | erf-form GELU over the same activation | within 1e-5 |
+| `ml/op-layernorm` | cpu, device | LayerNorm over the last axis, eps 1e-5, gamma and beta | within 1e-4 |
+| `ml/op-matmul` | cpu, device | 8192×512 by 512×2048 (the encoder's rows against its ff weight) | within 1e-3 |
+| `ml/op-conv2d` | cpu, device | 64×16×28×28 by 16×16×3×3, stride 1, pad 1 | within 1e-4 |
+| `ml/op-maxpool2d` | cpu, device | k 2, stride 2 over the same activation | within 1e-6 |
+| `ml/op-cross-entropy` | cpu, device | mean cross-entropy of 8192×512 logits | within 1e-5 |
 
 Smoke sizes (`CAJETA_BENCH_SMOKE=1`): synthetic sets 1e4 × 20 instead of
 1e5 × 100; kNN 1e4 training rows and 1e3 queries instead of 1e5 and 1e4; PCA 10
@@ -112,6 +119,12 @@ GPU is free.
 | autodiff gradients | 1e-4 absolute | float32 cross-entropy backward through the same two layers |
 | training rows | loss decreases | the page's check: Adam on a fixed batch must lower the loss over 100 steps |
 | checkpoint-load | bit-equal | a load is a copy; any difference is a bug |
+| op rows, elementwise and maxpool2d | 1e-6 absolute | one rounding per element, both sides float32 |
+| op-gelu | 1e-5 absolute | the erf form both sides, from two erf implementations |
+| op-layernorm | 1e-4 absolute | a 512-wide mean and variance in float32 |
+| op-matmul | 1e-3 absolute | K = 512 float32 dot products in a different order, with the weight scaled so outputs are O(1) |
+| op-conv2d | 1e-4 absolute | 144 taps per output in float32, weight scaled to O(1) outputs |
+| op-cross-entropy | 1e-5 absolute | a mean over rows of one log-softmax pick each |
 
 The competitor rows make the same check against the same reference with the
 same tolerance (their reference was computed by the same library, so theirs is

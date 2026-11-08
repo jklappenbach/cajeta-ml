@@ -1,7 +1,7 @@
 {
   "generator": {
     "tool": "cajeta",
-    "version": "0.53.1"
+    "version": "0.53.2"
   },
   "lockfile-version": 1,
   "manifest-checksum": "sha256:942de9984e8074c4cb877e271a3fb30f616df8928b827a52abe05672343e7654",
@@ -39,7 +39,7 @@
   ],
   "plugins": [],
   "properties": {
-    "cajeta.version": "0.53.1",
+    "cajeta.version": "0.53.2",
     "details.group": "",
     "details.library": "ml-bench",
     "details.name": "ml-bench",
@@ -49,5 +49,5 @@
     "target": "",
     "workspace.root": ""
   },
-  "resolved-at": "2026-11-08T06:50:08Z"
+  "resolved-at": "2026-11-08T11:50:57Z"
 }

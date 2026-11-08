@@ -1,0 +1,205 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.grad.Ops;
+
+/**
+ * The per-op rows, ml/op-<name>: one forward of a single dev.cajeta.ml op per
+ * iteration, each with a `cpu` and a `device` variant. The elementwise ops,
+ * softmax, layernorm and matmul run on the transformer-shaped activation
+ * (batch x seq x d, and its rows x d against d x ff for matmul); conv2d and
+ * maxpool2d on the CNN-shaped one; cross-entropy on rows x d logits. The check
+ * is the output within Tol.OP_* of torch's on the same inputs. A device
+ * iteration ends with a stream sync, so the clock covers the kernel, not its
+ * enqueue.
+ */
+public class OpBench extends MlBenchmark {
+
+    public static int32 ADD = 0;
+    public static int32 RELU = 1;
+    public static int32 GELU = 2;
+    public static int32 TANH = 3;
+    public static int32 SIGMOID = 4;
+    public static int32 SOFTMAX = 5;
+    public static int32 LAYERNORM = 6;
+    public static int32 MATMUL = 7;
+    public static int32 CONV2D = 8;
+    public static int32 MAXPOOL2D = 9;
+    public static int32 CROSSENTROPY = 10;
+    public static int32 COUNT = 11;
+
+    int32 kind;
+    boolean onDevice;
+    Tensor<float32> x;
+    Tensor<float32> y;
+    Tensor<float32> z;
+    Tensor<float32> s1;
+    Tensor<float32> s2;
+    Tensor<float32> out;
+    KernelStream stream;
+    String shapes;
+
+    public OpBench(int32 kind) {
+        this.kind = kind;
+        this.onDevice = false;
+        this.shapes = "";
+    }
+
+    /** The page slug of op `k`, without the `op-` prefix. */
+    public static #String opName(int32 k) {
+        if (k == OpBench.ADD) { return "add"; }
+        if (k == OpBench.RELU) { return "relu"; }
+        if (k == OpBench.GELU) { return "gelu"; }
+        if (k == OpBench.TANH) { return "tanh"; }
+        if (k == OpBench.SIGMOID) { return "sigmoid"; }
+        if (k == OpBench.SOFTMAX) { return "softmax"; }
+        if (k == OpBench.LAYERNORM) { return "layernorm"; }
+        if (k == OpBench.MATMUL) { return "matmul"; }
+        if (k == OpBench.CONV2D) { return "conv2d"; }
+        if (k == OpBench.MAXPOOL2D) { return "maxpool2d"; }
+        return "cross-entropy";
+    }
+
+    /** The recorded tolerance of op `k`'s check (Tol, mirrored in ml_bench.py). */
+    public static float64 tolOf(int32 k) {
+        if (k == OpBench.GELU) { return Tol.OP_GELU; }
+        if (k == OpBench.LAYERNORM) { return Tol.OP_LAYERNORM; }
+        if (k == OpBench.MATMUL) { return Tol.OP_MATMUL; }
+        if (k == OpBench.CONV2D) { return Tol.OP_CONV2D; }
+        if (k == OpBench.CROSSENTROPY) { return Tol.OP_CROSSENTROPY; }
+        return Tol.OP_ELEMENTWISE;
+    }
+
+    public String name() {
+        String n #= OpBench.opName(this.kind);
+        return "op-" + n;
+    }
+
+    public String unit() {
+        return "elements/s";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        if (this.kind == OpBench.MATMUL || this.kind == OpBench.CONV2D) {
+            return 10;
+        }
+        return 20;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("cpu");
+        v.add("device");
+        return v;
+    }
+
+    public String probe(String variant) {
+        return "ops/x.npy";
+    }
+
+    public void prepare(String v) {
+        this.begin(v);
+        this.onDevice = v.equals("device");
+        int32 k = this.kind;
+        if (k == OpBench.MATMUL) {
+            this.x #= Data.f32("ops/x2.npy");
+            this.y #= Data.f32("ops/w.npy");
+            this.shapes = Data.shape32(this.x) + " x " + Data.shape32(this.y);
+        } else if (k == OpBench.CONV2D) {
+            this.x #= Data.f32("ops/conv_x.npy");
+            this.y #= Data.f32("ops/conv_w.npy");
+            this.z #= Data.f32("ops/conv_b.npy");
+            this.shapes = Data.shape32(this.x) + " * " + Data.shape32(this.y) + " stride 1 pad 1";
+        } else if (k == OpBench.MAXPOOL2D) {
+            this.x #= Data.f32("ops/conv_x.npy");
+            this.shapes = Data.shape32(this.x) + " k 2 stride 2";
+        } else if (k == OpBench.CROSSENTROPY) {
+            this.x #= Data.f32("ops/logits.npy");
+            this.y #= Data.f32("ops/targets.npy");
+            this.shapes = Data.shape32(this.x) + " mean";
+        } else {
+            this.x #= Data.f32("ops/x.npy");
+            this.shapes #= Data.shape32(this.x);
+            if (k == OpBench.ADD) {
+                this.y #= Data.f32("ops/y.npy");
+            } else if (k == OpBench.LAYERNORM) {
+                this.y #= Data.f32("ops/gamma.npy");
+                this.z #= Data.f32("ops/beta.npy");
+                this.shapes = this.shapes + " eps 1e-5";
+            }
+        }
+        this.nIn = this.x.size();
+        this.ds = "ops " + this.shapes + " seed " + Data.SEED;
+        if (this.onDevice) {
+            this.x.gpu();
+            if (this.y != null) { this.y.gpu(); }
+            if (this.z != null) { this.z.gpu(); }
+            this.stream #= KernelStream.current();
+        }
+        if (k == OpBench.LAYERNORM) {
+            this.s1 #= Ops.zerosLike<float32>(this.x);
+            int64 d = this.x.shapeAt(this.x.ndim() - 1);
+            int64[] rs = [this.x.size() / d];
+            this.s2 #= Ops.zerosOn<float32>(rs, this.x);
+        } else if (k == OpBench.MAXPOOL2D) {
+            int64[] osh = [this.x.shapeAt(0), this.x.shapeAt(1),
+                           (this.x.shapeAt(2) - 2) / 2 + 1, (this.x.shapeAt(3) - 2) / 2 + 1];
+            this.s1 #= Ops.zerosOn<float32>(osh, this.x);
+        } else if (k == OpBench.CROSSENTROPY) {
+            this.s1 #= Ops.zerosLike<float32>(this.x);
+        }
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        int32 k = this.kind;
+        if (k == OpBench.ADD) {
+            this.out #= Ops.run2<float32>(Op.ADD, this.x, this.y);
+        } else if (k == OpBench.RELU) {
+            this.out #= Ops.run1<float32>(Op.RELU, this.x, 0, 0.0f);
+        } else if (k == OpBench.GELU) {
+            this.out #= Ops.run1<float32>(Op.GELU, this.x, 0, 0.0f);
+        } else if (k == OpBench.TANH) {
+            this.out #= Ops.run1<float32>(Op.TANH, this.x, 0, 0.0f);
+        } else if (k == OpBench.SIGMOID) {
+            this.out #= Ops.run1<float32>(Op.SIGMOID, this.x, 0, 0.0f);
+        } else if (k == OpBench.SOFTMAX) {
+            this.out #= Ops.run1<float32>(Op.SOFTMAX, this.x, 0, 0.0f);
+        } else if (k == OpBench.LAYERNORM) {
+            this.out #= Ops.layerNorm<float32>(this.x, this.y, this.z, 0.00001, this.s1, this.s2);
+        } else if (k == OpBench.MATMUL) {
+            this.out #= Ops.run2<float32>(Op.MATMUL, this.x, this.y);
+        } else if (k == OpBench.CONV2D) {
+            this.out #= Ops.conv2d<float32>(this.x, this.y, this.z, 1, 1);
+        } else if (k == OpBench.MAXPOOL2D) {
+            this.out #= Ops.maxPool2d<float32>(this.x, 2, 2, 0, this.s1);
+        } else {
+            this.out #= Ops.crossEntropy<float32>(this.x, this.y, this.s1);
+        }
+        if (this.onDevice) {
+            this.stream.sync();
+        }
+    }
+
+    public boolean checkResult() {
+        String n #= OpBench.opName(this.kind);
+        Tensor<float32> ref #= Data.f32("ref/op-" + n + ".npy");
+        if (this.out.isOnGpu()) {
+            this.out.cpu();
+        }
+        if (ref.size() != this.out.size()) {
+            this.note = "output size " + this.out.size() + " != torch's " + ref.size();
+            return false;
+        }
+        float64 tol = OpBench.tolOf(this.kind);
+        float64 worst = Data.maxDiff32(this.out, ref, ref.size());
+        this.note = n + " " + this.shapes + "; max |out - torch| " + worst + " <= " + tol;
+        return worst <= tol;
+    }
+}

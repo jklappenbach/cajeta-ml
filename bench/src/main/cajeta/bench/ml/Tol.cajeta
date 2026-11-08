@@ -16,4 +16,10 @@ public final class Tol {
     public static float64 CNN_LOGITS = 1.0e-4;
     public static float64 TRANSFORMER_OUT = 1.0e-3;
     public static float64 GRAD = 1.0e-4;          // max |dW - torch dW|, float32
+    public static float64 OP_ELEMENTWISE = 1.0e-6; // add, relu, tanh, sigmoid, softmax, maxpool2d: one rounding each
+    public static float64 OP_GELU = 1.0e-5;       // erf form both sides, different erf implementations
+    public static float64 OP_LAYERNORM = 1.0e-4;  // a 512-wide mean and variance, float32
+    public static float64 OP_MATMUL = 1.0e-3;     // K = 512 float32 dot products, inputs scaled to O(1)
+    public static float64 OP_CONV2D = 1.0e-4;     // 3x3 x channels taps, inputs scaled to O(1)
+    public static float64 OP_CROSSENTROPY = 1.0e-5; // a mean over rows of log-softmax picks
 }

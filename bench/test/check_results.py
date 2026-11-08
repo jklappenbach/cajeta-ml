@@ -35,6 +35,9 @@ EXPECTED = {
     "autodiff-overhead":        (["cpu"], "torch"),
     "checkpoint-load":          (["cpu"], "torch"),
 }
+for _op in ("add", "relu", "gelu", "tanh", "sigmoid", "softmax", "layernorm", "matmul",
+            "conv2d", "maxpool2d", "cross-entropy"):
+    EXPECTED[f"op-{_op}"] = (["cpu", "device"], "torch")
 GPU_HELD = "GPU held by another session (CAJETA_BENCH_NO_GPU=1)"
 # A competitor whose runtime cannot run on this box's device is a recorded gap, not a
 # failed smoke: the row says so (ml_bench.py probes torch in a child process first).

@@ -2,6 +2,7 @@ package bench.ml;
 
 import cajeta.collection.ArrayList;
 import cajeta.math.Tensor;
+import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.nn.Module;
 import dev.cajeta.ml.optim.Adam;
 import dev.cajeta.ml.zoo.EncoderBlock;
@@ -21,8 +22,10 @@ import dev.cajeta.ml.zoo.SmallCnn;
  *   train  one Adam step (lr 1e-3) per iteration; the check runs on to
  *          config/train.npy[0] steps (100; 20 under smoke) and passes when
  *          the loss at the last step is below the loss at the first.
- *   infer  eval-mode forward of the batch; the check is the output within
- *          Tol.*_LOGITS / Tol.TRANSFORMER_OUT of torch's on the same weights.
+ *   infer  eval-mode forward of the batch, then a stream sync on `device` (a
+ *          launch is asynchronous, and nothing else reads the output back); the
+ *          check is the output within Tol.*_LOGITS / Tol.TRANSFORMER_OUT of
+ *          torch's on the same weights.
  */
 public class NeuralBench extends MlBenchmark {
 
@@ -40,12 +43,15 @@ public class NeuralBench extends MlBenchmark {
     ArrayList<float64> losses;
     String mdl;
     int64 steps;
+    KernelStream stream;
+    boolean onDevice;
 
     public NeuralBench(int32 kind, boolean training) {
         this.kind = kind;
         this.training = training;
         this.mdl = "";
         this.steps = 0;
+        this.onDevice = false;
     }
 
     public String name() {
@@ -138,10 +144,12 @@ public class NeuralBench extends MlBenchmark {
         this.nIn = this.x.shapeAt(0);
         this.steps = Data.intAt("config/train.npy", (int64) 0);
         this.ds = d + " batch " + Data.shape32(this.x) + " seed " + Data.SEED;
-        if (v.equals("device")) {
+        this.onDevice = v.equals("device");
+        if (this.onDevice) {
             this.net.toDevice();
             this.x.gpu();
             this.y.gpu();
+            this.stream #= KernelStream.current();
         }
         if (this.training) {
             this.net.train();
@@ -159,6 +167,9 @@ public class NeuralBench extends MlBenchmark {
             this.losses.add(l);
         } else {
             this.out #= this.net.predict(this.x);
+            if (this.onDevice) {
+                this.stream.sync();
+            }
         }
     }
 

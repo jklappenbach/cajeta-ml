@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The competitor side of the dev.cajeta.ml benchmarks: scikit-learn for the
-classical page, PyTorch for the neural one, emitting the same ids, variants
-and schema-v2 columns as the Cajeta harness.
+classical page, PyTorch for the neural one and its per-op rows, emitting the
+same ids, variants and schema-v2 columns as the Cajeta harness.
 
     ml_bench.py --data <dir> --out <python.csv> [--bench <name>] [--list]
 
@@ -35,6 +35,12 @@ TOL = {
     "cnn-logits": 1e-4,
     "transformer-out": 1e-3,
     "grad": 1e-4,                   # max |dW - dW_ref|
+    "op-elementwise": 1e-6,         # add, relu, tanh, sigmoid, softmax, maxpool2d
+    "op-gelu": 1e-5,
+    "op-layernorm": 1e-4,
+    "op-matmul": 1e-3,
+    "op-conv2d": 1e-4,
+    "op-cross-entropy": 1e-5,
 }
 
 # warmup, trials: the Cajeta side's warmupIters()/measuredIters(), row for row.
@@ -45,6 +51,11 @@ WT = {
     "cnn-infer": (3, 20), "transformer-block-train": (2, 5), "transformer-block-infer": (2, 5),
     "autodiff-overhead": (5, 50), "checkpoint-load": (2, 10),
 }
+# The per-op rows: id -> (torch forward over the loaded inputs, tolerance key).
+OPS = ["op-add", "op-relu", "op-gelu", "op-tanh", "op-sigmoid", "op-softmax", "op-layernorm",
+       "op-matmul", "op-conv2d", "op-maxpool2d", "op-cross-entropy"]
+for _n in OPS:
+    WT[_n] = (3, 10) if _n in ("op-matmul", "op-conv2d") else (3, 20)
 
 CLASSICAL = ["linear-regression", "logistic-regression", "kmeans", "knn", "pca", "standard-scaler"]
 NEURAL = ["mlp-train-step", "mlp-infer", "cnn-train-step", "cnn-infer",
@@ -57,7 +68,7 @@ VARIANTS = {
     "knn": ["synthetic"], "pca": ["synthetic"], "standard-scaler": ["synthetic"],
     "autodiff-overhead": ["cpu"], "checkpoint-load": ["cpu"],
 }
-for _n in NEURAL:
+for _n in NEURAL + OPS:
     VARIANTS.setdefault(_n, ["cpu", "device"])
 
 
@@ -226,33 +237,45 @@ def torch_threads_note():
     return f"torch intra-op threads {torch.get_num_threads()}"
 
 
-def run_neural(name, variant, d):
+def torch_variant(name, variant):
+    """The torch row's device and identity columns for `variant`, or the skipped
+    row when the GPU is held (decided before torch is asked anything, so no CUDA
+    path is imported), not visible to torch, or broken for it."""
     device = variant == "device"
     meta = dict(benchmark=name, area="ml", variant=variant)
     if device and bc.no_gpu():
-        # Never import a CUDA path: the skip is decided before torch is asked anything.
         import torch
-        return bc.skipped_row(bc.GPU_HELD, backend="gpu", library="torch",
-                              library_version=torch.__version__,
-                              platform=f"torch {torch.__version__} {torch_accel()[0]}", **meta)
+        return None, None, bc.skipped_row(bc.GPU_HELD, backend="gpu", library="torch",
+                                          library_version=torch.__version__,
+                                          platform=f"torch {torch.__version__} {torch_accel()[0]}",
+                                          **meta)
     import torch
-    import torch.nn.functional as F
-    import twins
-
     dev = torch.device("cpu")
     if device:
         # torch's device namespace is "cuda" on ROCm builds too.
         if not torch.cuda.is_available():
-            return bc.skipped_row(f"no {torch_accel()[0]} device visible to torch",
-                                  backend=torch_accel()[0], **meta, **torch_meta(True))
+            return None, None, bc.skipped_row(f"no {torch_accel()[0]} device visible to torch",
+                                              backend=torch_accel()[0], **meta, **torch_meta(True))
         broken = torch_device_ok()
         if broken:
-            return bc.skipped_row(broken, backend=torch_accel()[0], **meta, **torch_meta(True))
+            return None, None, bc.skipped_row(broken, backend=torch_accel()[0], **meta,
+                                              **torch_meta(True))
         dev = torch.device("cuda")
     meta.update(torch_meta(device))
     meta["backend"] = torch_accel()[0] if device else "cpu"
     if device:
         meta["driver"] = torch_accel()[1]
+    return dev, meta, None
+
+
+def run_neural(name, variant, d):
+    device = variant == "device"
+    dev, meta, skipped = torch_variant(name, variant)
+    if skipped is not None:
+        return skipped
+    import torch
+    import torch.nn.functional as F
+    import twins
 
     def sync():
         if device:
@@ -374,6 +397,76 @@ def run_neural(name, variant, d):
     raise ValueError(name)
 
 
+def run_op(name, variant, d):
+    device = variant == "device"
+    dev, meta, skipped = torch_variant(name, variant)
+    if skipped is not None:
+        return skipped
+    import torch
+    import torch.nn.functional as F
+
+    def t(rel):
+        return torch.from_numpy(load(d, f"ops/{rel}.npy")).to(dev)
+
+    op = name[3:]
+    state = {}
+    if op == "matmul":
+        a, b = t("x2"), t("w")
+        shapes = f"{size_note(a)} x {size_note(b)}"
+        fn = lambda: a @ b
+    elif op == "conv2d":
+        a, w, b = t("conv_x"), t("conv_w"), t("conv_b")
+        shapes = f"{size_note(a)} * {size_note(w)} stride 1 pad 1"
+        fn = lambda: F.conv2d(a, w, b, stride=1, padding=1)
+    elif op == "maxpool2d":
+        a = t("conv_x")
+        shapes = f"{size_note(a)} k 2 stride 2"
+        fn = lambda: F.max_pool2d(a, 2)
+    elif op == "cross-entropy":
+        a, tg = t("logits"), t("targets").long()
+        shapes = f"{size_note(a)} mean"
+        fn = lambda: F.cross_entropy(a, tg).reshape(1)
+    else:
+        a = t("x")
+        shapes = size_note(a)
+        if op == "add":
+            b = t("y")
+            fn = lambda: a + b
+        elif op == "relu":
+            fn = lambda: F.relu(a)
+        elif op == "gelu":
+            fn = lambda: F.gelu(a)
+        elif op == "tanh":
+            fn = lambda: torch.tanh(a)
+        elif op == "sigmoid":
+            fn = lambda: torch.sigmoid(a)
+        elif op == "softmax":
+            fn = lambda: F.softmax(a, dim=-1)
+        elif op == "layernorm":
+            g, bt = t("gamma"), t("beta")
+            shapes += " eps 1e-5"
+            fn = lambda: F.layer_norm(a, (a.shape[-1],), g, bt, 1e-5)
+        else:
+            raise ValueError(name)
+
+    def body():
+        with torch.no_grad():
+            state["out"] = fn()
+        if device:
+            torch.cuda.synchronize()
+
+    warm, trials = bc.warmup_trials(*WT[name])
+    samples = bc.measure(body, warm, trials)
+    ref = load(d, f"ref/{name}.npy")
+    diff = float(np.max(np.abs(state["out"].cpu().numpy().reshape(ref.shape) - ref)))
+    key = name if name in TOL else "op-elementwise"
+    tol = TOL[key]
+    note = f"{op} {shapes}; max |out - ref| {diff:.3g} <= {tol:g}; " + torch_threads_note()
+    return bc.measured_row(samples, warm, input_size=a.numel(), unit="elements/s",
+                           check_ok=diff <= tol, note=note,
+                           dataset_name=f"ops {shapes} seed 20261025", **meta)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=False)
@@ -381,7 +474,7 @@ def main():
     ap.add_argument("--bench")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
-    names = [n for n in CLASSICAL + NEURAL if a.bench in (None, n)]
+    names = [n for n in CLASSICAL + NEURAL + OPS if a.bench in (None, n)]
     if a.list:
         for n in names:
             print(f"  ml/{n}  {VARIANTS[n]}")
@@ -392,7 +485,12 @@ def main():
     for n in names:
         for v in VARIANTS[n]:
             try:
-                r = run_classical(n, v, a.data) if n in CLASSICAL else run_neural(n, v, a.data)
+                if n in CLASSICAL:
+                    r = run_classical(n, v, a.data)
+                elif n in OPS:
+                    r = run_op(n, v, a.data)
+                else:
+                    r = run_neural(n, v, a.data)
             except Exception as e:  # a failing benchmark never stops the run
                 r = bc.failed_row(f"{type(e).__name__}: {e}", benchmark=n, area="ml", variant=v)
             print(f"  {r['status']}  ml/{n} [python {r['library']}] variant='{v}'  "
