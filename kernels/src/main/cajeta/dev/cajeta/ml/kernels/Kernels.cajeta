@@ -18,7 +18,7 @@ public final class Kernels {
         + "act_float32|adam_float32|adaptive2d_float32|adaptiveBack_float32|"
         + "applyCarry_float32|applyCarry_int32|applyCarry_int64|argmax_float32|argmax_int32|"
         + "avg2d_float32|avgBack_float32|axis_float32|axisMaxBack_float32|bnBackIn_float32|"
-        + "bnParamGrads_float32|bucketize_float32|conv2d_float32|convBackIn_float32|"
+        + "bnParamGrads_float32|bucketize_float32|conv2d_float32|conv2dTiled_float32|convBackIn_float32|"
         + "convBackWeight_float32|convert_bfloat16_float32|convert_float16_float32|"
         + "convert_float32_bfloat16|convert_float32_float16|convert_float32_int8|"
         + "convert_int8_float32|copy_bfloat16|copy_float16|copy_float32|copy_int32|"

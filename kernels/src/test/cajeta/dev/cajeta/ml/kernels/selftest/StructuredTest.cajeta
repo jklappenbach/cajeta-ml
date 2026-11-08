@@ -66,7 +66,11 @@ public class StructuredTest {
     }
 
     static void convCase(int32 stride, int32 pad) {
-        int64 n = 2L; int64 c = 3L; int64 h = 5L; int64 wd = 6L; int64 oc = 4L; int64 kh = 3L; int64 kw = 3L;
+        StructuredTest.convDims(2L, 3L, 5L, 6L, 4L, 3L, 3L, stride, pad, false);
+    }
+
+    /** One conv2d case against the float64 host reference; `direct` takes the one-lane-per-output kernel. */
+    static void convDims(int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw, int32 stride, int32 pad, boolean direct) {
         int64 oh = StructuredTest.outExtent(h, (int32) kh, stride, pad);
         int64 ow = StructuredTest.outExtent(wd, (int32) kw, stride, pad);
         float64[] fx = heap float64[n * c * h * wd];
@@ -77,10 +81,15 @@ public class StructuredTest {
         KernelBuffer<float32> b #= StructuredTest.upload(oc, 7L, fb);
         KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (n * oc * oh * ow));
         int64[] m #= ValueCheck.mark();
-        Conv.forward<float32>(out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
+        if (direct) {
+            Conv.forwardDirect<float32>(out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
+        } else {
+            Conv.forward<float32>(out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
+        }
         float32[] got = heap float32[n * oc * oh * ow];
         out.download(got);
-        StructuredTest.stage = "conv2d s" + stride + " p" + pad;
+        StructuredTest.stage = "conv2d " + n + "x" + c + "x" + h + "x" + wd + " * " + oc + "x" + kh + "x" + kw + " s" + stride + " p" + pad + (direct ? " direct" : " tiled");
+        float64 extra = (float64) (c * kh * kw) * 2.0e-7;
         int64 bn = 0L;
         while (bn < n) {
             int64 o = 0L;
@@ -109,7 +118,7 @@ public class StructuredTest {
                             }
                             ci = ci + 1L;
                         }
-                        StructuredTest.close((float64) got[(int32) (((bn * oc + o) * oh + y) * ow + xx)], acc, 27.0 * 1.0e-7);
+                        StructuredTest.close((float64) got[(int32) (((bn * oc + o) * oh + y) * ow + xx)], acc, extra);
                         xx = xx + 1L;
                     }
                     y = y + 1L;
@@ -123,10 +132,32 @@ public class StructuredTest {
 
     @Test
     public void conv2dMatchesTheHost() {
-        if (!StructuredTest.usable("conv2d_float32")) { return; }
+        if (!StructuredTest.usable("conv2dTiled_float32")) { return; }
         StructuredTest.convCase(1, 1);
         StructuredTest.convCase(2, 0);
         StructuredTest.convCase(1, 0);
+    }
+
+    /** cajeta-ml-gpu 28.2.3: the tiled kernel across its tile edges: a partial channel tile
+     *  (oc 20 over tiles of 16), a channel count past one LDS chunk (c 60 at 3x3, chunk 56),
+     *  a 5x5 window, a strided single image, and a batch wider than one workgroup of positions. */
+    @Test
+    public void conv2dTiledMatchesTheHostAcrossTiles() {
+        if (!StructuredTest.usable("conv2dTiled_float32")) { return; }
+        StructuredTest.convDims(2L, 3L, 5L, 6L, 20L, 3L, 3L, 1, 1, false);
+        StructuredTest.convDims(1L, 60L, 5L, 5L, 16L, 3L, 3L, 1, 1, false);
+        StructuredTest.convDims(1L, 4L, 9L, 9L, 16L, 5L, 5L, 1, 2, false);
+        StructuredTest.convDims(1L, 3L, 11L, 10L, 7L, 3L, 3L, 2, 1, false);
+        StructuredTest.convDims(3L, 2L, 12L, 12L, 16L, 3L, 3L, 1, 1, false);
+    }
+
+    /** The one-lane-per-output kernel stays the fallback for a window past the LDS chunk, and it
+     *  must agree with the host too. */
+    @Test
+    public void conv2dDirectMatchesTheHost() {
+        if (!StructuredTest.usable("conv2d_float32")) { return; }
+        StructuredTest.convDims(2L, 3L, 5L, 6L, 4L, 3L, 3L, 1, 1, true);
+        StructuredTest.convDims(1L, 3L, 7L, 7L, 5L, 3L, 3L, 2, 0, true);
     }
 
     static void poolCase(int32 k, int32 stride, int32 pad) {
