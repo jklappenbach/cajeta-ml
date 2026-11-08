@@ -1,0 +1,39 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.String;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.unit.Test;
+import dev.cajeta.ml.kernels.Kernels;
+import dev.cajeta.ml.kernels.testing.KernelCensus;
+
+/**
+ * cajeta-ml-gpu 32.2.1: Kernels.NAMES is the registry. Every kernel registered on this
+ * backend is listed (a compiler variant counts under its base), so a consumer's census
+ * can class the package's kernels EXTERNAL by asking Kernels.owns.
+ */
+public class KernelNamesTest {
+
+    public KernelNamesTest() { return; }
+
+    @Test
+    public void everyRegisteredKernelIsOwned() {
+        int32 n = Device.registeredKernelCount();
+        int32 missing = 0;
+        int32 i = 0;
+        while (i < n) {
+            String name #= Device.registeredKernel(i);
+            String base #= KernelCensus.variantBase(name);
+            if (base.count() > 0L) { name #= base; }
+            if (!Kernels.owns(name)) {
+                missing = missing + 1;
+                System.stdout.println("  NAMES missing: " + name);
+            }
+            i = i + 1;
+        }
+        Assert.isTrue(n > 0);
+        Assert.isTrue(missing == 0);
+        Assert.isTrue(!Kernels.owns("rmsnormF32"));
+    }
+}

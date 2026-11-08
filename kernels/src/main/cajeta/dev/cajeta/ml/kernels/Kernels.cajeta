@@ -2,11 +2,58 @@ package dev.cajeta.ml.kernels;
 
 import cajeta.lang.String;
 
-/** The package: its version, and the anchor the library build needs. */
+/** The package: its version, the anchor the library build needs, and which registered
+ *  kernels are its own, for a consumer's census. */
 public final class Kernels {
     public Kernels() { return; }
 
     public static String version() {
-        return "0.2.1";
+        return "0.2.2";
+    }
+
+    /** Every kernel this package registers, as its own suite's census lists them (the
+     *  selftest instantiations included); KernelNamesTest keeps it current. */
+    static final String NAMES =
+        "|actBack_bfloat16|actBack_float16|actBack_float32|act_bfloat16|act_float16|"
+        + "act_float32|adam_float32|adaptive2d_float32|adaptiveBack_float32|"
+        + "applyCarry_float32|applyCarry_int32|applyCarry_int64|argmax_float32|argmax_int32|"
+        + "avg2d_float32|avgBack_float32|axis_float32|axisMaxBack_float32|bnBackIn_float32|"
+        + "bnParamGrads_float32|bucketize_float32|conv2d_float32|convBackIn_float32|"
+        + "convBackWeight_float32|convert_bfloat16_float32|convert_float16_float32|"
+        + "convert_float32_bfloat16|convert_float32_float16|convert_float32_int8|"
+        + "convert_int8_float32|copy_bfloat16|copy_float16|copy_float32|copy_int32|"
+        + "copy_int8|copyRange_int32|copy_uint32|cosineBack_float32|cosine_float32|"
+        + "DecodedGemm16_dev_cajeta_ml_kernels_selftest_Q4K_gemm|"
+        + "DecodedGemm_dev_cajeta_ml_kernels_selftest_Nibble_gemm|digitHist|dropout_float32|"
+        + "embedF_float32|embed_float16|embed_float32|embedScatterAdd_float32|"
+        + "exactWords_float32|fill_bfloat16|fill_float16|fill_float32|fill_int32|fill_int64|"
+        + "fill_int8|fillRange_int32|finish|flash|fromOrdered_float32|fromOrdered_int32|"
+        + "FusedGemm_dev_cajeta_ml_kernels_selftest_BiasRelu_gemm|"
+        + "FusedGemm_dev_cajeta_ml_kernels_selftest_BiasResidual_gemm|gather_float32|"
+        + "gemm16Batched_float16|gemm16_bfloat16|gemm16_float16|gemm16_float32|gemm16I8|"
+        + "gemmTiledBatched_float32|gemmTiled_float32|glu_bfloat16|glu_float16|glu_float32|"
+        + "histGlobal|HistShared_1024_tile|HistShared_256_tile|HistShared_4096_tile|"
+        + "iota_bfloat16|iota_float16|iota_float32|iota_int32|iota_uint32|"
+        + "l2normBack_bfloat16|l2normBack_float16|l2normBack_float32|l2norm_bfloat16|"
+        + "l2norm_float16|l2norm_float32|layernormBack_float32|layernorm_bfloat16|"
+        + "layernorm_float16|layernorm_float32|layernormParamGrads_float32|"
+        + "layernormSaved_float32|matvec_float16|matvec_float32|max2d_float32|"
+        + "maxBack_float32|nllBack_float32|nll_float32|normalize_float32|packQ8K|"
+        + "partial_float16|partial_float32|partitionScatter_int32|rmsnorm_bfloat16|"
+        + "rmsnorm_float16|rmsnorm_float32|rope_float16|rope_float32|Scale_128_scale|"
+        + "Scale_64_scale|scanBlock_float32|scanBlock_int32|scanBlock_int64|"
+        + "scanTotals_float32|scanTotals_int32|scanTotals_int64|scatterAdd_float32|"
+        + "scatter_float32|scatterPass|segmentCounts|sgd_float32|softmaxBack_bfloat16|"
+        + "softmaxBack_float16|softmaxBack_float32|softmax_bfloat16|softmax_float16|"
+        + "softmax_float32|split2_float16|split4_float16|split8_float16|splitFixup|"
+        + "stats_float32|strided_float32|toOrdered_float32|toOrdered_int32|topk_float32|"
+        + "topk_int32|transpose_float16|transpose_float32|transpose_int8|unary_bfloat16|"
+        + "unary_float16|unary_float32|";
+
+    /** Whether `kernel` is one of this package's: a consumer's census reads it as EXTERNAL,
+     *  gated by this package's suite. A generic kernel the consumer instantiates for its own
+     *  type registers under the consumer's name and is the consumer's to check. */
+    public static boolean owns(String kernel) {
+        return Kernels.NAMES.contains("|" + kernel + "|");
     }
 }
