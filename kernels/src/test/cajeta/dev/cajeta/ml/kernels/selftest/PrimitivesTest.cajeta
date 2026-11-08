@@ -281,6 +281,8 @@ public class PrimitivesTest {
         Iota.on<int32>(s, a, n);
         Copy.on<int32>(s, b, a, n);
         Fill.on<int32>(s, a, n, 7);
+        Fill.rangeOn<int32>(s, a, 100L, 50L, -3);
+        Copy.rangeOn<int32>(s, b, a, 120L, 10L);
         s.sync();
         int32[] ga = heap int32[n];
         int32[] gb = heap int32[n];
@@ -288,8 +290,12 @@ public class PrimitivesTest {
         b.download(gb);
         int64 i = 0L;
         while (i < n) {
-            Assert.isTrue(gb[(int32) i] == (int32) i);
-            Assert.isTrue(ga[(int32) i] == 7);
+            int32 wantA = 7;
+            if (i >= 100L && i < 150L) { wantA = -3; }
+            int32 wantB = (int32) i;
+            if (i >= 120L && i < 130L) { wantB = -3; }
+            Assert.isTrue(ga[(int32) i] == wantA);
+            Assert.isTrue(gb[(int32) i] == wantB);
             i = i + 1L;
         }
         ValueCheck.credit(m);

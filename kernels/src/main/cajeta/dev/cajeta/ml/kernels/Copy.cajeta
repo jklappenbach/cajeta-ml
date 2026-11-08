@@ -81,4 +81,17 @@ public final class Copy {
         uint32 un = (uint32) n;
         copy.launch(s, grid: [(un + 63) / 64], block: [64])(out, in, un);
     }
+
+    /** `out[begin + i] = in[begin + i]` for i in [0, count): the same range of two buffers. */
+    @Kernel
+    public static void copyRange<E>(KernelBuffer<E> out, KernelBuffer<E> in, uint32 begin, uint32 count) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < count) { out[begin + i] = in[begin + i]; }
+    }
+
+    /** `out[begin .. begin + count)` = `in[begin .. begin + count)`, launched on `s` with no sync. */
+    public static void rangeOn<E>(KernelStream s, KernelBuffer<E> out, KernelBuffer<E> in, int64 begin, int64 count) {
+        uint32 uc = (uint32) count;
+        copyRange.launch(s, grid: [(uc + 255) / 256], block: [256])(out, in, (uint32) begin, uc);
+    }
 }

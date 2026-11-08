@@ -32,4 +32,17 @@ public final class Fill {
         uint32 un = (uint32) n;
         fill.launch(s, grid: [(un + 255) / 256], block: [256])(out, un, v);
     }
+
+    /** `out[base + i] = v` for i in [0, n): a range of a larger buffer, without a slice. */
+    @Kernel
+    public static void fillRange<E>(KernelBuffer<E> out, uint32 base, uint32 n, E v) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out[base + i] = v; }
+    }
+
+    /** `out[base .. base + n)` = `v`, launched on `s` with no sync. */
+    public static void rangeOn<E>(KernelStream s, KernelBuffer<E> out, int64 base, int64 n, E v) {
+        uint32 un = (uint32) n;
+        fillRange.launch(s, grid: [(un + 255) / 256], block: [256])(out, (uint32) base, un, v);
+    }
 }
