@@ -39,12 +39,18 @@ public class MlBenchmark extends Benchmark {
         return "dev.cajeta.ml";
     }
 
+    /** The dev.cajeta.ml version under test: CAJETA_BENCH_ML_VERSION, set by bench.sh from cajeta.json. */
     public String libraryVersion() {
-        return "0.11.1";
+        String v = System.env.get("CAJETA_BENCH_ML_VERSION");
+        if (v == null) {
+            return "unknown";
+        }
+        return #= v;
     }
 
     public String platform() {
-        return "dev.cajeta.ml 0.11.1";
+        String p = "dev.cajeta.ml " + this.libraryVersion();
+        return #= p;
     }
 
     public String competitorNote() {

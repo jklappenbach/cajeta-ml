@@ -57,6 +57,9 @@ machine="${CAJETA_BENCH_MACHINE:-$(hostname | tr '[:upper:]' '[:lower:]')}"
 run_id="${CAJETA_BENCH_RUN_ID:-$(date -u +%Y%m%dT%H%MZ)-${version:-unknown}}"
 export CAJETA_BENCH_MACHINE="$machine" CAJETA_BENCH_RUN_ID="$run_id"
 export CAJETA_BENCH_CAJETA_VERSION="$version" CAJETA_BENCH_RUN_TS="$(date +%s)"
+# The library version the rows name, from the library's own manifest (benchmark-reference 22.2.10).
+ML_VERSION="$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$here/../cajeta.json" | head -1)"
+export CAJETA_BENCH_ML_VERSION="${ML_VERSION:-unknown}"
 export CAJETA_BENCH_FLAGS="--release --opt=O3 --cpu=native"
 run_dir="$here/results/$machine/$run_id"
 mkdir -p "$run_dir"
@@ -119,7 +122,7 @@ fi
 {
     echo "python,$("$PY" -c 'import platform; print(platform.python_version())')"
     "$PY" -c 'import numpy, sklearn, torch; print(f"numpy,{numpy.__version__}\nscikit-learn,{sklearn.__version__}\ntorch,{torch.__version__}")'
-    echo "dev.cajeta.ml,0.11.1"
+    echo "dev.cajeta.ml,$ML_VERSION"
     echo "loadavg,\"$(cut -d' ' -f1-3 /proc/loadavg)\""
     if [[ "${CAJETA_BENCH_NO_GPU:-}" =~ ^(1|true|yes)$ ]]; then
         echo "gpu,not probed (CAJETA_BENCH_NO_GPU=1: held by another session)"
