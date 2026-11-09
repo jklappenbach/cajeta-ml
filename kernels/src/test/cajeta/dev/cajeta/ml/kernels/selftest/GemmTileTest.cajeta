@@ -79,7 +79,9 @@ public class GemmTileTest {
         ValueCheck.credit(mk);
     }
 
-    static void tiled64Case<E>(String kernel, int64 m, int64 n, int64 k) {
+    static void tiled64Case<E>(String kernel, int64 m, int64 n, int64 k) { GemmTileTest.plainCase<E>(kernel, 64, m, n, k); }
+
+    static void plainCase<E>(String kernel, int32 member, int64 m, int64 n, int64 k) {
         E[] ha = heap E[m * k];
         E[] hb = heap E[k * n];
         float32[] fa = heap float32[m * k];
@@ -98,7 +100,7 @@ public class GemmTileTest {
         while (i < m * n) { got[(int32) i] = (E) 12345.0f; i = i + 1L; }
         c.upload(got);
         int64[] mk #= ValueCheck.mark();
-        Gemm.tiled64<E>(c, a, b, m, n, k);
+        if (member == 128) { Gemm.tiled128<E>(c, a, b, m, n, k); } else { Gemm.tiled64<E>(c, a, b, m, n, k); }
         c.download(got);
         int64 r = 0L;
         int32 bad = 0;
@@ -135,6 +137,18 @@ public class GemmTileTest {
         GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 300L, 500L, 100L);
         GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 7L, 1000L, 2049L);
         GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 4096L, 64L, 512L);
+    }
+
+    @Test
+    public void f32WideRegisterTileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmTiled128_float32")) { return; }
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 128, 128L, 128L, 16L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 128, 3L, 5L, 7L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 128, 257L, 33L, 129L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 128, 300L, 500L, 100L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 128, 256L, 256L, 104L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 128, 7L, 1000L, 2049L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 128, 4096L, 64L, 512L);
     }
 
     @Test
