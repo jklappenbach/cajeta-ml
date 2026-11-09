@@ -14,12 +14,11 @@ public final class Fill {
         if (i < n) { out[i] = v; }
     }
 
-    /** `out[0..n)` = `v` on the device: one launch, synced. */
+    /** `out[0..n)` = `v` on the device: one launch, queued on the current stream. */
     public static void with<E>(KernelBuffer<E> out, int64 n, E v) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         fill.launch(s, grid: [(un + 63) / 64], block: [64])(out, un, v);
-        s.sync();
     }
 
     /** {@link #with} at float32. */

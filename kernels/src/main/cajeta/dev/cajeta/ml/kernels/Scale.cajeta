@@ -17,11 +17,10 @@ public final class Scale<uint32 TM> {
         if (i < n) { y[i] = a * x[i]; }
     }
 
-    /** One launch over `n` elements in `TM`-wide blocks; synced. */
+    /** One launch over `n` elements in `TM`-wide blocks; queued on the current stream. */
     public void run(KernelBuffer<float32> y, KernelBuffer<float32> x, int64 n, float32 a) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         scale.launch(s, grid: [(un + TM - 1) / TM], block: [TM])(y, x, un, a);
-        s.sync();
     }
 }

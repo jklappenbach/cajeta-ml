@@ -41,12 +41,11 @@ public final class Rope {
         }
     }
 
-    /** Rotates `t` (rows x nHeads x headDim) in place at `pos[row]` with the pairing `variant`; synced. */
+    /** Rotates `t` (rows x nHeads x headDim) in place at `pos[row]` with the pairing `variant`; queued on the current stream. */
     public static void apply<E>(KernelBuffer<E> t, KernelBuffer<float32> invFreq, KernelBuffer<int32> pos,
                                 int64 rows, int64 nHeads, int64 headDim, int32 variant) {
         uint32 lanes = (uint32) (rows * nHeads * (headDim / 2L));
         KernelStream s #= KernelStream.current();
         rope.launch(s, grid: [(lanes + 255) / 256], block: [256])(t, invFreq, pos, (uint32) rows, (uint32) nHeads, (uint32) headDim, variant);
-        s.sync();
     }
 }

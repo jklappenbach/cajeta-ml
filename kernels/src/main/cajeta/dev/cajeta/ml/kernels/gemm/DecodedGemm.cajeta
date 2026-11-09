@@ -31,12 +31,11 @@ public final class DecodedGemm<D> {
         }
     }
 
-    /** `c[rows x cols] = a[rows x depth] · decode(w)[depth x cols]`; synced. */
+    /** `c[rows x cols] = a[rows x depth] · decode(w)[depth x cols]`; queued on the current stream. */
     public void run(KernelBuffer<float32> c, KernelBuffer<float32> a, KernelBuffer<int8> w,
                     int64 rows, int64 cols, int64 depth) {
         uint32 n = (uint32) (rows * cols);
         KernelStream s #= KernelStream.current();
         gemm.launch(s, grid: [(n + 63) / 64], block: [64])(c, a, w, (uint32) rows, (uint32) cols, (uint32) depth);
-        s.sync();
     }
 }

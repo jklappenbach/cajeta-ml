@@ -71,13 +71,12 @@ public final class DecodedGemm16<D> {
         }
     }
 
-    /** `c` (m x n) = `a` (m x k) . W^T, W the consumer's n rows of k decoded by D; synced. */
+    /** `c` (m x n) = `a` (m x k) . W^T, W the consumer's n rows of k decoded by D; queued on the current stream. */
     public void run(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<int8> w, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
         KernelStream s #= KernelStream.current();
         gemm.launch(s, grid: [tiles], block: [64])(c, a, w, um, un, (uint32) k);
-        s.sync();
     }
 }

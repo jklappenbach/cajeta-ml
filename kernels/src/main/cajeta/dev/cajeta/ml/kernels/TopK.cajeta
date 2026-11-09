@@ -65,10 +65,9 @@ public final class TopK {
         }
     }
 
-    /** `idx[r*k .. r*k+k)` = the top-k indices of row r, best first; `k` from 1 to 64; synced. */
+    /** `idx[r*k .. r*k+k)` = the top-k indices of row r, best first; `k` from 1 to 64; queued on the current stream. */
     public static void rows<E>(KernelBuffer<int32> idx, KernelBuffer<E> in, int64 rows, int64 cols, int64 k) {
         KernelStream s #= KernelStream.current();
         topk.launch(s, grid: [(uint32) rows], block: [256])(idx, in, (uint32) cols, (uint32) k);
-        s.sync();
     }
 }

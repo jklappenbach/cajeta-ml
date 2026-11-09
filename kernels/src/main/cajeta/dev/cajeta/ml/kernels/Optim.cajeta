@@ -44,22 +44,20 @@ public final class Optim {
         }
     }
 
-    /** One SGD step over `n` elements; `v` is read and written only when `momentum` is nonzero; synced. */
+    /** One SGD step over `n` elements; `v` is read and written only when `momentum` is nonzero; queued on the current stream. */
     public static void sgdStep<E>(KernelBuffer<E> p, KernelBuffer<E> v, KernelBuffer<E> g, int64 n, float32 lr, float32 momentum) {
         uint32 un = (uint32) n;
         int32 um = 0;
         if (momentum != 0.0f) { um = 1; }
         KernelStream s #= KernelStream.current();
         sgd.launch(s, grid: [(un + 255) / 256], block: [256])(p, v, g, un, lr, momentum, um);
-        s.sync();
     }
 
-    /** One Adam step with bias corrections `c1 = 1 - b1^t`, `c2 = 1 - b2^t` and decoupled decay `wd` (0 for Adam); synced. */
+    /** One Adam step with bias corrections `c1 = 1 - b1^t`, `c2 = 1 - b2^t` and decoupled decay `wd` (0 for Adam); queued on the current stream. */
     public static void adamStep<E>(KernelBuffer<E> p, KernelBuffer<E> m, KernelBuffer<E> v, KernelBuffer<E> g, int64 n,
                                    float32 lr, float32 c1, float32 c2, float32 wd) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         adam.launch(s, grid: [(un + 255) / 256], block: [256])(p, m, v, g, un, lr, c1, c2, wd);
-        s.sync();
     }
 }

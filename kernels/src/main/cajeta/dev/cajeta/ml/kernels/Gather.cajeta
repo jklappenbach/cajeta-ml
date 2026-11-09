@@ -14,11 +14,10 @@ public final class Gather {
         if (i < n) { out[i] = in[(uint32) idx[i]]; }
     }
 
-    /** `out[0..n)` gathered from `in` at `idx`; synced. */
+    /** `out[0..n)` gathered from `in` at `idx`; queued on the current stream. */
     public static void by<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, int64 n) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         gather.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, idx, un);
-        s.sync();
     }
 }

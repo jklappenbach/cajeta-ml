@@ -1046,10 +1046,14 @@ public final class Ops {
             Ops.requireF32<E>("crossEntropy");
             int64 cls = logits.shapeAt(logits.ndim() - 1);
             int64 rows = logits.size() / cls;
-            Act.softmaxRows<E>(probs.deviceView("crossEntropy"), logits.deviceView("crossEntropy"), rows, cls);
             int64[] rs = [rows];
             Tensor<E> rowLoss #= Ewise.deviceOf<E>(rs);
-            Loss.nllRows<E>(rowLoss.deviceView("crossEntropy"), probs.deviceView("crossEntropy"), targets.deviceView("crossEntropy"), rows, cls);
+            if (cls <= 2048L) {
+                Act.softmaxNllRows<E>(probs.deviceView("crossEntropy"), rowLoss.deviceView("crossEntropy"), logits.deviceView("crossEntropy"), targets.deviceView("crossEntropy"), rows, cls);
+            } else {
+                Act.softmaxRows<E>(probs.deviceView("crossEntropy"), logits.deviceView("crossEntropy"), rows, cls);
+                Loss.nllRows<E>(rowLoss.deviceView("crossEntropy"), probs.deviceView("crossEntropy"), targets.deviceView("crossEntropy"), rows, cls);
+            }
             return Ops.reduceAllGpu<E>("crossEntropy", rowLoss, true);
         }
         return StructKernels.crossEntropy<E>(logits, targets, probs);

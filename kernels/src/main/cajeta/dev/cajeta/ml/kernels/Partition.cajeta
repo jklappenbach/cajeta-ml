@@ -38,7 +38,7 @@ public final class Partition {
         }
     }
 
-    /** `out` = `in` partitioned by `flags` (nonzero goes left) within each of `segments` segments of `segLen`; `counts[s]` = the left count; synced. */
+    /** `out` = `in` partitioned by `flags` (nonzero goes left) within each of `segments` segments of `segLen`; `counts[s]` = the left count; synced, since it drops device temporaries. */
     public static void stable<E>(KernelBuffer<E> out, KernelBuffer<int32> counts, KernelBuffer<E> in, KernelBuffer<int32> flags,
                                  int64 segLen, int64 segments) {
         int64 n = segLen * segments;

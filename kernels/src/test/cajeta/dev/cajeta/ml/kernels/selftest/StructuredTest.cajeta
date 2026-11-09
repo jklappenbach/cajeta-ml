@@ -6,6 +6,7 @@ import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.nn.Act;
 import dev.cajeta.ml.kernels.nn.BatchNorm;
 import dev.cajeta.ml.kernels.nn.Conv;
 import dev.cajeta.ml.kernels.nn.Dropout;
@@ -423,6 +424,51 @@ public class StructuredTest {
         i = 0L;
         while (i < n) { if (gm[(int32) i] != 0.0f) { kept = kept + 1L; } i = i + 1L; }
         Assert.isTrue(kept > 3450L && kept < 3750L);
+        ValueCheck.credit(m);
+    }
+
+    /** The fused softmax + nll launch agrees with softmaxRows then nllRows (cajeta-ml-gpu 28.2.4). */
+    @Test
+    public void fusedSoftmaxNllMatchesTheTwoLaunches() {
+        if (!StructuredTest.usable("softmaxNll_float32") || !StructuredTest.usable("softmax_float32") || !StructuredTest.usable("nll_float32")) { return; }
+        int64 rows = 41L; int64 d = 517L;
+        float64[] fx = heap float64[rows * d];
+        KernelBuffer<float32> x #= StructuredTest.upload(rows * d, 67L, fx);
+        float32[] ht = heap float32[rows];
+        int64 r = 0L;
+        while (r < rows) { ht[(int32) r] = (float32) ((r * 13L) % d); r = r + 1L; }
+        ht[5] = (float32) d;
+        KernelBuffer<float32> targets = heap KernelBuffer<float32>((uint64) rows);
+        targets.upload(ht);
+        KernelBuffer<float32> p2 = heap KernelBuffer<float32>((uint64) (rows * d));
+        KernelBuffer<float32> l2 = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> p3 = heap KernelBuffer<float32>((uint64) (rows * d));
+        KernelBuffer<float32> l3 = heap KernelBuffer<float32>((uint64) rows);
+        int64[] m #= ValueCheck.mark();
+        Act.softmaxRows<float32>(p2, x, rows, d);
+        Loss.nllRows<float32>(l2, p2, targets, rows, d);
+        Act.softmaxNllRows<float32>(p3, l3, x, targets, rows, d);
+        float32[] g2 = heap float32[rows * d];
+        float32[] g3 = heap float32[rows * d];
+        float32[] h2 = heap float32[rows];
+        float32[] h3 = heap float32[rows];
+        p2.download(g2);
+        p3.download(g3);
+        l2.download(h2);
+        l3.download(h3);
+        int64 i = 0L;
+        StructuredTest.stage = "softmaxNll probs";
+        while (i < rows * d) { StructuredTest.close((float64) g3[(int32) i], (float64) g2[(int32) i], 1.0e-7); i = i + 1L; }
+        r = 0L;
+        while (r < rows) {
+            if (r == 5L) {
+                Assert.isTrue(h3[5] != h3[5]);
+            } else {
+                StructuredTest.stage = "softmaxNll loss";
+                StructuredTest.close((float64) h3[(int32) r], (float64) h2[(int32) r], 1.0e-5);
+            }
+            r = r + 1L;
+        }
         ValueCheck.credit(m);
     }
 

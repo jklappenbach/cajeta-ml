@@ -2,6 +2,7 @@ package dev.cajeta.ml.kernels.nn;
 
 import cajeta.lang.Math;
 import cajeta.xpu.Barrier;
+import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
@@ -89,6 +90,51 @@ public final class Norm {
         uint32 lane = KernelThread.x();
         uint32 row = Workgroup.x();
         uint32 base = row * cols;
+        if (cols <= 2048) {
+            // The row stays in registers (lane holds the elements lane + 256 k) and
+            // the two statistics are workgroup collectives: one read of x, two
+            // barriers, no shared-memory tree (cajeta-ml-gpu 28.2.4).
+            uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
+            uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
+            float32 v0 = 0.0f; float32 v1 = 0.0f; float32 v2 = 0.0f; float32 v3 = 0.0f;
+            float32 v4 = 0.0f; float32 v5 = 0.0f; float32 v6 = 0.0f; float32 v7 = 0.0f;
+            if (i0 < cols) { v0 = (float32) x[base + i0]; }
+            if (i1 < cols) { v1 = (float32) x[base + i1]; }
+            if (i2 < cols) { v2 = (float32) x[base + i2]; }
+            if (i3 < cols) { v3 = (float32) x[base + i3]; }
+            if (i4 < cols) { v4 = (float32) x[base + i4]; }
+            if (i5 < cols) { v5 = (float32) x[base + i5]; }
+            if (i6 < cols) { v6 = (float32) x[base + i6]; }
+            if (i7 < cols) { v7 = (float32) x[base + i7]; }
+            float32 sum = ((v0 + v1) + (v2 + v3)) + ((v4 + v5) + (v6 + v7));
+            float32 total = Workgroup.reduce(GroupOp.Add, sum);
+            if (lane == 0) { part[0] = total; }
+            Barrier.workgroup();
+            float32 mu = part[0] / (float32) cols;
+            float32 dev = 0.0f;
+            if (i0 < cols) { float32 d0 = v0 - mu; dev = dev + d0 * d0; }
+            if (i1 < cols) { float32 d1 = v1 - mu; dev = dev + d1 * d1; }
+            if (i2 < cols) { float32 d2 = v2 - mu; dev = dev + d2 * d2; }
+            if (i3 < cols) { float32 d3 = v3 - mu; dev = dev + d3 * d3; }
+            if (i4 < cols) { float32 d4 = v4 - mu; dev = dev + d4 * d4; }
+            if (i5 < cols) { float32 d5 = v5 - mu; dev = dev + d5 * d5; }
+            if (i6 < cols) { float32 d6 = v6 - mu; dev = dev + d6 * d6; }
+            if (i7 < cols) { float32 d7 = v7 - mu; dev = dev + d7 * d7; }
+            float32 var = Workgroup.reduce(GroupOp.Add, dev);
+            if (lane == 0) { part[1] = var; }
+            Barrier.workgroup();
+            float32 ivr = 1.0f / Math.sqrt(part[1] / (float32) cols + eps);
+            if (lane == 0) { invstd[row] = (E) ivr; }
+            if (i0 < cols) { float32 h0 = (v0 - mu) * ivr; xhat[base + i0] = (E) h0; out[base + i0] = (E) ((float32) w[i0] * h0 + (float32) b[i0]); }
+            if (i1 < cols) { float32 h1 = (v1 - mu) * ivr; xhat[base + i1] = (E) h1; out[base + i1] = (E) ((float32) w[i1] * h1 + (float32) b[i1]); }
+            if (i2 < cols) { float32 h2 = (v2 - mu) * ivr; xhat[base + i2] = (E) h2; out[base + i2] = (E) ((float32) w[i2] * h2 + (float32) b[i2]); }
+            if (i3 < cols) { float32 h3 = (v3 - mu) * ivr; xhat[base + i3] = (E) h3; out[base + i3] = (E) ((float32) w[i3] * h3 + (float32) b[i3]); }
+            if (i4 < cols) { float32 h4 = (v4 - mu) * ivr; xhat[base + i4] = (E) h4; out[base + i4] = (E) ((float32) w[i4] * h4 + (float32) b[i4]); }
+            if (i5 < cols) { float32 h5 = (v5 - mu) * ivr; xhat[base + i5] = (E) h5; out[base + i5] = (E) ((float32) w[i5] * h5 + (float32) b[i5]); }
+            if (i6 < cols) { float32 h6 = (v6 - mu) * ivr; xhat[base + i6] = (E) h6; out[base + i6] = (E) ((float32) w[i6] * h6 + (float32) b[i6]); }
+            if (i7 < cols) { float32 h7 = (v7 - mu) * ivr; xhat[base + i7] = (E) h7; out[base + i7] = (E) ((float32) w[i7] * h7 + (float32) b[i7]); }
+            return;
+        }
         float32 acc = 0.0f;
         uint32 i = lane;
         while (i < cols) { acc = acc + (float32) x[base + i]; i = i + 256; }
@@ -247,54 +293,47 @@ public final class Norm {
         }
     }
 
-    /** `out` = rmsnorm of each of `rows` rows of `x` (rows x cols) scaled by `w`; synced. */
+    /** `out` = rmsnorm of each of `rows` rows of `x` (rows x cols) scaled by `w`; queued on the current stream. */
     public static void rms<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         rmsnorm.launch(s, grid: [(uint32) rows], block: [256])(out, x, w, (uint32) cols, eps);
-        s.sync();
     }
 
-    /** `out` = layernorm of each row of `x` with scale `w` and shift `b`; synced. */
+    /** `out` = layernorm of each row of `x` with scale `w` and shift `b`; queued on the current stream. */
     public static void layer<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         layernorm.launch(s, grid: [(uint32) rows], block: [256])(out, x, w, b, (uint32) cols, eps);
-        s.sync();
     }
 
-    /** layernorm of each row with the saved xhat and per-row invstd; synced. */
+    /** layernorm of each row with the saved xhat and per-row invstd; queued on the current stream. */
     public static void layerSaved<E>(KernelBuffer<E> out, KernelBuffer<E> xhat, KernelBuffer<E> invstd, KernelBuffer<E> x,
                                      KernelBuffer<E> w, KernelBuffer<E> b, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         layernormSaved.launch(s, grid: [(uint32) rows], block: [256])(out, xhat, invstd, x, w, b, (uint32) cols, eps);
-        s.sync();
     }
 
-    /** The row-normalisation VJP over `rows` rows, `y` the normalised rows; synced. */
+    /** The row-normalisation VJP over `rows` rows, `y` the normalised rows; queued on the current stream. */
     public static void l2rowsBack<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> y, KernelBuffer<E> g, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         l2normBack.launch(s, grid: [(uint32) rows], block: [256])(out, x, y, g, (uint32) cols, eps);
-        s.sync();
     }
 
-    /** The layernorm input VJP over `rows` rows; synced. */
+    /** The layernorm input VJP over `rows` rows; queued on the current stream. */
     public static void layerBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> xhat, KernelBuffer<E> w, KernelBuffer<E> invstd, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
         layernormBack.launch(s, grid: [(uint32) rows], block: [256])(dx, g, xhat, w, invstd, (uint32) cols);
-        s.sync();
     }
 
-    /** The layernorm scale and shift VJPs summed over `rows`; synced. */
+    /** The layernorm scale and shift VJPs summed over `rows`; queued on the current stream. */
     public static void layerParamGrads<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<E> g, KernelBuffer<E> xhat, int64 rows, int64 cols) {
         uint32 uc = (uint32) cols;
         KernelStream s #= KernelStream.current();
         layernormParamGrads.launch(s, grid: [(uc + 255) / 256], block: [256])(dw, db, g, xhat, (uint32) rows, uc);
-        s.sync();
     }
 
-    /** `out` = each of `rows` rows of `x` scaled to unit L2 norm, the norm floored at `eps`; synced. */
+    /** `out` = each of `rows` rows of `x` scaled to unit L2 norm, the norm floored at `eps`; queued on the current stream. */
     public static void l2rows<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
         l2norm.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, eps);
-        s.sync();
     }
 }

@@ -77,14 +77,13 @@ public final class BatchNorm {
         }
     }
 
-    /** Per-channel mean and biased variance of `x` (n, c, hw); synced. */
+    /** Per-channel mean and biased variance of `x` (n, c, hw); queued on the current stream. */
     public static void channelStats<E>(KernelBuffer<E> mean, KernelBuffer<E> var, KernelBuffer<E> x, int64 n, int64 c, int64 hw) {
         KernelStream s #= KernelStream.current();
         stats.launch(s, grid: [(uint32) c], block: [256])(mean, var, x, (uint32) n, (uint32) c, (uint32) hw);
-        s.sync();
     }
 
-    /** The normalise with the given statistics, saving xhat and invstd; synced. */
+    /** The normalise with the given statistics, saving xhat and invstd; queued on the current stream. */
     public static void apply<E>(KernelBuffer<E> out, KernelBuffer<E> xhat, KernelBuffer<E> invstd, KernelBuffer<E> x,
                                 KernelBuffer<E> gamma, KernelBuffer<E> beta, KernelBuffer<E> mean, KernelBuffer<E> var,
                                 int64 n, int64 c, int64 hw, float32 eps) {
@@ -92,7 +91,6 @@ public final class BatchNorm {
         KernelStream s #= KernelStream.current();
         normalize.launch(s, grid: [(total + 255) / 256], block: [256])(out, xhat, invstd, x, gamma, beta, mean, var,
             (uint32) n, (uint32) c, (uint32) hw, eps);
-        s.sync();
     }
 
     /** dgamma[ci] = sum g*xhat and dbeta[ci] = sum g over (n, hw): one workgroup per channel. */
@@ -147,14 +145,13 @@ public final class BatchNorm {
         }
     }
 
-    /** Per-channel dgamma = sum g*xhat and dbeta = sum g; synced. */
+    /** Per-channel dgamma = sum g*xhat and dbeta = sum g; queued on the current stream. */
     public static void channelParamGrads<E>(KernelBuffer<E> dgamma, KernelBuffer<E> dbeta, KernelBuffer<E> g, KernelBuffer<E> xhat, int64 n, int64 c, int64 hw) {
         KernelStream s #= KernelStream.current();
         bnParamGrads.launch(s, grid: [(uint32) c], block: [256])(dgamma, dbeta, g, xhat, (uint32) n, (uint32) c, (uint32) hw);
-        s.sync();
     }
 
-    /** The input VJP from g, the saved xhat and invstd and the channel sums; synced. */
+    /** The input VJP from g, the saved xhat and invstd and the channel sums; queued on the current stream. */
     public static void backwardInput<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> xhat, KernelBuffer<E> gamma, KernelBuffer<E> invstd,
                                         KernelBuffer<E> dgamma, KernelBuffer<E> dbeta, int64 n, int64 c, int64 hw, boolean training) {
         int32 tr = 0;
@@ -162,6 +159,5 @@ public final class BatchNorm {
         uint32 total = (uint32) (n * c * hw);
         KernelStream s #= KernelStream.current();
         bnBackIn.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, xhat, gamma, invstd, dgamma, dbeta, (uint32) n, (uint32) c, (uint32) hw, tr);
-        s.sync();
     }
 }

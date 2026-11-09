@@ -16,6 +16,14 @@ CAJETA="${CAJETA:-cajeta}"
 XPU_BACKEND="${XPU_BACKEND:-${CAJETA_XPU_BACKEND:-cpu}}"
 export CAJETA_XPU_BACKEND="${XPU_BACKEND}"
 echo ">> backend: ${XPU_BACKEND}"
+# A vulkan leg runs under the Khronos validation layer when it is installed: RADV
+# segfaults on an invalid SPIR-V module; the layer names the instruction and the
+# runtime refuses the module instead (cajeta benchmark-reference 14.3.7).
+if [[ "${XPU_BACKEND}" == vulkan && -z "${VK_INSTANCE_LAYERS:-}" \
+      && -f /usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json ]]; then
+    export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+    echo ">> vulkan: VK_LAYER_KHRONOS_validation on"
+fi
 
 cajeta_artifact_path() {
     local dir="$1" name="$2"

@@ -57,12 +57,11 @@ public final class PackQ8K {
         }
     }
 
-    /** `out` = the q8_K pack of `rows` rows of `cols` floats (cols a multiple of 256), 320 bytes a block; synced. */
+    /** `out` = the q8_K pack of `rows` rows of `cols` floats (cols a multiple of 256), 320 bytes a block; queued on the current stream. */
     public static void rows(KernelBuffer<int8> out, KernelBuffer<float32> x, int64 rows, int64 cols) {
         uint32 nbRow = (uint32) (cols / 256L);
         uint32 blocks = (uint32) rows * nbRow;
         KernelStream s #= KernelStream.current();
         packQ8K.launch(s, grid: [blocks], block: [256])(out, x, blocks, nbRow, (uint32) cols);
-        s.sync();
     }
 }

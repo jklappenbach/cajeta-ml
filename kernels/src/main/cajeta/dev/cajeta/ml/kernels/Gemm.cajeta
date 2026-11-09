@@ -355,7 +355,7 @@ public final class Gemm {
         }
     }
 
-    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the 128x128 member; synced. For float16; bfloat16 goes through runBf16. On a backend the member is not built for (vulkan, 23.2.7) it runs the 16x16 member. */
+    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the 128x128 member; queued on the current stream. For float16; bfloat16 goes through runBf16. On a backend the member is not built for (vulkan, 23.2.7) it runs the 16x16 member. */
     public static void run128<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         if (!Device.kernelAvailable("gemm128_float16")) { Gemm.run<E>(c, a, b, m, n, k); return; }
         uint32 um = (uint32) m;
@@ -363,7 +363,6 @@ public final class Gemm {
         uint32 tiles = ((um + 127) / 128) * ((un + 127) / 128);
         KernelStream s #= KernelStream.current();
         gemm128.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
-        s.sync();
     }
 
     /**
@@ -1050,18 +1049,17 @@ public final class Gemm {
         if (r7 < m && q7 < n) { c[r7 * n + q7] = c77; }
     }
 
-    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the wide register tile; synced. */
+    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the wide register tile; queued on the current stream. */
     public static void wide<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 127) / 128) * ((un + 127) / 128);
         KernelStream s #= KernelStream.current();
         gemmWide.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
-        s.sync();
     }
 
     /**
-     * `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at bfloat16; synced. The 128x128 matrix-core
+     * `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at bfloat16; queued on the current stream. The 128x128 matrix-core
      * member where this backend has it built (cpu, nvptx, amdgpu), the wide register tile where it
      * does not (vulkan).
      */
@@ -1072,7 +1070,6 @@ public final class Gemm {
         uint32 tiles = ((um + 127) / 128) * ((un + 127) / 128);
         KernelStream s #= KernelStream.current();
         gemm128Bf16.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
-        s.sync();
     }
 
     /** The int8 form: workgroup (mi, nj) owns one 16x16 tile of C, accumulated exactly in int32 through the integer matrix core. */
@@ -1129,7 +1126,7 @@ public final class Gemm {
         }
     }
 
-    /** `c` (m x n, int32) = `a` (m x k) . `b` (k x n) over int8, exact; synced. */
+    /** `c` (m x n, int32) = `a` (m x k) . `b` (k x n) over int8, exact; queued on the current stream. */
     public static void runI8(KernelBuffer<int32> c, KernelBuffer<int8> a, KernelBuffer<int8> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
@@ -1137,7 +1134,6 @@ public final class Gemm {
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
         KernelStream s #= KernelStream.current();
         gemm16I8.launch(s, grid: [tiles], block: [64])(c, a, b, um, un, uk);
-        s.sync();
     }
 
     // Three kernels of one body: a class template over S instantiated inside the library
@@ -1335,7 +1331,7 @@ public final class Gemm {
         }
     }
 
-    /** The f16 GEMM split S ways over K (S in 1, 2, 4, 8), fixed up in split order; synced. */
+    /** The f16 GEMM split S ways over K (S in 1, 2, 4, 8), fixed up in split order; synced, since it drops device temporaries. */
     public static void splitKF16(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
                                  int64 m, int64 n, int64 k, int64 splits) {
         if (splits <= 1L) { Gemm.run<float16>(c, a, b, m, n, k); return; }
@@ -1443,14 +1439,13 @@ public final class Gemm {
         }
     }
 
-    /** `batch` independent m x k by k x n products, operands and results stacked, in one launch; synced. */
+    /** `batch` independent m x k by k x n products, operands and results stacked, in one launch; queued on the current stream. */
     public static void batched<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, int64 batch) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
         KernelStream s #= KernelStream.current();
         gemm16Batched.launch(s, grid: [tiles * (uint32) batch], block: [64])(c, a, b, um, un, (uint32) k);
-        s.sync();
     }
 
     /** Workgroup (mi, nj): one 16x16 tile of C at E, each lane one element, the K loop staged
@@ -1602,14 +1597,13 @@ public final class Gemm {
         if (r3 < m && q3 < n) { c[r3 * n + q3] = (E) c33; }
     }
 
-    /** `c` (m x n) = `a` (m x k) . `b` (k x n), all at E, through the register-blocked plain tile; synced. */
+    /** `c` (m x n) = `a` (m x k) . `b` (k x n), all at E, through the register-blocked plain tile; queued on the current stream. */
     public static void tiled64<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 63) / 64) * ((un + 63) / 64);
         KernelStream s #= KernelStream.current();
         gemmTiled64.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
-        s.sync();
     }
 
     /**
@@ -2043,14 +2037,13 @@ public final class Gemm {
         if (r7 < m && q7 < n) { c[r7 * n + q7] = (E) c77; }
     }
 
-    /** `c` (m x n) = `a` (m x k) . `b` (k x n), all at E, through the wide register-blocked tile; synced. */
+    /** `c` (m x n) = `a` (m x k) . `b` (k x n), all at E, through the wide register-blocked tile; queued on the current stream. */
     public static void tiled128<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 127) / 128) * ((un + 127) / 128);
         KernelStream s #= KernelStream.current();
         gemmTiled128.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
-        s.sync();
     }
 
     /** The plain tile over a leading batch axis: workgroup (batch, mi, nj). */
@@ -2097,14 +2090,13 @@ public final class Gemm {
         if (gm < m && gn < n) { c[bt * m * n + gm * n + gn] = (E) acc; }
     }
 
-    /** `c` (batch x m x n) = `a` (batch x m x k) . `b` (batch x k x n) at E through the plain tile; synced. */
+    /** `c` (batch x m x n) = `a` (batch x m x k) . `b` (batch x k x n) at E through the plain tile; queued on the current stream. */
     public static void tiledBatched<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, int64 batch) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
         KernelStream s #= KernelStream.current();
         gemmTiledBatched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k);
-        s.sync();
     }
 
     /**
@@ -2121,7 +2113,7 @@ public final class Gemm {
     }
 
     /**
-     * `c` (m x n) = `a` (m x k) . `b` (k x n), all at E; synced. A shape with LARGE_TILES or
+     * `c` (m x n) = `a` (m x k) . `b` (k x n), all at E; queued on the current stream. A shape with LARGE_TILES or
      * more 128x128 tiles runs on the wide register tile (one fused rounding per step), any
      * other on the plain tile (a sequential float32 sum).
      */
@@ -2132,10 +2124,9 @@ public final class Gemm {
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
         KernelStream s #= KernelStream.current();
         gemmTiled.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
-        s.sync();
     }
 
-    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the 16x16 member; synced. For f16 and bf16 at Gemm.large shapes, run128 is the faster member (run is instantiated at float32 too, where a 128x128 software tile would not pay). */
+    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the 16x16 member; queued on the current stream. For f16 and bf16 at Gemm.large shapes, run128 is the faster member (run is instantiated at float32 too, where a 128x128 software tile would not pay). */
     public static void run<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
@@ -2143,7 +2134,6 @@ public final class Gemm {
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
         KernelStream s #= KernelStream.current();
         gemm16.launch(s, grid: [tiles], block: [64])(c, a, b, um, un, uk);
-        s.sync();
     }
 }
 

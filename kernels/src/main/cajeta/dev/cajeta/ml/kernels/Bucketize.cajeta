@@ -23,11 +23,10 @@ public final class Bucketize {
         }
     }
 
-    /** `out[i]` = the number of the `m` ascending `edges` at most `vals[i]`; synced. */
+    /** `out[i]` = the number of the `m` ascending `edges` at most `vals[i]`; queued on the current stream. */
     public static void upperBound<E>(KernelBuffer<int32> out, KernelBuffer<E> vals, KernelBuffer<E> edges, int64 m, int64 n) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         bucketize.launch(s, grid: [(un + 255) / 256], block: [256])(out, vals, edges, (uint32) m, un);
-        s.sync();
     }
 }

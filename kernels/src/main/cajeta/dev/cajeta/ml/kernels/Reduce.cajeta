@@ -105,12 +105,11 @@ public final class Reduce {
         }
     }
 
-    /** `out` (outer x inner) = `op` along the middle axis of `in` (outer x axisLen x inner), at E; synced. */
+    /** `out` (outer x inner) = `op` along the middle axis of `in` (outer x axisLen x inner), at E; queued on the current stream. */
     public static void alongAxis<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 outer, int64 axisLen, int64 inner, int32 op) {
         uint32 total = (uint32) (outer * inner);
         KernelStream s #= KernelStream.current();
         axis.launch(s, grid: [(total + 255) / 256], block: [256])(out, in, (uint32) outer, (uint32) axisLen, (uint32) inner, op);
-        s.sync();
     }
 
     /** The max-along-axis VJP: g[o][i] lands on the first j where in[o][j][i] equals mx[o][i]; the rest 0. */
@@ -131,12 +130,11 @@ public final class Reduce {
         }
     }
 
-    /** The max-along-axis VJP over (outer, axisLen, inner); synced. */
+    /** The max-along-axis VJP over (outer, axisLen, inner); queued on the current stream. */
     public static void alongAxisMaxBack<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<E> mx, KernelBuffer<E> g, int64 outer, int64 axisLen, int64 inner) {
         uint32 total = (uint32) (outer * inner);
         KernelStream s #= KernelStream.current();
         axisMaxBack.launch(s, grid: [(total + 255) / 256], block: [256])(out, in, mx, g, (uint32) outer, (uint32) axisLen, (uint32) inner);
-        s.sync();
     }
 
     /** Chunks per segment: one block of 256 lanes per 4096 elements, 1 to 64. */
@@ -147,7 +145,7 @@ public final class Reduce {
         return (uint32) c;
     }
 
-    /** `out[s]` = `op` over segment `s` of `in`, `segments` segments of `segLen` elements; synced. */
+    /** `out[s]` = `op` over segment `s` of `in`, `segments` segments of `segLen` elements; synced, since it drops device temporaries. */
     public static void segments<E>(KernelBuffer<float32> out, KernelBuffer<E> in, int64 segLen,
                                    int64 segments, int32 op) {
         uint32 chunks = Reduce.chunksFor(segLen);

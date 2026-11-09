@@ -19,7 +19,7 @@ public final class Kernels {
         + "applyCarry_float32|applyCarry_int32|applyCarry_int64|argmax_float32|argmax_int32|"
         + "avg2d_float32|avgBack_float32|axis_float32|axisMaxBack_float32|bnBackIn_float32|"
         + "bnParamGrads_float32|bucketize_float32|conv2d_float32|conv2dTiled_float32|convBackIn_float32|"
-        + "convBackWeight_float32|convert_bfloat16_float32|convert_float16_float32|"
+        + "convBackWeightSplit_float32|convBackWeightSum_float32|convert_bfloat16_float32|convert_float16_float32|"
         + "convert_float32_bfloat16|convert_float32_float16|convert_float32_int8|"
         + "convert_int8_float32|copy_bfloat16|copy_float16|copy_float32|copy_int32|"
         + "copy_int8|copyRange_int32|copy_uint32|cosineBack_float32|cosine_float32|"
@@ -46,7 +46,7 @@ public final class Kernels {
         + "scanTotals_float32|scanTotals_int32|scanTotals_int64|scatterAdd_float32|"
         + "scatter_float32|scatterPass|segmentCounts|sgd_float32|softmaxBack_bfloat16|"
         + "softmaxBack_float16|softmaxBack_float32|softmax_bfloat16|softmax_float16|"
-        + "softmax_float32|split2_float16|split4_float16|split8_float16|splitFixup|"
+        + "softmaxNll_float32|softmax_float32|split2_float16|split4_float16|split8_float16|splitFixup|"
         + "stats_float32|strided_float32|toOrdered_float32|toOrdered_int32|topk_float32|"
         + "topk_int32|transpose_float16|transpose_float32|transpose_int8|unary_bfloat16|"
         + "unary_float16|unary_float32|";

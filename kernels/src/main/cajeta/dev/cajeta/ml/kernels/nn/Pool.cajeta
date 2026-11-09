@@ -108,34 +108,31 @@ public final class Pool {
         }
     }
 
-    /** Max pooling with `argmax` receiving each output cell's flat input index; synced. */
+    /** Max pooling with `argmax` receiving each output cell's flat input index; queued on the current stream. */
     public static void max<E>(KernelBuffer<E> out, KernelBuffer<E> argmax, KernelBuffer<E> x,
                               int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow, int32 k, int32 stride, int32 pad) {
         uint32 total = (uint32) (n * c * oh * ow);
         KernelStream s #= KernelStream.current();
         max2d.launch(s, grid: [(total + 255) / 256], block: [256])(out, argmax, x, (uint32) n, (uint32) c, (uint32) h,
             (uint32) wd, (uint32) oh, (uint32) ow, k, stride, pad);
-        s.sync();
     }
 
-    /** Average pooling over the full k x k window; synced. */
+    /** Average pooling over the full k x k window; queued on the current stream. */
     public static void avg<E>(KernelBuffer<E> out, KernelBuffer<E> x,
                               int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow, int32 k, int32 stride, int32 pad) {
         uint32 total = (uint32) (n * c * oh * ow);
         KernelStream s #= KernelStream.current();
         avg2d.launch(s, grid: [(total + 255) / 256], block: [256])(out, x, (uint32) n, (uint32) c, (uint32) h,
             (uint32) wd, (uint32) oh, (uint32) ow, k, stride, pad);
-        s.sync();
     }
 
-    /** Adaptive average pooling to (oh, ow); synced. */
+    /** Adaptive average pooling to (oh, ow); queued on the current stream. */
     public static void adaptive<E>(KernelBuffer<E> out, KernelBuffer<E> x,
                                    int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow) {
         uint32 total = (uint32) (n * c * oh * ow);
         KernelStream s #= KernelStream.current();
         adaptive2d.launch(s, grid: [(total + 255) / 256], block: [256])(out, x, (uint32) n, (uint32) c, (uint32) h,
             (uint32) wd, (uint32) oh, (uint32) ow);
-        s.sync();
     }
 
     /** Max-pool VJP: one lane per input element summing the cotangents of the windows whose argmax is it. */
@@ -233,33 +230,30 @@ public final class Pool {
         }
     }
 
-    /** The max-pool VJP into `dx` (n,c,h,wd) from `g` and the forward's `argmax`; synced. */
+    /** The max-pool VJP into `dx` (n,c,h,wd) from `g` and the forward's `argmax`; queued on the current stream. */
     public static void maxBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> argmax,
                                       int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow, int32 k, int32 stride, int32 pad) {
         uint32 total = (uint32) (n * c * h * wd);
         KernelStream s #= KernelStream.current();
         maxBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, argmax, (uint32) n, (uint32) c, (uint32) h,
             (uint32) wd, (uint32) oh, (uint32) ow, k, stride, pad);
-        s.sync();
     }
 
-    /** The average-pool VJP; synced. */
+    /** The average-pool VJP; queued on the current stream. */
     public static void avgBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> g,
                                       int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow, int32 k, int32 stride, int32 pad) {
         uint32 total = (uint32) (n * c * h * wd);
         KernelStream s #= KernelStream.current();
         avgBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, (uint32) n, (uint32) c, (uint32) h,
             (uint32) wd, (uint32) oh, (uint32) ow, k, stride, pad);
-        s.sync();
     }
 
-    /** The adaptive-average VJP; synced. */
+    /** The adaptive-average VJP; queued on the current stream. */
     public static void adaptiveBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> g,
                                            int64 n, int64 c, int64 h, int64 wd, int64 oh, int64 ow) {
         uint32 total = (uint32) (n * c * h * wd);
         KernelStream s #= KernelStream.current();
         adaptiveBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, (uint32) n, (uint32) c, (uint32) h,
             (uint32) wd, (uint32) oh, (uint32) ow);
-        s.sync();
     }
 }

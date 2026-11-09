@@ -26,10 +26,9 @@ public final class MatVec {
         if (lane == 0 && r < rows) { y[r] = tot; }
     }
 
-    /** `y` (rows, float32) = `w` (rows x cols) . `x` (cols) at E; synced. */
+    /** `y` (rows, float32) = `w` (rows x cols) . `x` (cols) at E; queued on the current stream. */
     public static void run<E>(KernelBuffer<float32> y, KernelBuffer<E> w, KernelBuffer<E> x, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
         matvec.launch(s, grid: [(uint32) rows], block: [256])(y, w, x, (uint32) rows, (uint32) cols);
-        s.sync();
     }
 }

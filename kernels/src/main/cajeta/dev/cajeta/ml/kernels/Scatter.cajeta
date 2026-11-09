@@ -20,19 +20,17 @@ public final class Scatter {
         if (i < n) { out.atomicAdd((uint32) idx[i], in[i]); }
     }
 
-    /** `out[idx[i]] = in[i]` for i in [0, n); synced. */
+    /** `out[idx[i]] = in[i]` for i in [0, n); queued on the current stream. */
     public static void by<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, int64 n) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         scatter.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, idx, un);
-        s.sync();
     }
 
-    /** `out[idx[i]] += in[i]` for i in [0, n), duplicates summed; synced. */
+    /** `out[idx[i]] += in[i]` for i in [0, n), duplicates summed; queued on the current stream. */
     public static void add<E>(KernelBuffer<E> out, KernelBuffer<E> in, KernelBuffer<int32> idx, int64 n) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         scatterAdd.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, idx, un);
-        s.sync();
     }
 }

@@ -39,13 +39,12 @@ public final class Dropout {
         }
     }
 
-    /** out = x * mask with keep probability 1 - p and survivors scaled by 1/(1-p); synced. */
+    /** out = x * mask with keep probability 1 - p and survivors scaled by 1/(1-p); queued on the current stream. */
     public static void apply<E>(KernelBuffer<E> out, KernelBuffer<E> mask, KernelBuffer<E> x, int64 n, float32 p, uint64 seed) {
         uint32 un = (uint32) n;
         uint32 lo = (uint32) (seed & 4294967295L);
         uint32 hi = (uint32) (seed >> 32);
         KernelStream s #= KernelStream.current();
         dropout.launch(s, grid: [(un + 255) / 256], block: [256])(out, mask, x, un, p, 1.0f / (1.0f - p), lo, hi);
-        s.sync();
     }
 }

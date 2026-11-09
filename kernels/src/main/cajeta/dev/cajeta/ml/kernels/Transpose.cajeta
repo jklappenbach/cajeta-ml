@@ -18,11 +18,10 @@ public final class Transpose {
         }
     }
 
-    /** `out` (cols x rows) = the transpose of `in` (rows x cols), both row-major: one launch, synced. */
+    /** `out` (cols x rows) = the transpose of `in` (rows x cols), both row-major: one launch, queued on the current stream. */
     public static void into<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 rows, int64 cols) {
         uint32 un = (uint32) (rows * cols);
         KernelStream s #= KernelStream.current();
         transpose.launch(s, grid: [(un + 63) / 64], block: [64])(out, in, (uint32) rows, (uint32) cols);
-        s.sync();
     }
 }

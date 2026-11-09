@@ -14,11 +14,10 @@ public final class Convert {
         if (i < n) { out[i] = (T) in[i]; }
     }
 
-    /** `out[0..n)` = `(T) in[0..n)`: one launch, synced. */
+    /** `out[0..n)` = `(T) in[0..n)`: one launch, queued on the current stream. */
     public static void into<F, T>(KernelBuffer<T> out, KernelBuffer<F> in, int64 n) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         convert.launch(s, grid: [(un + 63) / 64], block: [64])(out, in, un);
-        s.sync();
     }
 }

@@ -136,7 +136,8 @@ public class StructuredBackTest {
 
     @Test
     public void conv2dBackwardsMatchTheHost() {
-        if (!StructuredBackTest.usable("convBackIn_float32") || !StructuredBackTest.usable("convBackWeight_float32")) { return; }
+        if (!StructuredBackTest.usable("convBackIn_float32") || !StructuredBackTest.usable("convBackWeightSplit_float32")
+                || !StructuredBackTest.usable("convBackWeightSum_float32")) { return; }
         StructuredBackTest.convBackCase(1, 1);
         StructuredBackTest.convBackCase(2, 0);
     }

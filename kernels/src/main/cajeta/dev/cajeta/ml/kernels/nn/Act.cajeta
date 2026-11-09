@@ -2,6 +2,7 @@ package dev.cajeta.ml.kernels.nn;
 
 import cajeta.lang.Math;
 import cajeta.xpu.Barrier;
+import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
@@ -53,6 +54,70 @@ public final class Act {
         Shared<float32> part = shared float32[256];
         uint32 lane = KernelThread.x();
         uint32 base = Workgroup.x() * cols;
+        if (cols <= 2048) {
+            // The row in registers (lane holds the elements lane + 256 k), the max
+            // and the sum as workgroup collectives: one read of x, two barriers
+            // (cajeta-ml-gpu 28.2.4).
+            uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
+            uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
+            float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f;
+            float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f;
+            if (i0 < cols) { v0 = (float32) x[base + i0]; }
+            if (i1 < cols) { v1 = (float32) x[base + i1]; }
+            if (i2 < cols) { v2 = (float32) x[base + i2]; }
+            if (i3 < cols) { v3 = (float32) x[base + i3]; }
+            if (i4 < cols) { v4 = (float32) x[base + i4]; }
+            if (i5 < cols) { v5 = (float32) x[base + i5]; }
+            if (i6 < cols) { v6 = (float32) x[base + i6]; }
+            if (i7 < cols) { v7 = (float32) x[base + i7]; }
+            float32 m01 = v0; if (v1 > m01) { m01 = v1; }
+            float32 m23 = v2; if (v3 > m23) { m23 = v3; }
+            float32 m45 = v4; if (v5 > m45) { m45 = v5; }
+            float32 m67 = v6; if (v7 > m67) { m67 = v7; }
+            if (m23 > m01) { m01 = m23; }
+            if (m67 > m45) { m45 = m67; }
+            if (m45 > m01) { m01 = m45; }
+            float32 rmax = Workgroup.reduce(GroupOp.Max, m01);
+            if (lane == 0) { part[0] = rmax; }
+            Barrier.workgroup();
+            float32 rowMax = part[0];
+            float32 e0 = 0.0f; float32 e1 = 0.0f; float32 e2 = 0.0f; float32 e3 = 0.0f;
+            float32 e4 = 0.0f; float32 e5 = 0.0f; float32 e6 = 0.0f; float32 e7 = 0.0f;
+            if (i0 < cols) { e0 = Math.exp(v0 - rowMax); }
+            if (i1 < cols) { e1 = Math.exp(v1 - rowMax); }
+            if (i2 < cols) { e2 = Math.exp(v2 - rowMax); }
+            if (i3 < cols) { e3 = Math.exp(v3 - rowMax); }
+            if (i4 < cols) { e4 = Math.exp(v4 - rowMax); }
+            if (i5 < cols) { e5 = Math.exp(v5 - rowMax); }
+            if (i6 < cols) { e6 = Math.exp(v6 - rowMax); }
+            if (i7 < cols) { e7 = Math.exp(v7 - rowMax); }
+            float32 sum = ((e0 + e1) + (e2 + e3)) + ((e4 + e5) + (e6 + e7));
+            float32 tot = Workgroup.reduce(GroupOp.Add, sum);
+            if (lane == 0) { part[1] = tot; }
+            Barrier.workgroup();
+            float32 inv = 1.0f / part[1];
+            float32 lse = Math.log(part[1]);
+            if (logOut != 0) {
+                if (i0 < cols) { out[base + i0] = (E) (v0 - rowMax - lse); }
+                if (i1 < cols) { out[base + i1] = (E) (v1 - rowMax - lse); }
+                if (i2 < cols) { out[base + i2] = (E) (v2 - rowMax - lse); }
+                if (i3 < cols) { out[base + i3] = (E) (v3 - rowMax - lse); }
+                if (i4 < cols) { out[base + i4] = (E) (v4 - rowMax - lse); }
+                if (i5 < cols) { out[base + i5] = (E) (v5 - rowMax - lse); }
+                if (i6 < cols) { out[base + i6] = (E) (v6 - rowMax - lse); }
+                if (i7 < cols) { out[base + i7] = (E) (v7 - rowMax - lse); }
+            } else {
+                if (i0 < cols) { out[base + i0] = (E) (e0 * inv); }
+                if (i1 < cols) { out[base + i1] = (E) (e1 * inv); }
+                if (i2 < cols) { out[base + i2] = (E) (e2 * inv); }
+                if (i3 < cols) { out[base + i3] = (E) (e3 * inv); }
+                if (i4 < cols) { out[base + i4] = (E) (e4 * inv); }
+                if (i5 < cols) { out[base + i5] = (E) (e5 * inv); }
+                if (i6 < cols) { out[base + i6] = (E) (e6 * inv); }
+                if (i7 < cols) { out[base + i7] = (E) (e7 * inv); }
+            }
+            return;
+        }
         float32 mx = -3.4028235e38f;
         uint32 i = lane;
         while (i < cols) {
@@ -88,6 +153,71 @@ public final class Act {
             float32 d = (float32) x[base + j] - rowMax;
             if (logOut != 0) { out[base + j] = (E) (d - lse); } else { out[base + j] = (E) (Math.exp(d) * inv); }
             j = j + 256;
+        }
+    }
+
+    /** The softmax of a row and its negative log-likelihood at the target, cols <= 2048: the cross-entropy forward in one pass (cajeta-ml-gpu 28.2.4). */
+    @Kernel
+    public static void softmaxNll<E>(KernelBuffer<E> probs, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, uint32 cols) {
+        Shared<float32> part = shared float32[2];
+        uint32 lane = KernelThread.x();
+        uint32 row = Workgroup.x();
+        uint32 base = row * cols;
+        uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
+        uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
+        float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f;
+        float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f;
+        if (i0 < cols) { v0 = (float32) x[base + i0]; }
+        if (i1 < cols) { v1 = (float32) x[base + i1]; }
+        if (i2 < cols) { v2 = (float32) x[base + i2]; }
+        if (i3 < cols) { v3 = (float32) x[base + i3]; }
+        if (i4 < cols) { v4 = (float32) x[base + i4]; }
+        if (i5 < cols) { v5 = (float32) x[base + i5]; }
+        if (i6 < cols) { v6 = (float32) x[base + i6]; }
+        if (i7 < cols) { v7 = (float32) x[base + i7]; }
+        float32 m01 = v0; if (v1 > m01) { m01 = v1; }
+        float32 m23 = v2; if (v3 > m23) { m23 = v3; }
+        float32 m45 = v4; if (v5 > m45) { m45 = v5; }
+        float32 m67 = v6; if (v7 > m67) { m67 = v7; }
+        if (m23 > m01) { m01 = m23; }
+        if (m67 > m45) { m45 = m67; }
+        if (m45 > m01) { m01 = m45; }
+        float32 rmax = Workgroup.reduce(GroupOp.Max, m01);
+        if (lane == 0) { part[0] = rmax; }
+        Barrier.workgroup();
+        float32 rowMax = part[0];
+        float32 e0 = 0.0f; float32 e1 = 0.0f; float32 e2 = 0.0f; float32 e3 = 0.0f;
+        float32 e4 = 0.0f; float32 e5 = 0.0f; float32 e6 = 0.0f; float32 e7 = 0.0f;
+        if (i0 < cols) { e0 = Math.exp(v0 - rowMax); }
+        if (i1 < cols) { e1 = Math.exp(v1 - rowMax); }
+        if (i2 < cols) { e2 = Math.exp(v2 - rowMax); }
+        if (i3 < cols) { e3 = Math.exp(v3 - rowMax); }
+        if (i4 < cols) { e4 = Math.exp(v4 - rowMax); }
+        if (i5 < cols) { e5 = Math.exp(v5 - rowMax); }
+        if (i6 < cols) { e6 = Math.exp(v6 - rowMax); }
+        if (i7 < cols) { e7 = Math.exp(v7 - rowMax); }
+        float32 sum = ((e0 + e1) + (e2 + e3)) + ((e4 + e5) + (e6 + e7));
+        float32 tot = Workgroup.reduce(GroupOp.Add, sum);
+        if (lane == 0) { part[1] = tot; }
+        Barrier.workgroup();
+        float32 inv = 1.0f / part[1];
+        float32 lse = Math.log(part[1]);
+        if (i0 < cols) { probs[base + i0] = (E) (e0 * inv); }
+        if (i1 < cols) { probs[base + i1] = (E) (e1 * inv); }
+        if (i2 < cols) { probs[base + i2] = (E) (e2 * inv); }
+        if (i3 < cols) { probs[base + i3] = (E) (e3 * inv); }
+        if (i4 < cols) { probs[base + i4] = (E) (e4 * inv); }
+        if (i5 < cols) { probs[base + i5] = (E) (e5 * inv); }
+        if (i6 < cols) { probs[base + i6] = (E) (e6 * inv); }
+        if (i7 < cols) { probs[base + i7] = (E) (e7 * inv); }
+        if (lane == 0) {
+            float32 tf = (float32) targets[row];
+            float32 loss = 0.0f / 0.0f;
+            if (tf >= 0.0f && tf < (float32) cols) {
+                uint32 t = (uint32) tf;
+                loss = (rowMax + lse) - (float32) x[base + t];
+            }
+            rowLoss[row] = (E) loss;
         }
     }
 
@@ -162,50 +292,50 @@ public final class Act {
     // The host entries carry names of their own: a host method of a kernel's name AND arity
     // captures `kernel.launch` and launches nothing (cajeta-ml-gpu 24.2.2).
 
-    /** `out` = softmax of each of `rows` rows of `x`; synced. */
+    /** `out` = softmax of each of `rows` rows of `x`; queued on the current stream. */
     public static void softmaxRows<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
         softmax.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, 0);
-        s.sync();
     }
 
-    /** `out` = log-softmax of each of `rows` rows of `x`, as `x - max - log(sum exp)`; synced. */
+    /** probs = softmax of each row of `x` and rowLoss[r] = -log probs[r][targets[r]] in one launch; cols <= 2048; queued on the current stream. */
+    public static void softmaxNllRows<E>(KernelBuffer<E> probs, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, int64 rows, int64 cols) {
+        KernelStream s #= KernelStream.current();
+        softmaxNll.launch(s, grid: [(uint32) rows], block: [256])(probs, rowLoss, x, targets, (uint32) cols);
+    }
+
+    /** `out` = log-softmax of each of `rows` rows of `x`, as `x - max - log(sum exp)`; queued on the current stream. */
     public static void logSoftmaxRows<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
         softmax.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, 1);
-        s.sync();
     }
 
-    /** `out[i]` = the activation `kind` of `x[i]`; synced. */
+    /** `out[i]` = the activation `kind` of `x[i]`; queued on the current stream. */
     public static void apply<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 n, int32 kind) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         act.launch(s, grid: [(un + 255) / 256], block: [256])(out, x, un, kind);
-        s.sync();
     }
 
-    /** `out[i]` = `kind`(g[i]) * u[i], the gated linear unit; synced. */
+    /** `out[i]` = `kind`(g[i]) * u[i], the gated linear unit; queued on the current stream. */
     public static void gated<E>(KernelBuffer<E> out, KernelBuffer<E> g, KernelBuffer<E> u, int64 n, int32 kind) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         glu.launch(s, grid: [(un + 255) / 256], block: [256])(out, g, u, un, kind);
-        s.sync();
     }
 
-    /** out = g * kind'(x) with y = kind(x) (relu, silu, gelu, tanh, sigmoid, erf gelu); synced. */
+    /** out = g * kind'(x) with y = kind(x) (relu, silu, gelu, tanh, sigmoid, erf gelu); queued on the current stream. */
     public static void backward<E>(KernelBuffer<E> out, KernelBuffer<E> g, KernelBuffer<E> x, KernelBuffer<E> y, int64 n, int32 kind) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         actBack.launch(s, grid: [(un + 255) / 256], block: [256])(out, g, x, y, un, kind);
-        s.sync();
     }
 
-    /** The row-wise softmax VJP (or the log-softmax VJP when `logForm`) over `rows` rows; synced. */
+    /** The row-wise softmax VJP (or the log-softmax VJP when `logForm`) over `rows` rows; queued on the current stream. */
     public static void softmaxBackward<E>(KernelBuffer<E> out, KernelBuffer<E> y, KernelBuffer<E> g, int64 rows, int64 cols, boolean logForm) {
         int32 lf = 0;
         if (logForm) { lf = 1; }
         KernelStream s #= KernelStream.current();
         softmaxBack.launch(s, grid: [(uint32) rows], block: [256])(out, y, g, (uint32) cols, lf);
-        s.sync();
     }
 }

@@ -75,19 +75,17 @@ public final class Loss {
         }
     }
 
-    /** rowLoss[r] = -log(probs[r][targets[r]]) over `rows` rows of `cls` classes; synced. */
+    /** rowLoss[r] = -log(probs[r][targets[r]]) over `rows` rows of `cls` classes; queued on the current stream. */
     public static void nllRows<E>(KernelBuffer<E> rowLoss, KernelBuffer<E> probs, KernelBuffer<E> targets, int64 rows, int64 cls) {
         uint32 ur = (uint32) rows;
         KernelStream s #= KernelStream.current();
         nll.launch(s, grid: [(ur + 255) / 256], block: [256])(rowLoss, probs, targets, ur, (uint32) cls);
-        s.sync();
     }
 
-    /** Row-wise cosine similarity of `a` and `b` (rows x d) with the saved norms; synced. */
+    /** Row-wise cosine similarity of `a` and `b` (rows x d) with the saved norms; queued on the current stream. */
     public static void cosineRows<E>(KernelBuffer<E> out, KernelBuffer<E> cache, KernelBuffer<E> a, KernelBuffer<E> b, int64 rows, int64 d, float32 eps) {
         KernelStream s #= KernelStream.current();
         cosine.launch(s, grid: [(uint32) rows], block: [256])(out, cache, a, b, (uint32) d, eps);
-        s.sync();
     }
 
     /** dlogits = (probs - onehot(target)) * g[0] / rows, one lane per element. */
@@ -123,15 +121,14 @@ public final class Loss {
         }
     }
 
-    /** The cross-entropy VJP over `rows` rows of `cls` classes from the scalar cotangent `g`; synced. */
+    /** The cross-entropy VJP over `rows` rows of `cls` classes from the scalar cotangent `g`; queued on the current stream. */
     public static void nllBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> probs, KernelBuffer<E> targets, KernelBuffer<E> g, int64 rows, int64 cls) {
         uint32 total = (uint32) (rows * cls);
         KernelStream s #= KernelStream.current();
         nllBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, probs, targets, g, (uint32) rows, (uint32) cls);
-        s.sync();
     }
 
-    /** The cosine VJP for `src` against `other` from the per-row cotangent `g` and the forward's cache; synced. */
+    /** The cosine VJP for `src` against `other` from the per-row cotangent `g` and the forward's cache; queued on the current stream. */
     public static void cosineBackward<E>(KernelBuffer<E> dsrc, KernelBuffer<E> g, KernelBuffer<E> src, KernelBuffer<E> other, KernelBuffer<E> cache,
                                          int64 rows, int64 d, float32 eps, boolean wantA) {
         int32 wa = 0;
@@ -139,6 +136,5 @@ public final class Loss {
         uint32 total = (uint32) (rows * d);
         KernelStream s #= KernelStream.current();
         cosineBack.launch(s, grid: [(total + 255) / 256], block: [256])(dsrc, g, src, other, cache, (uint32) rows, (uint32) d, eps, wa);
-        s.sync();
     }
 }

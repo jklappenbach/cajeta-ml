@@ -57,7 +57,7 @@ public final class Histogram {
         return nbins <= 4096L;
     }
 
-    /** Zeroes `hist` and runs variant `v` over the problem; synced. */
+    /** Zeroes `hist` and runs variant `v` over the problem; queued on the current stream. */
     public static void runVariant(int32 v, KernelBuffer<int64> hist, KernelBuffer<int32> bins, int64 segLen,
                                   int64 segments, int64 nbins) {
         Fill.with<int64>(hist, segments * nbins, 0L);
@@ -67,7 +67,6 @@ public final class Histogram {
         uint32 n = (uint32) (segLen * segments);
         KernelStream s #= KernelStream.current();
         histGlobal.launch(s, grid: [(n + 255) / 256], block: [256])(hist, bins, n, (uint32) segLen, (uint32) nbins);
-        s.sync();
     }
 
     /** Whether the last {@link #segments} timed its members (false when the store, an override or a lone survivor answered). */

@@ -82,7 +82,7 @@ public final class Scan {
         }
     }
 
-    /** `out[s*segLen + j]` = the prefix sum within segment `s`; `segments` segments of `segLen`; synced. */
+    /** `out[s*segLen + j]` = the prefix sum within segment `s`; `segments` segments of `segLen`; synced, since it drops device temporaries. */
     public static void segmented<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 segLen, int64 segments,
                                     boolean inclusive) {
         int64 n = segLen * segments;

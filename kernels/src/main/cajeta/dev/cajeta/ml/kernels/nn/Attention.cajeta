@@ -71,15 +71,14 @@ public final class Attention {
         }
     }
 
-    /** `out` (rows x nH x hd) = attention of the `rows` queries at positions startPos.., each over its causal prefix of the pools; hd a multiple of 32; synced. */
+    /** `out` (rows x nH x hd) = attention of the `rows` queries at positions startPos.., each over its causal prefix of the pools; hd a multiple of 32; queued on the current stream. */
     public static void prefill(KernelBuffer<float32> out, KernelBuffer<float32> q, KernelBuffer<float16> k, KernelBuffer<float16> v,
                                int64 rows, int64 nH, int64 nKv, int64 hd, int64 startPos, float32 scale) {
         KernelStream s #= KernelStream.current();
         flash.launch(s, grid: [(uint32) (rows * nH)], block: [32])(out, q, k, v, (uint32) rows, (uint32) nH, (uint32) nKv, (uint32) hd, (uint32) startPos, scale);
-        s.sync();
     }
 
-    /** `out` (nH x hd) = attention of one query over the first `count` positions; synced. */
+    /** `out` (nH x hd) = attention of one query over the first `count` positions; queued on the current stream. */
     public static void decode(KernelBuffer<float32> out, KernelBuffer<float32> q, KernelBuffer<float16> k, KernelBuffer<float16> v,
                               int64 nH, int64 nKv, int64 hd, int64 count, float32 scale) {
         Attention.prefill(out, q, k, v, 1L, nH, nKv, hd, count - 1L, scale);

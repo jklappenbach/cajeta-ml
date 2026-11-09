@@ -71,7 +71,7 @@ public final class FusedGemm<Epi> {
         }
     }
 
-    /** `c` (m x n) = Epi over `a` (m x k) . `b` (k x n) with `aux0` and `aux1` at the epilogue's disposal; synced. */
+    /** `c` (m x n) = Epi over `a` (m x k) . `b` (k x n) with `aux0` and `aux1` at the epilogue's disposal; queued on the current stream. */
     public void run(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
                     KernelBuffer<float32> aux0, KernelBuffer<float32> aux1, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
@@ -79,6 +79,5 @@ public final class FusedGemm<Epi> {
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
         KernelStream s #= KernelStream.current();
         gemm.launch(s, grid: [tiles], block: [64])(c, a, b, aux0, aux1, um, un, (uint32) k);
-        s.sync();
     }
 }

@@ -41,7 +41,7 @@ public final class Copy {
 
     /**
      * The strided copy over `dims` (1 to 4 axes, padded on the left) with per-axis input and
-     * output strides and base offsets; synced.
+     * output strides and base offsets; queued on the current stream.
      */
     public static void stridedInto<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64[] dims,
                                       int64[] inStrides, int64[] outStrides, int64 inOff, int64 outOff) {
@@ -65,15 +65,13 @@ public final class Copy {
         KernelStream s #= KernelStream.current();
         strided.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, un, r[1], r[2], r[3],
             si[0], si[1], si[2], si[3], so[0], so[1], so[2], so[3], (uint32) inOff, (uint32) outOff);
-        s.sync();
     }
 
-    /** `out[0..n)` = `in[0..n)`: one launch, synced. */
+    /** `out[0..n)` = `in[0..n)`: one launch, queued on the current stream. */
     public static void into<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 n) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         copy.launch(s, grid: [(un + 63) / 64], block: [64])(out, in, un);
-        s.sync();
     }
 
     /** `out[0..n)` = `in[0..n)`, launched on `s` with no sync. */

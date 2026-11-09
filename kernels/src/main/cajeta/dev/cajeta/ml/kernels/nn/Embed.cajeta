@@ -21,11 +21,10 @@ public final class Embed {
         }
     }
 
-    /** `out` (n x dim, float32) = the rows of `table` named by `ids`; synced. */
+    /** `out` (n x dim, float32) = the rows of `table` named by `ids`; queued on the current stream. */
     public static void rows<E>(KernelBuffer<float32> out, KernelBuffer<E> table, KernelBuffer<int32> ids, int64 n, int64 dim) {
         KernelStream s #= KernelStream.current();
         embed.launch(s, grid: [(uint32) n], block: [256])(out, table, ids, (uint32) dim);
-        s.sync();
     }
 
     /** out[i][j] = table[ids[i]][j] with ids carried as E values (exact below 2^24); an id outside the table reads as 0. */
@@ -42,12 +41,11 @@ public final class Embed {
         }
     }
 
-    /** out (n x dim) = the rows of `table` (vocab x dim) at the E-valued `ids`; synced. */
+    /** out (n x dim) = the rows of `table` (vocab x dim) at the E-valued `ids`; queued on the current stream. */
     public static void rowsAt<E>(KernelBuffer<E> out, KernelBuffer<E> table, KernelBuffer<E> ids, int64 n, int64 dim, int64 vocab) {
         uint32 total = (uint32) (n * dim);
         KernelStream s #= KernelStream.current();
         embedF.launch(s, grid: [(total + 255) / 256], block: [256])(out, table, ids, total, (uint32) dim, (uint32) vocab);
-        s.sync();
     }
 
     /** dw[v][j] = sum of g[i][j] over the rows i whose id is v: one lane per table element scanning the ids, no atomics. */
@@ -67,11 +65,10 @@ public final class Embed {
         }
     }
 
-    /** The embedding VJP: `g` (n x dim) scattered and summed into `dw` (vocab x dim) by the E-valued `ids`; synced. */
+    /** The embedding VJP: `g` (n x dim) scattered and summed into `dw` (vocab x dim) by the E-valued `ids`; queued on the current stream. */
     public static void scatterRows<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> ids, int64 vocab, int64 dim, int64 n) {
         uint32 total = (uint32) (vocab * dim);
         KernelStream s #= KernelStream.current();
         embedScatterAdd.launch(s, grid: [(total + 255) / 256], block: [256])(dw, g, ids, (uint32) vocab, (uint32) dim, (uint32) n);
-        s.sync();
     }
 }

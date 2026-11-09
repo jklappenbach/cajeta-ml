@@ -46,11 +46,10 @@ public final class HistShared<uint32 TR> {
         }
     }
 
-    /** Adds the counts of `segments` segments of `segLen` into `hist` (segments x nbins); synced. */
+    /** Adds the counts of `segments` segments of `segLen` into `hist` (segments x nbins); queued on the current stream. */
     public void run(KernelBuffer<int64> hist, KernelBuffer<int32> bins, int64 segLen, int64 segments, int64 nbins) {
         uint32 tiles = ((uint32) segLen + TR - 1) / TR;
         KernelStream s #= KernelStream.current();
         tile.launch(s, grid: [(uint32) segments * tiles], block: [256])(hist, bins, (uint32) segLen, tiles, (uint32) nbins);
-        s.sync();
     }
 }

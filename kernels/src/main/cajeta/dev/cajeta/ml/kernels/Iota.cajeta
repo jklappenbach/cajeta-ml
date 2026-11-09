@@ -14,12 +14,11 @@ public final class Iota {
         if (i < n) { out[i] = (E) i; }
     }
 
-    /** `out[0..n)` = 0, 1, 2, … at `E`: one launch, synced. */
+    /** `out[0..n)` = 0, 1, 2, … at `E`: one launch, queued on the current stream. */
     public static void into<E>(KernelBuffer<E> out, int64 n) {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         iota.launch(s, grid: [(un + 63) / 64], block: [64])(out, un);
-        s.sync();
     }
 
     /** `out[i] = i`, launched on `s` with no sync. */

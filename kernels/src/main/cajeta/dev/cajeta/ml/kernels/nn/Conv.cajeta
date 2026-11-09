@@ -189,7 +189,7 @@ public final class Conv {
         }
     }
 
-    /** `out` (n,oc,oh,ow) = conv2d of `x` (n,c,h,wd) with `w` (oc,c,kh,kw) plus `b` (oc); synced. The tiled
+    /** `out` (n,oc,oh,ow) = conv2d of `x` (n,c,h,wd) with `w` (oc,c,kh,kw) plus `b` (oc); queued on the current stream. The tiled
      *  kernel unless one channel's window outgrows the LDS chunk, then the direct one. */
     public static void forward<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
                                   int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
@@ -201,16 +201,14 @@ public final class Conv {
         }
         KernelStream s #= KernelStream.current();
         Conv.launchTiled<E>(s, out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
-        s.sync();
     }
 
-    /** The one-lane-per-output form of `forward`; synced. */
+    /** The one-lane-per-output form of `forward`; queued on the current stream. */
     public static void forwardDirect<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b,
                                         int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
                                         int64 oh, int64 ow, int32 stride, int32 pad) {
         KernelStream s #= KernelStream.current();
         Conv.launchDirect<E>(s, out, x, w, b, n, c, h, wd, oc, kh, kw, oh, ow, stride, pad);
-        s.sync();
     }
 
     /** Queues the tiled kernel on `s` without syncing; the caller must know 16 * kh * kw <= TILE_WORDS. */
@@ -273,13 +271,25 @@ public final class Conv {
         }
     }
 
-    /** dw[o][ci][a][e] = sum over the batch and the output plane of g * x, one lane per weight. */
+    /** dx = the conv2d input VJP of `g` (n,oc,oh,ow) with `w` (oc,c,kh,kw); queued on the current stream. */
+    public static void backwardInput<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> w,
+                                        int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
+                                        int64 oh, int64 ow, int32 stride, int32 pad) {
+        uint32 total = (uint32) (n * c * h * wd);
+        KernelStream s #= KernelStream.current();
+        convBackIn.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, w, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad);
+    }
+
+    /** part[w * splits + p] = the weight VJP of weight w over the batch slice p of `splits`: one lane per (weight, slice). */
     @Kernel
-    public static void convBackWeight<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
-                                     uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc, uint32 kh, uint32 kw,
-                                     uint32 oh, uint32 ow, int32 stride, int32 pad) {
-        uint32 t = KernelThread.globalIdX();
-        if (t < oc * c * kh * kw) {
+    public static void convBackWeightSplit<E>(KernelBuffer<float32> part, KernelBuffer<E> g, KernelBuffer<E> x,
+                                          uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc, uint32 kh, uint32 kw,
+                                          uint32 oh, uint32 ow, int32 stride, int32 pad, uint32 splits) {
+        uint32 lane = KernelThread.globalIdX();
+        if (lane < oc * c * kh * kw * splits) {
+            uint32 sp = lane % splits;
+            uint32 t = lane / splits;
             uint32 e = t % kw;
             uint32 q = t / kw;
             uint32 a = q % kh;
@@ -287,7 +297,7 @@ public final class Conv {
             uint32 ci = q % c;
             uint32 o = q / c;
             float32 acc = 0.0f;
-            uint32 bn = 0;
+            uint32 bn = sp;
             while (bn < n) {
                 uint32 y = 0;
                 while (y < oh) {
@@ -304,31 +314,41 @@ public final class Conv {
                     }
                     y = y + 1;
                 }
-                bn = bn + 1;
+                bn = bn + splits;
+            }
+            part[lane] = acc;
+        }
+    }
+
+    /** dw[w] = the sum of its `splits` partials, in slice order. */
+    @Kernel
+    public static void convBackWeightSum<E>(KernelBuffer<E> dw, KernelBuffer<float32> part, uint32 weights, uint32 splits) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < weights) {
+            float32 acc = 0.0f;
+            uint32 p = 0;
+            while (p < splits) {
+                acc = acc + part[t * splits + p];
+                p = p + 1;
             }
             dw[t] = (E) acc;
         }
     }
 
-    /** dx = the conv2d input VJP of `g` (n,oc,oh,ow) with `w` (oc,c,kh,kw); synced. */
-    public static void backwardInput<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> w,
-                                        int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
-                                        int64 oh, int64 ow, int32 stride, int32 pad) {
-        uint32 total = (uint32) (n * c * h * wd);
-        KernelStream s #= KernelStream.current();
-        convBackIn.launch(s, grid: [(total + 255) / 256], block: [256])(dx, g, w, (uint32) n, (uint32) c, (uint32) h,
-            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad);
-        s.sync();
-    }
-
-    /** dw = the conv2d weight VJP of `g` against `x`; synced. */
+    /** dw = the conv2d weight VJP of `g` against `x`; the batch is split across lanes so the launch fills the device (cajeta-ml-gpu 28.2.6); synced, since it drops device temporaries. */
     public static void backwardWeight<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
                                          int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
                                          int64 oh, int64 ow, int32 stride, int32 pad) {
         uint32 total = (uint32) (oc * c * kh * kw);
+        uint32 splits = (uint32) n;
+        if (splits > 32) { splits = 32; }
+        while (total * splits < 16384 && splits < (uint32) n) { splits = splits * 2; }
+        if (splits > (uint32) n) { splits = (uint32) n; }
         KernelStream s #= KernelStream.current();
-        convBackWeight.launch(s, grid: [(total + 255) / 256], block: [256])(dw, g, x, (uint32) n, (uint32) c, (uint32) h,
-            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad);
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) (total * splits));
+        convBackWeightSplit.launch(s, grid: [(total * splits + 255) / 256], block: [256])(part, g, x, (uint32) n, (uint32) c, (uint32) h,
+            (uint32) wd, (uint32) oc, (uint32) kh, (uint32) kw, (uint32) oh, (uint32) ow, stride, pad, splits);
+        convBackWeightSum.launch(s, grid: [(total + 255) / 256], block: [256])(dw, part, total, splits);
         s.sync();
     }
 }
