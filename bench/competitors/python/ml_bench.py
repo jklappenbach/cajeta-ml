@@ -232,9 +232,12 @@ def torch_meta(device):
     return m
 
 
+_TF32_OFF = False
+
+
 def torch_threads_note():
     import torch
-    return f"torch intra-op threads {torch.get_num_threads()}"
+    return f"torch intra-op threads {torch.get_num_threads()}" + ("; TF32 off" if _TF32_OFF else "")
 
 
 def torch_variant(name, variant):
@@ -261,6 +264,12 @@ def torch_variant(name, variant):
             return None, None, bc.skipped_row(broken, backend=torch_accel()[0], **meta,
                                               **torch_meta(True))
         dev = torch.device("cuda")
+        # The reference files are float32 exact; cudnn's TF32 default misses the
+        # conv2d tolerance on Ada (max |d| 1.6e-3 against 1e-4, Phoenix 2026-11-09).
+        global _TF32_OFF
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        _TF32_OFF = True
     meta.update(torch_meta(device))
     meta["backend"] = torch_accel()[0] if device else "cpu"
     if device:
