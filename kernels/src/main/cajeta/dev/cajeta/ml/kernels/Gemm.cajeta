@@ -893,16 +893,22 @@ public final class Gemm {
             Vector<E,4> pa1 = a.vload<4>((m0 + ar1) * k + ac0);
             Vector<E,4> pb0 = b.vload<4>(br0 * n + n0 + bc0);
             Vector<E,4> pb1 = b.vload<4>(br1 * n + n0 + bc0);
-            sa[(ac0 + 0) * 132 + ar0] = pa0.x;
-            sa[(ac0 + 1) * 132 + ar0] = pa0.y;
-            sa[(ac0 + 2) * 132 + ar0] = pa0.z;
-            sa[(ac0 + 3) * 132 + ar0] = pa0.w;
-            sa[(ac0 + 0) * 132 + ar1] = pa1.x;
-            sa[(ac0 + 1) * 132 + ar1] = pa1.y;
-            sa[(ac0 + 2) * 132 + ar1] = pa1.z;
-            sa[(ac0 + 3) * 132 + ar1] = pa1.w;
-            sb.vstore(br0 * 132 + bc0, pb0);
-            sb.vstore(br1 * 132 + bc0, pb1);
+            sa[(ac0 + 0) * 132 + ar0] = (float32) pa0.x;
+            sa[(ac0 + 1) * 132 + ar0] = (float32) pa0.y;
+            sa[(ac0 + 2) * 132 + ar0] = (float32) pa0.z;
+            sa[(ac0 + 3) * 132 + ar0] = (float32) pa0.w;
+            sa[(ac0 + 0) * 132 + ar1] = (float32) pa1.x;
+            sa[(ac0 + 1) * 132 + ar1] = (float32) pa1.y;
+            sa[(ac0 + 2) * 132 + ar1] = (float32) pa1.z;
+            sa[(ac0 + 3) * 132 + ar1] = (float32) pa1.w;
+            sb[br0 * 132 + bc0 + 0] = (float32) pb0.x;
+            sb[br0 * 132 + bc0 + 1] = (float32) pb0.y;
+            sb[br0 * 132 + bc0 + 2] = (float32) pb0.z;
+            sb[br0 * 132 + bc0 + 3] = (float32) pb0.w;
+            sb[br1 * 132 + bc0 + 0] = (float32) pb1.x;
+            sb[br1 * 132 + bc0 + 1] = (float32) pb1.y;
+            sb[br1 * 132 + bc0 + 2] = (float32) pb1.z;
+            sb[br1 * 132 + bc0 + 3] = (float32) pb1.w;
             Barrier.workgroup();
             while (k0 < kFull) {
                 uint32 next = k0 + 16;
@@ -1003,16 +1009,22 @@ public final class Gemm {
                 }
                 Barrier.workgroup();
                 if (more) {
-                    sa[(ac0 + 0) * 132 + ar0] = pa0.x;
-                    sa[(ac0 + 1) * 132 + ar0] = pa0.y;
-                    sa[(ac0 + 2) * 132 + ar0] = pa0.z;
-                    sa[(ac0 + 3) * 132 + ar0] = pa0.w;
-                    sa[(ac0 + 0) * 132 + ar1] = pa1.x;
-                    sa[(ac0 + 1) * 132 + ar1] = pa1.y;
-                    sa[(ac0 + 2) * 132 + ar1] = pa1.z;
-                    sa[(ac0 + 3) * 132 + ar1] = pa1.w;
-                    sb.vstore(br0 * 132 + bc0, pb0);
-                    sb.vstore(br1 * 132 + bc0, pb1);
+                    sa[(ac0 + 0) * 132 + ar0] = (float32) pa0.x;
+                    sa[(ac0 + 1) * 132 + ar0] = (float32) pa0.y;
+                    sa[(ac0 + 2) * 132 + ar0] = (float32) pa0.z;
+                    sa[(ac0 + 3) * 132 + ar0] = (float32) pa0.w;
+                    sa[(ac0 + 0) * 132 + ar1] = (float32) pa1.x;
+                    sa[(ac0 + 1) * 132 + ar1] = (float32) pa1.y;
+                    sa[(ac0 + 2) * 132 + ar1] = (float32) pa1.z;
+                    sa[(ac0 + 3) * 132 + ar1] = (float32) pa1.w;
+                    sb[br0 * 132 + bc0 + 0] = (float32) pb0.x;
+                    sb[br0 * 132 + bc0 + 1] = (float32) pb0.y;
+                    sb[br0 * 132 + bc0 + 2] = (float32) pb0.z;
+                    sb[br0 * 132 + bc0 + 3] = (float32) pb0.w;
+                    sb[br1 * 132 + bc0 + 0] = (float32) pb1.x;
+                    sb[br1 * 132 + bc0 + 1] = (float32) pb1.y;
+                    sb[br1 * 132 + bc0 + 2] = (float32) pb1.z;
+                    sb[br1 * 132 + bc0 + 3] = (float32) pb1.w;
                     Barrier.workgroup();
                 }
                 k0 = next;
@@ -1271,8 +1283,26 @@ public final class Gemm {
         s.sync();
     }
 
-    /** `c` (m x n) = `a` (m x k) . `b` (k x n), all at E, through the plain tile; synced. */
+    /**
+     * The number of 128x128 tiles of an m x n result at or above which the large members
+     * win. Measured on the RTX 4090 (sm_89, 128 SMs) on 2026-11-09: at 16 tiles (512^2) the
+     * 16x16 members tie or win, at 64 (1024^2) the large ones run 1.5x (f16) and 2.7x (f32)
+     * faster, and a single row or n = 64 never fills enough tiles to pay.
+     */
+    public static final int64 LARGE_TILES = 32L;
+
+    /** Whether an m x n result has enough 128x128 tiles for the large members. */
+    public static boolean large(int64 m, int64 n) {
+        return ((m + 127L) / 128L) * ((n + 127L) / 128L) >= Gemm.LARGE_TILES;
+    }
+
+    /**
+     * `c` (m x n) = `a` (m x k) . `b` (k x n), all at E; synced. A shape with LARGE_TILES or
+     * more 128x128 tiles runs on the wide register tile (one fused rounding per step), any
+     * other on the plain tile (a sequential float32 sum).
+     */
     public static void tiled<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
+        if (Gemm.large(m, n)) { Gemm.tiled128<E>(c, a, b, m, n, k); return; }
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
@@ -1281,7 +1311,7 @@ public final class Gemm {
         s.sync();
     }
 
-    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E; synced. */
+    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the 16x16 member; synced. For f16 and bf16 at Gemm.large shapes, run128 is the faster member (run is instantiated at float32 too, where a 128x128 software tile would not pay). */
     public static void run<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;

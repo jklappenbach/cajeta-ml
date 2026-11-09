@@ -131,6 +131,27 @@ public class GemmTest {
         GemmTest.tiledCase<float32>("gemmTiled_float32", 7L, 1000L, 2049L);
     }
 
+    /** The route check: `big` launched since `bigBefore`, and `small` did not since `smallBefore`. */
+    static void routes(String big, String small, int64 bigBefore, int64 smallBefore) {
+        Assert.isTrue(Device.kernelLaunchCount(big) > bigBefore);
+        Assert.equals(smallBefore, Device.kernelLaunchCount(small));
+    }
+
+    /** 19.2.2: Gemm.tiled at 32 or more 128x128 tiles routes to the wide register tile, below it stays on the plain tile; results right either way. */
+    @Test
+    public void largeShapesRouteToTheWideRegisterTileAndStayRight() {
+        if (GemmTest.usable("gemmTiled128_float32")) {
+            int64 b0 = Device.kernelLaunchCount("gemmTiled128_float32");
+            int64 s0 = Device.kernelLaunchCount("gemmTiled_float32");
+            GemmTest.tiledCase<float32>("gemmTiled128_float32", 1024L, 768L, 40L);
+            GemmTest.tiledCase<float32>("gemmTiled128_float32", 1000L, 1000L, 37L);
+            GemmTest.routes("gemmTiled128_float32", "gemmTiled_float32", b0, s0);
+            int64 b1 = Device.kernelLaunchCount("gemmTiled128_float32");
+            GemmTest.tiledCase<float32>("gemmTiled_float32", 300L, 500L, 100L);
+            GemmTest.routes("gemmTiled_float32", "gemmTiled128_float32", s0, b1);
+        }
+    }
+
     @Test
     public void f16GemmMatchesTheHostAtSquareAndLlmShapes() {
         if (!GemmTest.usable("gemm16_float16")) { return; }
