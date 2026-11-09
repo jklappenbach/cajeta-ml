@@ -1,0 +1,159 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 19.2.2: the 128x128 member of the GEMM family, one kernel for every
+ * backend, against a host GEMM in float64 within 19.1.1's tolerance. The shapes cover one
+ * whole tile, several tiles and K slabs, ragged edges on each axis, a single row, a long K
+ * and a tall M, so every zero-filled edge of the staging is read. The register-blocked
+ * plain tile (tiled64) is held to gemmTiled's own bar: each output summed in k order.
+ */
+public class GemmTileTest {
+    public GemmTileTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) ((((i * 7919L) % 251L) - 125L) % 5L) * 0.5f;
+    }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "cajeta-ml-gpu 19.2.2"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "cajeta-ml-gpu 19.2.2");
+            return false;
+        }
+        return true;
+    }
+
+    static void tileCase<E>(String kernel, int64 m, int64 n, int64 k) {
+        E[] ha = heap E[m * k];
+        E[] hb = heap E[k * n];
+        float32[] fa = heap float32[m * k];
+        float32[] fb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < m * k) { fa[(int32) i] = GemmTileTest.pattern(i); ha[(int32) i] = (E) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = GemmTileTest.pattern(i + 17L); hb[(int32) i] = (E) fb[(int32) i]; i = i + 1L; }
+        KernelBuffer<E> a = heap KernelBuffer<E>((uint64) (m * k));
+        KernelBuffer<E> b = heap KernelBuffer<E>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        // A stale C must not survive: fill it with a value no product here makes.
+        float32[] got = heap float32[m * n];
+        i = 0L;
+        while (i < m * n) { got[(int32) i] = 12345.0f; i = i + 1L; }
+        c.upload(got);
+        int64[] mk #= ValueCheck.mark();
+        Gemm.run128<E>(c, a, b, m, n, k);
+        c.download(got);
+        int64 r = 0L;
+        int32 bad = 0;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 df = (float64) got[(int32) (r * n + col)] - acc;
+                if (df < 0.0) { df = 0.0 - df; }
+                float64 w = acc;
+                if (w < 0.0) { w = 0.0 - w; }
+                if (df > 1.0e-5 * (w + 1.0) + (float64) k * 1.0e-7) {
+                    if (bad < 3) {
+                        System.stdout.println(kernel + " " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + (float64) got[(int32) (r * n + col)] + " want " + acc);
+                    }
+                    bad = bad + 1;
+                }
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(mk);
+    }
+
+    static void tiled64Case<E>(String kernel, int64 m, int64 n, int64 k) {
+        E[] ha = heap E[m * k];
+        E[] hb = heap E[k * n];
+        float32[] fa = heap float32[m * k];
+        float32[] fb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < m * k) { fa[(int32) i] = GemmTileTest.pattern(i); ha[(int32) i] = (E) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = GemmTileTest.pattern(i + 17L); hb[(int32) i] = (E) fb[(int32) i]; i = i + 1L; }
+        KernelBuffer<E> a = heap KernelBuffer<E>((uint64) (m * k));
+        KernelBuffer<E> b = heap KernelBuffer<E>((uint64) (k * n));
+        KernelBuffer<E> c = heap KernelBuffer<E>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        E[] got = heap E[m * n];
+        i = 0L;
+        while (i < m * n) { got[(int32) i] = (E) 12345.0f; i = i + 1L; }
+        c.upload(got);
+        int64[] mk #= ValueCheck.mark();
+        Gemm.tiled64<E>(c, a, b, m, n, k);
+        c.download(got);
+        int64 r = 0L;
+        int32 bad = 0;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 df = (float64) got[(int32) (r * n + col)] - acc;
+                if (df < 0.0) { df = 0.0 - df; }
+                float64 w = acc;
+                if (w < 0.0) { w = 0.0 - w; }
+                if (df > 1.0e-5 * (w + 1.0) + (float64) k * 1.0e-7) {
+                    if (bad < 3) {
+                        System.stdout.println(kernel + " " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + (float64) got[(int32) (r * n + col)] + " want " + acc);
+                    }
+                    bad = bad + 1;
+                }
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void f32RegisterTileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmTiled64_float32")) { return; }
+        GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 64L, 64L, 16L);
+        GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 3L, 5L, 7L);
+        GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 257L, 33L, 129L);
+        GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 300L, 500L, 100L);
+        GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 7L, 1000L, 2049L);
+        GemmTileTest.tiled64Case<float32>("gemmTiled64_float32", 4096L, 64L, 512L);
+    }
+
+    @Test
+    public void f16TileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemm128_float16")) { return; }
+        GemmTileTest.tileCase<float16>("gemm128_float16", 128L, 128L, 32L);
+        GemmTileTest.tileCase<float16>("gemm128_float16", 256L, 256L, 96L);
+        GemmTileTest.tileCase<float16>("gemm128_float16", 257L, 33L, 129L);
+        GemmTileTest.tileCase<float16>("gemm128_float16", 300L, 500L, 100L);
+        GemmTileTest.tileCase<float16>("gemm128_float16", 1L, 4096L, 2048L);
+        GemmTileTest.tileCase<float16>("gemm128_float16", 7L, 1000L, 2049L);
+        GemmTileTest.tileCase<float16>("gemm128_float16", 4096L, 64L, 512L);
+    }
+
+    @Test
+    public void bf16TileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemm128_bfloat16")) { return; }
+        GemmTileTest.tileCase<bfloat16>("gemm128_bfloat16", 128L, 128L, 32L);
+        GemmTileTest.tileCase<bfloat16>("gemm128_bfloat16", 257L, 33L, 129L);
+        GemmTileTest.tileCase<bfloat16>("gemm128_bfloat16", 7L, 1000L, 2049L);
+    }
+}
