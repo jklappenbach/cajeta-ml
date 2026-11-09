@@ -35,7 +35,7 @@
         // in .. first, which puts it in ~/.olla where this resolves.
         "dependencies": {
             "dev.cajeta.bench": "0.1.5",
-            "dev.cajeta.ml":    "0.11.2"
+            "dev.cajeta.ml":    "0.11.5"
         },
 
         "repositories": [
