@@ -14,6 +14,10 @@
 #   4. python competitors/python/ml_bench.py → python.csv (with --competitors)
 #   5. merge  results.csv = both, one schema-v2 header
 # into results/<machine>/<run-id>/, run-id `<UTC basic>-<cajeta version>`.
+# A second call on the same run id (CAJETA_BENCH_RUN_ID, one --bench at a
+# time) appends its rows to cajeta.csv and python.csv and rebuilds results.csv,
+# so a run built id by id keeps every id (benchmark-reference 22.2.7); the env
+# block is written once.
 #
 # Environment: CAJETA_BENCH_SMOKE=1 (reduced sizes, warmup 1, trials 3, rows
 # tagged smoke), CAJETA_BENCH_NO_GPU=1 (device rows skipped on both sides; the
@@ -96,7 +100,9 @@ t=$(date +%s)
 step "cajeta: $bin --run${bench:+ --bench $bench}"
 "$bin" --run --out "$run_dir/results.csv" ${bench:+--bench "$bench"}
 crc=$?
-mv "$run_dir/results.csv" "$run_dir/cajeta.csv"
+# append <new> <kept>: the new file's rows join the kept one, one header.
+append() { if [[ -s "$2" ]]; then tail -n +2 "$1" >> "$2"; rm -f "$1"; else mv "$1" "$2"; fi; }
+append "$run_dir/results.csv" "$run_dir/cajeta.csv"
 echo "   cajeta: $(secs $t) s (exit $crc)"
 
 # 4. the competitor rows
@@ -109,8 +115,9 @@ if [[ $competitors -eq 1 ]]; then
     # fails the runtime's blit-kernel link and torch segfaults on its first device
     # allocation. It must not share ~/.cache/comgr with the box's ROCm either: a
     # failed link leaves entries that poison every later run (proton, 2026-11-08).
-    ( cd "$here/competitors/python" && env -u HIP_DEVICE_LIB_PATH AMD_COMGR_CACHE_DIR="$here/build/comgr-cache-torch" "$PY" ml_bench.py --data "$data" --out "$run_dir/python.csv" ${bench:+--bench "$bench"} )
+    ( cd "$here/competitors/python" && env -u HIP_DEVICE_LIB_PATH AMD_COMGR_CACHE_DIR="$here/build/comgr-cache-torch" "$PY" ml_bench.py --data "$data" --out "$run_dir/python.new.csv" ${bench:+--bench "$bench"} )
     prc=$?
+    [[ -s "$run_dir/python.new.csv" ]] && append "$run_dir/python.new.csv" "$run_dir/python.csv"
     echo "   python: $(secs $t) s (exit $prc)"
 fi
 
@@ -119,7 +126,7 @@ fi
     cat "$run_dir/cajeta.csv"
     [[ -f "$run_dir/python.csv" ]] && tail -n +2 "$run_dir/python.csv"
 } > "$run_dir/results.csv"
-{
+grep -q '^scale,' "$run_dir/env.csv" 2>/dev/null || {
     echo "python,$("$PY" -c 'import platform; print(platform.python_version())')"
     "$PY" -c 'import numpy, sklearn, torch; print(f"numpy,{numpy.__version__}\nscikit-learn,{sklearn.__version__}\ntorch,{torch.__version__}")'
     echo "dev.cajeta.ml,$ML_VERSION"
