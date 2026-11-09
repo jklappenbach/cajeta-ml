@@ -111,8 +111,57 @@ public final class Gemm {
             for (uint32 j = 0; j < 4; j = j + 1) { acc[i][j].splat(0.0f); }
         }
         CooperativeMatrix<E,16,16,0> ma;
-        CooperativeMatrix<E,16,16,1> mb;
+        CooperativeMatrix<E,16,16,1>[4] mb;
+        // A tile wholly inside A and B, at strides an 8-wide load can take, runs its whole
+        // 32-slabs on vector loads, the next slab loaded into registers while the current
+        // one multiplies; a ragged K tail and every edge tile stage through zero fill.
+        boolean wide = m0 + 128 <= m && n0 + 128 <= n && (k % 8) == 0 && (n % 8) == 0;
+        uint32 kFull = 0;
+        if (wide) { kFull = (k / 32) * 32; }
+        uint32 ar0 = t / 4;
+        uint32 ac0 = (t - ar0 * 4) * 8;
+        uint32 ar1 = ar0 + 64;
+        uint32 br0 = t / 16;
+        uint32 bc0 = (t - br0 * 16) * 8;
+        uint32 br1 = br0 + 16;
         uint32 k0 = 0;
+        if (kFull > 0) {
+            Vector<E,8> pa0 = a.vload<8>((m0 + ar0) * k + ac0);
+            Vector<E,8> pa1 = a.vload<8>((m0 + ar1) * k + ac0);
+            Vector<E,8> pb0 = b.vload<8>(br0 * n + n0 + bc0);
+            Vector<E,8> pb1 = b.vload<8>(br1 * n + n0 + bc0);
+            sa.vstore(ar0 * 40 + ac0, pa0);
+            sa.vstore(ar1 * 40 + ac0, pa1);
+            sb.vstore(br0 * 136 + bc0, pb0);
+            sb.vstore(br1 * 136 + bc0, pb1);
+            Barrier.workgroup();
+            while (k0 < kFull) {
+                uint32 next = k0 + 32;
+                boolean more = next < kFull;
+                if (more) {
+                    pa0 = a.vload<8>((m0 + ar0) * k + next + ac0);
+                    pa1 = a.vload<8>((m0 + ar1) * k + next + ac0);
+                    pb0 = b.vload<8>((next + br0) * n + n0 + bc0);
+                    pb1 = b.vload<8>((next + br1) * n + n0 + bc0);
+                }
+                for (uint32 ks = 0; ks < 2; ks = ks + 1) {
+                    for (uint32 j = 0; j < 4; j = j + 1) { mb[j].load(sb, ks * 16 * 136 + wn * 64 + j * 16, 0, 136); }
+                    for (uint32 i = 0; i < 2; i = i + 1) {
+                        ma.load(sa, (wm * 32 + i * 16) * 40 + ks * 16, 0, 40);
+                        for (uint32 j = 0; j < 4; j = j + 1) { acc[i][j].mma(ma, mb[j]); }
+                    }
+                }
+                Barrier.workgroup();
+                if (more) {
+                    sa.vstore(ar0 * 40 + ac0, pa0);
+                    sa.vstore(ar1 * 40 + ac0, pa1);
+                    sb.vstore(br0 * 136 + bc0, pb0);
+                    sb.vstore(br1 * 136 + bc0, pb1);
+                    Barrier.workgroup();
+                }
+                k0 = next;
+            }
+        }
         while (k0 < k) {
             uint32 idx = t;
             while (idx < 4096) {
@@ -134,12 +183,10 @@ public final class Gemm {
             }
             Barrier.workgroup();
             for (uint32 ks = 0; ks < 2; ks = ks + 1) {
+                for (uint32 j = 0; j < 4; j = j + 1) { mb[j].load(sb, ks * 16 * 136 + wn * 64 + j * 16, 0, 136); }
                 for (uint32 i = 0; i < 2; i = i + 1) {
                     ma.load(sa, (wm * 32 + i * 16) * 40 + ks * 16, 0, 40);
-                    for (uint32 j = 0; j < 4; j = j + 1) {
-                        mb.load(sb, ks * 16 * 136 + wn * 64 + j * 16, 0, 136);
-                        acc[i][j].mma(ma, mb);
-                    }
+                    for (uint32 j = 0; j < 4; j = j + 1) { acc[i][j].mma(ma, mb[j]); }
                 }
             }
             Barrier.workgroup();

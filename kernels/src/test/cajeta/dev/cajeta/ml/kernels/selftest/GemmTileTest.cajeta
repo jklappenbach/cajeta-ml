@@ -142,6 +142,7 @@ public class GemmTileTest {
         if (!GemmTileTest.usable("gemm128_float16")) { return; }
         GemmTileTest.tileCase<float16>("gemm128_float16", 128L, 128L, 32L);
         GemmTileTest.tileCase<float16>("gemm128_float16", 256L, 256L, 96L);
+        GemmTileTest.tileCase<float16>("gemm128_float16", 256L, 256L, 104L);
         GemmTileTest.tileCase<float16>("gemm128_float16", 257L, 33L, 129L);
         GemmTileTest.tileCase<float16>("gemm128_float16", 300L, 500L, 100L);
         GemmTileTest.tileCase<float16>("gemm128_float16", 1L, 4096L, 2048L);
