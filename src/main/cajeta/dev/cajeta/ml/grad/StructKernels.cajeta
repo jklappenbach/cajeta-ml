@@ -835,7 +835,7 @@ public final class StructKernels {
 
     static #Tensor<E> layerNorm<E extends Floating>(Tensor<E> x, Tensor<E> gamma,
                                                     Tensor<E> beta, float64 eps,
-                                                    Tensor<E> xhat, Tensor<E> invstd) {
+                                                    Tensor<E> mean, Tensor<E> invstd) {
         int64 d = x.shapeAt(x.ndim() - 1);
         int64 rows = 1;
         int32 k = 0;
@@ -861,11 +861,11 @@ public final class StructKernels {
                 j = j + 1;
             }
             float64 iv = 1.0 / Math.sqrt(vacc / (float64) d + eps);
+            mean.flatSet(r, (E) mu);
             invstd.flatSet(r, (E) iv);
             j = 0;
             while (j < d) {
                 float64 xh = ((float64) x.flatGet(r * d + j) - mu) * iv;
-                xhat.flatSet(r * d + j, (E) xh);
                 float64 ov = (float64) gamma.flatGet(j) * xh
                            + (float64) beta.flatGet(j);
                 out.flatSet(r * d + j, (E) ov);
@@ -876,9 +876,9 @@ public final class StructKernels {
         return #out;
     }
 
-    /** dL/dx for layerNorm — the per-ROW analogue of the batchNorm rule. */
-    static #Tensor<E> layerNormBackIn<E extends Floating>(Tensor<E> g, Tensor<E> xhat,
-                                                          Tensor<E> gamma,
+    /** dL/dx for layerNorm, the per-row analogue of the batchNorm rule; xhat is recomputed from x and the row statistics. */
+    static #Tensor<E> layerNormBackIn<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                          Tensor<E> gamma, Tensor<E> mean,
                                                           Tensor<E> invstd) {
         Tensor<E> dx #= Tensor.zerosLike<E>(g);
         int64 d = g.shapeAt(g.ndim() - 1);
@@ -891,6 +891,7 @@ public final class StructKernels {
         int64 r = 0;
         while (r < rows) {
             float64 iv = (float64) invstd.flatGet(r);
+            float64 mu = (float64) mean.flatGet(r);
             float64 sumDx = 0.0;
             float64 sumDxXh = 0.0;
             int64 j = 0;
@@ -898,15 +899,16 @@ public final class StructKernels {
                 float64 dxh = (float64) g.flatGet(r * d + j)
                             * (float64) gamma.flatGet(j);
                 sumDx = sumDx + dxh;
-                sumDxXh = sumDxXh + dxh * (float64) xhat.flatGet(r * d + j);
+                sumDxXh = sumDxXh + dxh * (((float64) x.flatGet(r * d + j) - mu) * iv);
                 j = j + 1;
             }
             j = 0;
             while (j < d) {
                 float64 dxh = (float64) g.flatGet(r * d + j)
                             * (float64) gamma.flatGet(j);
+                float64 xh = ((float64) x.flatGet(r * d + j) - mu) * iv;
                 float64 v = iv / (float64) d * ((float64) d * dxh - sumDx
-                            - (float64) xhat.flatGet(r * d + j) * sumDxXh);
+                            - xh * sumDxXh);
                 dx.flatSet(r * d + j, (E) v);
                 j = j + 1;
             }
@@ -915,9 +917,9 @@ public final class StructKernels {
         return #dx;
     }
 
-    /** dL/dgamma for layerNorm: Σ over rows of g·x̂ (per last-axis position). */
-    static #Tensor<E> layerNormBackScale<E extends Floating>(Tensor<E> g,
-                                                             Tensor<E> xhat) {
+    /** dL/dgamma for layerNorm: Σ over rows of g·x̂ (per last-axis position), x̂ recomputed from x and the row statistics. */
+    static #Tensor<E> layerNormBackScale<E extends Floating>(Tensor<E> g, Tensor<E> x,
+                                                             Tensor<E> mean, Tensor<E> invstd) {
         int64 d = g.shapeAt(g.ndim() - 1);
         int64 rows = 1;
         int32 k = 0;
@@ -932,8 +934,9 @@ public final class StructKernels {
             float64 acc = 0.0;
             int64 r = 0;
             while (r < rows) {
-                acc = acc + (float64) g.flatGet(r * d + j)
-                          * (float64) xhat.flatGet(r * d + j);
+                float64 xh = ((float64) x.flatGet(r * d + j) - (float64) mean.flatGet(r))
+                           * (float64) invstd.flatGet(r);
+                acc = acc + (float64) g.flatGet(r * d + j) * xh;
                 r = r + 1;
             }
             dg.flatSet(j, (E) acc);

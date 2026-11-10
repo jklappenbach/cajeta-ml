@@ -82,9 +82,9 @@ public final class Norm {
         }
     }
 
-    /** layernorm that also saves each element's xhat and each row's 1/std, the backward's state. */
+    /** layernorm that also saves each row's mean and 1/std, the backward's state; xhat is recomputed from them. */
     @Kernel
-    public static void layernormSaved<E>(KernelBuffer<E> out, KernelBuffer<E> xhat, KernelBuffer<E> invstd, KernelBuffer<E> x,
+    public static void layernormSaved<E>(KernelBuffer<E> out, KernelBuffer<E> mean, KernelBuffer<E> invstd, KernelBuffer<E> x,
                                          KernelBuffer<E> w, KernelBuffer<E> b, uint32 cols, float32 eps) {
         Shared<float32> part = shared float32[256];
         uint32 lane = KernelThread.x();
@@ -124,15 +124,15 @@ public final class Norm {
             if (lane == 0) { part[1] = var; }
             Barrier.workgroup();
             float32 ivr = 1.0f / Math.sqrt(part[1] / (float32) cols + eps);
-            if (lane == 0) { invstd[row] = (E) ivr; }
-            if (i0 < cols) { float32 h0 = (v0 - mu) * ivr; xhat[base + i0] = (E) h0; out[base + i0] = (E) ((float32) w[i0] * h0 + (float32) b[i0]); }
-            if (i1 < cols) { float32 h1 = (v1 - mu) * ivr; xhat[base + i1] = (E) h1; out[base + i1] = (E) ((float32) w[i1] * h1 + (float32) b[i1]); }
-            if (i2 < cols) { float32 h2 = (v2 - mu) * ivr; xhat[base + i2] = (E) h2; out[base + i2] = (E) ((float32) w[i2] * h2 + (float32) b[i2]); }
-            if (i3 < cols) { float32 h3 = (v3 - mu) * ivr; xhat[base + i3] = (E) h3; out[base + i3] = (E) ((float32) w[i3] * h3 + (float32) b[i3]); }
-            if (i4 < cols) { float32 h4 = (v4 - mu) * ivr; xhat[base + i4] = (E) h4; out[base + i4] = (E) ((float32) w[i4] * h4 + (float32) b[i4]); }
-            if (i5 < cols) { float32 h5 = (v5 - mu) * ivr; xhat[base + i5] = (E) h5; out[base + i5] = (E) ((float32) w[i5] * h5 + (float32) b[i5]); }
-            if (i6 < cols) { float32 h6 = (v6 - mu) * ivr; xhat[base + i6] = (E) h6; out[base + i6] = (E) ((float32) w[i6] * h6 + (float32) b[i6]); }
-            if (i7 < cols) { float32 h7 = (v7 - mu) * ivr; xhat[base + i7] = (E) h7; out[base + i7] = (E) ((float32) w[i7] * h7 + (float32) b[i7]); }
+            if (lane == 0) { mean[row] = (E) mu; invstd[row] = (E) ivr; }
+            if (i0 < cols) { float32 h0 = (v0 - mu) * ivr; out[base + i0] = (E) ((float32) w[i0] * h0 + (float32) b[i0]); }
+            if (i1 < cols) { float32 h1 = (v1 - mu) * ivr; out[base + i1] = (E) ((float32) w[i1] * h1 + (float32) b[i1]); }
+            if (i2 < cols) { float32 h2 = (v2 - mu) * ivr; out[base + i2] = (E) ((float32) w[i2] * h2 + (float32) b[i2]); }
+            if (i3 < cols) { float32 h3 = (v3 - mu) * ivr; out[base + i3] = (E) ((float32) w[i3] * h3 + (float32) b[i3]); }
+            if (i4 < cols) { float32 h4 = (v4 - mu) * ivr; out[base + i4] = (E) ((float32) w[i4] * h4 + (float32) b[i4]); }
+            if (i5 < cols) { float32 h5 = (v5 - mu) * ivr; out[base + i5] = (E) ((float32) w[i5] * h5 + (float32) b[i5]); }
+            if (i6 < cols) { float32 h6 = (v6 - mu) * ivr; out[base + i6] = (E) ((float32) w[i6] * h6 + (float32) b[i6]); }
+            if (i7 < cols) { float32 h7 = (v7 - mu) * ivr; out[base + i7] = (E) ((float32) w[i7] * h7 + (float32) b[i7]); }
             return;
         }
         float32 acc = 0.0f;
@@ -160,11 +160,10 @@ public final class Norm {
             s = s / 2;
         }
         float32 iv = 1.0f / Math.sqrt(part[0] / (float32) cols + eps);
-        if (lane == 0) { invstd[row] = (E) iv; }
+        if (lane == 0) { mean[row] = (E) mu; invstd[row] = (E) iv; }
         uint32 j = lane;
         while (j < cols) {
             float32 xh = ((float32) x[base + j] - mu) * iv;
-            xhat[base + j] = (E) xh;
             out[base + j] = (E) ((float32) w[j] * xh + (float32) b[j]);
             j = j + 256;
         }
@@ -236,21 +235,23 @@ public final class Norm {
         }
     }
 
-    /** The layernorm input VJP per row: invstd/d * (d*dxh - sum dxh - xhat * sum dxh*xhat), dxh = g*w. */
+    /** The layernorm input VJP per row: invstd/d * (d*dxh - sum dxh - xhat * sum dxh*xhat), dxh = g*w, xhat = (x - mean) * invstd. */
     @Kernel
-    public static void layernormBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> xhat, KernelBuffer<E> w, KernelBuffer<E> invstd, uint32 cols) {
+    public static void layernormBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> mean, KernelBuffer<E> invstd, uint32 cols) {
         Shared<float32> pa = shared float32[256];
         Shared<float32> pb = shared float32[256];
         uint32 lane = KernelThread.x();
         uint32 row = Workgroup.x();
         uint32 base = row * cols;
+        float32 mu = (float32) mean[row];
+        float32 iv = (float32) invstd[row];
         float32 sa = 0.0f;
         float32 sb = 0.0f;
         uint32 i = lane;
         while (i < cols) {
             float32 dxh = (float32) g[base + i] * (float32) w[i];
             sa = sa + dxh;
-            sb = sb + dxh * (float32) xhat[base + i];
+            sb = sb + dxh * (((float32) x[base + i] - mu) * iv);
             i = i + 256;
         }
         pa[lane] = sa;
@@ -264,19 +265,19 @@ public final class Norm {
         }
         float32 sumDx = pa[0];
         float32 sumDxXh = pb[0];
-        float32 iv = (float32) invstd[row];
         float32 d = (float32) cols;
         uint32 j = lane;
         while (j < cols) {
             float32 dxh = (float32) g[base + j] * (float32) w[j];
-            dx[base + j] = (E) (iv / d * (d * dxh - sumDx - (float32) xhat[base + j] * sumDxXh));
+            float32 xh = ((float32) x[base + j] - mu) * iv;
+            dx[base + j] = (E) (iv / d * (d * dxh - sumDx - xh * sumDxXh));
             j = j + 256;
         }
     }
 
-    /** dw[j] = sum over rows of g*xhat and db[j] = sum of g: one lane per column. */
+    /** dw[j] = sum over rows of g*xhat and db[j] = sum of g, xhat = (x - mean) * invstd: one lane per column. */
     @Kernel
-    public static void layernormParamGrads<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<E> g, KernelBuffer<E> xhat, uint32 rows, uint32 cols) {
+    public static void layernormParamGrads<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<E> g, KernelBuffer<E> x, KernelBuffer<E> mean, KernelBuffer<E> invstd, uint32 rows, uint32 cols) {
         uint32 j = KernelThread.globalIdX();
         if (j < cols) {
             float32 sa = 0.0f;
@@ -284,7 +285,7 @@ public final class Norm {
             uint32 r = 0;
             while (r < rows) {
                 float32 gv = (float32) g[r * cols + j];
-                sa = sa + gv * (float32) xhat[r * cols + j];
+                sa = sa + gv * (((float32) x[r * cols + j] - (float32) mean[r]) * (float32) invstd[r]);
                 sb = sb + gv;
                 r = r + 1;
             }
@@ -305,11 +306,11 @@ public final class Norm {
         layernorm.launch(s, grid: [(uint32) rows], block: [256])(out, x, w, b, (uint32) cols, eps);
     }
 
-    /** layernorm of each row with the saved xhat and per-row invstd; queued on the current stream. */
-    public static void layerSaved<E>(KernelBuffer<E> out, KernelBuffer<E> xhat, KernelBuffer<E> invstd, KernelBuffer<E> x,
+    /** layernorm of each row with the per-row mean and invstd saved; queued on the current stream. */
+    public static void layerSaved<E>(KernelBuffer<E> out, KernelBuffer<E> mean, KernelBuffer<E> invstd, KernelBuffer<E> x,
                                      KernelBuffer<E> w, KernelBuffer<E> b, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
-        layernormSaved.launch(s, grid: [(uint32) rows], block: [256])(out, xhat, invstd, x, w, b, (uint32) cols, eps);
+        layernormSaved.launch(s, grid: [(uint32) rows], block: [256])(out, mean, invstd, x, w, b, (uint32) cols, eps);
     }
 
     /** The row-normalisation VJP over `rows` rows, `y` the normalised rows; queued on the current stream. */
@@ -318,17 +319,17 @@ public final class Norm {
         l2normBack.launch(s, grid: [(uint32) rows], block: [256])(out, x, y, g, (uint32) cols, eps);
     }
 
-    /** The layernorm input VJP over `rows` rows; queued on the current stream. */
-    public static void layerBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> xhat, KernelBuffer<E> w, KernelBuffer<E> invstd, int64 rows, int64 cols) {
+    /** The layernorm input VJP over `rows` rows from x and the saved row statistics; queued on the current stream. */
+    public static void layerBack<E>(KernelBuffer<E> dx, KernelBuffer<E> g, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> mean, KernelBuffer<E> invstd, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
-        layernormBack.launch(s, grid: [(uint32) rows], block: [256])(dx, g, xhat, w, invstd, (uint32) cols);
+        layernormBack.launch(s, grid: [(uint32) rows], block: [256])(dx, g, x, w, mean, invstd, (uint32) cols);
     }
 
     /** The layernorm scale and shift VJPs summed over `rows`; queued on the current stream. */
-    public static void layerParamGrads<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<E> g, KernelBuffer<E> xhat, int64 rows, int64 cols) {
+    public static void layerParamGrads<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<E> g, KernelBuffer<E> x, KernelBuffer<E> mean, KernelBuffer<E> invstd, int64 rows, int64 cols) {
         uint32 uc = (uint32) cols;
         KernelStream s #= KernelStream.current();
-        layernormParamGrads.launch(s, grid: [(uc + 255) / 256], block: [256])(dw, db, g, xhat, (uint32) rows, uc);
+        layernormParamGrads.launch(s, grid: [(uc + 255) / 256], block: [256])(dw, db, g, x, mean, invstd, (uint32) rows, uc);
     }
 
     /** `out` = each of `rows` rows of `x` scaled to unit L2 norm, the norm floored at `eps`; queued on the current stream. */

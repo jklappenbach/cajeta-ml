@@ -466,14 +466,15 @@ public final class Ops {
         return #dbeta;
     }
 
-    /** Both layernorm parameter VJPs on the device; `wantScale` picks dgamma over dbeta. */
-    static #Tensor<E> layerParamGradsGpu<E extends Floating>(Tensor<E> g, Tensor<E> xhat, boolean wantScale) {
+    /** Both layernorm parameter VJPs on the device from x and the saved row statistics; `wantScale` picks dgamma over dbeta. */
+    static #Tensor<E> layerParamGradsGpu<E extends Floating>(Tensor<E> g, Tensor<E> x, Tensor<E> mean, Tensor<E> invstd, boolean wantScale) {
         int64 d = g.shapeAt(g.ndim() - 1);
         int64[] ds = [d];
         Tensor<E> dw #= Ewise.deviceOf<E>(ds);
         Tensor<E> db #= Ewise.deviceOf<E>(ds);
         Norm.layerParamGrads<E>(dw.deviceView("layerNorm.backward"), db.deviceView("layerNorm.backward"),
-            g.deviceView("layerNorm.backward"), xhat.deviceView("layerNorm.backward"), g.size() / d, d);
+            g.deviceView("layerNorm.backward"), x.deviceView("layerNorm.backward"), mean.deviceView("layerNorm.backward"),
+            invstd.deviceView("layerNorm.backward"), g.size() / d, d);
         if (wantScale) { return #dw; }
         return #db;
     }
@@ -937,56 +938,63 @@ public final class Ops {
         return;
     }
 
+    /** Layer norm over the last axis; `mean` and `invstd` (one per row) receive the backward's saved statistics. */
     public static #Tensor<E> layerNorm<E extends Floating>(Tensor<E> x, Tensor<E> gamma,
                                                            Tensor<E> beta, float64 eps,
-                                                           Tensor<E> xhat,
+                                                           Tensor<E> mean,
                                                            Tensor<E> invstd) {
         Ops.requireSame<E>("layerNorm", x, gamma);
         Ops.requireSame<E>("layerNorm", x, beta);
-        Ops.requireSame<E>("layerNorm", x, xhat);
+        Ops.requireSame<E>("layerNorm", x, mean);
         if (x.isOnGpu()) {
             Ops.requireF32<E>("layerNorm");
             int64 d = x.shapeAt(x.ndim() - 1);
             int64 rows = x.size() / d;
             Tensor<E> out #= Ewise.deviceLike<E>(x);
-            Norm.layerSaved<E>(out.deviceView("layerNorm"), xhat.deviceView("layerNorm"), invstd.deviceView("layerNorm"),
+            Norm.layerSaved<E>(out.deviceView("layerNorm"), mean.deviceView("layerNorm"), invstd.deviceView("layerNorm"),
                 x.deviceView("layerNorm"), gamma.deviceView("layerNorm"), beta.deviceView("layerNorm"), rows, d, (float32) eps);
             return #out;
         }
-        return StructKernels.layerNorm<E>(x, gamma, beta, eps, xhat, invstd);
+        return StructKernels.layerNorm<E>(x, gamma, beta, eps, mean, invstd);
     }
 
+    /** dL/dx of layerNorm from the forward's input and its saved row statistics. */
     public static #Tensor<E> layerNormBackIn<E extends Floating>(Tensor<E> g,
-                                                                 Tensor<E> xhat,
+                                                                 Tensor<E> x,
                                                                  Tensor<E> gamma,
+                                                                 Tensor<E> mean,
                                                                  Tensor<E> invstd) {
-        Ops.requireSame<E>("layerNorm.backward", g, xhat);
+        Ops.requireSame<E>("layerNorm.backward", g, x);
         if (g.isOnGpu()) {
             Ops.requireF32<E>("layerNorm.backward");
             int64 d = g.shapeAt(g.ndim() - 1);
             Tensor<E> dx #= Ewise.deviceLike<E>(g);
-            Norm.layerBack<E>(dx.deviceView("layerNorm.backward"), g.deviceView("layerNorm.backward"), xhat.deviceView("layerNorm.backward"),
-                gamma.deviceView("layerNorm.backward"), invstd.deviceView("layerNorm.backward"), g.size() / d, d);
+            Norm.layerBack<E>(dx.deviceView("layerNorm.backward"), g.deviceView("layerNorm.backward"), x.deviceView("layerNorm.backward"),
+                gamma.deviceView("layerNorm.backward"), mean.deviceView("layerNorm.backward"), invstd.deviceView("layerNorm.backward"),
+                g.size() / d, d);
             return #dx;
         }
-        return StructKernels.layerNormBackIn<E>(g, xhat, gamma, invstd);
+        return StructKernels.layerNormBackIn<E>(g, x, gamma, mean, invstd);
     }
 
+    /** dL/dgamma of layerNorm from the forward's input and its saved row statistics. */
     public static #Tensor<E> layerNormBackScale<E extends Floating>(Tensor<E> g,
-                                                                    Tensor<E> xhat) {
-        Ops.requireSame<E>("layerNorm.backward", g, xhat);
+                                                                    Tensor<E> x,
+                                                                    Tensor<E> mean,
+                                                                    Tensor<E> invstd) {
+        Ops.requireSame<E>("layerNorm.backward", g, x);
         if (g.isOnGpu()) {
             Ops.requireF32<E>("layerNorm.backward");
-            Tensor<E> dw #= Ops.layerParamGradsGpu<E>(g, xhat, true);
+            Tensor<E> dw #= Ops.layerParamGradsGpu<E>(g, x, mean, invstd, true);
             return #dw;
         }
-        return StructKernels.layerNormBackScale<E>(g, xhat);
+        return StructKernels.layerNormBackScale<E>(g, x, mean, invstd);
     }
 
     public static #Tensor<E> layerNormBackShift<E extends Floating>(Tensor<E> g) {
         if (g.isOnGpu()) {
             Ops.requireF32<E>("layerNorm.backward");
-            Tensor<E> db #= Ops.layerParamGradsGpu<E>(g, g, false);
+            Tensor<E> db #= Ops.layerParamGradsGpu<E>(g, g, g, g, false);
             return #db;
         }
         return StructKernels.layerNormBackShift<E>(g);

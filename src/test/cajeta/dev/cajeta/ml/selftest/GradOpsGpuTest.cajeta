@@ -285,14 +285,14 @@ public class GradOpsGpuTest {
         Tensor<float32> lgd #= GradOpsGpuTest.onDevice(lg);
         Tensor<float32> lbd #= GradOpsGpuTest.onDevice(lb);
         int64[] rs = [6L];
-        Tensor<float32> lx #= Tensor.zerosLike<float32>(l);
+        Tensor<float32> lm #= Tensor.zeros<float32>(rs);
         Tensor<float32> li #= Tensor.zeros<float32>(rs);
-        Tensor<float32> lxD #= Ops.zerosLike<float32>(ld);
+        Tensor<float32> lmD #= Ops.zerosOn<float32>(rs, ld);
         Tensor<float32> liD #= Ops.zerosOn<float32>(rs, ld);
-        Tensor<float32> ly #= Ops.layerNorm<float32>(l, lg, lb, 0.00001, lx, li);
-        Tensor<float32> lyD #= Ops.layerNorm<float32>(ld, lgd, lbd, 0.00001, lxD, liD);
+        Tensor<float32> ly #= Ops.layerNorm<float32>(l, lg, lb, 0.00001, lm, li);
+        Tensor<float32> lyD #= Ops.layerNorm<float32>(ld, lgd, lbd, 0.00001, lmD, liD);
         GradOpsGpuTest.same("layerNorm", ly, lyD);
-        GradOpsGpuTest.same("layerNorm xhat", lx, lxD);
+        GradOpsGpuTest.same("layerNorm mean", lm, lmD);
         GradOpsGpuTest.same("layerNorm invstd", li, liD);
         Assert.isTrue(Ops.hasGpu(Op.LAYERNORM));
     }

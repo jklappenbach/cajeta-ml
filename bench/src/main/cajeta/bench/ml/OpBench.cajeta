@@ -144,9 +144,9 @@ public class OpBench extends MlBenchmark {
             this.stream #= KernelStream.current();
         }
         if (k == OpBench.LAYERNORM) {
-            this.s1 #= Ops.zerosLike<float32>(this.x);
             int64 d = this.x.shapeAt(this.x.ndim() - 1);
             int64[] rs = [this.x.size() / d];
+            this.s1 #= Ops.zerosOn<float32>(rs, this.x);
             this.s2 #= Ops.zerosOn<float32>(rs, this.x);
         } else if (k == OpBench.MAXPOOL2D) {
             int64[] osh = [this.x.shapeAt(0), this.x.shapeAt(1),

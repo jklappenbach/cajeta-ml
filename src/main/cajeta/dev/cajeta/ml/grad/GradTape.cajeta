@@ -399,7 +399,6 @@ public final class GradTape<E extends Floating> {
     public GradTensor layerNorm(GradTensor x, GradTensor gamma, GradTensor beta,
                                 float64 eps) {
         Tensor<E> xv = this.values.get(x.idx);
-        Tensor<E> xhat #= Ops.zerosLike<E>(xv);
         int64 rows = 1;
         int32 k = 0;
         while (k < xv.ndim() - 1) {
@@ -407,12 +406,13 @@ public final class GradTape<E extends Floating> {
             k = k + 1;
         }
         int64[] rsh #= StructKernels.shape1(rows);
+        Tensor<E> mean #= Ops.zerosOn<E>(rsh, xv);
         Tensor<E> invstd #= Ops.zerosOn<E>(rsh, xv);
         Tensor<E> v #= Ops.layerNorm<E>(xv, this.values.get(gamma.idx),
-                                       this.values.get(beta.idx), eps, xhat, invstd);
+                                       this.values.get(beta.idx), eps, mean, invstd);
         GradTensor t = this.push(Op.LAYERNORM, x.idx, gamma.idx, 0, eps, #v);
         this.linkThird(t.idx, beta.idx);
-        this.aux0[t.idx] = this.addAux(#xhat);
+        this.aux0[t.idx] = this.addAux(#mean);
         this.aux1[t.idx] = this.addAux(#invstd);
         return t;
     }
@@ -765,14 +765,15 @@ public final class GradTape<E extends Floating> {
             return;
         }
         if (op == Op.LAYERNORM) {
-            Tensor<E> xhat = this.auxT.get(this.aux0[i]);
+            Tensor<E> xv = this.values.get(a);
+            Tensor<E> mean = this.auxT.get(this.aux0[i]);
             Tensor<E> invstd = this.auxT.get(this.aux1[i]);
             if (this.needsGrad[a]) {
-                this.accum(a, Ops.layerNormBackIn<E>(g, xhat, this.values.get(b),
-                                                     invstd));
+                this.accum(a, Ops.layerNormBackIn<E>(g, xv, this.values.get(b),
+                                                     mean, invstd));
             }
             if (this.needsGrad[b]) {
-                this.accum(b, Ops.layerNormBackScale<E>(g, xhat));
+                this.accum(b, Ops.layerNormBackScale<E>(g, xv, mean, invstd));
             }
             int32 c = this.cin[i];
             if (c >= 0 && this.needsGrad[c]) {

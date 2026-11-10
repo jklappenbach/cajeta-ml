@@ -325,19 +325,25 @@ public class StructuredBackTest {
         int64 rows = 7L; int64 cols = 300L;
         int64 total = rows * cols;
         float64[] fg = heap float64[total];
-        float64[] fxh = heap float64[total];
+        float64[] fx = heap float64[total];
         float64[] fw = heap float64[cols];
+        float64[] fmean = heap float64[rows];
         float64[] finv = heap float64[rows];
         KernelBuffer<float32> g #= StructuredBackTest.upload(total, 41L, fg);
-        KernelBuffer<float32> xhat #= StructuredBackTest.upload(total, 43L, fxh);
+        KernelBuffer<float32> x #= StructuredBackTest.upload(total, 43L, fx);
         KernelBuffer<float32> w #= StructuredBackTest.upload(cols, 47L, fw);
+        KernelBuffer<float32> mean #= StructuredBackTest.upload(rows, 59L, fmean);
         KernelBuffer<float32> invstd #= StructuredBackTest.upload(rows, 53L, finv);
+        // The kernels recompute xhat from x and the saved row statistics; so does the host.
+        float64[] fxh = heap float64[total];
+        int64 q = 0L;
+        while (q < total) { fxh[(int32) q] = (fx[(int32) q] - fmean[(int32) (q / cols)]) * finv[(int32) (q / cols)]; q = q + 1L; }
         KernelBuffer<float32> dx = heap KernelBuffer<float32>((uint64) total);
         KernelBuffer<float32> dw = heap KernelBuffer<float32>((uint64) cols);
         KernelBuffer<float32> db = heap KernelBuffer<float32>((uint64) cols);
         int64[] m #= ValueCheck.mark();
-        Norm.layerBack<float32>(dx, g, xhat, w, invstd, rows, cols);
-        Norm.layerParamGrads<float32>(dw, db, g, xhat, rows, cols);
+        Norm.layerBack<float32>(dx, g, x, w, mean, invstd, rows, cols);
+        Norm.layerParamGrads<float32>(dw, db, g, x, mean, invstd, rows, cols);
         float32[] gdx = heap float32[total];
         float32[] gdw = heap float32[cols];
         float32[] gdb = heap float32[cols];

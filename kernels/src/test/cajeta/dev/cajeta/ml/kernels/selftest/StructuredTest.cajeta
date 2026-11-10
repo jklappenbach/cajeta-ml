@@ -347,15 +347,15 @@ public class StructuredTest {
         KernelBuffer<float32> w #= StructuredTest.upload(cols, 43L, fw);
         KernelBuffer<float32> b #= StructuredTest.upload(cols, 47L, fb);
         KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (rows * cols));
-        KernelBuffer<float32> xhat = heap KernelBuffer<float32>((uint64) (rows * cols));
+        KernelBuffer<float32> mean = heap KernelBuffer<float32>((uint64) rows);
         KernelBuffer<float32> invstd = heap KernelBuffer<float32>((uint64) rows);
         int64[] m #= ValueCheck.mark();
-        Norm.layerSaved<float32>(out, xhat, invstd, x, w, b, rows, cols, 1.0e-5f);
+        Norm.layerSaved<float32>(out, mean, invstd, x, w, b, rows, cols, 1.0e-5f);
         float32[] go = heap float32[rows * cols];
-        float32[] gx = heap float32[rows * cols];
+        float32[] gm = heap float32[rows];
         float32[] gi = heap float32[rows];
         out.download(go);
-        xhat.download(gx);
+        mean.download(gm);
         invstd.download(gi);
         int64 r = 0L;
         while (r < rows) {
@@ -367,13 +367,13 @@ public class StructuredTest {
             j = 0L;
             while (j < cols) { float64 d = fx[(int32) (r * cols + j)] - mu; d2 = d2 + d * d; j = j + 1L; }
             float64 iv = 1.0 / Math.sqrt(d2 / (float64) cols + 1.0e-5);
+            StructuredTest.stage = "layernormSaved mean";
+            StructuredTest.close((float64) gm[(int32) r], mu, 1.0e-5);
             StructuredTest.stage = "layernormSaved invstd";
             StructuredTest.close((float64) gi[(int32) r], iv, 0.0);
             j = 0L;
             while (j < cols) {
                 float64 xh = (fx[(int32) (r * cols + j)] - mu) * iv;
-                StructuredTest.stage = "layernormSaved xhat";
-                StructuredTest.close((float64) gx[(int32) (r * cols + j)], xh, 1.0e-5);
                 StructuredTest.stage = "layernormSaved out";
                 StructuredTest.close((float64) go[(int32) (r * cols + j)], fw[(int32) j] * xh + fb[(int32) j], 1.0e-5);
                 j = j + 1L;
