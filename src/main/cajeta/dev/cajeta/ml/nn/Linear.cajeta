@@ -44,7 +44,12 @@ public class Linear extends Module {
     }
 
     public GradTensor forward(GradTape<float32> tape, GradTensor x) {
-        return tape.add(tape.matmul(x, this.weight.node()), this.bias.node());
+        return tape.linear(x, this.weight.node(), this.bias.node(), 0);
+    }
+
+    /** The forward with the activation `act` (0 none, 1 relu) fused into the same node. */
+    public GradTensor forwardAct(GradTape<float32> tape, GradTensor x, int32 act) {
+        return tape.linear(x, this.weight.node(), this.bias.node(), act);
     }
 
     /** Inference convenience — the same forward on a throwaway tape. */

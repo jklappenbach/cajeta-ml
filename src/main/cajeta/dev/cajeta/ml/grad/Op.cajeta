@@ -59,7 +59,9 @@ public final class Op {
     /** Row-wise L2 normalization over the last axis — SPELA's per-layer
      *  input and activation normalization. */
     public static int32 ROWNORM     = 40;
+    /** y = act(x . w + b) in one node: a Linear layer's forward, bias as the third input, act in the axis slot. */
+    public static int32 LINEAR      = 41;
 
     /** One past the largest id — the registry array length. */
-    public static int32 COUNT       = 41;
+    public static int32 COUNT       = 42;
 }

@@ -56,9 +56,19 @@ public class Sequential extends Module {
     public GradTensor forward(GradTape<float32> tape, GradTensor x) {
         GradTensor cur = x;
         int32 i = 0;
-        while (i < this.layers.count()) {
-            cur = this.layers.get(i).forward(tape, cur);
-            i = i + 1;
+        int32 count = (int32) this.layers.count();
+        while (i < count) {
+            Module m = this.layers.get(i);
+            boolean fused = false;
+            if (i + 1 < count) {
+                if (m instanceof Linear lin) {
+                    if (this.layers.get(i + 1) instanceof ReLU r) {
+                        cur = lin.forwardAct(tape, cur, 1);
+                        fused = true;
+                    }
+                }
+            }
+            if (fused) { i = i + 2; } else { cur = m.forward(tape, cur); i = i + 1; }
         }
         return cur;
     }

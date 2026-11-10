@@ -13,6 +13,7 @@ import dev.cajeta.ml.kernels.Elementwise;
 import dev.cajeta.ml.kernels.Fill;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.ml.kernels.Reduce;
+import dev.cajeta.ml.kernels.gemm.Linear;
 import dev.cajeta.ml.kernels.nn.Act;
 import dev.cajeta.ml.kernels.nn.BatchNorm;
 import dev.cajeta.ml.kernels.nn.Conv;
@@ -188,6 +189,28 @@ public final class Ops {
     public static #Tensor<E> zerosLike<E extends Floating>(Tensor<E> like) {
         int64[] sh #= Ops.shapeOf<E>(like);
         return Ops.zerosOn<E>(sh, like);
+    }
+
+    /** y = act(x . w + b): `x` (m x k) against `w` (k x n) with the bias `b` (n), act 0 none or 1 relu; one launch on the device below Gemm.large, else the composition. */
+    public static #Tensor<E> linear<E extends Floating>(Tensor<E> x, Tensor<E> w, Tensor<E> b, int32 act) {
+        if (x.isOnGpu()) {
+            Ops.requireSame<E>("linear", x, w);
+            Ops.requireSame<E>("linear", x, b);
+            Ops.requireF32<E>("linear");
+            int64 m = x.shapeAt(0);
+            int64 k = x.shapeAt(1);
+            int64 n = w.shapeAt(1);
+            if (!Gemm.large(m, n)) {
+                int64[] shp = [m, n];
+                Tensor<E> out #= Ewise.deviceOf<E>(shp);
+                Linear.run<E>(out.deviceView("linear"), x.deviceView("linear"), w.deviceView("linear"), b.deviceView("linear"), m, n, k, true, act);
+                return #out;
+            }
+        }
+        Tensor<E> mm #= Ops.run2<E>(Op.MATMUL, x, w);
+        Tensor<E> y #= Ops.run2<E>(Op.ADD, mm, b);
+        if (act == 1) { return Ops.run1<E>(Op.RELU, y, 0, (E) 0); }
+        return #y;
     }
 
     /** A copy of `t` on its own device. */
@@ -1198,6 +1221,7 @@ public final class Ops {
         if (op == Op.TRANSPOSEB) { return "transposeBatch"; }
         if (op == Op.PERMUTE) { return "permute"; }
         if (op == Op.ROWNORM) { return "rowNorm"; }
+        if (op == Op.LINEAR) { return "linear"; }
         return "op" + op;
     }
 

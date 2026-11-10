@@ -6,6 +6,7 @@ import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
 import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.nn.Parameter;
 import dev.cajeta.ml.zoo.SmallCnn;
 
@@ -165,6 +166,41 @@ public class GradBackGpuTest {
         d.backward(yd);
         GradBackGpuTest.sameGrad(what + " dA", t.gradOf(la), d.gradOf(lda));
         GradBackGpuTest.sameGrad(what + " dB", t.gradOf(lb), d.gradOf(ldb));
+    }
+
+    static void linear(String what, int32 act, Tensor<float32> x, Tensor<float32> w, Tensor<float32> b) {
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor lx = t.leaf(x, true);
+        GradTensor lw = t.leaf(w, true);
+        GradTensor lb = t.leaf(b, true);
+        GradTensor y = t.linear(lx, lw, lb, act);
+        t.backward(y);
+        Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+        Tensor<float32> wd #= GradBackGpuTest.onDevice(w);
+        Tensor<float32> bd #= GradBackGpuTest.onDevice(b);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor ldx = d.leaf(xd, true);
+        GradTensor ldw = d.leaf(wd, true);
+        GradTensor ldb = d.leaf(bd, true);
+        GradTensor yd = d.linear(ldx, ldw, ldb, act);
+        d.backward(yd);
+        GradBackGpuTest.sameGrad(what + " value", t.valueOf(y), Ops.copyOf<float32>(d.valueOf(yd)));
+        GradBackGpuTest.sameGrad(what + " dX", t.gradOf(lx), d.gradOf(ldx));
+        GradBackGpuTest.sameGrad(what + " dW", t.gradOf(lw), d.gradOf(ldw));
+        GradBackGpuTest.sameGrad(what + " dB", t.gradOf(lb), d.gradOf(ldb));
+    }
+
+    /** cajeta-ml-gpu 28.2.5: the fused linear node's one-launch forward and its VJP on the device. */
+    @Test
+    public void linearBackwardMatchesTheCpu() {
+        int64[] xs = [3L, 70L];
+        int64[] ws = [70L, 5L];
+        int64[] bs = [1L, 5L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 23L, false);
+        Tensor<float32> w #= GradBackGpuTest.fill(ws, 29L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(bs, 31L, false);
+        GradBackGpuTest.linear("linear", 0, x, w, b);
+        GradBackGpuTest.linear("linear relu", 1, x, w, b);
     }
 
     @Test

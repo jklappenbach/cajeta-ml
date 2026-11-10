@@ -1,0 +1,77 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.grad.Ops;
+
+/**
+ * cajeta-ml-gpu 28.2.5: the fused linear node, y = act(x . w + b), against the
+ * matmul-add-relu composition on the host: same value, same three gradients.
+ */
+public class GradLinearTest {
+    public GradLinearTest() { return; }
+
+    static #Tensor<float32> fill(int64[] shape, int64 seed) {
+        Tensor<float32> t #= Tensor.full<float32>(shape, 0.0f);
+        int64 n = t.size();
+        int64 f = 0;
+        while (f < n) {
+            t.flatSet(f, (float32) ((((f + seed) * 7919L) % 251L) - 125L) * 0.012f);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    static void same(String what, Tensor<float32> want, Tensor<float32> got) {
+        Assert.equals(want.size(), got.size());
+        int64 i = 0;
+        while (i < want.size()) {
+            float64 d = (float64) got.flatGet(i) - (float64) want.flatGet(i);
+            if (d < 0.0) { d = 0.0 - d; }
+            if (d > 1.0e-6) {
+                System.stdout.println("  " + what + " [" + i + "] fused " + got.flatGet(i) + " composed " + want.flatGet(i));
+                Assert.isTrue(false);
+            }
+            i = i + 1;
+        }
+    }
+
+    static void check(int32 act, int64[] bshape) {
+        int64[] xs = [5L, 7L];
+        int64[] ws = [7L, 3L];
+        Tensor<float32> xv #= GradLinearTest.fill(xs, 3L);
+        Tensor<float32> wv #= GradLinearTest.fill(ws, 11L);
+        Tensor<float32> bv #= GradLinearTest.fill(bshape, 29L);
+        GradTape<float32> c = heap GradTape<float32>();
+        GradTensor cx = c.leaf(xv, true);
+        GradTensor cw = c.leaf(wv, true);
+        GradTensor cb = c.leaf(bv, true);
+        GradTensor cy = c.add(c.matmul(cx, cw), cb);
+        if (act == 1) { cy = c.relu(cy); }
+        c.backward(cy);
+        GradTape<float32> f = heap GradTape<float32>();
+        GradTensor fx = f.leaf(xv, true);
+        GradTensor fw = f.leaf(wv, true);
+        GradTensor fb = f.leaf(bv, true);
+        GradTensor fy = f.linear(fx, fw, fb, act);
+        f.backward(fy);
+        GradLinearTest.same("value act " + act, c.valueOf(cy), f.valueOf(fy));
+        GradLinearTest.same("dx act " + act, c.gradOf(cx), f.gradOf(fx));
+        GradLinearTest.same("dw act " + act, c.gradOf(cw), f.gradOf(fw));
+        GradLinearTest.same("db act " + act, c.gradOf(cb), f.gradOf(fb));
+    }
+
+    @Test
+    public void linearMatchesTheCompositionOnTheHost() {
+        int64[] row = [1L, 3L];
+        int64[] vec = [3L];
+        GradLinearTest.check(0, row);
+        GradLinearTest.check(1, row);
+        GradLinearTest.check(1, vec);
+        Assert.equals("linear", Ops.name(Op.LINEAR));
+    }
+}

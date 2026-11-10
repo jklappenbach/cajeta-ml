@@ -315,6 +315,14 @@ public final class GradTape<E extends Floating> {
         return t;
     }
 
+    /** y = act(x . w + b) in one node (act 0 none, 1 relu); the bias is the node's third input. */
+    public GradTensor linear(GradTensor x, GradTensor w, GradTensor b, int32 act) {
+        Tensor<E> v #= Ops.linear<E>(this.values.get(x.idx), this.values.get(w.idx), this.values.get(b.idx), act);
+        GradTensor t = this.push(Op.LINEAR, x.idx, w.idx, act, 0.0, #v);
+        this.linkThird(t.idx, b.idx);
+        return t;
+    }
+
     /** Concatenate two nodes along `axis`. */
     public GradTensor concat(GradTensor a, GradTensor b, int32 axis) {
         Tensor<E> v #= Ops.concat<E>(this.values.get(a.idx), this.values.get(b.idx), axis);
@@ -538,6 +546,22 @@ public final class GradTape<E extends Floating> {
         return;
     }
 
+    /** The linear node's VJP from the cotangent `gm` of its pre-activation sum. */
+    void linearBack(int32 i, int32 a, int32 b, Tensor<E> va, Tensor<E> vb, Tensor<E> gm) {
+        if (this.needsGrad[a]) {
+            Tensor<E> bt #= Ops.run1<E>(Op.TRANSPOSE, vb, 0, (E) 0);
+            this.accum(a, Ops.run2<E>(Op.MATMUL, gm, bt));
+        }
+        if (this.needsGrad[b]) {
+            Tensor<E> at #= Ops.run1<E>(Op.TRANSPOSE, va, 0, (E) 0);
+            this.accum(b, Ops.run2<E>(Op.MATMUL, at, gm));
+        }
+        int32 c = this.cin[i];
+        if (c >= 0 && this.needsGrad[c]) {
+            this.accum(c, Ops.sumTo<E>(gm, this.values.get(c)));
+        }
+    }
+
     void backOne(int32 i) {
         int32 op = this.ops[i];
         int32 a = this.ain[i];
@@ -594,6 +618,16 @@ public final class GradTape<E extends Floating> {
             if (this.needsGrad[b]) {
                 Tensor<E> at #= Ops.run1<E>(Op.TRANSPOSE, va, 0, (E) 0);
                 this.accum(b, Ops.run2<E>(Op.MATMUL, at, g));
+            }
+            return;
+        }
+        if (op == Op.LINEAR) {
+            Tensor<E> vb = this.values.get(b);
+            if (this.axes[i] == 1) {
+                Tensor<E> gm #= Ops.actBack<E>(Op.RELU, g, vo, vo);
+                this.linearBack(i, a, b, va, vb, gm);
+            } else {
+                this.linearBack(i, a, b, va, vb, g);
             }
             return;
         }
