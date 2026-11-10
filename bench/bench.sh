@@ -47,7 +47,10 @@ FORK_BIN="${CAJETA_LLVM_BIN:-$here/../../cajeta-llvm/llvm-install/bin}"
 [[ -x "$FORK_BIN/ld.lld" ]] && export PATH="$FORK_BIN:$PATH"
 # NVPTX device code needs ptxas newer than CUDA 12.0 (cajeta CLAUDE.md).
 [[ -z "${CUDA_PATH:-}" && -x /usr/local/cuda/bin/ptxas ]] && export CUDA_PATH=/usr/local/cuda
-PY="${BENCH_PYTHON:-$here/../../cajeta/bench/competitors/python/.venv/bin/python}"
+PY="${BENCH_PYTHON:-}"
+for c in "$here"/../../cajeta/bench/competitors/python/.venv/bin/python "$here"/../../cajeta-six/bench/competitors/python/.venv/bin/python; do
+    [[ -z "$PY" && -x "$c" ]] && PY="$c"
+done
 [[ -x "$PY" ]] || PY="$(command -v python3)"
 
 smoke=0
