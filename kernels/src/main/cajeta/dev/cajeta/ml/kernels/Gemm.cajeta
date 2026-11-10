@@ -95,10 +95,7 @@ public final class Gemm {
      * arrays so the tier scan sees them: on a backend with no native bf16 (RADV) the whole
      * kernel then demotes to the software tile, as gemm16 does, instead of refusing.
      */
-    // Built for cpu, nvptx and amdgpu: on spir-v its 8-wide prefetch registers cross the K
-    // loop's phi as invalid SPIR-V (RADV crashes compiling it; cajeta-ml-gpu 23.2.7), and the
-    // 4-wide form that validates is 10% slower on sm_89. run128 takes gemm16 on vulkan.
-    @Kernel(targets = {"cpu", "nvptx", "amdgpu"}) @Wave(width = 32)
+    @Kernel @Wave(width = 32)
     @Occupancy(maxThreads = 256)
     public static void gemm128<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k) {
         Shared<E> sa = shared E[9216];
@@ -355,9 +352,8 @@ public final class Gemm {
         }
     }
 
-    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the 128x128 member; queued on the current stream. For float16; bfloat16 goes through runBf16. On a backend the member is not built for (vulkan, 23.2.7) it runs the 16x16 member. */
+    /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the 128x128 member; queued on the current stream. For float16; bfloat16 goes through runBf16. */
     public static void run128<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
-        if (!Device.kernelAvailable("gemm128_float16")) { Gemm.run<E>(c, a, b, m, n, k); return; }
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 127) / 128) * ((un + 127) / 128);

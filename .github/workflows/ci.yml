@@ -78,11 +78,11 @@ env:
   # v0.35.0 enforces the field-store rule, which consumers apply to this
   # library's sources, so ml gates on it.
   # v0.36.0 extends that rule to holders passed with `#`, so ml gates on it.
-  # v0.39.0 is the release the fleet republishes on. v0.53.2 is the kernel
+  # v0.39.0 is the release the fleet republishes on. v0.53.3 is the kernel
   # package's pin (kernels/.cajeta-version): generic kernel instantiation, a
-  # template bound resolved in its own file, and the lld lookup beside the
-  # compiler.
-  CAJETA_VERSION: v0.53.2
+  # template bound resolved in its own file, the lld lookup beside the
+  # compiler, and the SPIR-V phi split that lets gemm128 build for vulkan.
+  CAJETA_VERSION: v0.53.3
 
 jobs:
   build-test:
