@@ -1,0 +1,179 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+import dev.cajeta.ml.kernels.tune.TuneMode;
+
+/**
+ * cajeta-ml-gpu 23.2.2: the 256x128 GEMM member (double-buffered shared memory, three
+ * slabs of prefetch, a rotated K walk) against a float64 host GEMM, and the large-GEMM
+ * family that chooses between it and the 128x128 member per device and problem: timed at
+ * first use and remembered, the first member when untimed.
+ */
+public class GemmFamilyTest {
+    public GemmFamilyTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) ((((i * 7919L) % 251L) - 125L) % 5L) * 0.5f;
+    }
+
+    static #float32[] fill(int64 count, int64 seed) {
+        float32[] f = heap float32[count];
+        int64 i = 0L;
+        while (i < count) { f[(int32) i] = GemmFamilyTest.pattern(i + seed); i = i + 1L; }
+        return #f;
+    }
+
+    /** How many outputs of `got` miss the float64 product of `fa` and `fb` by more than the matrix-core tolerance. */
+    static int32 misses(String what, float32[] fa, float32[] fb, float32[] got, int64 m, int64 n, int64 k) {
+        int64 r = 0L;
+        int32 bad = 0;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 df = (float64) got[(int32) (r * n + col)] - acc;
+                if (df < 0.0) { df = 0.0 - df; }
+                float64 w = acc;
+                if (w < 0.0) { w = 0.0 - w; }
+                if (df > 1.0e-5 * (w + 1.0) + (float64) k * 1.0e-7) {
+                    if (bad < 3) {
+                        System.stdout.println(what + " " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + (float64) got[(int32) (r * n + col)] + " want " + acc);
+                    }
+                    bad = bad + 1;
+                }
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        return bad;
+    }
+
+    /** Run the f16 GEMM through `how` (0 the 256x128 member, 1 the family with `store`) and check it; returns the family's member, or "". */
+    static #String f16Case(int32 how, int64 m, int64 n, int64 k, String store) {
+        float32[] fa #= GemmFamilyTest.fill(m * k, 0L);
+        float32[] fb #= GemmFamilyTest.fill(k * n, 17L);
+        float16[] ha = heap float16[m * k];
+        float16[] hb = heap float16[k * n];
+        int64 i = 0L;
+        while (i < m * k) { ha[(int32) i] = (float16) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { hb[(int32) i] = (float16) fb[(int32) i]; i = i + 1L; }
+        KernelBuffer<float16> a = heap KernelBuffer<float16>((uint64) (m * k));
+        KernelBuffer<float16> b = heap KernelBuffer<float16>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        float32[] got = heap float32[m * n];
+        i = 0L;
+        while (i < m * n) { got[(int32) i] = 12345.0f; i = i + 1L; }
+        c.upload(got);
+        int64[] mk #= ValueCheck.mark();
+        String member #= "".clone();
+        if (how == 0) { Gemm.run256<float16>(c, a, b, m, n, k); }
+        else { member #= Gemm.runTuned(c, a, b, m, n, k, store); }
+        c.download(got);
+        Assert.equals(0L, (int64) GemmFamilyTest.misses("f16 how " + how, fa, fb, got, m, n, k));
+        ValueCheck.credit(mk);
+        return #member;
+    }
+
+    /** The bf16 form of f16Case. */
+    static #String bf16Case(int32 how, int64 m, int64 n, int64 k, String store) {
+        float32[] fa #= GemmFamilyTest.fill(m * k, 0L);
+        float32[] fb #= GemmFamilyTest.fill(k * n, 17L);
+        bfloat16[] ha = heap bfloat16[m * k];
+        bfloat16[] hb = heap bfloat16[k * n];
+        int64 i = 0L;
+        while (i < m * k) { ha[(int32) i] = (bfloat16) fa[(int32) i]; i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { hb[(int32) i] = (bfloat16) fb[(int32) i]; i = i + 1L; }
+        KernelBuffer<bfloat16> a = heap KernelBuffer<bfloat16>((uint64) (m * k));
+        KernelBuffer<bfloat16> b = heap KernelBuffer<bfloat16>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        float32[] got = heap float32[m * n];
+        i = 0L;
+        while (i < m * n) { got[(int32) i] = 12345.0f; i = i + 1L; }
+        c.upload(got);
+        int64[] mk #= ValueCheck.mark();
+        String member #= "".clone();
+        if (how == 0) { Gemm.run256Bf16(c, a, b, m, n, k); }
+        else { member #= Gemm.runTunedBf16(c, a, b, m, n, k, store); }
+        c.download(got);
+        Assert.equals(0L, (int64) GemmFamilyTest.misses("bf16 how " + how, fa, fb, got, m, n, k));
+        ValueCheck.credit(mk);
+        return #member;
+    }
+
+    static #String freshStore() {
+        String store #= "build/tune-gemm-" + Clock.nanoTime();
+        Path dir #= Path.of(store);
+        dir.mkdirs();
+        return #store;
+    }
+
+    @Test
+    public void wideMemberMatchesTheHostAtF16() {
+        if (!GemmTileTest.usable("gemm256_float16")) { return; }
+        String none #= "".clone();
+        GemmFamilyTest.f16Case(0, 512L, 256L, 256L, none);
+        GemmFamilyTest.f16Case(0, 256L, 128L, 32L, none);
+        GemmFamilyTest.f16Case(0, 256L, 128L, 64L, none);
+        GemmFamilyTest.f16Case(0, 256L, 256L, 136L, none);
+        GemmFamilyTest.f16Case(0, 300L, 200L, 130L, none);
+        GemmFamilyTest.f16Case(0, 33L, 17L, 9L, none);
+        GemmFamilyTest.f16Case(0, 1L, 130L, 77L, none);
+    }
+
+    @Test
+    public void wideMemberMatchesTheHostAtBf16() {
+        if (!GemmTileTest.usable("gemm256Bf16")) { return; }
+        String none #= "".clone();
+        GemmFamilyTest.bf16Case(0, 512L, 256L, 256L, none);
+        GemmFamilyTest.bf16Case(0, 256L, 128L, 32L, none);
+        GemmFamilyTest.bf16Case(0, 300L, 200L, 130L, none);
+        GemmFamilyTest.bf16Case(0, 33L, 17L, 9L, none);
+    }
+
+    @Test
+    public void familyTimesItsMembersOnceAndRemembersTheWinner() {
+        if (!GemmTileTest.usable("gemm256_float16") || !GemmTileTest.usable("gemm128_float16")) { return; }
+        String store #= GemmFamilyTest.freshStore();
+        TuneMode.setUntimed(false);
+        String first #= GemmFamilyTest.f16Case(1, 512L, 512L, 256L, store);
+        Assert.isTrue(Gemm.lastLargeTimed());
+        Assert.isTrue(first.equals("gemm128_float16") || first.equals("gemm256_float16"));
+        String again #= GemmFamilyTest.f16Case(1, 512L, 512L, 256L, store);
+        Assert.isFalse(Gemm.lastLargeTimed());
+        Assert.equals(first, again);
+    }
+
+    @Test
+    public void bf16FamilyServesEveryBackend() {
+        String store #= GemmFamilyTest.freshStore();
+        TuneMode.setUntimed(false);
+        String member #= GemmFamilyTest.bf16Case(1, 300L, 260L, 72L, store);
+        Assert.isTrue(member.equals("gemm128Bf16") || member.equals("gemm256Bf16") || member.equals("gemmWide_bfloat16"));
+    }
+
+    @Test
+    public void untimedTakesTheFirstMember() {
+        if (!GemmTileTest.usable("gemm128_float16")) { return; }
+        TuneMode.setUntimed(true);
+        String none #= "".clone();
+        String member #= GemmFamilyTest.f16Case(1, 256L, 256L, 64L, none);
+        TuneMode.setUntimed(false);
+        Assert.equals("gemm128_float16", member);
+        Assert.isFalse(Gemm.lastLargeTimed());
+    }
+}
