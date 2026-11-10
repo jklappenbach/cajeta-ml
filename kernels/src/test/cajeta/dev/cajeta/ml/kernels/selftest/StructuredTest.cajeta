@@ -339,7 +339,13 @@ public class StructuredTest {
     @Test
     public void savedLayerNormMatchesTheHost() {
         if (!StructuredTest.usable("layernormSaved_float32")) { return; }
-        int64 rows = 7L; int64 cols = 300L;
+        StructuredTest.savedLayerNormCase(7L, 300L);
+        StructuredTest.savedLayerNormCase(11L, 100L);
+        StructuredTest.savedLayerNormCase(3L, 1500L);
+        StructuredTest.savedLayerNormCase(2L, 2600L);
+    }
+
+    static void savedLayerNormCase(int64 rows, int64 cols) {
         float64[] fx = heap float64[rows * cols];
         float64[] fw = heap float64[cols];
         float64[] fb = heap float64[cols];
@@ -433,6 +439,8 @@ public class StructuredTest {
         if (!StructuredTest.usable("crossEntropyRow_float32") || !StructuredTest.usable("softmax_float32") || !StructuredTest.usable("nll_float32")) { return; }
         StructuredTest.crossEntropyRowsCase(41L, 517L, 67L);
         StructuredTest.crossEntropyRowsCase(5L, 2600L, 83L);
+        StructuredTest.crossEntropyRowsCase(37L, 300L, 91L);
+        StructuredTest.crossEntropyRowsCase(23L, 100L, 97L);
     }
 
     static void crossEntropyRowsCase(int64 rows, int64 d, int64 seed) {

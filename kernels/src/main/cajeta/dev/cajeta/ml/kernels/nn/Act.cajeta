@@ -7,6 +7,7 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 import cajeta.xpu.Shared;
+import cajeta.xpu.Wave;
 import cajeta.xpu.Workgroup;
 
 /**
@@ -50,160 +51,202 @@ public final class Act {
     }
 
     @Kernel
-    public static void softmax<E>(KernelBuffer<E> out, KernelBuffer<E> x, uint32 cols, int32 logOut) {
+    public static void softmax<E>(KernelBuffer<E> out, KernelBuffer<E> x, uint32 rows, uint32 cols, int32 logOut) {
         Shared<float32> part = shared float32[256];
         uint32 lane = KernelThread.x();
-        uint32 base = Workgroup.x() * cols;
-        if (cols <= 2048) {
-            // The row in registers (lane holds the elements lane + 256 k), the max
-            // and the sum as workgroup collectives: one read of x, two barriers
-            // (cajeta-ml-gpu 28.2.4).
-            uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
-            uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
-            float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f;
-            float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f;
-            if (i0 < cols) { v0 = (float32) x[base + i0]; }
-            if (i1 < cols) { v1 = (float32) x[base + i1]; }
-            if (i2 < cols) { v2 = (float32) x[base + i2]; }
-            if (i3 < cols) { v3 = (float32) x[base + i3]; }
-            if (i4 < cols) { v4 = (float32) x[base + i4]; }
-            if (i5 < cols) { v5 = (float32) x[base + i5]; }
-            if (i6 < cols) { v6 = (float32) x[base + i6]; }
-            if (i7 < cols) { v7 = (float32) x[base + i7]; }
-            float32 m01 = v0; if (v1 > m01) { m01 = v1; }
-            float32 m23 = v2; if (v3 > m23) { m23 = v3; }
-            float32 m45 = v4; if (v5 > m45) { m45 = v5; }
-            float32 m67 = v6; if (v7 > m67) { m67 = v7; }
-            if (m23 > m01) { m01 = m23; }
-            if (m67 > m45) { m45 = m67; }
-            if (m45 > m01) { m01 = m45; }
-            float32 rmax = Workgroup.reduce(GroupOp.Max, m01);
-            if (lane == 0) { part[0] = rmax; }
-            Barrier.workgroup();
-            float32 rowMax = part[0];
-            float32 e0 = 0.0f; float32 e1 = 0.0f; float32 e2 = 0.0f; float32 e3 = 0.0f;
-            float32 e4 = 0.0f; float32 e5 = 0.0f; float32 e6 = 0.0f; float32 e7 = 0.0f;
-            if (i0 < cols) { e0 = Math.exp(v0 - rowMax); }
-            if (i1 < cols) { e1 = Math.exp(v1 - rowMax); }
-            if (i2 < cols) { e2 = Math.exp(v2 - rowMax); }
-            if (i3 < cols) { e3 = Math.exp(v3 - rowMax); }
-            if (i4 < cols) { e4 = Math.exp(v4 - rowMax); }
-            if (i5 < cols) { e5 = Math.exp(v5 - rowMax); }
-            if (i6 < cols) { e6 = Math.exp(v6 - rowMax); }
-            if (i7 < cols) { e7 = Math.exp(v7 - rowMax); }
-            float32 sum = ((e0 + e1) + (e2 + e3)) + ((e4 + e5) + (e6 + e7));
-            float32 tot = Workgroup.reduce(GroupOp.Add, sum);
-            if (lane == 0) { part[1] = tot; }
-            Barrier.workgroup();
-            float32 inv = 1.0f / part[1];
-            float32 lse = Math.log(part[1]);
-            if (logOut != 0) {
-                if (i0 < cols) { out[base + i0] = (E) (v0 - rowMax - lse); }
-                if (i1 < cols) { out[base + i1] = (E) (v1 - rowMax - lse); }
-                if (i2 < cols) { out[base + i2] = (E) (v2 - rowMax - lse); }
-                if (i3 < cols) { out[base + i3] = (E) (v3 - rowMax - lse); }
-                if (i4 < cols) { out[base + i4] = (E) (v4 - rowMax - lse); }
-                if (i5 < cols) { out[base + i5] = (E) (v5 - rowMax - lse); }
-                if (i6 < cols) { out[base + i6] = (E) (v6 - rowMax - lse); }
-                if (i7 < cols) { out[base + i7] = (E) (v7 - rowMax - lse); }
-            } else {
-                if (i0 < cols) { out[base + i0] = (E) (e0 * inv); }
-                if (i1 < cols) { out[base + i1] = (E) (e1 * inv); }
-                if (i2 < cols) { out[base + i2] = (E) (e2 * inv); }
-                if (i3 < cols) { out[base + i3] = (E) (e3 * inv); }
-                if (i4 < cols) { out[base + i4] = (E) (e4 * inv); }
-                if (i5 < cols) { out[base + i5] = (E) (e5 * inv); }
-                if (i6 < cols) { out[base + i6] = (E) (e6 * inv); }
-                if (i7 < cols) { out[base + i7] = (E) (e7 * inv); }
+        uint32 width = Wave.width();
+        uint32 first = Workgroup.x() * 8;
+        uint32 last = first + 8;
+        if (last > rows) { last = rows; }
+        if (cols <= 16 * width) {
+            // Eight rows per workgroup, a wave per row, no barriers; the trip count and the
+            // branches around the wave ops are uniform (cajeta-ml-gpu 28.2.4).
+            uint32 wl = Wave.laneId();
+            uint32 waves = 256 / width;
+            uint32 reps = (8 + waves - 1) / waves;
+            uint32 k = 0;
+            while (k < reps) {
+                uint32 row = first + lane / width + k * waves;
+                boolean live = row < last;
+                if (!live) { row = rows - 1; }
+                uint32 base = row * cols;
+                uint32 i0 = wl;
+                uint32 i1 = wl + 1 * width;
+                uint32 i2 = wl + 2 * width;
+                uint32 i3 = wl + 3 * width;
+                uint32 i4 = wl + 4 * width;
+                uint32 i5 = wl + 5 * width;
+                uint32 i6 = wl + 6 * width;
+                uint32 i7 = wl + 7 * width;
+                uint32 i8 = wl + 8 * width;
+                uint32 i9 = wl + 9 * width;
+                uint32 i10 = wl + 10 * width;
+                uint32 i11 = wl + 11 * width;
+                uint32 i12 = wl + 12 * width;
+                uint32 i13 = wl + 13 * width;
+                uint32 i14 = wl + 14 * width;
+                uint32 i15 = wl + 15 * width;
+                float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f; float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f; float32 v8 = -3.4028235e38f; float32 v9 = -3.4028235e38f; float32 v10 = -3.4028235e38f; float32 v11 = -3.4028235e38f; float32 v12 = -3.4028235e38f; float32 v13 = -3.4028235e38f; float32 v14 = -3.4028235e38f; float32 v15 = -3.4028235e38f;
+                if (i0 < cols) { v0 = (float32) x[base + i0]; }
+                if (i1 < cols) { v1 = (float32) x[base + i1]; }
+                if (i2 < cols) { v2 = (float32) x[base + i2]; }
+                if (i3 < cols) { v3 = (float32) x[base + i3]; }
+                if (i4 < cols) { v4 = (float32) x[base + i4]; }
+                if (i5 < cols) { v5 = (float32) x[base + i5]; }
+                if (i6 < cols) { v6 = (float32) x[base + i6]; }
+                if (i7 < cols) { v7 = (float32) x[base + i7]; }
+                if (i8 < cols) { v8 = (float32) x[base + i8]; }
+                if (i9 < cols) { v9 = (float32) x[base + i9]; }
+                if (i10 < cols) { v10 = (float32) x[base + i10]; }
+                if (i11 < cols) { v11 = (float32) x[base + i11]; }
+                if (i12 < cols) { v12 = (float32) x[base + i12]; }
+                if (i13 < cols) { v13 = (float32) x[base + i13]; }
+                if (i14 < cols) { v14 = (float32) x[base + i14]; }
+                if (i15 < cols) { v15 = (float32) x[base + i15]; }
+                float32 m = v0;
+                if (v1 > m) { m = v1; }
+                if (v2 > m) { m = v2; }
+                if (v3 > m) { m = v3; }
+                if (v4 > m) { m = v4; }
+                if (v5 > m) { m = v5; }
+                if (v6 > m) { m = v6; }
+                if (v7 > m) { m = v7; }
+                if (v8 > m) { m = v8; }
+                if (v9 > m) { m = v9; }
+                if (v10 > m) { m = v10; }
+                if (v11 > m) { m = v11; }
+                if (v12 > m) { m = v12; }
+                if (v13 > m) { m = v13; }
+                if (v14 > m) { m = v14; }
+                if (v15 > m) { m = v15; }
+                float32 rmax = Wave.reduceMaxF32(m);
+                float32 sum = 0.0f;
+                if (i0 < cols) { sum = sum + Math.exp(v0 - rmax); }
+                if (i1 < cols) { sum = sum + Math.exp(v1 - rmax); }
+                if (i2 < cols) { sum = sum + Math.exp(v2 - rmax); }
+                if (i3 < cols) { sum = sum + Math.exp(v3 - rmax); }
+                if (i4 < cols) { sum = sum + Math.exp(v4 - rmax); }
+                if (i5 < cols) { sum = sum + Math.exp(v5 - rmax); }
+                if (i6 < cols) { sum = sum + Math.exp(v6 - rmax); }
+                if (i7 < cols) { sum = sum + Math.exp(v7 - rmax); }
+                if (i8 < cols) { sum = sum + Math.exp(v8 - rmax); }
+                if (i9 < cols) { sum = sum + Math.exp(v9 - rmax); }
+                if (i10 < cols) { sum = sum + Math.exp(v10 - rmax); }
+                if (i11 < cols) { sum = sum + Math.exp(v11 - rmax); }
+                if (i12 < cols) { sum = sum + Math.exp(v12 - rmax); }
+                if (i13 < cols) { sum = sum + Math.exp(v13 - rmax); }
+                if (i14 < cols) { sum = sum + Math.exp(v14 - rmax); }
+                if (i15 < cols) { sum = sum + Math.exp(v15 - rmax); }
+                float32 tot = Wave.reduceSumF32(sum);
+                float32 inv = 1.0f / tot;
+                float32 lse = Math.log(tot);
+                if (live) {
+                    if (logOut != 0) {
+                        if (i0 < cols) { out[base + i0] = (E) (v0 - rmax - lse); }
+                        if (i1 < cols) { out[base + i1] = (E) (v1 - rmax - lse); }
+                        if (i2 < cols) { out[base + i2] = (E) (v2 - rmax - lse); }
+                        if (i3 < cols) { out[base + i3] = (E) (v3 - rmax - lse); }
+                        if (i4 < cols) { out[base + i4] = (E) (v4 - rmax - lse); }
+                        if (i5 < cols) { out[base + i5] = (E) (v5 - rmax - lse); }
+                        if (i6 < cols) { out[base + i6] = (E) (v6 - rmax - lse); }
+                        if (i7 < cols) { out[base + i7] = (E) (v7 - rmax - lse); }
+                        if (i8 < cols) { out[base + i8] = (E) (v8 - rmax - lse); }
+                        if (i9 < cols) { out[base + i9] = (E) (v9 - rmax - lse); }
+                        if (i10 < cols) { out[base + i10] = (E) (v10 - rmax - lse); }
+                        if (i11 < cols) { out[base + i11] = (E) (v11 - rmax - lse); }
+                        if (i12 < cols) { out[base + i12] = (E) (v12 - rmax - lse); }
+                        if (i13 < cols) { out[base + i13] = (E) (v13 - rmax - lse); }
+                        if (i14 < cols) { out[base + i14] = (E) (v14 - rmax - lse); }
+                        if (i15 < cols) { out[base + i15] = (E) (v15 - rmax - lse); }
+                    } else {
+                        if (i0 < cols) { out[base + i0] = (E) (Math.exp(v0 - rmax) * inv); }
+                        if (i1 < cols) { out[base + i1] = (E) (Math.exp(v1 - rmax) * inv); }
+                        if (i2 < cols) { out[base + i2] = (E) (Math.exp(v2 - rmax) * inv); }
+                        if (i3 < cols) { out[base + i3] = (E) (Math.exp(v3 - rmax) * inv); }
+                        if (i4 < cols) { out[base + i4] = (E) (Math.exp(v4 - rmax) * inv); }
+                        if (i5 < cols) { out[base + i5] = (E) (Math.exp(v5 - rmax) * inv); }
+                        if (i6 < cols) { out[base + i6] = (E) (Math.exp(v6 - rmax) * inv); }
+                        if (i7 < cols) { out[base + i7] = (E) (Math.exp(v7 - rmax) * inv); }
+                        if (i8 < cols) { out[base + i8] = (E) (Math.exp(v8 - rmax) * inv); }
+                        if (i9 < cols) { out[base + i9] = (E) (Math.exp(v9 - rmax) * inv); }
+                        if (i10 < cols) { out[base + i10] = (E) (Math.exp(v10 - rmax) * inv); }
+                        if (i11 < cols) { out[base + i11] = (E) (Math.exp(v11 - rmax) * inv); }
+                        if (i12 < cols) { out[base + i12] = (E) (Math.exp(v12 - rmax) * inv); }
+                        if (i13 < cols) { out[base + i13] = (E) (Math.exp(v13 - rmax) * inv); }
+                        if (i14 < cols) { out[base + i14] = (E) (Math.exp(v14 - rmax) * inv); }
+                        if (i15 < cols) { out[base + i15] = (E) (Math.exp(v15 - rmax) * inv); }
+                    }
+                }
+                k = k + 1;
             }
             return;
         }
-        float32 mx = -3.4028235e38f;
-        uint32 i = lane;
-        while (i < cols) {
-            float32 v = (float32) x[base + i];
-            if (v > mx) { mx = v; }
-            i = i + 256;
-        }
-        part[lane] = mx;
-        Barrier.workgroup();
-        uint32 s = 128;
-        while (s > 0) {
-            if (lane < s && part[lane + s] > part[lane]) { part[lane] = part[lane + s]; }
-            Barrier.workgroup();
-            s = s / 2;
-        }
-        float32 rowMax = part[0];
-        Barrier.workgroup();
-        float32 sum = 0.0f;
-        i = lane;
-        while (i < cols) { sum = sum + Math.exp((float32) x[base + i] - rowMax); i = i + 256; }
-        part[lane] = sum;
-        Barrier.workgroup();
-        s = 128;
-        while (s > 0) {
-            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
-            Barrier.workgroup();
-            s = s / 2;
-        }
-        float32 inv = 1.0f / part[0];
-        float32 lse = Math.log(part[0]);
-        uint32 j = lane;
-        while (j < cols) {
-            float32 d = (float32) x[base + j] - rowMax;
-            if (logOut != 0) { out[base + j] = (E) (d - lse); } else { out[base + j] = (E) (Math.exp(d) * inv); }
-            j = j + 256;
-        }
-    }
-
-    /** Each row's log-sum-exp and its negative log-likelihood at the target: the cross-entropy forward in one pass, no probs written (cajeta-ml-gpu 28.2.4). */
-    @Kernel
-    public static void crossEntropyRow<E>(KernelBuffer<E> lse, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, uint32 cols) {
-        Shared<float32> part = shared float32[256];
-        uint32 lane = KernelThread.x();
-        uint32 row = Workgroup.x();
-        uint32 base = row * cols;
-        float32 rowLse = 0.0f;
-        if (cols <= 2048) {
-            uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
-            uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
-            float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f;
-            float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f;
-            if (i0 < cols) { v0 = (float32) x[base + i0]; }
-            if (i1 < cols) { v1 = (float32) x[base + i1]; }
-            if (i2 < cols) { v2 = (float32) x[base + i2]; }
-            if (i3 < cols) { v3 = (float32) x[base + i3]; }
-            if (i4 < cols) { v4 = (float32) x[base + i4]; }
-            if (i5 < cols) { v5 = (float32) x[base + i5]; }
-            if (i6 < cols) { v6 = (float32) x[base + i6]; }
-            if (i7 < cols) { v7 = (float32) x[base + i7]; }
-            float32 m01 = v0; if (v1 > m01) { m01 = v1; }
-            float32 m23 = v2; if (v3 > m23) { m23 = v3; }
-            float32 m45 = v4; if (v5 > m45) { m45 = v5; }
-            float32 m67 = v6; if (v7 > m67) { m67 = v7; }
-            if (m23 > m01) { m01 = m23; }
-            if (m67 > m45) { m45 = m67; }
-            if (m45 > m01) { m01 = m45; }
-            float32 rmax = Workgroup.reduce(GroupOp.Max, m01);
-            if (lane == 0) { part[0] = rmax; }
-            Barrier.workgroup();
-            float32 rowMax = part[0];
-            float32 e0 = 0.0f; float32 e1 = 0.0f; float32 e2 = 0.0f; float32 e3 = 0.0f;
-            float32 e4 = 0.0f; float32 e5 = 0.0f; float32 e6 = 0.0f; float32 e7 = 0.0f;
-            if (i0 < cols) { e0 = Math.exp(v0 - rowMax); }
-            if (i1 < cols) { e1 = Math.exp(v1 - rowMax); }
-            if (i2 < cols) { e2 = Math.exp(v2 - rowMax); }
-            if (i3 < cols) { e3 = Math.exp(v3 - rowMax); }
-            if (i4 < cols) { e4 = Math.exp(v4 - rowMax); }
-            if (i5 < cols) { e5 = Math.exp(v5 - rowMax); }
-            if (i6 < cols) { e6 = Math.exp(v6 - rowMax); }
-            if (i7 < cols) { e7 = Math.exp(v7 - rowMax); }
-            float32 sum = ((e0 + e1) + (e2 + e3)) + ((e4 + e5) + (e6 + e7));
-            float32 tot = Workgroup.reduce(GroupOp.Add, sum);
-            if (lane == 0) { part[1] = tot; }
-            Barrier.workgroup();
-            rowLse = rowMax + Math.log(part[1]);
-        } else {
+        uint32 row = first;
+        while (row < last) {
+            uint32 base = row * cols;
+            if (cols <= 2048) {
+                // The row in registers (lane holds the elements lane + 256 k), the max
+                // and the sum as workgroup collectives: one read of x, two barriers
+                // (cajeta-ml-gpu 28.2.4).
+                uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
+                uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
+                float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f;
+                float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f;
+                if (i0 < cols) { v0 = (float32) x[base + i0]; }
+                if (i1 < cols) { v1 = (float32) x[base + i1]; }
+                if (i2 < cols) { v2 = (float32) x[base + i2]; }
+                if (i3 < cols) { v3 = (float32) x[base + i3]; }
+                if (i4 < cols) { v4 = (float32) x[base + i4]; }
+                if (i5 < cols) { v5 = (float32) x[base + i5]; }
+                if (i6 < cols) { v6 = (float32) x[base + i6]; }
+                if (i7 < cols) { v7 = (float32) x[base + i7]; }
+                float32 m01 = v0; if (v1 > m01) { m01 = v1; }
+                float32 m23 = v2; if (v3 > m23) { m23 = v3; }
+                float32 m45 = v4; if (v5 > m45) { m45 = v5; }
+                float32 m67 = v6; if (v7 > m67) { m67 = v7; }
+                if (m23 > m01) { m01 = m23; }
+                if (m67 > m45) { m45 = m67; }
+                if (m45 > m01) { m01 = m45; }
+                float32 rmax = Workgroup.reduce(GroupOp.Max, m01);
+                if (lane == 0) { part[0] = rmax; }
+                Barrier.workgroup();
+                float32 rowMax = part[0];
+                float32 e0 = 0.0f; float32 e1 = 0.0f; float32 e2 = 0.0f; float32 e3 = 0.0f;
+                float32 e4 = 0.0f; float32 e5 = 0.0f; float32 e6 = 0.0f; float32 e7 = 0.0f;
+                if (i0 < cols) { e0 = Math.exp(v0 - rowMax); }
+                if (i1 < cols) { e1 = Math.exp(v1 - rowMax); }
+                if (i2 < cols) { e2 = Math.exp(v2 - rowMax); }
+                if (i3 < cols) { e3 = Math.exp(v3 - rowMax); }
+                if (i4 < cols) { e4 = Math.exp(v4 - rowMax); }
+                if (i5 < cols) { e5 = Math.exp(v5 - rowMax); }
+                if (i6 < cols) { e6 = Math.exp(v6 - rowMax); }
+                if (i7 < cols) { e7 = Math.exp(v7 - rowMax); }
+                float32 sum = ((e0 + e1) + (e2 + e3)) + ((e4 + e5) + (e6 + e7));
+                float32 tot = Workgroup.reduce(GroupOp.Add, sum);
+                if (lane == 0) { part[1] = tot; }
+                Barrier.workgroup();
+                float32 inv = 1.0f / part[1];
+                float32 lse = Math.log(part[1]);
+                if (logOut != 0) {
+                    if (i0 < cols) { out[base + i0] = (E) (v0 - rowMax - lse); }
+                    if (i1 < cols) { out[base + i1] = (E) (v1 - rowMax - lse); }
+                    if (i2 < cols) { out[base + i2] = (E) (v2 - rowMax - lse); }
+                    if (i3 < cols) { out[base + i3] = (E) (v3 - rowMax - lse); }
+                    if (i4 < cols) { out[base + i4] = (E) (v4 - rowMax - lse); }
+                    if (i5 < cols) { out[base + i5] = (E) (v5 - rowMax - lse); }
+                    if (i6 < cols) { out[base + i6] = (E) (v6 - rowMax - lse); }
+                    if (i7 < cols) { out[base + i7] = (E) (v7 - rowMax - lse); }
+                } else {
+                    if (i0 < cols) { out[base + i0] = (E) (e0 * inv); }
+                    if (i1 < cols) { out[base + i1] = (E) (e1 * inv); }
+                    if (i2 < cols) { out[base + i2] = (E) (e2 * inv); }
+                    if (i3 < cols) { out[base + i3] = (E) (e3 * inv); }
+                    if (i4 < cols) { out[base + i4] = (E) (e4 * inv); }
+                    if (i5 < cols) { out[base + i5] = (E) (e5 * inv); }
+                    if (i6 < cols) { out[base + i6] = (E) (e6 * inv); }
+                    if (i7 < cols) { out[base + i7] = (E) (e7 * inv); }
+                }
+            } else {
             float32 mx = -3.4028235e38f;
             uint32 i = lane;
             while (i < cols) {
@@ -232,17 +275,204 @@ public final class Act {
                 Barrier.workgroup();
                 s = s / 2;
             }
-            rowLse = rowMax + Math.log(part[0]);
-        }
-        if (lane == 0) {
-            lse[row] = (E) rowLse;
-            float32 tf = (float32) targets[row];
-            float32 loss = 0.0f / 0.0f;
-            if (tf >= 0.0f && tf < (float32) cols) {
-                uint32 t = (uint32) tf;
-                loss = rowLse - (float32) x[base + t];
+            float32 inv = 1.0f / part[0];
+            float32 lse = Math.log(part[0]);
+            uint32 j = lane;
+            while (j < cols) {
+                float32 d = (float32) x[base + j] - rowMax;
+                if (logOut != 0) { out[base + j] = (E) (d - lse); } else { out[base + j] = (E) (Math.exp(d) * inv); }
+                j = j + 256;
             }
-            rowLoss[row] = (E) loss;
+            }
+            Barrier.workgroup();
+            row = row + 1;
+        }
+    }
+
+    /** Each row's log-sum-exp and its negative log-likelihood at the target, eight rows per workgroup: a wave per row up to 16 lanes' worth of columns, the workgroup per row beyond (cajeta-ml-gpu 28.2.4). */
+    @Kernel
+    public static void crossEntropyRow<E>(KernelBuffer<E> lse, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, uint32 rows, uint32 cols) {
+        Shared<float32> part = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 width = Wave.width();
+        uint32 first = Workgroup.x() * 8;
+        uint32 last = first + 8;
+        if (last > rows) { last = rows; }
+        if (cols <= 16 * width) {
+            // A wave per row: the trip count and every branch around the wave ops are
+            // uniform (an out-of-range row clamps its loads and skips only its stores).
+            uint32 wl = Wave.laneId();
+            uint32 waves = 256 / width;
+            uint32 reps = (8 + waves - 1) / waves;
+            uint32 k = 0;
+            while (k < reps) {
+                uint32 row = first + lane / width + k * waves;
+                boolean live = row < last;
+                if (!live) { row = rows - 1; }
+                uint32 base = row * cols;
+                uint32 i0 = wl;
+                uint32 i1 = wl + 1 * width;
+                uint32 i2 = wl + 2 * width;
+                uint32 i3 = wl + 3 * width;
+                uint32 i4 = wl + 4 * width;
+                uint32 i5 = wl + 5 * width;
+                uint32 i6 = wl + 6 * width;
+                uint32 i7 = wl + 7 * width;
+                uint32 i8 = wl + 8 * width;
+                uint32 i9 = wl + 9 * width;
+                uint32 i10 = wl + 10 * width;
+                uint32 i11 = wl + 11 * width;
+                uint32 i12 = wl + 12 * width;
+                uint32 i13 = wl + 13 * width;
+                uint32 i14 = wl + 14 * width;
+                uint32 i15 = wl + 15 * width;
+                float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f; float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f; float32 v8 = -3.4028235e38f; float32 v9 = -3.4028235e38f; float32 v10 = -3.4028235e38f; float32 v11 = -3.4028235e38f; float32 v12 = -3.4028235e38f; float32 v13 = -3.4028235e38f; float32 v14 = -3.4028235e38f; float32 v15 = -3.4028235e38f;
+                if (i0 < cols) { v0 = (float32) x[base + i0]; }
+                if (i1 < cols) { v1 = (float32) x[base + i1]; }
+                if (i2 < cols) { v2 = (float32) x[base + i2]; }
+                if (i3 < cols) { v3 = (float32) x[base + i3]; }
+                if (i4 < cols) { v4 = (float32) x[base + i4]; }
+                if (i5 < cols) { v5 = (float32) x[base + i5]; }
+                if (i6 < cols) { v6 = (float32) x[base + i6]; }
+                if (i7 < cols) { v7 = (float32) x[base + i7]; }
+                if (i8 < cols) { v8 = (float32) x[base + i8]; }
+                if (i9 < cols) { v9 = (float32) x[base + i9]; }
+                if (i10 < cols) { v10 = (float32) x[base + i10]; }
+                if (i11 < cols) { v11 = (float32) x[base + i11]; }
+                if (i12 < cols) { v12 = (float32) x[base + i12]; }
+                if (i13 < cols) { v13 = (float32) x[base + i13]; }
+                if (i14 < cols) { v14 = (float32) x[base + i14]; }
+                if (i15 < cols) { v15 = (float32) x[base + i15]; }
+                float32 m = v0;
+                if (v1 > m) { m = v1; }
+                if (v2 > m) { m = v2; }
+                if (v3 > m) { m = v3; }
+                if (v4 > m) { m = v4; }
+                if (v5 > m) { m = v5; }
+                if (v6 > m) { m = v6; }
+                if (v7 > m) { m = v7; }
+                if (v8 > m) { m = v8; }
+                if (v9 > m) { m = v9; }
+                if (v10 > m) { m = v10; }
+                if (v11 > m) { m = v11; }
+                if (v12 > m) { m = v12; }
+                if (v13 > m) { m = v13; }
+                if (v14 > m) { m = v14; }
+                if (v15 > m) { m = v15; }
+                float32 rmax = Wave.reduceMaxF32(m);
+                float32 sum = 0.0f;
+                if (i0 < cols) { sum = sum + Math.exp(v0 - rmax); }
+                if (i1 < cols) { sum = sum + Math.exp(v1 - rmax); }
+                if (i2 < cols) { sum = sum + Math.exp(v2 - rmax); }
+                if (i3 < cols) { sum = sum + Math.exp(v3 - rmax); }
+                if (i4 < cols) { sum = sum + Math.exp(v4 - rmax); }
+                if (i5 < cols) { sum = sum + Math.exp(v5 - rmax); }
+                if (i6 < cols) { sum = sum + Math.exp(v6 - rmax); }
+                if (i7 < cols) { sum = sum + Math.exp(v7 - rmax); }
+                if (i8 < cols) { sum = sum + Math.exp(v8 - rmax); }
+                if (i9 < cols) { sum = sum + Math.exp(v9 - rmax); }
+                if (i10 < cols) { sum = sum + Math.exp(v10 - rmax); }
+                if (i11 < cols) { sum = sum + Math.exp(v11 - rmax); }
+                if (i12 < cols) { sum = sum + Math.exp(v12 - rmax); }
+                if (i13 < cols) { sum = sum + Math.exp(v13 - rmax); }
+                if (i14 < cols) { sum = sum + Math.exp(v14 - rmax); }
+                if (i15 < cols) { sum = sum + Math.exp(v15 - rmax); }
+                float32 tot = Wave.reduceSumF32(sum);
+                float32 rl = rmax + Math.log(tot);
+                if (live && wl == 0) {
+                    lse[row] = (E) rl;
+                    float32 tf = (float32) targets[row];
+                    float32 loss = 0.0f / 0.0f;
+                    if (tf >= 0.0f && tf < (float32) cols) { uint32 t = (uint32) tf; loss = rl - (float32) x[base + t]; }
+                    rowLoss[row] = (E) loss;
+                }
+                k = k + 1;
+            }
+            return;
+        }
+        uint32 row = first;
+        while (row < last) {
+            uint32 base = row * cols;
+            float32 rowLse = 0.0f;
+            if (cols <= 2048) {
+                uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
+                uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
+                float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f;
+                float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f;
+                if (i0 < cols) { v0 = (float32) x[base + i0]; }
+                if (i1 < cols) { v1 = (float32) x[base + i1]; }
+                if (i2 < cols) { v2 = (float32) x[base + i2]; }
+                if (i3 < cols) { v3 = (float32) x[base + i3]; }
+                if (i4 < cols) { v4 = (float32) x[base + i4]; }
+                if (i5 < cols) { v5 = (float32) x[base + i5]; }
+                if (i6 < cols) { v6 = (float32) x[base + i6]; }
+                if (i7 < cols) { v7 = (float32) x[base + i7]; }
+                float32 m01 = v0; if (v1 > m01) { m01 = v1; }
+                float32 m23 = v2; if (v3 > m23) { m23 = v3; }
+                float32 m45 = v4; if (v5 > m45) { m45 = v5; }
+                float32 m67 = v6; if (v7 > m67) { m67 = v7; }
+                if (m23 > m01) { m01 = m23; }
+                if (m67 > m45) { m45 = m67; }
+                if (m45 > m01) { m01 = m45; }
+                float32 rmax = Workgroup.reduce(GroupOp.Max, m01);
+                if (lane == 0) { part[0] = rmax; }
+                Barrier.workgroup();
+                float32 rowMax = part[0];
+                float32 e0 = 0.0f; float32 e1 = 0.0f; float32 e2 = 0.0f; float32 e3 = 0.0f;
+                float32 e4 = 0.0f; float32 e5 = 0.0f; float32 e6 = 0.0f; float32 e7 = 0.0f;
+                if (i0 < cols) { e0 = Math.exp(v0 - rowMax); }
+                if (i1 < cols) { e1 = Math.exp(v1 - rowMax); }
+                if (i2 < cols) { e2 = Math.exp(v2 - rowMax); }
+                if (i3 < cols) { e3 = Math.exp(v3 - rowMax); }
+                if (i4 < cols) { e4 = Math.exp(v4 - rowMax); }
+                if (i5 < cols) { e5 = Math.exp(v5 - rowMax); }
+                if (i6 < cols) { e6 = Math.exp(v6 - rowMax); }
+                if (i7 < cols) { e7 = Math.exp(v7 - rowMax); }
+                float32 sum = ((e0 + e1) + (e2 + e3)) + ((e4 + e5) + (e6 + e7));
+                float32 tot = Workgroup.reduce(GroupOp.Add, sum);
+                if (lane == 0) { part[1] = tot; }
+                Barrier.workgroup();
+                rowLse = rowMax + Math.log(part[1]);
+            } else {
+                float32 mx = -3.4028235e38f;
+                uint32 i = lane;
+                while (i < cols) {
+                    float32 v = (float32) x[base + i];
+                    if (v > mx) { mx = v; }
+                    i = i + 256;
+                }
+                part[lane] = mx;
+                Barrier.workgroup();
+                uint32 s = 128;
+                while (s > 0) {
+                    if (lane < s && part[lane + s] > part[lane]) { part[lane] = part[lane + s]; }
+                    Barrier.workgroup();
+                    s = s / 2;
+                }
+                float32 rowMax = part[0];
+                Barrier.workgroup();
+                float32 sum = 0.0f;
+                i = lane;
+                while (i < cols) { sum = sum + Math.exp((float32) x[base + i] - rowMax); i = i + 256; }
+                part[lane] = sum;
+                Barrier.workgroup();
+                s = 128;
+                while (s > 0) {
+                    if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+                    Barrier.workgroup();
+                    s = s / 2;
+                }
+                rowLse = rowMax + Math.log(part[0]);
+            }
+            if (lane == 0) {
+                lse[row] = (E) rowLse;
+                float32 tf = (float32) targets[row];
+                float32 loss = 0.0f / 0.0f;
+                if (tf >= 0.0f && tf < (float32) cols) { uint32 t = (uint32) tf; loss = rowLse - (float32) x[base + t]; }
+                rowLoss[row] = (E) loss;
+            }
+            Barrier.workgroup();
+            row = row + 1;
         }
     }
 
@@ -320,19 +550,19 @@ public final class Act {
     /** `out` = softmax of each of `rows` rows of `x`; queued on the current stream. */
     public static void softmaxRows<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
-        softmax.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, 0);
+        softmax.launch(s, grid: [((uint32) rows + 7) / 8], block: [256])(out, x, (uint32) rows, (uint32) cols, 0);
     }
 
     /** lse[r] = log sum exp of row r of `x` and rowLoss[r] = lse[r] - x[r][targets[r]] in one launch, any width; queued on the current stream. */
     public static void crossEntropyRows<E>(KernelBuffer<E> lse, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
-        crossEntropyRow.launch(s, grid: [(uint32) rows], block: [256])(lse, rowLoss, x, targets, (uint32) cols);
+        crossEntropyRow.launch(s, grid: [((uint32) rows + 7) / 8], block: [256])(lse, rowLoss, x, targets, (uint32) rows, (uint32) cols);
     }
 
     /** `out` = log-softmax of each of `rows` rows of `x`, as `x - max - log(sum exp)`; queued on the current stream. */
     public static void logSoftmaxRows<E>(KernelBuffer<E> out, KernelBuffer<E> x, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
-        softmax.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, 1);
+        softmax.launch(s, grid: [((uint32) rows + 7) / 8], block: [256])(out, x, (uint32) rows, (uint32) cols, 1);
     }
 
     /** `out[i]` = the activation `kind` of `x[i]`; queued on the current stream. */
