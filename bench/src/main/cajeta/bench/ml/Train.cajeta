@@ -25,11 +25,11 @@ public final class Train {
                                boolean mse) {
         GradTape<float32> tape = heap GradTape<float32>();
         net.bindParameters(tape);
-        GradTensor xn = tape.leaf(x, false);
+        GradTensor xn = tape.leafBorrow(x, false);
         GradTensor out = net.forward(tape, xn);
         GradTensor loss = out;
         if (mse) {
-            GradTensor tgt = tape.leaf(y, false);
+            GradTensor tgt = tape.leafBorrow(y, false);
             loss = tape.mseLoss(out, tgt);
         } else {
             loss = tape.crossEntropy(out, y);

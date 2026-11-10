@@ -45,6 +45,28 @@ public class GradTapeTest {
     }
 
     @Test
+    public void borrowedLeafSharesTheCallersTensor() {
+        GradTape<float32> t = heap GradTape<float32>();
+        Tensor<float32> av #= GradTapeTest.grid23();
+        GradTensor x = t.leafBorrow(av, true);
+        av.flatSet(0L, 100.0f);
+        if (t.valueOf(x).flatGet(0L) != 100.0f) { Assert.fail("a borrowed leaf reads the caller's tensor, not a copy"); }
+        GradTensor s = t.sum(t.mul(x, x));
+        t.backward(s);
+        Tensor<float32> g = t.gradOf(x);
+        if (g.flatGet(0L) != 200.0f) { Assert.fail("d(sum x*x)/dx at 100 is 200, got " + g.flatGet(0L)); }
+    }
+
+    @Test
+    public void copiedLeafIsIsolatedFromTheCaller() {
+        GradTape<float32> t = heap GradTape<float32>();
+        Tensor<float32> av #= GradTapeTest.grid23();
+        GradTensor x = t.leaf(av, false);
+        av.flatSet(0L, 100.0f);
+        if (t.valueOf(x).flatGet(0L) != -1.25f) { Assert.fail("a copied leaf keeps the value it was given"); }
+    }
+
+    @Test
     public void reusedNodeAccumulatesGrad() {
         GradTape<float32> t = heap GradTape<float32>();
         Tensor<float32> av #= GradTapeTest.grid23();

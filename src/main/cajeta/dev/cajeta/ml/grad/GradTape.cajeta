@@ -38,7 +38,7 @@ public final class GradTape<E extends Floating> {
      *  through the bare class name in this toolchain. */
     int32 payStride;
 
-    ArrayList<Tensor<E>> values;         // node forward values (owned)
+    ArrayList<Tensor<E>> values;         // node forward values (owned, or borrowed for leafBorrow)
     ArrayList<Tensor<E>> grads;          // cotangents (allocated in backward)
     ArrayList<Tensor<E>> auxT;           // saved forward state (owned)
     int32[] ops;                         // Op.* per node
@@ -129,7 +129,7 @@ public final class GradTape<E extends Floating> {
     }
 
     GradTensor push(int32 op, int32 a, int32 b, int32 axis, float64 c,
-                    #Tensor<E> value) {
+                    Tensor<E> value) {
         this.grow();
         int32 i = this.n;
         this.ops[i] = op;
@@ -186,6 +186,14 @@ public final class GradTape<E extends Floating> {
     public GradTensor leaf(Tensor<E> value, boolean requiresGrad) {
         Tensor<E> own #= Ops.copyOf<E>(value);
         GradTensor t = this.push(Op.LEAF, -1, -1, 0, 0.0, #own);
+        this.needsGrad[t.idx] = requiresGrad && this.noGradDepth == 0;
+        this.isLeafGrad[t.idx] = this.needsGrad[t.idx];
+        return t;
+    }
+
+    /** Record the caller's `value` as a leaf without copying it; the caller keeps it alive and unchanged for the tape's life. */
+    public GradTensor leafBorrow(Tensor<E> value, boolean requiresGrad) {
+        GradTensor t = this.push(Op.LEAF, -1, -1, 0, 0.0, value);
         this.needsGrad[t.idx] = requiresGrad && this.noGradDepth == 0;
         this.isLeafGrad[t.idx] = this.needsGrad[t.idx];
         return t;

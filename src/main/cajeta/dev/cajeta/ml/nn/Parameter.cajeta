@@ -67,9 +67,9 @@ public class Parameter {
         return;
     }
 
-    /** Record this parameter as a leaf of `tape` and remember the handle. */
+    /** Record this parameter as a leaf of `tape` (borrowed, no copy) and remember the handle. */
     public GradTensor bind(GradTape<float32> tape) {
-        GradTensor t = tape.leaf(this.value, this.requiresGrad);
+        GradTensor t = tape.leafBorrow(this.value, this.requiresGrad);
         this.boundNode = t.index();
         return t;
     }

@@ -115,7 +115,7 @@ public class Module {
     public #Tensor<float32> predict(Tensor<float32> x) {
         GradTape<float32> tape = heap GradTape<float32>();
         this.bindParameters(tape);
-        GradTensor xn = tape.leaf(x, false);
+        GradTensor xn = tape.leafBorrow(x, false);
         GradTensor y = this.forward(tape, xn);
         Tensor<float32> out #= Ops.copyOf<float32>(tape.valueOf(y));
         this.unbindParameters();
