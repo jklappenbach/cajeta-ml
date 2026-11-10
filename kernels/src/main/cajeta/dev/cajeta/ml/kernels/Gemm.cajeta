@@ -4086,6 +4086,14 @@ public final class Gemm {
         return Gemm.largeF16Fam;
     }
 
+    /** How many large-GEMM members at f16 (`bf16` false) or bf16 survive the feasibility filter here at m x n x k (0 where none has device code); one survivor runs untimed. */
+    public static int32 largeSurvivors(boolean bf16, int64 m, int64 n, int64 k) {
+        TileFamily<LargeShape> f = Gemm.largeFamily(bf16);
+        if (!f.serves(m, n, k)) { return 0; }
+        ShapeFilter flt #= f.filterFor(m, n, k);
+        return flt.survivorCount();
+    }
+
     /** Whether the last {@link #runTuned} or {@link #runTunedBf16} timed its members. */
     public static boolean lastLargeTimed() { return Gemm.largeTimed; }
 

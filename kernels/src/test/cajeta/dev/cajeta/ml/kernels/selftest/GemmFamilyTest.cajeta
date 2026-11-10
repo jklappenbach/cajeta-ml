@@ -14,7 +14,8 @@ import dev.cajeta.ml.kernels.tune.TuneMode;
  * cajeta-ml-gpu 23.2.2: the 256x128 GEMM member (double-buffered shared memory, three
  * slabs of prefetch, a rotated K walk) against a float64 host GEMM, and the large-GEMM
  * family that chooses between it and the 128x128 member per device and problem: timed at
- * first use and remembered, the first member when untimed.
+ * first use and remembered, the first member when untimed, and a lone survivor of the
+ * feasibility filter (the 256x128 member spills at 512 threads on sm_89) untimed.
  */
 public class GemmFamilyTest {
     public GemmFamilyTest() { return; }
@@ -150,9 +151,11 @@ public class GemmFamilyTest {
         if (!GemmTileTest.usable("gemm256_float16") || !GemmTileTest.usable("gemm128_float16")) { return; }
         String store #= GemmFamilyTest.freshStore();
         TuneMode.setUntimed(false);
+        int32 survivors = Gemm.largeSurvivors(false, 512L, 512L, 256L);
+        Assert.isTrue(survivors >= 1);
         String first #= GemmFamilyTest.f16Case(1, 512L, 512L, 256L, store);
-        Assert.isTrue(Gemm.lastLargeTimed());
         Assert.isTrue(first.equals("gemm128_float16") || first.equals("gemm256_float16"));
+        if (survivors > 1) { Assert.isTrue(Gemm.lastLargeTimed()); } else { Assert.isFalse(Gemm.lastLargeTimed()); }
         String again #= GemmFamilyTest.f16Case(1, 512L, 512L, 256L, store);
         Assert.isFalse(Gemm.lastLargeTimed());
         Assert.equals(first, again);
