@@ -17,7 +17,7 @@
 
     "details": {
         "name":               "dev.cajeta.ml",
-        "version":            "0.13.0",
+        "version":            "0.13.1",
         "description":        "cajeta-ml — classical ML: linear models with inference, preprocessing, model selection, metrics, and the ecosystem estimator protocol",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
@@ -34,7 +34,7 @@
         // consumers resolve the published archive; run-tests.sh builds it from
         // source so the suite tests the tree.
         "dependencies": {
-            "dev.cajeta.ml.kernels": "0.2.8"
+            "dev.cajeta.ml.kernels": "0.2.9"
         },
 
         // The suite is driven by cajeta-unit's reflective @Test discovery;
