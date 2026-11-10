@@ -1,0 +1,212 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.Barrier;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
+
+/**
+ * A linear layer's forward in one launch for small batches (spec §5.4): C = act(A . B + bias)
+ * with A (m x k), B (k x n), bias (n) and act 0 (none) or 1 (relu). A workgroup owns a 16x16
+ * tile of C and splits K sixteen ways across its 256 lanes (slabs of 64 through shared
+ * memory, the next slab prefetched in registers), then reduces the sixteen partial sums
+ * through shared memory and applies the epilogue in the store.
+ */
+public final class Linear {
+    public Linear() { return; }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void linear<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, KernelBuffer<E> bias,
+                                 uint32 m, uint32 n, uint32 k, uint32 hasBias, uint32 act) {
+        Shared<float32> sa = shared float32[1024];
+        Shared<float32> sb = shared float32[1024];
+        Shared<float32> sr = shared float32[4096];
+        uint32 t = KernelThread.x();
+        uint32 tx = t % 16;
+        uint32 tk = t / 16;
+        uint32 ntiles = (n + 15) / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid - mi * ntiles;
+        uint32 m0 = mi * 16;
+        uint32 n0 = nj * 16;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        float32 c8 = 0.0f;
+        float32 c9 = 0.0f;
+        float32 c10 = 0.0f;
+        float32 c11 = 0.0f;
+        float32 c12 = 0.0f;
+        float32 c13 = 0.0f;
+        float32 c14 = 0.0f;
+        float32 c15 = 0.0f;
+        uint32 ar = t / 64;
+        uint32 ak = t - ar * 64;
+        uint32 bk = t / 16;
+        uint32 k0 = 0;
+        float32 pa0 = 0.0f;
+        float32 pa1 = 0.0f;
+        float32 pa2 = 0.0f;
+        float32 pa3 = 0.0f;
+        float32 pb0 = 0.0f;
+        float32 pb1 = 0.0f;
+        float32 pb2 = 0.0f;
+        float32 pb3 = 0.0f;
+        if (m0 + ar < m && ak < k) { pa0 = (float32) a[(m0 + ar) * k + ak]; }
+        if (m0 + ar + 4 < m && ak < k) { pa1 = (float32) a[(m0 + ar + 4) * k + ak]; }
+        if (m0 + ar + 8 < m && ak < k) { pa2 = (float32) a[(m0 + ar + 8) * k + ak]; }
+        if (m0 + ar + 12 < m && ak < k) { pa3 = (float32) a[(m0 + ar + 12) * k + ak]; }
+        if (bk < k && n0 + tx < n) { pb0 = (float32) b[bk * n + n0 + tx]; }
+        if (bk + 16 < k && n0 + tx < n) { pb1 = (float32) b[(bk + 16) * n + n0 + tx]; }
+        if (bk + 32 < k && n0 + tx < n) { pb2 = (float32) b[(bk + 32) * n + n0 + tx]; }
+        if (bk + 48 < k && n0 + tx < n) { pb3 = (float32) b[(bk + 48) * n + n0 + tx]; }
+        while (k0 < k) {
+            sa[ar * 64 + ak] = pa0;
+            sa[(ar + 4) * 64 + ak] = pa1;
+            sa[(ar + 8) * 64 + ak] = pa2;
+            sa[(ar + 12) * 64 + ak] = pa3;
+            sb[bk * 16 + tx] = pb0;
+            sb[(bk + 16) * 16 + tx] = pb1;
+            sb[(bk + 32) * 16 + tx] = pb2;
+            sb[(bk + 48) * 16 + tx] = pb3;
+            Barrier.workgroup();
+            uint32 kn = k0 + 64;
+            pa0 = 0.0f;
+            pa1 = 0.0f;
+            pa2 = 0.0f;
+            pa3 = 0.0f;
+            pb0 = 0.0f;
+            pb1 = 0.0f;
+            pb2 = 0.0f;
+            pb3 = 0.0f;
+            if (kn < k) {
+                if (m0 + ar < m && kn + ak < k) { pa0 = (float32) a[(m0 + ar) * k + kn + ak]; }
+                if (m0 + ar + 4 < m && kn + ak < k) { pa1 = (float32) a[(m0 + ar + 4) * k + kn + ak]; }
+                if (m0 + ar + 8 < m && kn + ak < k) { pa2 = (float32) a[(m0 + ar + 8) * k + kn + ak]; }
+                if (m0 + ar + 12 < m && kn + ak < k) { pa3 = (float32) a[(m0 + ar + 12) * k + kn + ak]; }
+                if (kn + bk < k && n0 + tx < n) { pb0 = (float32) b[(kn + bk) * n + n0 + tx]; }
+                if (kn + bk + 16 < k && n0 + tx < n) { pb1 = (float32) b[(kn + bk + 16) * n + n0 + tx]; }
+                if (kn + bk + 32 < k && n0 + tx < n) { pb2 = (float32) b[(kn + bk + 32) * n + n0 + tx]; }
+                if (kn + bk + 48 < k && n0 + tx < n) { pb3 = (float32) b[(kn + bk + 48) * n + n0 + tx]; }
+            }
+            float32 b0 = sb[(tk * 4 + 0) * 16 + tx];
+            c0 = c0 + sa[0 * 64 + tk * 4 + 0] * b0;
+            c1 = c1 + sa[1 * 64 + tk * 4 + 0] * b0;
+            c2 = c2 + sa[2 * 64 + tk * 4 + 0] * b0;
+            c3 = c3 + sa[3 * 64 + tk * 4 + 0] * b0;
+            c4 = c4 + sa[4 * 64 + tk * 4 + 0] * b0;
+            c5 = c5 + sa[5 * 64 + tk * 4 + 0] * b0;
+            c6 = c6 + sa[6 * 64 + tk * 4 + 0] * b0;
+            c7 = c7 + sa[7 * 64 + tk * 4 + 0] * b0;
+            c8 = c8 + sa[8 * 64 + tk * 4 + 0] * b0;
+            c9 = c9 + sa[9 * 64 + tk * 4 + 0] * b0;
+            c10 = c10 + sa[10 * 64 + tk * 4 + 0] * b0;
+            c11 = c11 + sa[11 * 64 + tk * 4 + 0] * b0;
+            c12 = c12 + sa[12 * 64 + tk * 4 + 0] * b0;
+            c13 = c13 + sa[13 * 64 + tk * 4 + 0] * b0;
+            c14 = c14 + sa[14 * 64 + tk * 4 + 0] * b0;
+            c15 = c15 + sa[15 * 64 + tk * 4 + 0] * b0;
+            float32 b1 = sb[(tk * 4 + 1) * 16 + tx];
+            c0 = c0 + sa[0 * 64 + tk * 4 + 1] * b1;
+            c1 = c1 + sa[1 * 64 + tk * 4 + 1] * b1;
+            c2 = c2 + sa[2 * 64 + tk * 4 + 1] * b1;
+            c3 = c3 + sa[3 * 64 + tk * 4 + 1] * b1;
+            c4 = c4 + sa[4 * 64 + tk * 4 + 1] * b1;
+            c5 = c5 + sa[5 * 64 + tk * 4 + 1] * b1;
+            c6 = c6 + sa[6 * 64 + tk * 4 + 1] * b1;
+            c7 = c7 + sa[7 * 64 + tk * 4 + 1] * b1;
+            c8 = c8 + sa[8 * 64 + tk * 4 + 1] * b1;
+            c9 = c9 + sa[9 * 64 + tk * 4 + 1] * b1;
+            c10 = c10 + sa[10 * 64 + tk * 4 + 1] * b1;
+            c11 = c11 + sa[11 * 64 + tk * 4 + 1] * b1;
+            c12 = c12 + sa[12 * 64 + tk * 4 + 1] * b1;
+            c13 = c13 + sa[13 * 64 + tk * 4 + 1] * b1;
+            c14 = c14 + sa[14 * 64 + tk * 4 + 1] * b1;
+            c15 = c15 + sa[15 * 64 + tk * 4 + 1] * b1;
+            float32 b2 = sb[(tk * 4 + 2) * 16 + tx];
+            c0 = c0 + sa[0 * 64 + tk * 4 + 2] * b2;
+            c1 = c1 + sa[1 * 64 + tk * 4 + 2] * b2;
+            c2 = c2 + sa[2 * 64 + tk * 4 + 2] * b2;
+            c3 = c3 + sa[3 * 64 + tk * 4 + 2] * b2;
+            c4 = c4 + sa[4 * 64 + tk * 4 + 2] * b2;
+            c5 = c5 + sa[5 * 64 + tk * 4 + 2] * b2;
+            c6 = c6 + sa[6 * 64 + tk * 4 + 2] * b2;
+            c7 = c7 + sa[7 * 64 + tk * 4 + 2] * b2;
+            c8 = c8 + sa[8 * 64 + tk * 4 + 2] * b2;
+            c9 = c9 + sa[9 * 64 + tk * 4 + 2] * b2;
+            c10 = c10 + sa[10 * 64 + tk * 4 + 2] * b2;
+            c11 = c11 + sa[11 * 64 + tk * 4 + 2] * b2;
+            c12 = c12 + sa[12 * 64 + tk * 4 + 2] * b2;
+            c13 = c13 + sa[13 * 64 + tk * 4 + 2] * b2;
+            c14 = c14 + sa[14 * 64 + tk * 4 + 2] * b2;
+            c15 = c15 + sa[15 * 64 + tk * 4 + 2] * b2;
+            float32 b3 = sb[(tk * 4 + 3) * 16 + tx];
+            c0 = c0 + sa[0 * 64 + tk * 4 + 3] * b3;
+            c1 = c1 + sa[1 * 64 + tk * 4 + 3] * b3;
+            c2 = c2 + sa[2 * 64 + tk * 4 + 3] * b3;
+            c3 = c3 + sa[3 * 64 + tk * 4 + 3] * b3;
+            c4 = c4 + sa[4 * 64 + tk * 4 + 3] * b3;
+            c5 = c5 + sa[5 * 64 + tk * 4 + 3] * b3;
+            c6 = c6 + sa[6 * 64 + tk * 4 + 3] * b3;
+            c7 = c7 + sa[7 * 64 + tk * 4 + 3] * b3;
+            c8 = c8 + sa[8 * 64 + tk * 4 + 3] * b3;
+            c9 = c9 + sa[9 * 64 + tk * 4 + 3] * b3;
+            c10 = c10 + sa[10 * 64 + tk * 4 + 3] * b3;
+            c11 = c11 + sa[11 * 64 + tk * 4 + 3] * b3;
+            c12 = c12 + sa[12 * 64 + tk * 4 + 3] * b3;
+            c13 = c13 + sa[13 * 64 + tk * 4 + 3] * b3;
+            c14 = c14 + sa[14 * 64 + tk * 4 + 3] * b3;
+            c15 = c15 + sa[15 * 64 + tk * 4 + 3] * b3;
+            Barrier.workgroup();
+            k0 = kn;
+        }
+        sr[(tk * 16 + 0) * 16 + tx] = c0;
+        sr[(tk * 16 + 1) * 16 + tx] = c1;
+        sr[(tk * 16 + 2) * 16 + tx] = c2;
+        sr[(tk * 16 + 3) * 16 + tx] = c3;
+        sr[(tk * 16 + 4) * 16 + tx] = c4;
+        sr[(tk * 16 + 5) * 16 + tx] = c5;
+        sr[(tk * 16 + 6) * 16 + tx] = c6;
+        sr[(tk * 16 + 7) * 16 + tx] = c7;
+        sr[(tk * 16 + 8) * 16 + tx] = c8;
+        sr[(tk * 16 + 9) * 16 + tx] = c9;
+        sr[(tk * 16 + 10) * 16 + tx] = c10;
+        sr[(tk * 16 + 11) * 16 + tx] = c11;
+        sr[(tk * 16 + 12) * 16 + tx] = c12;
+        sr[(tk * 16 + 13) * 16 + tx] = c13;
+        sr[(tk * 16 + 14) * 16 + tx] = c14;
+        sr[(tk * 16 + 15) * 16 + tx] = c15;
+        Barrier.workgroup();
+        uint32 orow = t / 16;
+        float32 v = 0.0f;
+        uint32 q = 0;
+        while (q < 16) {
+            v = v + sr[(q * 16 + orow) * 16 + tx];
+            q = q + 1;
+        }
+        if (hasBias != 0 && n0 + tx < n) { v = v + (float32) bias[n0 + tx]; }
+        if (act == 1 && v < 0.0f) { v = 0.0f; }
+        if (m0 + orow < m && n0 + tx < n) { c[(m0 + orow) * n + n0 + tx] = (E) v; }
+    }
+
+    /** `c` (m x n) = act(`a` (m x k) . `b` (k x n) + `bias` (n, when hasBias)) at E, act 0 none or 1 relu; queued on the current stream. */
+    public static void run<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, KernelBuffer<E> bias,
+                              int64 m, int64 n, int64 k, boolean hasBias, int32 act) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
+        uint32 hb = 0;
+        if (hasBias) { hb = 1; }
+        KernelStream s #= KernelStream.current();
+        linear.launch(s, grid: [tiles], block: [256])(c, a, b, bias, um, un, (uint32) k, hb, (uint32) act);
+    }
+}

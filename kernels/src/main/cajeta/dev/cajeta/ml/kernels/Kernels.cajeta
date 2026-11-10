@@ -38,7 +38,7 @@ public final class Kernels {
         + "l2normBack_bfloat16|l2normBack_float16|l2normBack_float32|l2norm_bfloat16|"
         + "l2norm_float16|l2norm_float32|layernormBack_float32|layernorm_bfloat16|"
         + "layernorm_float16|layernorm_float32|layernormParamGrads_float32|"
-        + "layernormSaved_float32|matvec_float16|matvec_float32|max2d_float32|"
+        + "layernormSaved_float32|linear_float32|matvec_float16|matvec_float32|max2d_float32|"
         + "maxBack_float32|meanRows_float32|nllBack_float32|nll_float32|normalize_float32|packQ8K|"
         + "partial_float16|partial_float32|partitionScatter_int32|rmsnorm_bfloat16|"
         + "rmsnorm_float16|rmsnorm_float32|rope_float16|rope_float32|Scale_128_scale|"

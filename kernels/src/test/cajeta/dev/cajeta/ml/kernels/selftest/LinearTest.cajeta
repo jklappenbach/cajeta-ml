@@ -1,0 +1,75 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import dev.cajeta.unit.Assert;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.ml.kernels.gemm.Linear;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * cajeta-ml-gpu 28.2.5: the fused linear forward (Linear.run) against a float64 host
+ * reference at the mlp bench's layer shapes and at ragged ones, with and without the bias,
+ * with and without the relu.
+ */
+public class LinearTest {
+    public LinearTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) ((((i * 7919L) % 251L) - 125L) % 5L) * 0.5f;
+    }
+
+    static void check(int64 m, int64 n, int64 k, boolean hasBias, int32 act) {
+        float32[] fa = heap float32[m * k];
+        float32[] fb = heap float32[k * n];
+        float32[] bias = heap float32[n];
+        int64 i = 0L;
+        while (i < m * k) { fa[(int32) i] = LinearTest.pattern(i); i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = LinearTest.pattern(i + 17L); i = i + 1L; }
+        i = 0L;
+        while (i < n) { bias[(int32) i] = LinearTest.pattern(i + 5L); i = i + 1L; }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>((uint64) (m * k));
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) (k * n));
+        KernelBuffer<float32> dBias = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(fa);
+        b.upload(fb);
+        dBias.upload(bias);
+        int64[] mk #= ValueCheck.mark();
+        Linear.run<float32>(c, a, b, dBias, m, n, k, hasBias, act);
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        int64 r = 0L;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fa[(int32) (r * k + d)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                if (hasBias) { acc = acc + (float64) bias[(int32) col]; }
+                if (act == 1 && acc < 0.0) { acc = 0.0; }
+                Assert.isTrue(FusedGemmTest.close(got[(int32) (r * n + col)], acc, k));
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void mlpLayerShapesMatchTheHost() {
+        if (!FusedGemmTest.usable("linear_float32")) { return; }
+        LinearTest.check(64L, 512L, 784L, true, 1);
+        LinearTest.check(64L, 10L, 512L, true, 0);
+    }
+
+    @Test
+    public void raggedShapesMatchTheHost() {
+        if (!FusedGemmTest.usable("linear_float32")) { return; }
+        LinearTest.check(33L, 70L, 17L, true, 1);
+        LinearTest.check(5L, 19L, 100L, false, 0);
+        LinearTest.check(1L, 1L, 1L, true, 1);
+        LinearTest.check(17L, 33L, 129L, false, 1);
+    }
+}
