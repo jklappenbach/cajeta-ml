@@ -4,16 +4,16 @@
     "version": "0.53.3"
   },
   "lockfile-version": 1,
-  "manifest-checksum": "sha256:3f2298277c403ed1965b985fddea8e4c98dbeecec8983316d6e36e0641c1f062",
+  "manifest-checksum": "sha256:2c5872a8062ff3227925dd2d6baf28cc5c46fc407cd5e54a0c78b8fd1404cf03",
   "melts": [],
   "overrides": [],
   "packages": [
     {
-      "checksum": "sha256:ba8f75da3d93d67fa0499c1b2175433c2160e1a6a615ee75de64cf39a18ddb12",
+      "checksum": "sha256:01b274158e260f5d1a1b79b3f676bd1b4503f251a4fb490dd6a8336adc7cf869",
       "name": "dev.cajeta.ml",
       "provided-by": "explicit",
       "resolved-from": "central",
-      "version": "0.13.0"
+      "version": "0.13.1"
     },
     {
       "checksum": "sha256:512376bc69855e92ffbb9351f1317b3c20997d36a91cd8ac3fee1477a4a2cfa2",
@@ -23,11 +23,11 @@
       "version": "0.1.5"
     },
     {
-      "checksum": "sha256:85588793225eb5231f7282b4a62574e5e6f55f0b9e8ef71790a034f52c106d9b",
+      "checksum": "sha256:66f789428c5b5aebc2db462c40ae305fdac29896a264afe30b48b3c8c3a9ab6a",
       "name": "dev.cajeta.ml.kernels",
       "provided-by": "explicit",
       "resolved-from": "central",
-      "version": "0.2.8"
+      "version": "0.2.9"
     },
     {
       "checksum": "sha256:a02c568dd00c5773bdd9f3bd233edc0cd2fe2c7130a1b2c191b36cf13366655f",
@@ -49,5 +49,5 @@
     "target": "",
     "workspace.root": ""
   },
-  "resolved-at": "2026-11-10T16:26:18Z"
+  "resolved-at": "2026-11-10T19:47:07Z"
 }

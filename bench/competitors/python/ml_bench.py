@@ -57,6 +57,11 @@ OPS = ["op-add", "op-relu", "op-gelu", "op-tanh", "op-sigmoid", "op-softmax", "o
 for _n in OPS:
     WT[_n] = (3, 10) if _n in ("op-matmul", "op-conv2d") else (3, 20)
 
+# The GEMM rows: a @ b at 16-bit operands, device only (dev.cajeta.ml.kernels' large-GEMM family on the Cajeta side).
+GEMMS = ["op-gemm-f16", "op-gemm-bf16"]
+for _n in GEMMS:
+    WT[_n] = (3, 10)
+
 CLASSICAL = ["linear-regression", "logistic-regression", "kmeans", "knn", "pca", "standard-scaler"]
 NEURAL = ["mlp-train-step", "mlp-infer", "cnn-train-step", "cnn-infer",
           "transformer-block-train", "transformer-block-infer", "autodiff-overhead",
@@ -70,6 +75,8 @@ VARIANTS = {
 }
 for _n in NEURAL + OPS:
     VARIANTS.setdefault(_n, ["cpu", "device"])
+for _n in GEMMS:
+    VARIANTS[_n] = ["device"]
 
 
 def load(d, rel):
@@ -476,6 +483,39 @@ def run_op(name, variant, d):
                            dataset_name=f"ops {shapes} seed 20261025", **meta)
 
 
+def run_gemm(name, variant, d):
+    dev, meta, skipped = torch_variant(name, variant)
+    if skipped is not None:
+        return skipped
+    import torch
+    dt = torch.bfloat16 if name.endswith("bf16") else torch.float16
+    n = 256 if bc.smoke() else 4096
+    i = torch.arange(n * n, dtype=torch.int64)
+    a_h = ((i // 7) % 4).to(torch.float64).reshape(n, n)
+    b_h = ((i // 3) % 5).to(torch.float64).reshape(n, n)
+    a, b = a_h.to(dev, dt), b_h.to(dev, dt)
+    state = {}
+
+    def body():
+        state["out"] = a @ b
+        torch.cuda.synchronize()
+
+    warm, trials = bc.warmup_trials(*WT[name])
+    samples = bc.measure(body, warm, trials)
+    c = state["out"].double().cpu()
+    ok = True
+    for s in range(512):
+        r, cc = (s * 37 + 11) % n, (s * 101 + 5) % n
+        want = (a_h[r, :] * b_h[:, cc]).sum().to(dt).double()
+        if float(c[r, cc]) != float(want):
+            ok = False
+            break
+    note = (f"torch.matmul {dt} (TF32 off); output in {dt}, reference rounded to it; "
+            + torch_threads_note())
+    return bc.measured_row(samples, warm, input_size=2 * n ** 3, unit="flop/s", check_ok=ok,
+                           note=note, dataset_name=f"n={n}, A = (i / 7) % 4, B = (i / 3) % 5", **meta)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=False)
@@ -483,7 +523,7 @@ def main():
     ap.add_argument("--bench")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
-    names = [n for n in CLASSICAL + NEURAL + OPS if a.bench in (None, n)]
+    names = [n for n in CLASSICAL + NEURAL + OPS + GEMMS if a.bench in (None, n)]
     if a.list:
         for n in names:
             print(f"  ml/{n}  {VARIANTS[n]}")
@@ -498,6 +538,8 @@ def main():
                     r = run_classical(n, v, a.data)
                 elif n in OPS:
                     r = run_op(n, v, a.data)
+                elif n in GEMMS:
+                    r = run_gemm(n, v, a.data)
                 else:
                     r = run_neural(n, v, a.data)
             except Exception as e:  # a failing benchmark never stops the run

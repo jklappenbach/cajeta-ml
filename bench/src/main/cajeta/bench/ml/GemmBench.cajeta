@@ -1,0 +1,143 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.tune.TuneMode;
+
+/**
+ * ml/op-gemm-f16 and ml/op-gemm-bf16: a 4096 x 4096 GEMM (256 under smoke) at 16-bit
+ * operands into float32 through dev.cajeta.ml.kernels' large-GEMM family, which times its
+ * members at first use on this device and runs the winner (Gemm.runTuned, cajeta-ml-gpu
+ * 23.2.2). The first use happens in prepare, so the clock sees only the chosen member.
+ * Inputs are small integers (A = (i / 7) % 4, B = (i / 3) % 5), exact in both types, and
+ * 512 sampled outputs must equal the float64 sum. torch's twin is `a @ b` on the same data.
+ */
+public class GemmBench extends MlBenchmark {
+    boolean bf16;
+    int64 n;
+    float32[] ha;
+    float32[] hb;
+    float32[] hc;
+    KernelBuffer<float32> dc;
+    KernelBuffer<float16> af;
+    KernelBuffer<float16> bf;
+    KernelBuffer<bfloat16> ab;
+    KernelBuffer<bfloat16> bb;
+    KernelStream stream;
+    String member;
+
+    public GemmBench(boolean bf16) {
+        this.bf16 = bf16;
+        this.n = 0L;
+        this.member = "";
+    }
+
+    public String name() {
+        if (this.bf16) { return "op-gemm-bf16"; }
+        return "op-gemm-f16";
+    }
+
+    public String unit() {
+        return "flop/s";
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 10;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("device");
+        return v;
+    }
+
+    /** The tune store the family remembers its choice in, beside the bench build. */
+    static #String store() {
+        String s #= "build/tune".clone();
+        return #s;
+    }
+
+    public void prepare(String v) {
+        this.begin(v);
+        this.n = 4096L;
+        if (Data.smoke()) { this.n = 256L; }
+        int64 count = this.n * this.n;
+        this.ha = heap float32[count];
+        this.hb = heap float32[count];
+        this.hc = heap float32[count];
+        int64 i = 0L;
+        while (i < count) {
+            this.ha[(int32) i] = (float32) ((i / 7L) % 4L);
+            this.hb[(int32) i] = (float32) ((i / 3L) % 5L);
+            i = i + 1L;
+        }
+        this.dc = heap KernelBuffer<float32>((uint64) count);
+        if (this.bf16) {
+            bfloat16[] a = heap bfloat16[count];
+            bfloat16[] b = heap bfloat16[count];
+            i = 0L;
+            while (i < count) { a[(int32) i] = (bfloat16) this.ha[(int32) i]; b[(int32) i] = (bfloat16) this.hb[(int32) i]; i = i + 1L; }
+            this.ab = heap KernelBuffer<bfloat16>((uint64) count);
+            this.bb = heap KernelBuffer<bfloat16>((uint64) count);
+            this.ab.upload(a);
+            this.bb.upload(b);
+        } else {
+            float16[] a = heap float16[count];
+            float16[] b = heap float16[count];
+            i = 0L;
+            while (i < count) { a[(int32) i] = (float16) this.ha[(int32) i]; b[(int32) i] = (float16) this.hb[(int32) i]; i = i + 1L; }
+            this.af = heap KernelBuffer<float16>((uint64) count);
+            this.bf = heap KernelBuffer<float16>((uint64) count);
+            this.af.upload(a);
+            this.bf.upload(b);
+        }
+        this.stream #= KernelStream.current();
+        TuneMode.setUntimed(false);
+        String dir #= GemmBench.store();
+        this.member #= this.runOnce(dir);
+        this.stream.sync();
+        this.nIn = 2L * this.n * this.n * this.n;
+        this.ds = "n=" + this.n + ", A = (i / 7) % 4, B = (i / 3) % 5, float32 accumulator";
+    }
+
+    #String runOnce(String dir) {
+        if (this.bf16) { return Gemm.runTunedBf16(this.dc, this.ab, this.bb, this.n, this.n, this.n, dir); }
+        return Gemm.runTuned(this.dc, this.af, this.bf, this.n, this.n, this.n, dir);
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        String dir #= GemmBench.store();
+        String got #= this.runOnce(dir);
+        this.stream.sync();
+    }
+
+    public boolean checkResult() {
+        this.dc.download(this.hc);
+        int64 nn = this.n;
+        int32 s = 0;
+        while (s < 512) {
+            int64 r = ((int64) s * 37L + 11L) % nn;
+            int64 c = ((int64) s * 101L + 5L) % nn;
+            float64 want = 0.0;
+            int64 d = 0L;
+            while (d < nn) {
+                want = want + (float64) this.ha[(int32) (r * nn + d)] * (float64) this.hb[(int32) (d * nn + c)];
+                d = d + 1L;
+            }
+            float64 got = (float64) this.hc[(int32) (r * nn + c)];
+            if (got != want) {
+                this.note = "C[" + r + "][" + c + "] = " + got + ", want " + want + "; member " + this.member;
+                return false;
+            }
+            s = s + 1;
+        }
+        this.note = "member " + this.member + " (the large-GEMM family's choice on this device, timed at first use); 512 sampled outputs exact";
+        return true;
+    }
+}

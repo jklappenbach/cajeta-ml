@@ -31,6 +31,8 @@ public final class MlBench {
             b.add(heap OpBench(k));
             k = k + 1;
         }
+        b.add(heap GemmBench(false));
+        b.add(heap GemmBench(true));
         b.add(heap CheckpointLoadBench());
         return BenchMain.run(args, b);
     }
