@@ -1147,7 +1147,7 @@ public final class StructKernels {
      *  (1,) tensor — the tape's scalar carrier. */
     static #Tensor<E> crossEntropy<E extends Floating>(Tensor<E> logits,
                                                        Tensor<E> targets,
-                                                       Tensor<E> probs) {
+                                                       Tensor<E> lse) {
         int64 cls = logits.shapeAt(logits.ndim() - 1);
         int64 rows = 1;
         int32 k = 0;
@@ -1168,23 +1168,17 @@ public final class StructKernels {
             float64 sum = 0.0;
             j = 0;
             while (j < cls) {
-                float64 e = Math.exp((float64) logits.flatGet(r * cls + j) - mx);
-                probs.flatSet(r * cls + j, (E) e);
-                sum = sum + e;
+                sum = sum + Math.exp((float64) logits.flatGet(r * cls + j) - mx);
                 j = j + 1;
             }
-            j = 0;
-            while (j < cls) {
-                float64 pv = (float64) probs.flatGet(r * cls + j) / sum;
-                probs.flatSet(r * cls + j, (E) pv);
-                j = j + 1;
-            }
+            float64 rowLse = mx + Math.log(sum);
+            lse.flatSet(r, (E) rowLse);
             int64 t = (int64) (float64) targets.flatGet(r);
             if (t < 0 || t >= cls) {
                 throw heap MlException("ml.grad: crossEntropy target " + t
                     + " is outside [0, " + cls + ")");
             }
-            total = total - Math.log((float64) probs.flatGet(r * cls + t));
+            total = total + rowLse - (float64) logits.flatGet(r * cls + t);
             r = r + 1;
         }
         int64[] sh #= StructKernels.shape1(1);
@@ -1192,25 +1186,27 @@ public final class StructKernels {
         return Tensor.full<E>(sh, (E) __c14);
     }
 
-    /** dL/dlogits = (softmax − onehot)/N, scaled by the incoming cotangent. */
+    /** dL/dlogits = (softmax − onehot)/N, scaled by the incoming cotangent; softmax = exp(logits - lse[row]). */
     static #Tensor<E> crossEntropyBack<E extends Floating>(Tensor<E> g,
-                                                           Tensor<E> probs,
+                                                           Tensor<E> logits,
+                                                           Tensor<E> lse,
                                                            Tensor<E> targets) {
-        Tensor<E> dx #= Tensor.zerosLike<E>(probs);
-        int64 cls = probs.shapeAt(probs.ndim() - 1);
+        Tensor<E> dx #= Tensor.zerosLike<E>(logits);
+        int64 cls = logits.shapeAt(logits.ndim() - 1);
         int64 rows = 1;
         int32 k = 0;
-        while (k < probs.ndim() - 1) {
-            rows = rows * probs.shapeAt(k);
+        while (k < logits.ndim() - 1) {
+            rows = rows * logits.shapeAt(k);
             k = k + 1;
         }
         float64 gv = (float64) g.flatGet(0) / (float64) rows;
         int64 r = 0;
         while (r < rows) {
             int64 t = (int64) (float64) targets.flatGet(r);
+            float64 rowLse = (float64) lse.flatGet(r);
             int64 j = 0;
             while (j < cls) {
-                float64 v = (float64) probs.flatGet(r * cls + j);
+                float64 v = Math.exp((float64) logits.flatGet(r * cls + j) - rowLse);
                 if (j == t) { v = v - 1.0; }
                 float64 __c15 = v * gv;
                 dx.flatSet(r * cls + j, (E) __c15);

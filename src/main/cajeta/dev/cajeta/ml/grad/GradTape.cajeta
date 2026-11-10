@@ -443,10 +443,12 @@ public final class GradTape<E extends Floating> {
     /** Softmax cross-entropy against class ids, mean reduction → (1,). */
     public GradTensor crossEntropy(GradTensor logits, Tensor<E> targets) {
         Tensor<E> lv = this.values.get(logits.idx);
-        Tensor<E> probs #= Ops.zerosLike<E>(lv);
-        Tensor<E> v #= Ops.crossEntropy<E>(lv, targets, probs);
+        int64 cls = lv.shapeAt(lv.ndim() - 1);
+        int64[] rsh #= StructKernels.shape1(lv.size() / cls);
+        Tensor<E> lse #= Ops.zerosOn<E>(rsh, lv);
+        Tensor<E> v #= Ops.crossEntropy<E>(lv, targets, lse);
         GradTensor t = this.push(Op.CROSSENTROPY, logits.idx, -1, 0, 0.0, #v);
-        this.aux0[t.idx] = this.addAux(#probs);
+        this.aux0[t.idx] = this.addAux(#lse);
         Tensor<E> own #= Ops.copyOf<E>(targets);
         this.aux1[t.idx] = this.addAux(#own);
         return t;
@@ -793,9 +795,9 @@ public final class GradTape<E extends Floating> {
             return;
         }
         if (op == Op.CROSSENTROPY) {
-            Tensor<E> probs = this.auxT.get(this.aux0[i]);
+            Tensor<E> lse = this.auxT.get(this.aux0[i]);
             Tensor<E> targets = this.auxT.get(this.aux1[i]);
-            this.accum(a, Ops.crossEntropyBack<E>(g, probs, targets));
+            this.accum(a, Ops.crossEntropyBack<E>(g, this.values.get(a), lse, targets));
             return;
         }
         if (op == Op.MSELOSS) {

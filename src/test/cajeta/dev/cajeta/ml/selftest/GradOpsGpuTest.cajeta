@@ -322,12 +322,12 @@ public class GradOpsGpuTest {
         tg.flatSet(3, 3.0f);
         Tensor<float32> logitsD #= GradOpsGpuTest.onDevice(logits);
         Tensor<float32> tgD #= GradOpsGpuTest.onDevice(tg);
-        Tensor<float32> probs #= Tensor.zerosLike<float32>(logits);
-        Tensor<float32> probsD #= Ops.zerosLike<float32>(logitsD);
-        Tensor<float32> ce #= Ops.crossEntropy<float32>(logits, tg, probs);
-        Tensor<float32> ceD #= Ops.crossEntropy<float32>(logitsD, tgD, probsD);
+        Tensor<float32> lse #= Tensor.zeros<float32>(ts);
+        Tensor<float32> lseD #= Ops.zerosOn<float32>(ts, logitsD);
+        Tensor<float32> ce #= Ops.crossEntropy<float32>(logits, tg, lse);
+        Tensor<float32> ceD #= Ops.crossEntropy<float32>(logitsD, tgD, lseD);
         GradOpsGpuTest.same("crossEntropy", ce, ceD);
-        GradOpsGpuTest.same("crossEntropy probs", probs, probsD);
+        GradOpsGpuTest.same("crossEntropy lse", lse, lseD);
         Assert.isTrue(Ops.hasGpu(Op.CROSSENTROPY));
         // mse over 3x7 against 3x7 and against a 21-vector
         Tensor<float32> pr #= GradOpsGpuTest.fill(3L, 7L, 73L, false);

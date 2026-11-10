@@ -427,48 +427,76 @@ public class StructuredTest {
         ValueCheck.credit(m);
     }
 
-    /** The fused softmax + nll launch agrees with softmaxRows then nllRows (cajeta-ml-gpu 28.2.4). */
+    /** The one-pass cross-entropy row kernel agrees with softmaxRows then nllRows, at a register width and a looped one (cajeta-ml-gpu 28.2.4). */
     @Test
-    public void fusedSoftmaxNllMatchesTheTwoLaunches() {
-        if (!StructuredTest.usable("softmaxNll_float32") || !StructuredTest.usable("softmax_float32") || !StructuredTest.usable("nll_float32")) { return; }
-        int64 rows = 41L; int64 d = 517L;
+    public void crossEntropyRowsMatchTheTwoLaunches() {
+        if (!StructuredTest.usable("crossEntropyRow_float32") || !StructuredTest.usable("softmax_float32") || !StructuredTest.usable("nll_float32")) { return; }
+        StructuredTest.crossEntropyRowsCase(41L, 517L, 67L);
+        StructuredTest.crossEntropyRowsCase(5L, 2600L, 83L);
+    }
+
+    static void crossEntropyRowsCase(int64 rows, int64 d, int64 seed) {
         float64[] fx = heap float64[rows * d];
-        KernelBuffer<float32> x #= StructuredTest.upload(rows * d, 67L, fx);
+        KernelBuffer<float32> x #= StructuredTest.upload(rows * d, seed, fx);
         float32[] ht = heap float32[rows];
         int64 r = 0L;
         while (r < rows) { ht[(int32) r] = (float32) ((r * 13L) % d); r = r + 1L; }
-        ht[5] = (float32) d;
+        ht[2] = (float32) d;
         KernelBuffer<float32> targets = heap KernelBuffer<float32>((uint64) rows);
         targets.upload(ht);
         KernelBuffer<float32> p2 = heap KernelBuffer<float32>((uint64) (rows * d));
         KernelBuffer<float32> l2 = heap KernelBuffer<float32>((uint64) rows);
-        KernelBuffer<float32> p3 = heap KernelBuffer<float32>((uint64) (rows * d));
+        KernelBuffer<float32> lse = heap KernelBuffer<float32>((uint64) rows);
         KernelBuffer<float32> l3 = heap KernelBuffer<float32>((uint64) rows);
         int64[] m #= ValueCheck.mark();
         Act.softmaxRows<float32>(p2, x, rows, d);
         Loss.nllRows<float32>(l2, p2, targets, rows, d);
-        Act.softmaxNllRows<float32>(p3, l3, x, targets, rows, d);
+        Act.crossEntropyRows<float32>(lse, l3, x, targets, rows, d);
         float32[] g2 = heap float32[rows * d];
-        float32[] g3 = heap float32[rows * d];
+        float32[] gl = heap float32[rows];
         float32[] h2 = heap float32[rows];
         float32[] h3 = heap float32[rows];
         p2.download(g2);
-        p3.download(g3);
+        lse.download(gl);
         l2.download(h2);
         l3.download(h3);
-        int64 i = 0L;
-        StructuredTest.stage = "softmaxNll probs";
-        while (i < rows * d) { StructuredTest.close((float64) g3[(int32) i], (float64) g2[(int32) i], 1.0e-7); i = i + 1L; }
         r = 0L;
         while (r < rows) {
-            if (r == 5L) {
-                Assert.isTrue(h3[5] != h3[5]);
+            StructuredTest.stage = "crossEntropyRow lse";
+            int64 j = 0L;
+            while (j < d) {
+                float64 pv = Math.exp(fx[(int32) (r * d + j)] - (float64) gl[(int32) r]);
+                StructuredTest.close(pv, (float64) g2[(int32) (r * d + j)], 1.0e-6);
+                j = j + 1L;
+            }
+            if (r == 2L) {
+                Assert.isTrue(h3[2] != h3[2]);
             } else {
-                StructuredTest.stage = "softmaxNll loss";
+                StructuredTest.stage = "crossEntropyRow loss";
                 StructuredTest.close((float64) h3[(int32) r], (float64) h2[(int32) r], 1.0e-5);
             }
             r = r + 1L;
         }
+        ValueCheck.credit(m);
+    }
+
+    /** meanRows gives the mean of a vector longer than one workgroup. */
+    @Test
+    public void meanOfRowsMatchesTheHost() {
+        if (!StructuredTest.usable("meanRows_float32")) { return; }
+        int64 rows = 1000L;
+        float64[] fv = heap float64[rows];
+        KernelBuffer<float32> v #= StructuredTest.upload(rows, 89L, fv);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(1);
+        int64[] m #= ValueCheck.mark();
+        Loss.meanOf<float32>(out, v, rows);
+        float32[] go = heap float32[1];
+        out.download(go);
+        float64 acc = 0.0;
+        int64 i = 0L;
+        while (i < rows) { acc = acc + fv[(int32) i]; i = i + 1L; }
+        StructuredTest.stage = "meanRows";
+        StructuredTest.close((float64) go[0], acc / (float64) rows, 1.0e-5);
         ValueCheck.credit(m);
     }
 

@@ -2,6 +2,7 @@ package dev.cajeta.ml.kernels.nn;
 
 import cajeta.lang.Math;
 import cajeta.xpu.Barrier;
+import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
@@ -25,6 +26,17 @@ public final class Loss {
             }
             rowLoss[r] = (E) v;
         }
+    }
+
+    /** out[0] = mean of v[0..rows): one workgroup, a strided sum per lane and one collective. */
+    @Kernel
+    public static void meanRows<E>(KernelBuffer<E> out, KernelBuffer<E> v, uint32 rows) {
+        uint32 lane = KernelThread.x();
+        float32 acc = 0.0f;
+        uint32 i = lane;
+        while (i < rows) { acc = acc + (float32) v[i]; i = i + 256; }
+        float32 tot = Workgroup.reduce(GroupOp.Add, acc);
+        if (lane == 0) { out[0] = (E) (tot / (float32) rows); }
     }
 
     /** One workgroup per row: out[r] = a.b / max(|a||b|, eps), cache[3r..] = |a|, |b|, cos. */
@@ -88,14 +100,14 @@ public final class Loss {
         cosine.launch(s, grid: [(uint32) rows], block: [256])(out, cache, a, b, (uint32) d, eps);
     }
 
-    /** dlogits = (probs - onehot(target)) * g[0] / rows, one lane per element. */
+    /** dlogits = (softmax(x) - onehot(target)) * g[0] / rows with softmax(x) = exp(x - lse[row]), one lane per element. */
     @Kernel
-    public static void nllBack<E>(KernelBuffer<E> dx, KernelBuffer<E> probs, KernelBuffer<E> targets, KernelBuffer<E> g, uint32 rows, uint32 cls) {
+    public static void nllBack<E>(KernelBuffer<E> dx, KernelBuffer<E> x, KernelBuffer<E> lse, KernelBuffer<E> targets, KernelBuffer<E> g, uint32 rows, uint32 cls) {
         uint32 t = KernelThread.globalIdX();
         if (t < rows * cls) {
             uint32 r = t / cls;
             uint32 j = t - r * cls;
-            float32 v = (float32) probs[t];
+            float32 v = Math.exp((float32) x[t] - (float32) lse[r]);
             if ((float32) j == (float32) targets[r]) { v = v - 1.0f; }
             dx[t] = (E) (v * (float32) g[0] / (float32) rows);
         }
@@ -121,11 +133,17 @@ public final class Loss {
         }
     }
 
-    /** The cross-entropy VJP over `rows` rows of `cls` classes from the scalar cotangent `g`; queued on the current stream. */
-    public static void nllBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> probs, KernelBuffer<E> targets, KernelBuffer<E> g, int64 rows, int64 cls) {
+    /** The cross-entropy VJP over `rows` rows of `cls` classes from the logits, their saved lse and the scalar cotangent `g`; queued on the current stream. */
+    public static void nllBackward<E>(KernelBuffer<E> dx, KernelBuffer<E> x, KernelBuffer<E> lse, KernelBuffer<E> targets, KernelBuffer<E> g, int64 rows, int64 cls) {
         uint32 total = (uint32) (rows * cls);
         KernelStream s #= KernelStream.current();
-        nllBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, probs, targets, g, (uint32) rows, (uint32) cls);
+        nllBack.launch(s, grid: [(total + 255) / 256], block: [256])(dx, x, lse, targets, g, (uint32) rows, (uint32) cls);
+    }
+
+    /** out[0] = the mean of `rows` row values in one workgroup; queued on the current stream. */
+    public static void meanOf<E>(KernelBuffer<E> out, KernelBuffer<E> rowLoss, int64 rows) {
+        KernelStream s #= KernelStream.current();
+        meanRows.launch(s, grid: [1], block: [256])(out, rowLoss, (uint32) rows);
     }
 
     /** The cosine VJP for `src` against `other` from the per-row cotangent `g` and the forward's cache; queued on the current stream. */

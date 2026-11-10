@@ -156,66 +156,91 @@ public final class Act {
         }
     }
 
-    /** The softmax of a row and its negative log-likelihood at the target, cols <= 2048: the cross-entropy forward in one pass (cajeta-ml-gpu 28.2.4). */
+    /** Each row's log-sum-exp and its negative log-likelihood at the target: the cross-entropy forward in one pass, no probs written (cajeta-ml-gpu 28.2.4). */
     @Kernel
-    public static void softmaxNll<E>(KernelBuffer<E> probs, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, uint32 cols) {
-        Shared<float32> part = shared float32[2];
+    public static void crossEntropyRow<E>(KernelBuffer<E> lse, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, uint32 cols) {
+        Shared<float32> part = shared float32[256];
         uint32 lane = KernelThread.x();
         uint32 row = Workgroup.x();
         uint32 base = row * cols;
-        uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
-        uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
-        float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f;
-        float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f;
-        if (i0 < cols) { v0 = (float32) x[base + i0]; }
-        if (i1 < cols) { v1 = (float32) x[base + i1]; }
-        if (i2 < cols) { v2 = (float32) x[base + i2]; }
-        if (i3 < cols) { v3 = (float32) x[base + i3]; }
-        if (i4 < cols) { v4 = (float32) x[base + i4]; }
-        if (i5 < cols) { v5 = (float32) x[base + i5]; }
-        if (i6 < cols) { v6 = (float32) x[base + i6]; }
-        if (i7 < cols) { v7 = (float32) x[base + i7]; }
-        float32 m01 = v0; if (v1 > m01) { m01 = v1; }
-        float32 m23 = v2; if (v3 > m23) { m23 = v3; }
-        float32 m45 = v4; if (v5 > m45) { m45 = v5; }
-        float32 m67 = v6; if (v7 > m67) { m67 = v7; }
-        if (m23 > m01) { m01 = m23; }
-        if (m67 > m45) { m45 = m67; }
-        if (m45 > m01) { m01 = m45; }
-        float32 rmax = Workgroup.reduce(GroupOp.Max, m01);
-        if (lane == 0) { part[0] = rmax; }
-        Barrier.workgroup();
-        float32 rowMax = part[0];
-        float32 e0 = 0.0f; float32 e1 = 0.0f; float32 e2 = 0.0f; float32 e3 = 0.0f;
-        float32 e4 = 0.0f; float32 e5 = 0.0f; float32 e6 = 0.0f; float32 e7 = 0.0f;
-        if (i0 < cols) { e0 = Math.exp(v0 - rowMax); }
-        if (i1 < cols) { e1 = Math.exp(v1 - rowMax); }
-        if (i2 < cols) { e2 = Math.exp(v2 - rowMax); }
-        if (i3 < cols) { e3 = Math.exp(v3 - rowMax); }
-        if (i4 < cols) { e4 = Math.exp(v4 - rowMax); }
-        if (i5 < cols) { e5 = Math.exp(v5 - rowMax); }
-        if (i6 < cols) { e6 = Math.exp(v6 - rowMax); }
-        if (i7 < cols) { e7 = Math.exp(v7 - rowMax); }
-        float32 sum = ((e0 + e1) + (e2 + e3)) + ((e4 + e5) + (e6 + e7));
-        float32 tot = Workgroup.reduce(GroupOp.Add, sum);
-        if (lane == 0) { part[1] = tot; }
-        Barrier.workgroup();
-        float32 inv = 1.0f / part[1];
-        float32 lse = Math.log(part[1]);
-        if (i0 < cols) { probs[base + i0] = (E) (e0 * inv); }
-        if (i1 < cols) { probs[base + i1] = (E) (e1 * inv); }
-        if (i2 < cols) { probs[base + i2] = (E) (e2 * inv); }
-        if (i3 < cols) { probs[base + i3] = (E) (e3 * inv); }
-        if (i4 < cols) { probs[base + i4] = (E) (e4 * inv); }
-        if (i5 < cols) { probs[base + i5] = (E) (e5 * inv); }
-        if (i6 < cols) { probs[base + i6] = (E) (e6 * inv); }
-        if (i7 < cols) { probs[base + i7] = (E) (e7 * inv); }
+        float32 rowLse = 0.0f;
+        if (cols <= 2048) {
+            uint32 i0 = lane; uint32 i1 = lane + 256; uint32 i2 = lane + 512; uint32 i3 = lane + 768;
+            uint32 i4 = lane + 1024; uint32 i5 = lane + 1280; uint32 i6 = lane + 1536; uint32 i7 = lane + 1792;
+            float32 v0 = -3.4028235e38f; float32 v1 = -3.4028235e38f; float32 v2 = -3.4028235e38f; float32 v3 = -3.4028235e38f;
+            float32 v4 = -3.4028235e38f; float32 v5 = -3.4028235e38f; float32 v6 = -3.4028235e38f; float32 v7 = -3.4028235e38f;
+            if (i0 < cols) { v0 = (float32) x[base + i0]; }
+            if (i1 < cols) { v1 = (float32) x[base + i1]; }
+            if (i2 < cols) { v2 = (float32) x[base + i2]; }
+            if (i3 < cols) { v3 = (float32) x[base + i3]; }
+            if (i4 < cols) { v4 = (float32) x[base + i4]; }
+            if (i5 < cols) { v5 = (float32) x[base + i5]; }
+            if (i6 < cols) { v6 = (float32) x[base + i6]; }
+            if (i7 < cols) { v7 = (float32) x[base + i7]; }
+            float32 m01 = v0; if (v1 > m01) { m01 = v1; }
+            float32 m23 = v2; if (v3 > m23) { m23 = v3; }
+            float32 m45 = v4; if (v5 > m45) { m45 = v5; }
+            float32 m67 = v6; if (v7 > m67) { m67 = v7; }
+            if (m23 > m01) { m01 = m23; }
+            if (m67 > m45) { m45 = m67; }
+            if (m45 > m01) { m01 = m45; }
+            float32 rmax = Workgroup.reduce(GroupOp.Max, m01);
+            if (lane == 0) { part[0] = rmax; }
+            Barrier.workgroup();
+            float32 rowMax = part[0];
+            float32 e0 = 0.0f; float32 e1 = 0.0f; float32 e2 = 0.0f; float32 e3 = 0.0f;
+            float32 e4 = 0.0f; float32 e5 = 0.0f; float32 e6 = 0.0f; float32 e7 = 0.0f;
+            if (i0 < cols) { e0 = Math.exp(v0 - rowMax); }
+            if (i1 < cols) { e1 = Math.exp(v1 - rowMax); }
+            if (i2 < cols) { e2 = Math.exp(v2 - rowMax); }
+            if (i3 < cols) { e3 = Math.exp(v3 - rowMax); }
+            if (i4 < cols) { e4 = Math.exp(v4 - rowMax); }
+            if (i5 < cols) { e5 = Math.exp(v5 - rowMax); }
+            if (i6 < cols) { e6 = Math.exp(v6 - rowMax); }
+            if (i7 < cols) { e7 = Math.exp(v7 - rowMax); }
+            float32 sum = ((e0 + e1) + (e2 + e3)) + ((e4 + e5) + (e6 + e7));
+            float32 tot = Workgroup.reduce(GroupOp.Add, sum);
+            if (lane == 0) { part[1] = tot; }
+            Barrier.workgroup();
+            rowLse = rowMax + Math.log(part[1]);
+        } else {
+            float32 mx = -3.4028235e38f;
+            uint32 i = lane;
+            while (i < cols) {
+                float32 v = (float32) x[base + i];
+                if (v > mx) { mx = v; }
+                i = i + 256;
+            }
+            part[lane] = mx;
+            Barrier.workgroup();
+            uint32 s = 128;
+            while (s > 0) {
+                if (lane < s && part[lane + s] > part[lane]) { part[lane] = part[lane + s]; }
+                Barrier.workgroup();
+                s = s / 2;
+            }
+            float32 rowMax = part[0];
+            Barrier.workgroup();
+            float32 sum = 0.0f;
+            i = lane;
+            while (i < cols) { sum = sum + Math.exp((float32) x[base + i] - rowMax); i = i + 256; }
+            part[lane] = sum;
+            Barrier.workgroup();
+            s = 128;
+            while (s > 0) {
+                if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+                Barrier.workgroup();
+                s = s / 2;
+            }
+            rowLse = rowMax + Math.log(part[0]);
+        }
         if (lane == 0) {
+            lse[row] = (E) rowLse;
             float32 tf = (float32) targets[row];
             float32 loss = 0.0f / 0.0f;
             if (tf >= 0.0f && tf < (float32) cols) {
                 uint32 t = (uint32) tf;
-                loss = (rowMax + lse) - (float32) x[base + t];
+                loss = rowLse - (float32) x[base + t];
             }
             rowLoss[row] = (E) loss;
         }
@@ -298,10 +323,10 @@ public final class Act {
         softmax.launch(s, grid: [(uint32) rows], block: [256])(out, x, (uint32) cols, 0);
     }
 
-    /** probs = softmax of each row of `x` and rowLoss[r] = -log probs[r][targets[r]] in one launch; cols <= 2048; queued on the current stream. */
-    public static void softmaxNllRows<E>(KernelBuffer<E> probs, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, int64 rows, int64 cols) {
+    /** lse[r] = log sum exp of row r of `x` and rowLoss[r] = lse[r] - x[r][targets[r]] in one launch, any width; queued on the current stream. */
+    public static void crossEntropyRows<E>(KernelBuffer<E> lse, KernelBuffer<E> rowLoss, KernelBuffer<E> x, KernelBuffer<E> targets, int64 rows, int64 cols) {
         KernelStream s #= KernelStream.current();
-        softmaxNll.launch(s, grid: [(uint32) rows], block: [256])(probs, rowLoss, x, targets, (uint32) cols);
+        crossEntropyRow.launch(s, grid: [(uint32) rows], block: [256])(lse, rowLoss, x, targets, (uint32) cols);
     }
 
     /** `out` = log-softmax of each of `rows` rows of `x`, as `x - max - log(sum exp)`; queued on the current stream. */

@@ -409,10 +409,12 @@ public class StructuredBackTest {
             }
             v = v + 1L;
         }
-        // nll: 37 rows of 6 classes
+        // nll: 37 rows of 6 classes, the softmax recomputed from the logits and the saved lse
         int64 rows = 37L; int64 cls = 6L;
-        float64[] fp = heap float64[rows * cls];
-        KernelBuffer<float32> probs #= StructuredBackTest.upload(rows * cls, 71L, fp);
+        float64[] fx = heap float64[rows * cls];
+        float64[] flse = heap float64[rows];
+        KernelBuffer<float32> x #= StructuredBackTest.upload(rows * cls, 71L, fx);
+        KernelBuffer<float32> lse #= StructuredBackTest.upload(rows, 73L, flse);
         float32[] ht = heap float32[rows];
         int64 r = 0L;
         while (r < rows) { ht[(int32) r] = (float32) ((r * 5L) % cls); r = r + 1L; }
@@ -422,7 +424,7 @@ public class StructuredBackTest {
         KernelBuffer<float32> gs = heap KernelBuffer<float32>(1);
         gs.upload(hgs);
         KernelBuffer<float32> dl = heap KernelBuffer<float32>((uint64) (rows * cls));
-        Loss.nllBackward<float32>(dl, probs, targets, gs, rows, cls);
+        Loss.nllBackward<float32>(dl, x, lse, targets, gs, rows, cls);
         float32[] gdl = heap float32[rows * cls];
         dl.download(gdl);
         StructuredBackTest.stage = "nllBack";
@@ -430,9 +432,9 @@ public class StructuredBackTest {
         while (r < rows) {
             int64 j = 0L;
             while (j < cls) {
-                float64 pv = fp[(int32) (r * cls + j)];
+                float64 pv = Math.exp(fx[(int32) (r * cls + j)] - flse[(int32) r]);
                 if (j == (int64) ht[(int32) r]) { pv = pv - 1.0; }
-                StructuredBackTest.close((float64) gdl[(int32) (r * cls + j)], pv * 0.75 / (float64) rows, 0.0);
+                StructuredBackTest.close((float64) gdl[(int32) (r * cls + j)], pv * 0.75 / (float64) rows, 1.0e-6);
                 j = j + 1L;
             }
             r = r + 1L;

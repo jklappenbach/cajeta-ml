@@ -5,6 +5,7 @@ import cajeta.math.Ewise;
 import cajeta.math.Tensor;
 import cajeta.math.stats.Stats;
 import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.kernels.Convert;
 import dev.cajeta.ml.kernels.Copy;
@@ -1045,41 +1046,44 @@ public final class Ops {
         return StructKernels.dropout<E>(x, p, training, seed, mask);
     }
 
+    /** Mean softmax cross-entropy of `logits` against class ids; `lse` (one per row) receives each row's log-sum-exp, the backward's saved state. */
     public static #Tensor<E> crossEntropy<E extends Floating>(Tensor<E> logits,
                                                               Tensor<E> targets,
-                                                              Tensor<E> probs) {
+                                                              Tensor<E> lse) {
         Ops.requireSame<E>("crossEntropy", logits, targets);
-        Ops.requireSame<E>("crossEntropy", logits, probs);
+        Ops.requireSame<E>("crossEntropy", logits, lse);
         if (logits.isOnGpu()) {
             Ops.requireF32<E>("crossEntropy");
             int64 cls = logits.shapeAt(logits.ndim() - 1);
             int64 rows = logits.size() / cls;
             int64[] rs = [rows];
+            int64[] sh = [1];
             Tensor<E> rowLoss #= Ewise.deviceOf<E>(rs);
-            if (cls <= 2048L) {
-                Act.softmaxNllRows<E>(probs.deviceView("crossEntropy"), rowLoss.deviceView("crossEntropy"), logits.deviceView("crossEntropy"), targets.deviceView("crossEntropy"), rows, cls);
-            } else {
-                Act.softmaxRows<E>(probs.deviceView("crossEntropy"), logits.deviceView("crossEntropy"), rows, cls);
-                Loss.nllRows<E>(rowLoss.deviceView("crossEntropy"), probs.deviceView("crossEntropy"), targets.deviceView("crossEntropy"), rows, cls);
-            }
-            return Ops.reduceAllGpu<E>("crossEntropy", rowLoss, true);
+            Tensor<E> out #= Ewise.deviceOf<E>(sh);
+            Act.crossEntropyRows<E>(lse.deviceView("crossEntropy"), rowLoss.deviceView("crossEntropy"), logits.deviceView("crossEntropy"), targets.deviceView("crossEntropy"), rows, cls);
+            Loss.meanOf<E>(out.deviceView("crossEntropy"), rowLoss.deviceView("crossEntropy"), rows);
+            KernelStream s #= KernelStream.current();
+            s.sync();
+            return #out;
         }
-        return StructKernels.crossEntropy<E>(logits, targets, probs);
+        return StructKernels.crossEntropy<E>(logits, targets, lse);
     }
 
+    /** dL/dlogits from the logits, their saved row log-sum-exp and the scalar cotangent. */
     public static #Tensor<E> crossEntropyBack<E extends Floating>(Tensor<E> g,
-                                                                  Tensor<E> probs,
+                                                                  Tensor<E> logits,
+                                                                  Tensor<E> lse,
                                                                   Tensor<E> targets) {
         if (g.isOnGpu()) {
             Ops.requireF32<E>("crossEntropy.backward");
-            int64 cls = probs.shapeAt(probs.ndim() - 1);
-            int64 rows = probs.size() / cls;
-            Tensor<E> dx #= Ewise.deviceLike<E>(probs);
-            Loss.nllBackward<E>(dx.deviceView("crossEntropy.backward"), probs.deviceView("crossEntropy.backward"), targets.deviceView("crossEntropy.backward"),
-                g.deviceView("crossEntropy.backward"), rows, cls);
+            int64 cls = logits.shapeAt(logits.ndim() - 1);
+            int64 rows = logits.size() / cls;
+            Tensor<E> dx #= Ewise.deviceLike<E>(logits);
+            Loss.nllBackward<E>(dx.deviceView("crossEntropy.backward"), logits.deviceView("crossEntropy.backward"), lse.deviceView("crossEntropy.backward"),
+                targets.deviceView("crossEntropy.backward"), g.deviceView("crossEntropy.backward"), rows, cls);
             return #dx;
         }
-        return StructKernels.crossEntropyBack<E>(g, probs, targets);
+        return StructKernels.crossEntropyBack<E>(g, logits, lse, targets);
     }
 
     public static #Tensor<E> mseLoss<E extends Floating>(Tensor<E> pred, Tensor<E> target) {

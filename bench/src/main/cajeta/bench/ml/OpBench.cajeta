@@ -153,7 +153,8 @@ public class OpBench extends MlBenchmark {
                            (this.x.shapeAt(2) - 2) / 2 + 1, (this.x.shapeAt(3) - 2) / 2 + 1];
             this.s1 #= Ops.zerosOn<float32>(osh, this.x);
         } else if (k == OpBench.CROSSENTROPY) {
-            this.s1 #= Ops.zerosLike<float32>(this.x);
+            int64[] rs = [this.x.size() / this.x.shapeAt(this.x.ndim() - 1)];
+            this.s1 #= Ops.zerosOn<float32>(rs, this.x);
         }
     }
 
