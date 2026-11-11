@@ -1,0 +1,10 @@
+package dev.cajeta.ml.kernels.tune;
+
+import cajeta.lang.String;
+
+/** Told each choice a tile family settles: the family, the member, the problem, its margin
+ *  over the runner-up in per mille, and whether the store or a timing here decided it. */
+public interface TileChoiceListener {
+    void chose(String family, String kernel, int64 rows, int64 outDim, int64 cols,
+        int32 marginPerMille, boolean cached, boolean timed);
+}

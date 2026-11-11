@@ -11,6 +11,7 @@ import dev.cajeta.ml.kernels.Scale;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
 import dev.cajeta.ml.kernels.tune.TileFamily;
+import dev.cajeta.ml.kernels.tune.TileChoiceListener;
 import dev.cajeta.ml.kernels.tune.TuneMode;
 
 /** cajeta-ml-gpu 9.1.1: a tile family lists, prunes with a reason, times and remembers. */
@@ -99,5 +100,59 @@ public class TileFamilyTest {
         Assert.equals(0, probe.timed);
         Assert.equals(a, b);
         Assert.equals(0, a);
+    }
+
+    /** A settled choice is told to the family's listener once, with its member, problem and
+     *  provenance; a choice that does not settle tells it nothing (cajeta-ml-gpu 32.2.1). */
+    @Test
+    public void aSettledChoiceIsToldToTheListener() {
+        if (!Device.kernelAvailable("Scale_64_scale")) {
+            DeviceSkip.noKernel("Scale_64_scale", "cajeta-ml-gpu 9.2.2");
+            return;
+        }
+        int64 n = 256L;
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) n);
+        TuneMode.setUntimed(true);
+        TileFamily<ScaleShape> f #= TileFamilyTest.family();
+        ChoiceRecorder rec #= heap ChoiceRecorder();
+        f.onChoice(rec);
+        ShapeFilter flt #= f.filterFor(n, 1L, 1L);
+        ScaleProbe probe = heap ScaleProbe(y, x, n);
+        int32 a = f.chooseWith("", flt, probe, n, 1L, 1L);
+        Assert.equals(a, f.remembered(n, 1L, 1L));
+        // Two survivors and no store: only a timing could decide, so nothing settles or is told.
+        int32 u = f.chooseUntimed("", flt, n, 1L, 1L);
+        TuneMode.setUntimed(false);
+        Assert.equals(-1, u);
+        Assert.equals(1, rec.calls);
+        Assert.equals("scale", rec.family);
+        Assert.equals("Scale_64_scale", rec.kernel);
+        Assert.equals(n, rec.rows);
+        Assert.isFalse(rec.timed);
+        Assert.isFalse(rec.cached);
+    }
+}
+
+/** Records the last choice a family told it, and how many. */
+final class ChoiceRecorder implements TileChoiceListener {
+    public int32 calls = 0;
+    public String family;
+    public String kernel;
+    public int64 rows = 0L;
+    public boolean timed = true;
+    public boolean cached = true;
+    public ChoiceRecorder() {
+        this.family #= "".clone();
+        this.kernel #= "".clone();
+    }
+    public void chose(String family, String kernel, int64 rows, int64 outDim, int64 cols,
+            int32 marginPerMille, boolean cached, boolean timed) {
+        this.calls = this.calls + 1;
+        this.family #= family.clone();
+        this.kernel #= kernel.clone();
+        this.rows = rows;
+        this.timed = timed;
+        this.cached = cached;
     }
 }

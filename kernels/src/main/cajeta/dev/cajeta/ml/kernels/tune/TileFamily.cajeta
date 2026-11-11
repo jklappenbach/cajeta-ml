@@ -32,12 +32,14 @@ public final class TileFamily<S extends TileShape> {
     int32[] memoIdx;
     int32 memoNext = 0;
     int32 memoLast = -1;
+    TileChoiceListener listener;
     /** Print one `tile-choice` line per settled choice. */
     public static boolean verbose = false;
 
     public TileFamily(String name) {
         this.name #= name.clone();
         this.list #= heap ArrayList<S>();
+        this.listener = null;
         this.forget();
     }
 
@@ -48,6 +50,9 @@ public final class TileFamily<S extends TileShape> {
     public ArrayList<S> shapes() { return this.list; }
 
     public String name() { return this.name; }
+
+    /** Tell `l` each choice this family settles; the family borrows it. */
+    public void onChoice(^TileChoiceListener l) { this.listener = l; }
 
     /** Drop the remembered choices. */
     public void forget() {
@@ -209,6 +214,10 @@ public final class TileFamily<S extends TileShape> {
         if (r.survivor < 0) {
             String why #= r.refusal.clone();
             throw heap XpuLaunchException(#why);
+        }
+        if (this.listener != null) {
+            this.listener.chose(this.name, r.kernel, rows, outDim, cols, r.marginPerMille,
+                r.fromCache, r.timed);
         }
         if (TileFamily.verbose) {
             System.stdout.println("tile-choice " + this.name + " " + r.kernel + " " + rows + "x" + outDim
