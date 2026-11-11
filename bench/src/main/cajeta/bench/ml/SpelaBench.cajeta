@@ -1,0 +1,114 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaTrainer;
+
+/**
+ * spela-train-step: one SPELA step on the mlp batch, a two-layer stack (Linear + ReLU, then the
+ * Linear head) where each layer trains on its own cosface loss against fixed class vectors with
+ * AdamW (lr 1e-3, constant) and hands its output on detached. torch runs the same local-loss loop.
+ * The check runs on to config/train.npy[0] steps and passes when the last mean loss is below the first.
+ */
+public class SpelaBench extends MlBenchmark {
+
+    SpelaTrainer tr;
+    Tensor<float32> x;
+    Tensor<float32> y;
+    ArrayList<float64> losses;
+    String mdl;
+    int64 steps;
+
+    public SpelaBench() {
+        this.mdl = "";
+        this.steps = 0;
+    }
+
+    public String name() {
+        return "spela-train-step";
+    }
+
+    public String unit() {
+        return "samples/s";
+    }
+
+    public String model() {
+        return this.mdl;
+    }
+
+    public int32 warmupIters() {
+        return 5;
+    }
+
+    public int32 measuredIters() {
+        return 50;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("cpu");
+        v.add("device");
+        return v;
+    }
+
+    public String probe(String variant) {
+        return "mlp/x.npy";
+    }
+
+    public void prepare(String v) {
+        this.begin(v);
+        int64 a = Data.intAt("mlp/config.npy", (int64) 0);
+        int64 b = Data.intAt("mlp/config.npy", (int64) 1);
+        int64 c = Data.intAt("mlp/config.npy", (int64) 2);
+        ArrayList<Module> layers #= heap ArrayList<Module>();
+        Sequential first = heap Sequential();
+        Module l0 = heap Linear(a, b, Data.SEED);
+        first.add(#l0);
+        Module r = heap ReLU();
+        first.add(#r);
+        layers.add(#first);
+        Module l1 = heap Linear(b, c, Data.SEED + 1);
+        layers.add(#l1);
+        SpelaConfig cfg = heap SpelaConfig(c);
+        cfg.lrSchedule = SpelaConfig.CONSTANT;
+        cfg.seed = Data.SEED;
+        this.tr = heap SpelaTrainer(#layers, #cfg);
+        this.mdl = "spela " + a + "-" + b + "-" + c + " cosface f32";
+        this.x #= Data.f32("mlp/x.npy");
+        this.y #= Data.f32("mlp/y.npy");
+        this.nIn = this.x.shapeAt(0);
+        this.steps = Data.intAt("config/train.npy", (int64) 0);
+        this.ds = "mlp batch " + Data.shape32(this.x) + " seed " + Data.SEED;
+        if (v.equals("device")) {
+            int32 i = 0;
+            while (i < this.tr.layerCount()) {
+                this.tr.layerAt(i).toDevice();
+                i = i + 1;
+            }
+            this.x.gpu();
+            this.y.gpu();
+        }
+        this.losses = heap ArrayList<float64>();
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        float64 l = this.tr.trainBatch(this.x, this.y);
+        this.losses.add(l);
+    }
+
+    public boolean checkResult() {
+        while ((int64) this.losses.count() < this.steps) {
+            this.runVariant(this.cur, 1);
+        }
+        float64 first = this.losses.get(0);
+        float64 last = this.losses.get((int32) this.steps - 1);
+        this.note = "SPELA cosface scale 30, AdamW lr 1e-3; mean local loss " + first + " -> " + last
+            + " over " + this.steps + " steps";
+        return last < first;
+    }
+}

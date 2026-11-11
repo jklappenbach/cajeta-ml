@@ -49,7 +49,7 @@ WT = {
     "knn": (2, 5), "pca": (3, 10), "standard-scaler": (3, 10),
     "mlp-train-step": (5, 50), "mlp-infer": (5, 50), "cnn-train-step": (3, 20),
     "cnn-infer": (3, 20), "transformer-block-train": (2, 5), "transformer-block-infer": (2, 5),
-    "autodiff-overhead": (5, 50), "checkpoint-load": (2, 10),
+    "autodiff-overhead": (5, 50), "checkpoint-load": (2, 10), "spela-train-step": (5, 50),
 }
 # The per-op rows: id -> (torch forward over the loaded inputs, tolerance key).
 OPS = ["op-add", "op-relu", "op-gelu", "op-tanh", "op-sigmoid", "op-softmax", "op-layernorm",
@@ -64,8 +64,8 @@ for _n in GEMMS:
 
 CLASSICAL = ["linear-regression", "logistic-regression", "kmeans", "knn", "pca", "standard-scaler"]
 NEURAL = ["mlp-train-step", "mlp-infer", "cnn-train-step", "cnn-infer",
-          "transformer-block-train", "transformer-block-infer", "autodiff-overhead",
-          "checkpoint-load"]
+          "transformer-block-train", "transformer-block-infer", "spela-train-step",
+          "autodiff-overhead", "checkpoint-load"]
 VARIANTS = {
     "linear-regression": ["synthetic", "housing"],
     "logistic-regression": ["synthetic", "digits"],
@@ -366,6 +366,42 @@ def run_neural(name, variant, d):
         return bc.measured_row(samples, w, input_size=x.shape[0], unit="samples/s",
                                check_ok=diff <= tol, note=note, model=mdl,
                                dataset_name=f"{kind} batch {size_note(x)}", **meta)
+
+    if name == "spela-train-step":
+        n_in, hid, n_out = (int(v) for v in load(d, "mlp/config.npy"))
+        layers = [torch.nn.Sequential(torch.nn.Linear(n_in, hid), torch.nn.ReLU()).to(dev),
+                  torch.nn.Linear(hid, n_out).to(dev)]
+        x = torch.from_numpy(load(d, "mlp/x.npy")).to(dev)
+        y = torch.from_numpy(load(d, "mlp/y.npy")).to(dev).long()
+        g = torch.Generator().manual_seed(20261025)
+        # each layer's fixed class vectors on the unit sphere, held as scale x their transpose
+        tables = [(30.0 * F.normalize(torch.randn(n_out, dim, generator=g), dim=1).t()).contiguous().to(dev)
+                  for dim in (hid, n_out)]
+        opts = [torch.optim.AdamW(m.parameters(), lr=1e-3, weight_decay=1e-4) for m in layers]
+        losses = []
+
+        def step():
+            h, ls = x, []
+            for m, opt, vt in zip(layers, opts, tables):
+                out = m(F.normalize(h, dim=1, eps=1e-8))
+                loss = F.cross_entropy(F.normalize(out, dim=1, eps=1e-8) @ vt, y)
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                opt.step()
+                ls.append(loss.detach())
+                h = out.detach()
+            losses.append(float(torch.stack(ls).mean()))
+            sync()
+
+        samples = bc.measure(step, w, t)
+        while len(losses) < steps:
+            step()
+        ok = losses[steps - 1] < losses[0]
+        note = (f"SPELA cosface scale 30, AdamW lr 1e-3; mean local loss {losses[0]:.6g} -> "
+                f"{losses[steps - 1]:.6g} over {steps} steps; " + torch_threads_note())
+        return bc.measured_row(samples, w, input_size=x.shape[0], unit="samples/s", check_ok=ok,
+                               note=note, model=f"spela {n_in}-{hid}-{n_out} cosface f32",
+                               dataset_name=f"mlp batch {size_note(x)}", **meta)
 
     if name == "autodiff-overhead":
         m, x, y, mdl = model_and_batch("mlp")

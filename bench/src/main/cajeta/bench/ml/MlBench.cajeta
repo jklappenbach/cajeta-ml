@@ -25,6 +25,7 @@ public final class MlBench {
         b.add(heap NeuralBench(NeuralBench.CNN, false));
         b.add(heap NeuralBench(NeuralBench.TRANSFORMER, true));
         b.add(heap NeuralBench(NeuralBench.TRANSFORMER, false));
+        b.add(heap SpelaBench());
         b.add(heap AutodiffBench());
         int32 k = 0;
         while (k < OpBench.COUNT) {
