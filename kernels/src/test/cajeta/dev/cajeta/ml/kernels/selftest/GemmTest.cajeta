@@ -141,14 +141,15 @@ public class GemmTest {
     @Test
     public void largeShapesRouteToTheWideRegisterTileAndStayRight() {
         if (GemmTest.usable("gemmTiled128_float32")) {
-            int64 b0 = Device.kernelLaunchCount("gemmTiled128_float32");
+            String big #= Gemm.tiled128Member();
+            int64 b0 = Device.kernelLaunchCount(big);
             int64 s0 = Device.kernelLaunchCount("gemmTiled_float32");
-            GemmTest.tiledCase<float32>("gemmTiled128_float32", 1024L, 768L, 40L);
-            GemmTest.tiledCase<float32>("gemmTiled128_float32", 1000L, 1000L, 37L);
-            GemmTest.routes("gemmTiled128_float32", "gemmTiled_float32", b0, s0);
-            int64 b1 = Device.kernelLaunchCount("gemmTiled128_float32");
+            GemmTest.tiledCase<float32>(big, 1024L, 768L, 40L);
+            GemmTest.tiledCase<float32>(big, 1000L, 1000L, 37L);
+            GemmTest.routes(big, "gemmTiled_float32", b0, s0);
+            int64 b1 = Device.kernelLaunchCount(big);
             GemmTest.tiledCase<float32>("gemmTiled_float32", 300L, 500L, 100L);
-            GemmTest.routes("gemmTiled_float32", "gemmTiled128_float32", s0, b1);
+            GemmTest.routes("gemmTiled_float32", big, s0, b1);
         }
     }
 

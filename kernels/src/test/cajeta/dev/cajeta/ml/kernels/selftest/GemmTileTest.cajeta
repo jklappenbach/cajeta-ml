@@ -3,6 +3,7 @@ package dev.cajeta.ml.kernels.selftest;
 import cajeta.lang.System;
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelFacts;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
@@ -81,7 +82,7 @@ public class GemmTileTest {
         ValueCheck.credit(mk);
     }
 
-    static void wideCase<E>(String kernel, int64 m, int64 n, int64 k) {
+    static void wideCase<E>(String kernel, int32 which, int64 m, int64 n, int64 k) {
         E[] ha = heap E[m * k];
         E[] hb = heap E[k * n];
         float32[] fa = heap float32[m * k];
@@ -101,7 +102,9 @@ public class GemmTileTest {
         while (i < m * n) { got[(int32) i] = 12345.0f; i = i + 1L; }
         c.upload(got);
         int64[] mk #= ValueCheck.mark();
-        Gemm.wide<E>(c, a, b, m, n, k);
+        if (which == 1) { Gemm.wideRolled<E>(c, a, b, m, n, k); }
+        else if (which == 2) { Gemm.wideUnrolled<E>(c, a, b, m, n, k); }
+        else { Gemm.wide<E>(c, a, b, m, n, k); }
         c.download(got);
         int64 r = 0L;
         int32 bad = 0;
@@ -198,7 +201,10 @@ public class GemmTileTest {
         while (i < m * n) { got[(int32) i] = (E) 12345.0f; i = i + 1L; }
         c.upload(got);
         int64[] mk #= ValueCheck.mark();
-        if (member == 128) { Gemm.tiled128<E>(c, a, b, m, n, k); } else { Gemm.tiled64<E>(c, a, b, m, n, k); }
+        if (member == 128) { Gemm.tiled128<E>(c, a, b, m, n, k); }
+        else if (member == 1280) { Gemm.tiled128Rolled<E>(c, a, b, m, n, k); }
+        else if (member == 1281) { Gemm.tiled128Unrolled<E>(c, a, b, m, n, k); }
+        else { Gemm.tiled64<E>(c, a, b, m, n, k); }
         c.download(got);
         int64 r = 0L;
         int32 bad = 0;
@@ -276,9 +282,72 @@ public class GemmTileTest {
     @Test
     public void wideTileMatchesTheHostAtBf16() {
         if (!GemmTileTest.usable("gemmWide_bfloat16")) { return; }
-        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 128L, 128L, 16L);
-        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 257L, 33L, 129L);
-        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 256L, 256L, 104L);
-        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 7L, 1000L, 2049L);
+        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 0, 128L, 128L, 16L);
+        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 0, 257L, 33L, 129L);
+        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 0, 256L, 256L, 104L);
+        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 0, 7L, 1000L, 2049L);
+    }
+
+    /** The rolled f32 wide tile, the member every backend builds, on the same shapes. */
+    @Test
+    public void f32RolledWideTileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmTiled128_float32")) { return; }
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 128L, 128L, 16L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 3L, 5L, 7L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 257L, 33L, 129L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 256L, 256L, 104L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 7L, 1000L, 2049L);
+    }
+
+    /** The unrolled f32 wide tile, where this backend builds it, on the same shapes. */
+    @Test
+    public void f32UnrolledWideTileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmTiled128Unrolled_float32")) { return; }
+        GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 128L, 128L, 16L);
+        GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 3L, 5L, 7L);
+        GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 257L, 33L, 129L);
+        GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 256L, 256L, 104L);
+        GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 7L, 1000L, 2049L);
+    }
+
+    @Test
+    public void bf16RolledWideTileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmWide_bfloat16")) { return; }
+        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 1, 128L, 128L, 16L);
+        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 1, 257L, 33L, 129L);
+        GemmTileTest.wideCase<bfloat16>("gemmWide_bfloat16", 1, 7L, 1000L, 2049L);
+    }
+
+    @Test
+    public void bf16UnrolledWideTileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmWideUnrolled_bfloat16")) { return; }
+        GemmTileTest.wideCase<bfloat16>("gemmWideUnrolled_bfloat16", 2, 128L, 128L, 16L);
+        GemmTileTest.wideCase<bfloat16>("gemmWideUnrolled_bfloat16", 2, 257L, 33L, 129L);
+        GemmTileTest.wideCase<bfloat16>("gemmWideUnrolled_bfloat16", 2, 7L, 1000L, 2049L);
+    }
+
+    /** Rule R1 decides the body: the unrolled tile runs only where it has device code and
+     *  its build spills nothing (gfx1151 spills it and runs 5x slower, Proton 2026-11-10). */
+    static void unrolledOnlyWithoutSpills(String member, String rolled, String unrolled) {
+        boolean pays = Device.kernelAvailable(unrolled) && KernelFacts.measured(unrolled, 0).spillBytes == 0;
+        if (pays) { Assert.isTrue(member.equals(unrolled)); } else { Assert.isTrue(member.equals(rolled)); }
+    }
+
+    @Test
+    public void theUnrolledWideTilesRunOnlyWhereTheyDoNotSpill() {
+        String t #= Gemm.tiled128Member();
+        GemmTileTest.unrolledOnlyWithoutSpills(t, "gemmTiled128_float32", "gemmTiled128Unrolled_float32");
+        String w #= Gemm.wideMember();
+        GemmTileTest.unrolledOnlyWithoutSpills(w, "gemmWide_bfloat16", "gemmWideUnrolled_bfloat16");
+        if (GemmTileTest.usable(t)) {
+            int64 before = Device.kernelLaunchCount(t);
+            GemmTileTest.plainCase<float32>(t, 128, 256L, 256L, 104L);
+            Assert.isTrue(Device.kernelLaunchCount(t) > before);
+        }
+        if (GemmTileTest.usable(w)) {
+            int64 before = Device.kernelLaunchCount(w);
+            GemmTileTest.wideCase<bfloat16>(w, 0, 256L, 256L, 104L);
+            Assert.isTrue(Device.kernelLaunchCount(w) > before);
+        }
     }
 }
