@@ -5,7 +5,7 @@
     // and cajeta-xgboost as the first consumers. A LIBRARY: no entry-method.
     "details": {
         "name":               "dev.cajeta.ml.kernels",
-        "version":            "0.2.11",
+        "version":            "0.2.12",
         "description":        "cajeta-ml kernels — GPU compute primitives, dense linear algebra, nn ops and kernel support for cajeta.xpu, general purpose",
         "license":            "Apache-2.0",
         "authors":            ["Julian Klappenbach"],
