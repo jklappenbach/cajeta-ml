@@ -1,0 +1,183 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.nn.Conv2d;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.MaxPool2d;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaTrainer;
+
+/**
+ * cajeta-ml-gpu 28.2.9: SpelaTrainer's per-layer step on the device follows the host's loss
+ * curve, layer by layer, for a two-layer Linear net and a conv stack.
+ */
+public class SpelaDeviceTest {
+    public SpelaDeviceTest() { return; }
+
+    static #ArrayList<Module> mlp(uint64 seed) {
+        ArrayList<Module> ls #= heap ArrayList<Module>();
+        Module a = heap Linear(64, 24, seed);
+        ls.add(#a);
+        Module b = heap Linear(24, 12, seed + 1);
+        ls.add(#b);
+        return ls;
+    }
+
+    static #ArrayList<Module> cnn(uint64 seed) {
+        ArrayList<Module> ls #= heap ArrayList<Module>();
+        Sequential s = heap Sequential();
+        Module c = heap Conv2d(1, 4, 3, 1, 1, seed);
+        s.add(#c);
+        Module r = heap ReLU();
+        s.add(#r);
+        Module p = heap MaxPool2d(2, 2, 0);
+        s.add(#p);
+        ls.add(#s);
+        Module l = heap Linear(64, 12, seed + 1);
+        ls.add(#l);
+        return ls;
+    }
+
+    /** The (n, 64) digit images as (n, 1, 8, 8). */
+    static #Tensor<float32> asImages(Tensor<float32> x) {
+        int64[] sh = [x.shapeAt(0), 1L, 8L, 8L];
+        Tensor<float32> vw #= x.reshape(sh);
+        Tensor<float32> out #= vw.copy();
+        return #out;
+    }
+
+    /** `steps` batches through `tr`; the per-layer losses, step-major. */
+    static #float64[] curve(SpelaTrainer tr, Tensor<float32> x, Tensor<float32> y, int32 steps) {
+        int32 lc = tr.layerCount();
+        float64[] out = heap float64[steps * lc];
+        int32 s = 0;
+        while (s < steps) {
+            tr.trainBatch(x, y);
+            int32 l = 0;
+            while (l < lc) {
+                out[s * lc + l] = tr.lastLossAt(l);
+                l = l + 1;
+            }
+            s = s + 1;
+        }
+        return out;
+    }
+
+    static void toDevice(SpelaTrainer tr) {
+        int32 i = 0;
+        while (i < tr.layerCount()) {
+            tr.layerAt(i).toDevice();
+            i = i + 1;
+        }
+        return;
+    }
+
+    static void sameCurve(String what, float64[] host, float64[] dev, float64 tol) {
+        Assert.equals(host.count(), dev.count());
+        int32 i = 0;
+        while (i < (int32) host.count()) {
+            float64 d = dev[i] - host[i];
+            if (d < 0.0) { d = 0.0 - d; }
+            float64 a = host[i];
+            if (a < 0.0) { a = 0.0 - a; }
+            if (!(d <= tol * (a + 1.0))) {
+                System.stdout.println("  " + what + " [" + i + "] device " + dev[i] + " host " + host[i]);
+                Assert.isTrue(false);
+            }
+            i = i + 1;
+        }
+        return;
+    }
+
+    static void allOnDevice(SpelaTrainer tr) {
+        int32 i = 0;
+        while (i < tr.layerCount()) {
+            Parameter[] ps #= tr.layerAt(i).parameters();
+            int32 k = 0;
+            while (k < (int32) ps.count()) { Assert.isTrue(ps[k].get().isOnGpu()); k = k + 1; }
+            i = i + 1;
+        }
+        return;
+    }
+
+    @Test
+    public void cosfaceStepOnTheDeviceFollowsTheHostCurve() {
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 3L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaConfig hc = heap SpelaConfig(4);
+        hc.lr = 0.01f;
+        hc.cosineMargin = 0.35;
+        hc.seed = 29L;
+        SpelaTrainer host = heap SpelaTrainer(#SpelaDeviceTest.mlp(41L), #hc);
+        host.planSteps(6L);
+        SpelaConfig dc = heap SpelaConfig(4);
+        dc.lr = 0.01f;
+        dc.cosineMargin = 0.35;
+        dc.seed = 29L;
+        SpelaTrainer dev = heap SpelaTrainer(#SpelaDeviceTest.mlp(41L), #dc);
+        dev.planSteps(6L);
+        SpelaDeviceTest.toDevice(dev);
+        float64[] want #= SpelaDeviceTest.curve(host, x, y, 6);
+        float64[] got #= SpelaDeviceTest.curve(dev, x, y, 6);
+        SpelaDeviceTest.sameCurve("cosface", want, got, 2.0e-3);
+        Assert.isTrue(want[10] < want[0]);
+        SpelaDeviceTest.allOnDevice(dev);
+        float64 ah = host.accuracyFromLayer(x, y, -1);
+        float64 ad = dev.accuracyFromLayer(x, y, -1);
+        float64 gap = ah - ad;
+        if (gap < 0.0) { gap = 0.0 - gap; }
+        Assert.isTrue(gap <= 0.07);
+    }
+
+    @Test
+    public void paperExactStepOnTheDeviceFollowsTheHostCurve() {
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 5L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaConfig hc = heap SpelaConfig(4);
+        hc.paperExact();
+        hc.lr = 0.05f;
+        hc.seed = 17L;
+        SpelaTrainer host = heap SpelaTrainer(#SpelaDeviceTest.mlp(31L), #hc);
+        SpelaConfig dc = heap SpelaConfig(4);
+        dc.paperExact();
+        dc.lr = 0.05f;
+        dc.seed = 17L;
+        SpelaTrainer dev = heap SpelaTrainer(#SpelaDeviceTest.mlp(31L), #dc);
+        SpelaDeviceTest.toDevice(dev);
+        float64[] want #= SpelaDeviceTest.curve(host, x, y, 6);
+        float64[] got #= SpelaDeviceTest.curve(dev, x, y, 6);
+        SpelaDeviceTest.sameCurve("paper-exact", want, got, 2.0e-3);
+        Assert.isTrue(want[10] < want[0]);
+    }
+
+    @Test
+    public void convStackStepOnTheDeviceFollowsTheHostCurve() {
+        Tensor<float32> flat #= Digits.images(8, 4, 0.1f, 7L);
+        Tensor<float32> x #= SpelaDeviceTest.asImages(flat);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaConfig hc = heap SpelaConfig(4);
+        hc.lr = 0.01f;
+        hc.seed = 13L;
+        SpelaTrainer host = heap SpelaTrainer(#SpelaDeviceTest.cnn(51L), #hc);
+        host.planSteps(6L);
+        SpelaConfig dc = heap SpelaConfig(4);
+        dc.lr = 0.01f;
+        dc.seed = 13L;
+        SpelaTrainer dev = heap SpelaTrainer(#SpelaDeviceTest.cnn(51L), #dc);
+        dev.planSteps(6L);
+        SpelaDeviceTest.toDevice(dev);
+        float64[] want #= SpelaDeviceTest.curve(host, x, y, 6);
+        float64[] got #= SpelaDeviceTest.curve(dev, x, y, 6);
+        SpelaDeviceTest.sameCurve("conv stack", want, got, 2.0e-3);
+        Assert.isTrue(dev.classVectorsAt(0).shapeAt(1) == 64);
+        SpelaDeviceTest.allOnDevice(dev);
+    }
+}

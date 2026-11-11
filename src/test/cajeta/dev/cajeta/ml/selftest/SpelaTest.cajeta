@@ -362,8 +362,13 @@ public class SpelaTest {
         // any divergence is caused by the normalization itself
         Tensor<float32> x #= Digits.images(4, 4, 0.2f, 13L);
         Tensor<float32> y #= Digits.labels(4, 4);
+        // the bias starts at zero, so a row scale cannot move the first step's cosine loss
         a.trainBatch(x, y);
         b.trainBatch(x, y);
-        Assert.isTrue(a.lastLossAt(0) != b.lastLossAt(0));
+        a.trainBatch(x, y);
+        b.trainBatch(x, y);
+        float64 gap = a.lastLossAt(0) - b.lastLossAt(0);
+        if (gap < 0.0) { gap = 0.0 - gap; }
+        Assert.isTrue(gap > 0.000001);
     }
 }
