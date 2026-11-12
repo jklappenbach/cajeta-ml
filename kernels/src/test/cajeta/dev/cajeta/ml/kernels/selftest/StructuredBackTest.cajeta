@@ -288,6 +288,40 @@ public class StructuredBackTest {
         ValueCheck.credit(m);
     }
 
+    /** cajeta-ml-gpu 28.2.6: batch-norm's parameter sums over a long channel axis (16 x 784) split across workgroups
+     *  and join their partials in order, against the float64 host. */
+    @Test
+    public void batchNormParamGradsSplitMatchTheHostOverALongAxis() {
+        if (!StructuredBackTest.usable("bnParamPart_float32") || !StructuredBackTest.usable("bnParamJoin_float32")) { return; }
+        int64 n = 16L; int64 c = 4L; int64 hw = 784L;
+        int64 total = n * c * hw;
+        float64[] fg = heap float64[total];
+        float64[] fxh = heap float64[total];
+        KernelBuffer<float32> g #= StructuredBackTest.upload(total, 43L, fg);
+        KernelBuffer<float32> xhat #= StructuredBackTest.upload(total, 47L, fxh);
+        KernelBuffer<float32> dgamma = heap KernelBuffer<float32>((uint64) c);
+        KernelBuffer<float32> dbeta = heap KernelBuffer<float32>((uint64) c);
+        Assert.isTrue(BatchNorm.statSlices(n * hw, c) > 1L);
+        int64[] m #= ValueCheck.mark();
+        BatchNorm.channelParamGrads<float32>(dgamma, dbeta, g, xhat, n, c, hw);
+        float32[] ggam = heap float32[c];
+        float32[] gbet = heap float32[c];
+        dgamma.download(ggam);
+        dbeta.download(gbet);
+        int64 ci = 0L;
+        while (ci < c) {
+            float64 sa = 0.0; float64 sb = 0.0;
+            int64 bn = 0L;
+            while (bn < n) { int64 p = 0L; while (p < hw) { int64 i = (bn * c + ci) * hw + p; sa = sa + fg[(int32) i] * fxh[(int32) i]; sb = sb + fg[(int32) i]; p = p + 1L; } bn = bn + 1L; }
+            StructuredBackTest.stage = "split bn dgamma";
+            StructuredBackTest.close((float64) ggam[(int32) ci], sa, 12544.0 * 2.0e-7);
+            StructuredBackTest.stage = "split bn dbeta";
+            StructuredBackTest.close((float64) gbet[(int32) ci], sb, 12544.0 * 2.0e-7);
+            ci = ci + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
     @Test
     public void batchNormBackwardsMatchTheHost() {
         if (!StructuredBackTest.usable("bnParamGrads_float32") || !StructuredBackTest.usable("bnBackIn_float32")) { return; }

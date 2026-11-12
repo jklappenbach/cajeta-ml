@@ -272,6 +272,41 @@ public class StructuredTest {
         }
     }
 
+    /** cajeta-ml-gpu 28.2.6: a long channel axis (16 x 784 = 12544 elements) splits across workgroups and joins its
+     *  slices' (count, mean, M2) in order; mean and var against the float64 host. */
+    @Test
+    public void batchNormStatsSplitMatchesTheHostOverALongAxis() {
+        if (!StructuredTest.usable("bnStatsPart_float32") || !StructuredTest.usable("bnStatsJoin_float32")) { return; }
+        int64 n = 16L; int64 c = 4L; int64 hw = 784L;
+        float64[] fx = heap float64[n * c * hw];
+        KernelBuffer<float32> x #= StructuredTest.upload(n * c * hw, 41L, fx);
+        KernelBuffer<float32> mean = heap KernelBuffer<float32>((uint64) c);
+        KernelBuffer<float32> var = heap KernelBuffer<float32>((uint64) c);
+        Assert.isTrue(BatchNorm.statSlices(n * hw, c) > 1L);
+        int64[] m #= ValueCheck.mark();
+        BatchNorm.channelStats<float32>(mean, var, x, n, c, hw);
+        float32[] gm = heap float32[c];
+        float32[] gv = heap float32[c];
+        mean.download(gm);
+        var.download(gv);
+        int64 ci = 0L;
+        while (ci < c) {
+            float64 sum = 0.0;
+            int64 bn = 0L;
+            while (bn < n) { int64 p = 0L; while (p < hw) { sum = sum + fx[(int32) ((bn * c + ci) * hw + p)]; p = p + 1L; } bn = bn + 1L; }
+            float64 mu = sum / (float64) (n * hw);
+            float64 d2 = 0.0;
+            bn = 0L;
+            while (bn < n) { int64 p = 0L; while (p < hw) { float64 d = fx[(int32) ((bn * c + ci) * hw + p)] - mu; d2 = d2 + d * d; p = p + 1L; } bn = bn + 1L; }
+            StructuredTest.stage = "split stats mean";
+            StructuredTest.close((float64) gm[(int32) ci], mu, 1.0e-6);
+            StructuredTest.stage = "split stats var";
+            StructuredTest.close((float64) gv[(int32) ci], d2 / (float64) (n * hw), 1.0e-6);
+            ci = ci + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
     @Test
     public void batchNormMatchesTheHost() {
         if (!StructuredTest.usable("stats_float32") || !StructuredTest.usable("normalize_float32")) { return; }

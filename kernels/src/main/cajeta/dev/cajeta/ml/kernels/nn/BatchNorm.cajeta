@@ -77,10 +77,122 @@ public final class BatchNorm {
         }
     }
 
+    /** Slice `sl` of channel `ci`'s n*hw elements: its count, mean and M2 at part[(ci * slices + sl) * 3]. */
+    @Kernel
+    public static void bnStatsPart<E>(KernelBuffer<float32> part, KernelBuffer<E> x, uint32 n, uint32 c, uint32 hw,
+                                      uint32 slices) {
+        Shared<float32> red = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 ci = Workgroup.x() / slices;
+        uint32 sl = Workgroup.x() % slices;
+        uint32 count = n * hw;
+        uint32 chunk = (count + slices - 1) / slices;
+        uint32 i0 = sl * chunk;
+        uint32 i1 = i0 + chunk;
+        if (i1 > count) { i1 = count; }
+        if (i0 > count) { i0 = count; }
+        float32 acc = 0.0f;
+        uint32 i = i0 + lane;
+        while (i < i1) {
+            uint32 bn = i / hw;
+            acc = acc + (float32) x[(bn * c + ci) * hw + (i - bn * hw)];
+            i = i + 256;
+        }
+        red[lane] = acc;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { red[lane] = red[lane] + red[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        float32 cnt = (float32) (i1 - i0);
+        float32 mu = 0.0f;
+        if (i1 > i0) { mu = red[0] / cnt; }
+        Barrier.workgroup();
+        float32 dev = 0.0f;
+        i = i0 + lane;
+        while (i < i1) {
+            uint32 bn = i / hw;
+            float32 d = (float32) x[(bn * c + ci) * hw + (i - bn * hw)] - mu;
+            dev = dev + d * d;
+            i = i + 256;
+        }
+        red[lane] = dev;
+        Barrier.workgroup();
+        s = 128;
+        while (s > 0) {
+            if (lane < s) { red[lane] = red[lane] + red[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        if (lane == 0) {
+            uint32 pb = Workgroup.x() * 3;
+            part[pb] = cnt;
+            part[pb + 1] = mu;
+            part[pb + 2] = red[0];
+        }
+    }
+
+    /** mean[ci] and the biased var[ci] from the channel's slices, merged in slice order (Chan's pairwise update). */
+    @Kernel
+    public static void bnStatsJoin<E>(KernelBuffer<E> mean, KernelBuffer<E> var, KernelBuffer<float32> part, uint32 c,
+                                      uint32 slices) {
+        uint32 ci = KernelThread.globalIdX();
+        if (ci < c) {
+            uint32 pb = ci * slices * 3;
+            float32 na = part[pb];
+            float32 ma = part[pb + 1];
+            float32 m2 = part[pb + 2];
+            uint32 sl = 1;
+            while (sl < slices) {
+                uint32 q = pb + sl * 3;
+                float32 nb = part[q];
+                if (nb > 0.0f) {
+                    float32 nt = na + nb;
+                    float32 d = part[q + 1] - ma;
+                    ma = ma + d * (nb / nt);
+                    m2 = m2 + part[q + 2] + d * d * (na * nb / nt);
+                    na = nt;
+                }
+                sl = sl + 1;
+            }
+            mean[ci] = (E) ma;
+            var[ci] = (E) (m2 / na);
+        }
+    }
+
+    static KernelBuffer<float32> scratch;
+    static int64 scratchCap;
+
+    static void ensurePartials(int64 floats) {
+        if (BatchNorm.scratchCap < floats) {
+            BatchNorm.scratch #= heap KernelBuffer<float32>((uint64) floats);
+            BatchNorm.scratchCap = floats;
+        }
+        return;
+    }
+
+    /** Workgroups a channel's `count` elements split into: enough for ~256 over `c` channels, 2048 elements each at least. */
+    public static int64 statSlices(int64 count, int64 c) {
+        int64 want = (256L + c - 1L) / c;
+        int64 most = count / 2048L;
+        if (want > most) { want = most; }
+        if (want < 1L) { want = 1L; }
+        return want;
+    }
+
     /** Per-channel mean and biased variance of `x` (n, c, hw); queued on the current stream. */
     public static void channelStats<E>(KernelBuffer<E> mean, KernelBuffer<E> var, KernelBuffer<E> x, int64 n, int64 c, int64 hw) {
         KernelStream s #= KernelStream.current();
-        stats.launch(s, grid: [(uint32) c], block: [256])(mean, var, x, (uint32) n, (uint32) c, (uint32) hw);
+        int64 sl = BatchNorm.statSlices(n * hw, c);
+        if (sl == 1L) {
+            stats.launch(s, grid: [(uint32) c], block: [256])(mean, var, x, (uint32) n, (uint32) c, (uint32) hw);
+            return;
+        }
+        BatchNorm.ensurePartials(c * sl * 3L);
+        bnStatsPart.launch(s, grid: [(uint32) (c * sl)], block: [256])(BatchNorm.scratch, x, (uint32) n, (uint32) c, (uint32) hw, (uint32) sl);
+        bnStatsJoin.launch(s, grid: [(uint32) ((c + 63L) / 64L)], block: [64])(mean, var, BatchNorm.scratch, (uint32) c, (uint32) sl);
     }
 
     /** The normalise with the given statistics, saving xhat and invstd; queued on the current stream. */
@@ -145,10 +257,78 @@ public final class BatchNorm {
         }
     }
 
+    /** Slice `sl` of channel `ci`: its sum g*xhat and sum g at part[(ci * slices + sl) * 2]. */
+    @Kernel
+    public static void bnParamPart<E>(KernelBuffer<float32> part, KernelBuffer<E> g, KernelBuffer<E> xhat, uint32 n,
+                                      uint32 c, uint32 hw, uint32 slices) {
+        Shared<float32> pa = shared float32[256];
+        Shared<float32> pb = shared float32[256];
+        uint32 lane = KernelThread.x();
+        uint32 ci = Workgroup.x() / slices;
+        uint32 sl = Workgroup.x() % slices;
+        uint32 count = n * hw;
+        uint32 chunk = (count + slices - 1) / slices;
+        uint32 i0 = sl * chunk;
+        uint32 i1 = i0 + chunk;
+        if (i1 > count) { i1 = count; }
+        float32 sa = 0.0f;
+        float32 sb = 0.0f;
+        uint32 i = i0 + lane;
+        while (i < i1) {
+            uint32 bn = i / hw;
+            uint32 idx = (bn * c + ci) * hw + (i - bn * hw);
+            float32 gv = (float32) g[idx];
+            sa = sa + gv * (float32) xhat[idx];
+            sb = sb + gv;
+            i = i + 256;
+        }
+        pa[lane] = sa;
+        pb[lane] = sb;
+        Barrier.workgroup();
+        uint32 s = 128;
+        while (s > 0) {
+            if (lane < s) { pa[lane] = pa[lane] + pa[lane + s]; pb[lane] = pb[lane] + pb[lane + s]; }
+            Barrier.workgroup();
+            s = s / 2;
+        }
+        if (lane == 0) {
+            uint32 q = Workgroup.x() * 2;
+            part[q] = pa[0];
+            part[q + 1] = pb[0];
+        }
+    }
+
+    /** dgamma[ci] and dbeta[ci] as the channel's slice partials summed in slice order. */
+    @Kernel
+    public static void bnParamJoin<E>(KernelBuffer<E> dgamma, KernelBuffer<E> dbeta, KernelBuffer<float32> part, uint32 c,
+                                      uint32 slices) {
+        uint32 ci = KernelThread.globalIdX();
+        if (ci < c) {
+            float32 sa = 0.0f;
+            float32 sb = 0.0f;
+            uint32 sl = 0;
+            while (sl < slices) {
+                uint32 q = (ci * slices + sl) * 2;
+                sa = sa + part[q];
+                sb = sb + part[q + 1];
+                sl = sl + 1;
+            }
+            dgamma[ci] = (E) sa;
+            dbeta[ci] = (E) sb;
+        }
+    }
+
     /** Per-channel dgamma = sum g*xhat and dbeta = sum g; queued on the current stream. */
     public static void channelParamGrads<E>(KernelBuffer<E> dgamma, KernelBuffer<E> dbeta, KernelBuffer<E> g, KernelBuffer<E> xhat, int64 n, int64 c, int64 hw) {
         KernelStream s #= KernelStream.current();
-        bnParamGrads.launch(s, grid: [(uint32) c], block: [256])(dgamma, dbeta, g, xhat, (uint32) n, (uint32) c, (uint32) hw);
+        int64 sl = BatchNorm.statSlices(n * hw, c);
+        if (sl == 1L) {
+            bnParamGrads.launch(s, grid: [(uint32) c], block: [256])(dgamma, dbeta, g, xhat, (uint32) n, (uint32) c, (uint32) hw);
+            return;
+        }
+        BatchNorm.ensurePartials(c * sl * 3L);
+        bnParamPart.launch(s, grid: [(uint32) (c * sl)], block: [256])(BatchNorm.scratch, g, xhat, (uint32) n, (uint32) c, (uint32) hw, (uint32) sl);
+        bnParamJoin.launch(s, grid: [(uint32) ((c + 63L) / 64L)], block: [64])(dgamma, dbeta, BatchNorm.scratch, (uint32) c, (uint32) sl);
     }
 
     /** The input VJP from g, the saved xhat and invstd and the channel sums; queued on the current stream. */
