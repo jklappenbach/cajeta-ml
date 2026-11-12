@@ -321,67 +321,144 @@ public final class Conv {
         }
     }
 
-    /** dw for a 3x3 kernel: a workgroup per (output, input) channel pair, lanes striding the n*oh*ow positions so
-     *  loads coalesce, the nine taps reduced across the workgroup in a fixed order. */
+    /** dw for a 3x3 kernel: a workgroup per four output channels and one input channel, lanes striding the n*oh*ow
+     *  positions so loads coalesce and each input tap serves four outputs; the 36 sums reduced in a fixed order. */
     @Kernel @Wave(width = 32)
     public static void convBackWeight3x3<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
                                             uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc,
                                             uint32 oh, uint32 ow, int32 stride, int32 pad) {
-        uint32 pair = Workgroup.x();
-        uint32 o = pair / c;
-        uint32 ci = pair % c;
+        uint32 wg = Workgroup.x();
+        uint32 ob = (wg / c) * 4;
+        uint32 ci = wg % c;
         uint32 plane = oh * ow;
+        uint32 gs = oh * ow;
+        boolean v1 = ob + 1 < oc;
+        boolean v2 = ob + 2 < oc;
+        boolean v3 = ob + 3 < oc;
+        float32 a00 = 0.0f; float32 a01 = 0.0f; float32 a02 = 0.0f; float32 a03 = 0.0f; float32 a04 = 0.0f; float32 a05 = 0.0f; float32 a06 = 0.0f; float32 a07 = 0.0f; float32 a08 = 0.0f;
+        float32 a10 = 0.0f; float32 a11 = 0.0f; float32 a12 = 0.0f; float32 a13 = 0.0f; float32 a14 = 0.0f; float32 a15 = 0.0f; float32 a16 = 0.0f; float32 a17 = 0.0f; float32 a18 = 0.0f;
+        float32 a20 = 0.0f; float32 a21 = 0.0f; float32 a22 = 0.0f; float32 a23 = 0.0f; float32 a24 = 0.0f; float32 a25 = 0.0f; float32 a26 = 0.0f; float32 a27 = 0.0f; float32 a28 = 0.0f;
+        float32 a30 = 0.0f; float32 a31 = 0.0f; float32 a32 = 0.0f; float32 a33 = 0.0f; float32 a34 = 0.0f; float32 a35 = 0.0f; float32 a36 = 0.0f; float32 a37 = 0.0f; float32 a38 = 0.0f;
+        uint32 lane = KernelThread.x();
         uint32 total = n * plane;
-        float32 t0 = 0.0f; float32 t1 = 0.0f; float32 t2 = 0.0f;
-        float32 t3 = 0.0f; float32 t4 = 0.0f; float32 t5 = 0.0f;
-        float32 t6 = 0.0f; float32 t7 = 0.0f; float32 t8 = 0.0f;
-        uint32 p = KernelThread.x();
+        uint32 p = lane;
         while (p < total) {
             uint32 bn = p / plane;
             uint32 r = p % plane;
             uint32 y = r / ow;
             uint32 xx = r % ow;
-            float32 gv = (float32) g[((bn * oc + o) * oh + y) * ow + xx];
+            uint32 gb = (bn * oc + ob) * gs + y * ow + xx;
+            float32 g0 = (float32) g[gb];
+            float32 g1 = 0.0f; float32 g2 = 0.0f; float32 g3 = 0.0f;
+            if (v1) { g1 = (float32) g[gb + gs]; }
+            if (v2) { g2 = (float32) g[gb + 2 * gs]; }
+            if (v3) { g3 = (float32) g[gb + 3 * gs]; }
             int32 ih0 = (int32) y * stride - pad;
             int32 iw0 = (int32) xx * stride - pad;
             uint32 xb = (bn * c + ci) * h;
             boolean c0 = iw0 >= 0 && iw0 < (int32) wd;
             boolean c1 = iw0 + 1 >= 0 && iw0 + 1 < (int32) wd;
             boolean c2 = iw0 + 2 >= 0 && iw0 + 2 < (int32) wd;
-            if (ih0 >= 0 && ih0 < (int32) h) {
-                uint32 rb = (xb + (uint32) ih0) * wd;
-                if (c0) { t0 = t0 + gv * (float32) x[rb + (uint32) iw0]; }
-                if (c1) { t1 = t1 + gv * (float32) x[rb + (uint32) (iw0 + 1)]; }
-                if (c2) { t2 = t2 + gv * (float32) x[rb + (uint32) (iw0 + 2)]; }
+            if (ih0 + 0 >= 0 && ih0 + 0 < (int32) h) {
+                uint32 rb = (xb + (uint32) (ih0 + 0)) * wd;
+                if (c0) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 0)];
+                    a00 = a00 + g0 * xv; a10 = a10 + g1 * xv; a20 = a20 + g2 * xv; a30 = a30 + g3 * xv;
+                }
+                if (c1) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 1)];
+                    a01 = a01 + g0 * xv; a11 = a11 + g1 * xv; a21 = a21 + g2 * xv; a31 = a31 + g3 * xv;
+                }
+                if (c2) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 2)];
+                    a02 = a02 + g0 * xv; a12 = a12 + g1 * xv; a22 = a22 + g2 * xv; a32 = a32 + g3 * xv;
+                }
             }
             if (ih0 + 1 >= 0 && ih0 + 1 < (int32) h) {
                 uint32 rb = (xb + (uint32) (ih0 + 1)) * wd;
-                if (c0) { t3 = t3 + gv * (float32) x[rb + (uint32) iw0]; }
-                if (c1) { t4 = t4 + gv * (float32) x[rb + (uint32) (iw0 + 1)]; }
-                if (c2) { t5 = t5 + gv * (float32) x[rb + (uint32) (iw0 + 2)]; }
+                if (c0) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 0)];
+                    a03 = a03 + g0 * xv; a13 = a13 + g1 * xv; a23 = a23 + g2 * xv; a33 = a33 + g3 * xv;
+                }
+                if (c1) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 1)];
+                    a04 = a04 + g0 * xv; a14 = a14 + g1 * xv; a24 = a24 + g2 * xv; a34 = a34 + g3 * xv;
+                }
+                if (c2) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 2)];
+                    a05 = a05 + g0 * xv; a15 = a15 + g1 * xv; a25 = a25 + g2 * xv; a35 = a35 + g3 * xv;
+                }
             }
             if (ih0 + 2 >= 0 && ih0 + 2 < (int32) h) {
                 uint32 rb = (xb + (uint32) (ih0 + 2)) * wd;
-                if (c0) { t6 = t6 + gv * (float32) x[rb + (uint32) iw0]; }
-                if (c1) { t7 = t7 + gv * (float32) x[rb + (uint32) (iw0 + 1)]; }
-                if (c2) { t8 = t8 + gv * (float32) x[rb + (uint32) (iw0 + 2)]; }
+                if (c0) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 0)];
+                    a06 = a06 + g0 * xv; a16 = a16 + g1 * xv; a26 = a26 + g2 * xv; a36 = a36 + g3 * xv;
+                }
+                if (c1) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 1)];
+                    a07 = a07 + g0 * xv; a17 = a17 + g1 * xv; a27 = a27 + g2 * xv; a37 = a37 + g3 * xv;
+                }
+                if (c2) {
+                    float32 xv = (float32) x[rb + (uint32) (iw0 + 2)];
+                    a08 = a08 + g0 * xv; a18 = a18 + g1 * xv; a28 = a28 + g2 * xv; a38 = a38 + g3 * xv;
+                }
             }
             p = p + 256;
         }
-        float32 s0 = Workgroup.reduce(GroupOp.Add, t0);
-        float32 s1 = Workgroup.reduce(GroupOp.Add, t1);
-        float32 s2 = Workgroup.reduce(GroupOp.Add, t2);
-        float32 s3 = Workgroup.reduce(GroupOp.Add, t3);
-        float32 s4 = Workgroup.reduce(GroupOp.Add, t4);
-        float32 s5 = Workgroup.reduce(GroupOp.Add, t5);
-        float32 s6 = Workgroup.reduce(GroupOp.Add, t6);
-        float32 s7 = Workgroup.reduce(GroupOp.Add, t7);
-        float32 s8 = Workgroup.reduce(GroupOp.Add, t8);
-        if (KernelThread.x() == 0) {
-            uint32 wb = pair * 9;
-            dw[wb] = (E) s0; dw[wb + 1] = (E) s1; dw[wb + 2] = (E) s2;
-            dw[wb + 3] = (E) s3; dw[wb + 4] = (E) s4; dw[wb + 5] = (E) s5;
-            dw[wb + 6] = (E) s6; dw[wb + 7] = (E) s7; dw[wb + 8] = (E) s8;
+        float32 s00 = Workgroup.reduce(GroupOp.Add, a00);
+        float32 s01 = Workgroup.reduce(GroupOp.Add, a01);
+        float32 s02 = Workgroup.reduce(GroupOp.Add, a02);
+        float32 s03 = Workgroup.reduce(GroupOp.Add, a03);
+        float32 s04 = Workgroup.reduce(GroupOp.Add, a04);
+        float32 s05 = Workgroup.reduce(GroupOp.Add, a05);
+        float32 s06 = Workgroup.reduce(GroupOp.Add, a06);
+        float32 s07 = Workgroup.reduce(GroupOp.Add, a07);
+        float32 s08 = Workgroup.reduce(GroupOp.Add, a08);
+        float32 s10 = Workgroup.reduce(GroupOp.Add, a10);
+        float32 s11 = Workgroup.reduce(GroupOp.Add, a11);
+        float32 s12 = Workgroup.reduce(GroupOp.Add, a12);
+        float32 s13 = Workgroup.reduce(GroupOp.Add, a13);
+        float32 s14 = Workgroup.reduce(GroupOp.Add, a14);
+        float32 s15 = Workgroup.reduce(GroupOp.Add, a15);
+        float32 s16 = Workgroup.reduce(GroupOp.Add, a16);
+        float32 s17 = Workgroup.reduce(GroupOp.Add, a17);
+        float32 s18 = Workgroup.reduce(GroupOp.Add, a18);
+        float32 s20 = Workgroup.reduce(GroupOp.Add, a20);
+        float32 s21 = Workgroup.reduce(GroupOp.Add, a21);
+        float32 s22 = Workgroup.reduce(GroupOp.Add, a22);
+        float32 s23 = Workgroup.reduce(GroupOp.Add, a23);
+        float32 s24 = Workgroup.reduce(GroupOp.Add, a24);
+        float32 s25 = Workgroup.reduce(GroupOp.Add, a25);
+        float32 s26 = Workgroup.reduce(GroupOp.Add, a26);
+        float32 s27 = Workgroup.reduce(GroupOp.Add, a27);
+        float32 s28 = Workgroup.reduce(GroupOp.Add, a28);
+        float32 s30 = Workgroup.reduce(GroupOp.Add, a30);
+        float32 s31 = Workgroup.reduce(GroupOp.Add, a31);
+        float32 s32 = Workgroup.reduce(GroupOp.Add, a32);
+        float32 s33 = Workgroup.reduce(GroupOp.Add, a33);
+        float32 s34 = Workgroup.reduce(GroupOp.Add, a34);
+        float32 s35 = Workgroup.reduce(GroupOp.Add, a35);
+        float32 s36 = Workgroup.reduce(GroupOp.Add, a36);
+        float32 s37 = Workgroup.reduce(GroupOp.Add, a37);
+        float32 s38 = Workgroup.reduce(GroupOp.Add, a38);
+        if (lane == 0) {
+            {
+                uint32 wb0 = ((ob + 0) * c + ci) * 9;
+                dw[wb0 + 0] = (E) s00; dw[wb0 + 1] = (E) s01; dw[wb0 + 2] = (E) s02; dw[wb0 + 3] = (E) s03; dw[wb0 + 4] = (E) s04; dw[wb0 + 5] = (E) s05; dw[wb0 + 6] = (E) s06; dw[wb0 + 7] = (E) s07; dw[wb0 + 8] = (E) s08;
+            }
+            if (v1) {
+                uint32 wb1 = ((ob + 1) * c + ci) * 9;
+                dw[wb1 + 0] = (E) s10; dw[wb1 + 1] = (E) s11; dw[wb1 + 2] = (E) s12; dw[wb1 + 3] = (E) s13; dw[wb1 + 4] = (E) s14; dw[wb1 + 5] = (E) s15; dw[wb1 + 6] = (E) s16; dw[wb1 + 7] = (E) s17; dw[wb1 + 8] = (E) s18;
+            }
+            if (v2) {
+                uint32 wb2 = ((ob + 2) * c + ci) * 9;
+                dw[wb2 + 0] = (E) s20; dw[wb2 + 1] = (E) s21; dw[wb2 + 2] = (E) s22; dw[wb2 + 3] = (E) s23; dw[wb2 + 4] = (E) s24; dw[wb2 + 5] = (E) s25; dw[wb2 + 6] = (E) s26; dw[wb2 + 7] = (E) s27; dw[wb2 + 8] = (E) s28;
+            }
+            if (v3) {
+                uint32 wb3 = ((ob + 3) * c + ci) * 9;
+                dw[wb3 + 0] = (E) s30; dw[wb3 + 1] = (E) s31; dw[wb3 + 2] = (E) s32; dw[wb3 + 3] = (E) s33; dw[wb3 + 4] = (E) s34; dw[wb3 + 5] = (E) s35; dw[wb3 + 6] = (E) s36; dw[wb3 + 7] = (E) s37; dw[wb3 + 8] = (E) s38;
+            }
         }
     }
 
@@ -407,7 +484,7 @@ public final class Conv {
                                          int64 oh, int64 ow, int32 stride, int32 pad) {
         if (kh == 3L && kw == 3L) {
             KernelStream s3 #= KernelStream.current();
-            convBackWeight3x3.launch(s3, grid: [(uint32) (oc * c)], block: [256])(dw, g, x, (uint32) n, (uint32) c,
+            convBackWeight3x3.launch(s3, grid: [(uint32) (((oc + 3L) / 4L) * c)], block: [256])(dw, g, x, (uint32) n, (uint32) c,
                 (uint32) h, (uint32) wd, (uint32) oc, (uint32) oh, (uint32) ow, stride, pad);
             return;
         }
