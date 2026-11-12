@@ -62,7 +62,14 @@ public class StructuredBackTest {
     }
 
     static void convBackCase(int32 stride, int32 pad) {
-        int64 n = 2L; int64 c = 3L; int64 h = 5L; int64 wd = 6L; int64 oc = 4L; int64 kh = 3L; int64 kw = 3L;
+        StructuredBackTest.convBackCaseAt(2L, 3L, 5L, 6L, 4L, 3L, stride, pad, 60.0 * 1.0e-7);
+    }
+
+    /** conv2d's input and weight VJPs against the host for n x c x h x wd into oc k x k channels; `extraW` is the
+     *  weight VJP's absolute slack, which grows with the n*oh*ow terms it sums. */
+    static void convBackCaseAt(int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 k, int32 stride, int32 pad,
+                               float64 extraW) {
+        int64 kh = k; int64 kw = k;
         int64 oh = StructuredBackTest.outExtent(h, (int32) kh, stride, pad);
         int64 ow = StructuredBackTest.outExtent(wd, (int32) kw, stride, pad);
         float64[] fx = heap float64[n * c * h * wd];
@@ -130,16 +137,45 @@ public class StructuredBackTest {
         while (i < n * c * h * wd) { StructuredBackTest.close((float64) gdx[(int32) i], hdx[(int32) i], 36.0 * 1.0e-7); i = i + 1L; }
         StructuredBackTest.stage = "conv backWeight s" + stride;
         i = 0L;
-        while (i < oc * c * kh * kw) { StructuredBackTest.close((float64) gdw[(int32) i], hdw[(int32) i], 60.0 * 1.0e-7); i = i + 1L; }
+        while (i < oc * c * kh * kw) { StructuredBackTest.close((float64) gdw[(int32) i], hdw[(int32) i], extraW); i = i + 1L; }
         ValueCheck.credit(m);
     }
 
     @Test
     public void conv2dBackwardsMatchTheHost() {
         if (!StructuredBackTest.usable("convBackIn_float32") || !StructuredBackTest.usable("convBackWeightSplit_float32")
-                || !StructuredBackTest.usable("convBackWeightSum_float32")) { return; }
+                || !StructuredBackTest.usable("convBackWeightSum_float32")
+                || !StructuredBackTest.usable("convBackWeight3x3_float32")) { return; }
         StructuredBackTest.convBackCase(1, 1);
         StructuredBackTest.convBackCase(2, 0);
+        StructuredBackTest.convBackCaseAt(2L, 3L, 5L, 6L, 4L, 2L, 1, 0, 60.0 * 1.0e-7);
+    }
+
+    /** cajeta-ml-gpu 28.2.6: the 3x3 weight VJP over a long batch x plane (8 x 14 x 14 positions), stride 1 and 2,
+     *  against the host, and bit-identical across two launches. */
+    @Test
+    public void conv2dWeightBackwardMatchesTheHostOverALongPlane() {
+        if (!StructuredBackTest.usable("convBackIn_float32") || !StructuredBackTest.usable("convBackWeight3x3_float32")) { return; }
+        StructuredBackTest.convBackCaseAt(8L, 4L, 14L, 14L, 6L, 3L, 1, 1, 1568.0 * 2.0e-7);
+        StructuredBackTest.convBackCaseAt(8L, 4L, 14L, 13L, 6L, 3L, 2, 1, 1568.0 * 2.0e-7);
+        int64 n = 8L; int64 c = 4L; int64 h = 14L; int64 wd = 14L; int64 oc = 6L;
+        float64[] fx = heap float64[n * c * h * wd];
+        float64[] fg = heap float64[n * oc * h * wd];
+        KernelBuffer<float32> x #= StructuredBackTest.upload(n * c * h * wd, 5L, fx);
+        KernelBuffer<float32> g #= StructuredBackTest.upload(n * oc * h * wd, 17L, fg);
+        KernelBuffer<float32> d1 = heap KernelBuffer<float32>((uint64) (oc * c * 9L));
+        KernelBuffer<float32> d2 = heap KernelBuffer<float32>((uint64) (oc * c * 9L));
+        int64[] m #= ValueCheck.mark();
+        Conv.backwardWeight<float32>(d1, g, x, n, c, h, wd, oc, 3L, 3L, h, wd, 1, 1);
+        Conv.backwardWeight<float32>(d2, g, x, n, c, h, wd, oc, 3L, 3L, h, wd, 1, 1);
+        float32[] a = heap float32[oc * c * 9L];
+        float32[] b = heap float32[oc * c * 9L];
+        d1.download(a);
+        d2.download(b);
+        StructuredBackTest.stage = "conv backWeight repeat";
+        int64 i = 0L;
+        while (i < oc * c * 9L) { StructuredBackTest.close((float64) a[(int32) i], (float64) b[(int32) i], 0.0); Assert.isTrue(a[(int32) i] == b[(int32) i]); i = i + 1L; }
+        ValueCheck.credit(m);
     }
 
     static void poolBackCase(int32 k, int32 stride, int32 pad) {

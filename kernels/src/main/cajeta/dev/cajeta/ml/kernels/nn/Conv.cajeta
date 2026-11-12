@@ -1,6 +1,7 @@
 package dev.cajeta.ml.kernels.nn;
 
 import cajeta.xpu.Barrier;
+import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
@@ -320,6 +321,70 @@ public final class Conv {
         }
     }
 
+    /** dw for a 3x3 kernel: a workgroup per (output, input) channel pair, lanes striding the n*oh*ow positions so
+     *  loads coalesce, the nine taps reduced across the workgroup in a fixed order. */
+    @Kernel @Wave(width = 32)
+    public static void convBackWeight3x3<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
+                                            uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc,
+                                            uint32 oh, uint32 ow, int32 stride, int32 pad) {
+        uint32 pair = Workgroup.x();
+        uint32 o = pair / c;
+        uint32 ci = pair % c;
+        uint32 plane = oh * ow;
+        uint32 total = n * plane;
+        float32 t0 = 0.0f; float32 t1 = 0.0f; float32 t2 = 0.0f;
+        float32 t3 = 0.0f; float32 t4 = 0.0f; float32 t5 = 0.0f;
+        float32 t6 = 0.0f; float32 t7 = 0.0f; float32 t8 = 0.0f;
+        uint32 p = KernelThread.x();
+        while (p < total) {
+            uint32 bn = p / plane;
+            uint32 r = p % plane;
+            uint32 y = r / ow;
+            uint32 xx = r % ow;
+            float32 gv = (float32) g[((bn * oc + o) * oh + y) * ow + xx];
+            int32 ih0 = (int32) y * stride - pad;
+            int32 iw0 = (int32) xx * stride - pad;
+            uint32 xb = (bn * c + ci) * h;
+            boolean c0 = iw0 >= 0 && iw0 < (int32) wd;
+            boolean c1 = iw0 + 1 >= 0 && iw0 + 1 < (int32) wd;
+            boolean c2 = iw0 + 2 >= 0 && iw0 + 2 < (int32) wd;
+            if (ih0 >= 0 && ih0 < (int32) h) {
+                uint32 rb = (xb + (uint32) ih0) * wd;
+                if (c0) { t0 = t0 + gv * (float32) x[rb + (uint32) iw0]; }
+                if (c1) { t1 = t1 + gv * (float32) x[rb + (uint32) (iw0 + 1)]; }
+                if (c2) { t2 = t2 + gv * (float32) x[rb + (uint32) (iw0 + 2)]; }
+            }
+            if (ih0 + 1 >= 0 && ih0 + 1 < (int32) h) {
+                uint32 rb = (xb + (uint32) (ih0 + 1)) * wd;
+                if (c0) { t3 = t3 + gv * (float32) x[rb + (uint32) iw0]; }
+                if (c1) { t4 = t4 + gv * (float32) x[rb + (uint32) (iw0 + 1)]; }
+                if (c2) { t5 = t5 + gv * (float32) x[rb + (uint32) (iw0 + 2)]; }
+            }
+            if (ih0 + 2 >= 0 && ih0 + 2 < (int32) h) {
+                uint32 rb = (xb + (uint32) (ih0 + 2)) * wd;
+                if (c0) { t6 = t6 + gv * (float32) x[rb + (uint32) iw0]; }
+                if (c1) { t7 = t7 + gv * (float32) x[rb + (uint32) (iw0 + 1)]; }
+                if (c2) { t8 = t8 + gv * (float32) x[rb + (uint32) (iw0 + 2)]; }
+            }
+            p = p + 256;
+        }
+        float32 s0 = Workgroup.reduce(GroupOp.Add, t0);
+        float32 s1 = Workgroup.reduce(GroupOp.Add, t1);
+        float32 s2 = Workgroup.reduce(GroupOp.Add, t2);
+        float32 s3 = Workgroup.reduce(GroupOp.Add, t3);
+        float32 s4 = Workgroup.reduce(GroupOp.Add, t4);
+        float32 s5 = Workgroup.reduce(GroupOp.Add, t5);
+        float32 s6 = Workgroup.reduce(GroupOp.Add, t6);
+        float32 s7 = Workgroup.reduce(GroupOp.Add, t7);
+        float32 s8 = Workgroup.reduce(GroupOp.Add, t8);
+        if (KernelThread.x() == 0) {
+            uint32 wb = pair * 9;
+            dw[wb] = (E) s0; dw[wb + 1] = (E) s1; dw[wb + 2] = (E) s2;
+            dw[wb + 3] = (E) s3; dw[wb + 4] = (E) s4; dw[wb + 5] = (E) s5;
+            dw[wb + 6] = (E) s6; dw[wb + 7] = (E) s7; dw[wb + 8] = (E) s8;
+        }
+    }
+
     /** dw[w] = the sum of its `splits` partials, in slice order. */
     @Kernel
     public static void convBackWeightSum<E>(KernelBuffer<E> dw, KernelBuffer<float32> part, uint32 weights, uint32 splits) {
@@ -335,10 +400,17 @@ public final class Conv {
         }
     }
 
-    /** dw = the conv2d weight VJP of `g` against `x`; the batch is split across lanes so the launch fills the device (cajeta-ml-gpu 28.2.6); synced, since it drops device temporaries. */
+    /** dw = the conv2d weight VJP of `g` against `x`: a 3x3 kernel by {@link #convBackWeight3x3}, queued; any other by
+     *  batch slices across lanes, synced, since it drops device temporaries (cajeta-ml-gpu 28.2.6). */
     public static void backwardWeight<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
                                          int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
                                          int64 oh, int64 ow, int32 stride, int32 pad) {
+        if (kh == 3L && kw == 3L) {
+            KernelStream s3 #= KernelStream.current();
+            convBackWeight3x3.launch(s3, grid: [(uint32) (oc * c)], block: [256])(dw, g, x, (uint32) n, (uint32) c,
+                (uint32) h, (uint32) wd, (uint32) oc, (uint32) oh, (uint32) ow, stride, pad);
+            return;
+        }
         uint32 total = (uint32) (oc * c * kh * kw);
         uint32 splits = (uint32) n;
         if (splits > 32) { splits = 32; }
