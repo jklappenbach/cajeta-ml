@@ -570,8 +570,7 @@ public final class GradTape<E extends Floating> {
             this.accum(a, Ops.run2<E>(Op.MATMUL, gm, bt));
         }
         if (this.needsGrad[b]) {
-            Tensor<E> at #= Ops.run1<E>(Op.TRANSPOSE, va, 0, (E) 0);
-            this.accum(b, Ops.run2<E>(Op.MATMUL, at, gm));
+            this.accum(b, Ops.matmulTN<E>(va, gm));
         }
         int32 c = this.cin[i];
         if (c >= 0 && this.needsGrad[c]) {
@@ -633,8 +632,7 @@ public final class GradTape<E extends Floating> {
                 this.accum(a, Ops.run2<E>(Op.MATMUL, g, bt));
             }
             if (this.needsGrad[b]) {
-                Tensor<E> at #= Ops.run1<E>(Op.TRANSPOSE, va, 0, (E) 0);
-                this.accum(b, Ops.run2<E>(Op.MATMUL, at, g));
+                this.accum(b, Ops.matmulTN<E>(va, g));
             }
             return;
         }

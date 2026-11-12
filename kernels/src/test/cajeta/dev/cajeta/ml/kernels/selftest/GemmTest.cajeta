@@ -206,6 +206,64 @@ public class GemmTest {
         while (i < m * n) { Assert.isTrue(Cajeta.f32ToBits(one[(int32) i]) == Cajeta.f32ToBits(two[(int32) i])); i = i + 1L; }
     }
 
+    /** C = at^T . B with `at` stored k x m, through the transposed-A split member (`route` via Gemm.tiledTN), against the host in float64. */
+    static void tnCase(int64 m, int64 n, int64 k, uint32 splits, boolean route) {
+        float32[] fat = heap float32[k * m];
+        float32[] fb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < k * m) { fat[(int32) i] = GemmTest.pattern(i); i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { fb[(int32) i] = GemmTest.pattern(i + 17L); i = i + 1L; }
+        KernelBuffer<float32> at = heap KernelBuffer<float32>((uint64) (k * m));
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        at.upload(fat);
+        b.upload(fb);
+        int64[] mk #= ValueCheck.mark();
+        if (route) { Assert.isTrue(Gemm.tiledTN<float32>(c, at, b, m, n, k)); }
+        else { Gemm.tiled128SplitTN<float32>(c, at, b, m, n, k, splits); }
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        int32 bad = 0;
+        int64 r = 0L;
+        while (r < m) {
+            int64 col = 0L;
+            while (col < n) {
+                float64 acc = 0.0;
+                int64 d = 0L;
+                while (d < k) { acc = acc + (float64) fat[(int32) (d * m + r)] * (float64) fb[(int32) (d * n + col)]; d = d + 1L; }
+                float64 df = (float64) got[(int32) (r * n + col)] - acc;
+                if (df < 0.0) { df = 0.0 - df; }
+                float64 w = acc;
+                if (w < 0.0) { w = 0.0 - w; }
+                if (df > 1.0e-5 * (w + 1.0) + (float64) k * 1.0e-7) {
+                    if (bad < 3) { System.stdout.println("TN " + m + "x" + n + "x" + k + ": [" + r + "," + col + "] got " + (float64) got[(int32) (r * n + col)] + " want " + acc); }
+                    bad = bad + 1;
+                }
+                col = col + 1L;
+            }
+            r = r + 1L;
+        }
+        Assert.equals(0L, (int64) bad);
+        ValueCheck.credit(mk);
+    }
+
+    /**
+     * A weight gradient X^T . G reads X in place: the transposed-A split member against the
+     * host, at a whole-tile shape and a ragged one, and Gemm.tiledTN taking the shape where
+     * the member runs and declining a product that does not split (cajeta-ml-gpu 28.2.8).
+     */
+    @Test
+    public void aTransposedASplitMatchesTheHost() {
+        if (!GemmTest.usable("gemmTiled128UnrolledSplitTN_float32")) { return; }
+        GemmTest.tnCase(200L, 130L, 2050L, (uint32) 8, false);
+        GemmTest.tnCase(256L, 128L, 1024L, (uint32) 4, false);
+        if (!Gemm.splitTNRuns()) { return; }
+        GemmTest.tnCase(256L, 128L, 4096L, (uint32) 0, true);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) 64);
+        Assert.isFalse(Gemm.tiledTN<float32>(x, x, x, 8L, 8L, 8L));
+    }
+
     @Test
     public void f16GemmMatchesTheHostAtSquareAndLlmShapes() {
         if (!GemmTest.usable("gemm16_float16")) { return; }

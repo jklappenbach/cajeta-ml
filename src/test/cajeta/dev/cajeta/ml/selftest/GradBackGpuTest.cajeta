@@ -3,6 +3,7 @@ package dev.cajeta.ml.selftest;
 import cajeta.lang.System;
 import cajeta.math.Tensor;
 import cajeta.xpu.Device;
+import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
@@ -243,6 +244,28 @@ public class GradBackGpuTest {
         Tensor<float32> b #= GradBackGpuTest.fill(bs, 31L, false);
         GradBackGpuTest.linear("linear", 0, x, w, b);
         GradBackGpuTest.linear("linear relu", 1, x, w, b);
+    }
+
+    /**
+     * A weight gradient X^T . G at a shape that splits K reads X in place through the
+     * transposed-A split member, where it runs, instead of materializing X^T (16 to 64 MB a
+     * call in transformer-block-train, cajeta-ml-gpu 28.2.8); linear and matmul alike, the
+     * gradients matching the cpu tape.
+     */
+    @Test
+    public void aWeightGradientReadsItsActivationsInPlace() {
+        int64[] xs = [2048L, 128L];
+        int64[] ws = [128L, 128L];
+        int64[] bs = [1L, 128L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 23L, false);
+        Tensor<float32> w #= GradBackGpuTest.fill(ws, 29L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(bs, 31L, false);
+        int64 tn0 = Device.kernelLaunchCount("gemmTiled128UnrolledSplitTN_float32");
+        GradBackGpuTest.linear("linear, split K", 0, x, w, b);
+        GradBackGpuTest.binary("matmul, split K", Op.MATMUL, x, w, 0);
+        if (Gemm.splitTNRuns()) {
+            Assert.isTrue(Device.kernelLaunchCount("gemmTiled128UnrolledSplitTN_float32") >= tn0 + 2L);
+        }
     }
 
     @Test

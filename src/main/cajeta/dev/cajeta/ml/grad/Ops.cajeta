@@ -213,6 +213,30 @@ public final class Ops {
         return #y;
     }
 
+    /**
+     * `a`^T . `b` for 2-D `a` (k x m) and `b` (k x n): on the device the transposed-A
+     * split member reads `a` in place when the product splits K (Gemm.tiledTN), else `a`
+     * is transposed and multiplied as before. A weight gradient X^T . G is this shape, and
+     * the in-place read saves X's 16 to 64 MB copy (cajeta-ml-gpu 28.2.8).
+     */
+    public static #Tensor<E> matmulTN<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        if (a.isOnGpu() && a.ndim() == 2 && b.ndim() == 2) {
+            Ops.requireSame<E>("matmulTN", a, b);
+            Ops.requireF32<E>("matmulTN");
+            int64 k = a.shapeAt(0);
+            int64 m = a.shapeAt(1);
+            int64 n = b.shapeAt(1);
+            int64[] shp = [m, n];
+            Tensor<E> out #= Ewise.deviceOf<E>(shp);
+            if (Gemm.tiledTN<E>(out.deviceView("matmulTN"), a.deviceView("matmulTN"), b.deviceView("matmulTN"), m, n, k)) {
+                return #out;
+            }
+        }
+        Tensor<E> at #= Ops.run1<E>(Op.TRANSPOSE, a, 0, (E) 0);
+        Tensor<E> r #= Ops.run2<E>(Op.MATMUL, at, b);
+        return #r;
+    }
+
     /** A copy of `t` on its own device. */
     public static #Tensor<E> copyOf<E extends Floating>(Tensor<E> t) {
         if (t.isOnGpu()) {
