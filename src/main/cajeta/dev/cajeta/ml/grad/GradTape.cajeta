@@ -40,6 +40,7 @@ public final class GradTape<E extends Floating> {
 
     ArrayList<Tensor<E>> values;         // node forward values (owned, or borrowed for leafBorrow)
     ArrayList<Tensor<E>> grads;          // cotangents (allocated in backward)
+    boolean[] reached;                   // the node's cotangent holds a contribution (sized in backward)
     ArrayList<Tensor<E>> auxT;           // saved forward state (owned)
     int32[] ops;                         // Op.* per node
     int32[] ain;                         // first-input node idx (-1 = none)
@@ -212,6 +213,11 @@ public final class GradTape<E extends Floating> {
         if (!this.needsGrad[t.idx]) {
             throw heap MlException("GradTape.gradOf: node " + t.idx
                 + " does not require grad");
+        }
+        if (!this.reached[t.idx]) {
+            Tensor<E> z #= Ops.zerosLike<E>(this.values.get(t.idx));
+            this.grads.set(t.idx, #z);
+            this.reached[t.idx] = true;
         }
         return this.grads.get(t.idx);
     }
@@ -499,6 +505,11 @@ public final class GradTape<E extends Floating> {
     // ── Backward ────────────────────────────────────────────────────────
 
     void accum(int32 node, #Tensor<E> contrib) {
+        if (!this.reached[node]) {
+            this.grads.set(node, #contrib);
+            this.reached[node] = true;
+            return;
+        }
         Tensor<E> cur = this.grads.get(node);
         Tensor<E> next #= Tensor.add<E>(cur, contrib);
         this.grads.set(node, #next);
@@ -523,11 +534,16 @@ public final class GradTape<E extends Floating> {
                 + "reach any requires-grad leaf");
         }
         this.ranBackward = true;
-        // Allocate cotangents (zeros) for every node up front.
+        // A cotangent exists once a contribution reaches it: the first is taken as is, later
+        // ones are added, and gradOf zero-fills one nothing reached. Filling every node up
+        // front and adding each first contribution to zeros cost 30 fills and as many adds of
+        // 16 MB a step in transformer-block-train on cuda (cajeta-ml-gpu 28.2.8). Until then a
+        // node holds a one-element host placeholder.
+        this.reached = heap boolean[this.n];
+        int64[] one = [1L];
         int32 i = 0;
         while (i < this.n) {
-            Tensor<E> v = this.values.get(i);
-            Tensor<E> z #= Ops.zerosLike<E>(v);
+            Tensor<E> z #= Tensor.full<E>(one, (E) 0);
             this.grads.add(#z);
             i = i + 1;
         }
@@ -535,10 +551,11 @@ public final class GradTape<E extends Floating> {
         Tensor<E> seedSrc = this.values.get(out.idx);
         Tensor<E> seed #= Ops.fullOn<E>(GradTape.shapeOf<E>(seedSrc), seedSrc, (E) 1);
         this.grads.set(out.idx, #seed);
+        this.reached[out.idx] = true;
 
         int32 k = out.idx;
         while (k >= 0) {
-            if (this.needsGrad[k] && this.ops[k] != Op.LEAF) {
+            if (this.needsGrad[k] && this.reached[k] && this.ops[k] != Op.LEAF) {
                 this.backOne(k);
             }
             k = k - 1;

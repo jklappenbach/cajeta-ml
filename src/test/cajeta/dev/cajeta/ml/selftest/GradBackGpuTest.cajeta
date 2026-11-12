@@ -2,6 +2,7 @@ package dev.cajeta.ml.selftest;
 
 import cajeta.lang.System;
 import cajeta.math.Tensor;
+import cajeta.xpu.Device;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
@@ -94,6 +95,47 @@ public class GradBackGpuTest {
         GradTensor yd = GradBackGpuTest.apply1(d, op, ld, axis, c);
         d.backward(yd);
         GradBackGpuTest.sameGrad(what, want, d.gradOf(ld));
+    }
+
+    /**
+     * A cotangent exists only once something reaches it: backward zero-filled one for every
+     * node up front and added each first contribution to it, 30 fills and as many adds of
+     * 16 MB a step in cuda's transformer-block-train (cajeta-ml-gpu 28.2.8). Eight tanh
+     * nodes now cost the seed's one fill, the gradients still match the cpu, and a leaf
+     * nothing reaches reads as zeros.
+     */
+    @Test
+    public void backwardFillsOnlyTheSeedAndALeafNothingReachesReadsZero() {
+        int64[] s = [3L, 7L];
+        Tensor<float32> a #= GradBackGpuTest.fill(s, 3L, false);
+        Tensor<float32> u #= GradBackGpuTest.fill(s, 9L, false);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor la = t.leaf(a, true);
+        GradTensor y = la;
+        int32 i = 0;
+        while (i < 8) { y = t.tanh(y); i = i + 1; }
+        t.backward(y);
+        Tensor<float32> want = t.gradOf(la);
+        Tensor<float32> ad #= GradBackGpuTest.onDevice(a);
+        Tensor<float32> ud #= GradBackGpuTest.onDevice(u);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor ld = d.leaf(ad, true);
+        GradTensor lu = d.leaf(ud, true);
+        GradTensor yd = ld;
+        i = 0;
+        while (i < 8) { yd = d.tanh(yd); i = i + 1; }
+        int64 before = Device.kernelLaunchCount("fill_float32");
+        d.backward(yd);
+        int64 fills = Device.kernelLaunchCount("fill_float32") - before;
+        System.stdout.println("  backward fills: " + fills);
+        Assert.isTrue(fills <= 1L);
+        GradBackGpuTest.sameGrad("tanh x8", want, d.gradOf(ld));
+        Tensor<float32> zu = d.gradOf(lu);
+        Assert.isTrue(zu.isOnGpu());
+        zu.cpu();
+        Assert.equals(u.size(), zu.size());
+        int64 k = 0;
+        while (k < zu.size()) { Assert.isTrue(zu.flatGet(k) == 0.0f); k = k + 1; }
     }
 
     @Test
