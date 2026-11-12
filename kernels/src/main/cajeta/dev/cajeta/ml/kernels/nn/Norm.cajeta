@@ -1,5 +1,7 @@
 package dev.cajeta.ml.kernels.nn;
 
+import dev.cajeta.ml.kernels.Reduce;
+
 import cajeta.lang.Math;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.GroupOp;
@@ -391,6 +393,63 @@ public final class Norm {
         }
     }
 
+    /**
+     * Slice `p` of the split scale and shift VJPs: part[p * cols + j] = the sum over this
+     * slice's rows of g*xhat, and part[(splits + p) * cols + j] = the sum of g, one lane per
+     * (slice, column).
+     */
+    @Kernel
+    public static void layernormParamPart<E>(KernelBuffer<float32> part, KernelBuffer<E> g, KernelBuffer<E> x, KernelBuffer<E> mean,
+                                             KernelBuffer<E> invstd, uint32 rows, uint32 cols, uint32 splits) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < cols * splits) {
+            uint32 p = t / cols;
+            uint32 j = t - p * cols;
+            uint32 per = (rows + splits - 1) / splits;
+            uint32 r = p * per;
+            uint32 end = r + per;
+            if (end > rows) { end = rows; }
+            float32 sa = 0.0f;
+            float32 sb = 0.0f;
+            while (r < end) {
+                float32 gv = (float32) g[r * cols + j];
+                sa = sa + gv * (((float32) x[r * cols + j] - (float32) mean[r]) * (float32) invstd[r]);
+                sb = sb + gv;
+                r = r + 1;
+            }
+            part[t] = sa;
+            part[splits * cols + t] = sb;
+        }
+    }
+
+    /** dw[j] and db[j] = their `splits` partials joined in slice order. */
+    @Kernel
+    public static void layernormParamJoin<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<float32> part, uint32 cols,
+                                             uint32 splits) {
+        uint32 j = KernelThread.globalIdX();
+        if (j < cols) {
+            float32 sa = 0.0f;
+            float32 sb = 0.0f;
+            uint32 p = 0;
+            while (p < splits) {
+                sa = sa + part[p * cols + j];
+                sb = sb + part[(splits + p) * cols + j];
+                p = p + 1;
+            }
+            dw[j] = (E) sa;
+            db[j] = (E) sb;
+        }
+    }
+
+    /** Row slices for the scale and shift VJPs: Reduce.axisSplits over `cols` outputs of `rows` rows. */
+    public static uint32 layerParamSplits(int64 rows, int64 cols) {
+        return Reduce.axisSplits(cols, rows);
+    }
+
+    /** The split VJPs' partials, grown only past their high-water mark (see layerParamGrads). */
+    static KernelBuffer<float32> paramParts;
+    static uint64 paramPartsCap;
+
     /** `out` = rmsnorm of each of `rows` rows of `x` (rows x cols) scaled by `w`; queued on the current stream. */
     public static void rms<E>(KernelBuffer<E> out, KernelBuffer<E> x, KernelBuffer<E> w, int64 rows, int64 cols, float32 eps) {
         KernelStream s #= KernelStream.current();
@@ -422,11 +481,30 @@ public final class Norm {
         layernormBack.launch(s, grid: [(uint32) rows], block: [256])(dx, g, x, w, mean, invstd, (uint32) cols);
     }
 
-    /** The layernorm scale and shift VJPs summed over `rows`; queued on the current stream. */
+    /**
+     * The layernorm scale and shift VJPs summed over `rows`; queued on the current stream.
+     * Many rows under few columns split the rows into slices joined in slice order
+     * (layerParamSplits), so the result still repeats bit for bit; the partials buffer is
+     * kept across calls and the stream synced only on the call that grows it.
+     */
     public static void layerParamGrads<E>(KernelBuffer<E> dw, KernelBuffer<E> db, KernelBuffer<E> g, KernelBuffer<E> x, KernelBuffer<E> mean, KernelBuffer<E> invstd, int64 rows, int64 cols) {
         uint32 uc = (uint32) cols;
         KernelStream s #= KernelStream.current();
-        layernormParamGrads.launch(s, grid: [(uc + 255) / 256], block: [256])(dw, db, g, x, mean, invstd, (uint32) rows, uc);
+        uint32 splits = Norm.layerParamSplits(rows, cols);
+        if (splits <= (uint32) 1) {
+            layernormParamGrads.launch(s, grid: [(uc + 255) / 256], block: [256])(dw, db, g, x, mean, invstd, (uint32) rows, uc);
+            return;
+        }
+        uint64 need = (uint64) 2 * (uint64) uc * (uint64) splits;
+        if (Norm.paramParts == null || need > Norm.paramPartsCap) {
+            s.sync();
+            Norm.paramParts = heap KernelBuffer<float32>(need);
+            Norm.paramPartsCap = need;
+        }
+        KernelBuffer<float32> part = Norm.paramParts;
+        uint32 lanes = uc * splits;
+        layernormParamPart.launch(s, grid: [(lanes + 255) / 256], block: [256])(part, g, x, mean, invstd, (uint32) rows, uc, splits);
+        layernormParamJoin.launch(s, grid: [(uc + 255) / 256], block: [256])(dw, db, part, uc, splits);
     }
 
     /** `out` = each of `rows` rows of `x` scaled to unit L2 norm, the norm floored at `eps`; queued on the current stream. */

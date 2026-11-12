@@ -105,11 +105,102 @@ public final class Reduce {
         }
     }
 
-    /** `out` (outer x inner) = `op` along the middle axis of `in` (outer x axisLen x inner), at E; queued on the current stream. */
+    /**
+     * Slice `p` of a split axis reduction: part[p * total + t] = op over in[o][j][i] for the
+     * j in slice p, one lane per (slice, output), so lanes next to each other read next
+     * to each other in memory. SUMSQ squares here; the join only adds.
+     */
+    @Kernel
+    public static void axisPart<E>(KernelBuffer<float32> part, KernelBuffer<E> in, uint32 outer, uint32 axisLen, uint32 inner,
+                                   int32 op, uint32 splits) {
+        uint32 t = KernelThread.globalIdX();
+        uint32 total = outer * inner;
+        if (t < total * splits) {
+            uint32 p = t / total;
+            uint32 e = t - p * total;
+            uint32 o = e / inner;
+            uint32 i = e - o * inner;
+            int32 k = op;
+            if (k == 4) { k = 0; }
+            uint32 per = (axisLen + splits - 1) / splits;
+            uint32 j = p * per;
+            uint32 end = j + per;
+            if (end > axisLen) { end = axisLen; }
+            float32 acc = Reduce.identity(k);
+            while (j < end) {
+                float32 v = (float32) in[(o * axisLen + j) * inner + i];
+                if (k == 3) { v = v * v; }
+                acc = Reduce.combine(k, acc, v);
+                j = j + 1;
+            }
+            part[t] = acc;
+        }
+    }
+
+    /** out[t] = the `splits` partials of output t joined in slice order, then MEAN's divide. */
+    @Kernel
+    public static void axisJoin<E>(KernelBuffer<E> out, KernelBuffer<float32> part, uint32 total, uint32 splits, uint32 axisLen,
+                                   int32 op) {
+        uint32 t = KernelThread.globalIdX();
+        if (t < total) {
+            int32 k = op;
+            if (k == 4 || k == 3) { k = 0; }
+            float32 acc = Reduce.identity(k);
+            uint32 p = 0;
+            while (p < splits) {
+                acc = Reduce.combine(k, acc, part[p * total + t]);
+                p = p + 1;
+            }
+            if (op == 4) { acc = acc / (float32) axisLen; }
+            out[t] = (E) acc;
+        }
+    }
+
+    /**
+     * Slices for an axis reduction of `total` outputs over `axisLen`: 1 (one lane per
+     * output) when the outputs alone fill the device, else enough slices of at least 64
+     * elements to give the launch about 32k lanes, up to 256.
+     */
+    public static uint32 axisSplits(int64 total, int64 axisLen) {
+        if (total >= 16384L) { return (uint32) 1; }
+        int64 want = (32768L + total - 1L) / total;
+        int64 most = axisLen / 64L;
+        if (want > most) { want = most; }
+        if (want > 256L) { want = 256L; }
+        if (want < 1L) { want = 1L; }
+        return (uint32) want;
+    }
+
+    /** The split reduction's partials, grown only past their high-water mark (see alongAxis). */
+    static KernelBuffer<float32> axisParts;
+    static uint64 axisPartsCap;
+
+    /**
+     * `out` (outer x inner) = `op` along the middle axis of `in` (outer x axisLen x inner), at E;
+     * queued on the current stream. Few outputs over a long axis split the axis into slices
+     * joined in slice order (axisSplits), so the result still repeats bit for bit. The
+     * partials live in one buffer kept across calls; the stream is synced only on the call
+     * that grows it, since a queued launch may still read the old one.
+     */
     public static void alongAxis<E>(KernelBuffer<E> out, KernelBuffer<E> in, int64 outer, int64 axisLen, int64 inner, int32 op) {
         uint32 total = (uint32) (outer * inner);
         KernelStream s #= KernelStream.current();
-        axis.launch(s, grid: [(total + 255) / 256], block: [256])(out, in, (uint32) outer, (uint32) axisLen, (uint32) inner, op);
+        uint32 splits = Reduce.axisSplits(outer * inner, axisLen);
+        if (splits <= (uint32) 1) {
+            axis.launch(s, grid: [(total + 255) / 256], block: [256])(out, in, (uint32) outer, (uint32) axisLen, (uint32) inner, op);
+            return;
+        }
+        uint64 need = (uint64) total * (uint64) splits;
+        if (Reduce.axisParts == null || need > Reduce.axisPartsCap) {
+            s.sync();
+            Reduce.axisParts = heap KernelBuffer<float32>(need);
+            Reduce.axisPartsCap = need;
+        }
+        KernelBuffer<float32> part = Reduce.axisParts;
+        uint32 lanes = total * splits;
+        axisPart.launch(s, grid: [(lanes + 255) / 256], block: [256])(part, in, (uint32) outer, (uint32) axisLen, (uint32) inner,
+            op, splits);
+        axisJoin.launch(s, grid: [(total + 255) / 256], block: [256])(out, part, total, splits, (uint32) axisLen, op);
     }
 
     /** The max-along-axis VJP: g[o][i] lands on the first j where in[o][j][i] equals mx[o][i]; the rest 0. */

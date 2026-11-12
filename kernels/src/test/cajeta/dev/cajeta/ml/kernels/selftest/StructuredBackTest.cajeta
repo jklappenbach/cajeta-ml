@@ -379,6 +379,61 @@ public class StructuredBackTest {
         ValueCheck.credit(m);
     }
 
+    /**
+     * The scale and shift gradients over many rows split the rows across the device: one
+     * lane per column left two workgroups busy for 0.4 ms a call on a 4090
+     * (transformer-block-train, cajeta-ml-gpu 28.2.8). The slices join in order, so the
+     * result repeats bit for bit, and it matches the host in float64.
+     */
+    @Test
+    public void layerNormParamGradsOverManyRowsSplitAndMatchTheHost() {
+        if (!StructuredBackTest.usable("layernormParamPart_float32")) { return; }
+        int64 rows = 4096L; int64 cols = 96L;
+        Assert.isTrue(Norm.layerParamSplits(rows, cols) > 1);
+        Assert.isTrue(Norm.layerParamSplits(7L, 300L) == 1);
+        int64 total = rows * cols;
+        float64[] fg = heap float64[total];
+        float64[] fx = heap float64[total];
+        float64[] fmean = heap float64[rows];
+        float64[] finv = heap float64[rows];
+        KernelBuffer<float32> g #= StructuredBackTest.upload(total, 41L, fg);
+        KernelBuffer<float32> x #= StructuredBackTest.upload(total, 43L, fx);
+        KernelBuffer<float32> mean #= StructuredBackTest.upload(rows, 59L, fmean);
+        KernelBuffer<float32> invstd #= StructuredBackTest.upload(rows, 53L, finv);
+        KernelBuffer<float32> dw = heap KernelBuffer<float32>((uint64) cols);
+        KernelBuffer<float32> db = heap KernelBuffer<float32>((uint64) cols);
+        int64[] m #= ValueCheck.mark();
+        Norm.layerParamGrads<float32>(dw, db, g, x, mean, invstd, rows, cols);
+        float32[] gdw = heap float32[cols];
+        float32[] gdb = heap float32[cols];
+        dw.download(gdw);
+        db.download(gdb);
+        Norm.layerParamGrads<float32>(dw, db, g, x, mean, invstd, rows, cols);
+        float32[] gdw2 = heap float32[cols];
+        float32[] gdb2 = heap float32[cols];
+        dw.download(gdw2);
+        db.download(gdb2);
+        int64 j = 0L;
+        while (j < cols) {
+            Assert.isTrue(Cajeta.f32ToBits(gdw[(int32) j]) == Cajeta.f32ToBits(gdw2[(int32) j]));
+            Assert.isTrue(Cajeta.f32ToBits(gdb[(int32) j]) == Cajeta.f32ToBits(gdb2[(int32) j]));
+            float64 sa = 0.0; float64 sb = 0.0;
+            int64 r = 0L;
+            while (r < rows) {
+                float64 xh = (fx[(int32) (r * cols + j)] - fmean[(int32) r]) * finv[(int32) r];
+                sa = sa + fg[(int32) (r * cols + j)] * xh;
+                sb = sb + fg[(int32) (r * cols + j)];
+                r = r + 1L;
+            }
+            StructuredBackTest.stage = "ln dw, many rows";
+            StructuredBackTest.close((float64) gdw[(int32) j], sa, 1.0e-5);
+            StructuredBackTest.stage = "ln db, many rows";
+            StructuredBackTest.close((float64) gdb[(int32) j], sb, 1.0e-5);
+            j = j + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
     @Test
     public void scatterAddAndLossBackwardsMatchTheHost() {
         if (!StructuredBackTest.usable("embedScatterAdd_float32") || !StructuredBackTest.usable("nllBack_float32") || !StructuredBackTest.usable("cosineBack_float32")) { return; }
