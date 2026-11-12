@@ -260,11 +260,12 @@ public class GradBackGpuTest {
         Tensor<float32> x #= GradBackGpuTest.fill(xs, 23L, false);
         Tensor<float32> w #= GradBackGpuTest.fill(ws, 29L, false);
         Tensor<float32> b #= GradBackGpuTest.fill(bs, 31L, false);
-        int64 tn0 = Device.kernelLaunchCount("gemmTiled128UnrolledSplitTN_float32");
+        String tn #= Gemm.splitTNMember();
+        int64 tn0 = Device.kernelLaunchCount(tn);
         GradBackGpuTest.linear("linear, split K", 0, x, w, b);
         GradBackGpuTest.binary("matmul, split K", Op.MATMUL, x, w, 0);
         if (Gemm.splitTNRuns()) {
-            Assert.isTrue(Device.kernelLaunchCount("gemmTiled128UnrolledSplitTN_float32") >= tn0 + 2L);
+            Assert.isTrue(Device.kernelLaunchCount(tn) >= tn0 + 2L);
         }
     }
 

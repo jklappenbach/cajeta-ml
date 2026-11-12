@@ -6220,6 +6220,863 @@ public final class Gemm {
     }
 
     /**
+     * gemmTiled128 over one slice of K, for a backend where the unrolled split spills
+     * (gfx1151): workgroup x / tiles is the slice, and its 128 x 128 partial lands in plane
+     * `slice` of `parts` for gemmSplitJoin. The rolled body with only the K bounds, the first
+     * prefetch's base and the stores changed. `kChunk` is a multiple of 16.
+     */
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void gemmTiled128Split<E>(KernelBuffer<float32> parts, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k,
+                                            uint32 kChunk) {
+        Shared<float32> sa = shared float32[2112];
+        Shared<float32> sb = shared float32[2112];
+        uint32 t = KernelThread.x();
+        uint32 tx = t % 16;
+        uint32 ty = t / 16;
+        uint32 ntiles = (n + 127) / 128;
+        uint32 tilesAll = ((m + 127) / 128) * ntiles;
+        uint32 sp = Workgroup.x() / tilesAll;
+        uint32 wid = Workgroup.x() - sp * tilesAll;
+        uint32 kBeg = sp * kChunk;
+        uint32 kEnd = kBeg + kChunk;
+        if (kEnd > k) { kEnd = k; }
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid - mi * ntiles;
+        uint32 m0 = mi * 128;
+        uint32 n0 = nj * 128;
+        float32 c00 = 0.0f;
+        float32 c01 = 0.0f;
+        float32 c02 = 0.0f;
+        float32 c03 = 0.0f;
+        float32 c04 = 0.0f;
+        float32 c05 = 0.0f;
+        float32 c06 = 0.0f;
+        float32 c07 = 0.0f;
+        float32 c10 = 0.0f;
+        float32 c11 = 0.0f;
+        float32 c12 = 0.0f;
+        float32 c13 = 0.0f;
+        float32 c14 = 0.0f;
+        float32 c15 = 0.0f;
+        float32 c16 = 0.0f;
+        float32 c17 = 0.0f;
+        float32 c20 = 0.0f;
+        float32 c21 = 0.0f;
+        float32 c22 = 0.0f;
+        float32 c23 = 0.0f;
+        float32 c24 = 0.0f;
+        float32 c25 = 0.0f;
+        float32 c26 = 0.0f;
+        float32 c27 = 0.0f;
+        float32 c30 = 0.0f;
+        float32 c31 = 0.0f;
+        float32 c32 = 0.0f;
+        float32 c33 = 0.0f;
+        float32 c34 = 0.0f;
+        float32 c35 = 0.0f;
+        float32 c36 = 0.0f;
+        float32 c37 = 0.0f;
+        float32 c40 = 0.0f;
+        float32 c41 = 0.0f;
+        float32 c42 = 0.0f;
+        float32 c43 = 0.0f;
+        float32 c44 = 0.0f;
+        float32 c45 = 0.0f;
+        float32 c46 = 0.0f;
+        float32 c47 = 0.0f;
+        float32 c50 = 0.0f;
+        float32 c51 = 0.0f;
+        float32 c52 = 0.0f;
+        float32 c53 = 0.0f;
+        float32 c54 = 0.0f;
+        float32 c55 = 0.0f;
+        float32 c56 = 0.0f;
+        float32 c57 = 0.0f;
+        float32 c60 = 0.0f;
+        float32 c61 = 0.0f;
+        float32 c62 = 0.0f;
+        float32 c63 = 0.0f;
+        float32 c64 = 0.0f;
+        float32 c65 = 0.0f;
+        float32 c66 = 0.0f;
+        float32 c67 = 0.0f;
+        float32 c70 = 0.0f;
+        float32 c71 = 0.0f;
+        float32 c72 = 0.0f;
+        float32 c73 = 0.0f;
+        float32 c74 = 0.0f;
+        float32 c75 = 0.0f;
+        float32 c76 = 0.0f;
+        float32 c77 = 0.0f;
+        boolean wide = m0 + 128 <= m && n0 + 128 <= n && (k % 4) == 0 && (n % 4) == 0;
+        uint32 kFull = 0;
+        if (wide) { kFull = kBeg + ((kEnd - kBeg) / 16) * 16; }
+        uint32 ar0 = t / 4;
+        uint32 ac0 = (t - ar0 * 4) * 4;
+        uint32 ar1 = ar0 + 64;
+        uint32 br0 = t / 32;
+        uint32 bc0 = (t - br0 * 32) * 4;
+        uint32 br1 = br0 + 8;
+        uint32 k0 = kBeg;
+        if (kFull > kBeg) {
+            Vector<E,4> pa0 = a.vload<4>((m0 + ar0) * k + kBeg + ac0);
+            Vector<E,4> pa1 = a.vload<4>((m0 + ar1) * k + kBeg + ac0);
+            Vector<E,4> pb0 = b.vload<4>((kBeg + br0) * n + n0 + bc0);
+            Vector<E,4> pb1 = b.vload<4>((kBeg + br1) * n + n0 + bc0);
+            sa[(ac0 + 0) * 132 + ar0] = (float32) pa0.x;
+            sa[(ac0 + 1) * 132 + ar0] = (float32) pa0.y;
+            sa[(ac0 + 2) * 132 + ar0] = (float32) pa0.z;
+            sa[(ac0 + 3) * 132 + ar0] = (float32) pa0.w;
+            sa[(ac0 + 0) * 132 + ar1] = (float32) pa1.x;
+            sa[(ac0 + 1) * 132 + ar1] = (float32) pa1.y;
+            sa[(ac0 + 2) * 132 + ar1] = (float32) pa1.z;
+            sa[(ac0 + 3) * 132 + ar1] = (float32) pa1.w;
+            sb[br0 * 132 + bc0 + 0] = (float32) pb0.x;
+            sb[br0 * 132 + bc0 + 1] = (float32) pb0.y;
+            sb[br0 * 132 + bc0 + 2] = (float32) pb0.z;
+            sb[br0 * 132 + bc0 + 3] = (float32) pb0.w;
+            sb[br1 * 132 + bc0 + 0] = (float32) pb1.x;
+            sb[br1 * 132 + bc0 + 1] = (float32) pb1.y;
+            sb[br1 * 132 + bc0 + 2] = (float32) pb1.z;
+            sb[br1 * 132 + bc0 + 3] = (float32) pb1.w;
+            Barrier.workgroup();
+            while (k0 < kFull) {
+                uint32 next = k0 + 16;
+                boolean more = next < kFull;
+                if (more) {
+                    pa0 = a.vload<4>((m0 + ar0) * k + next + ac0);
+                    pa1 = a.vload<4>((m0 + ar1) * k + next + ac0);
+                    pb0 = b.vload<4>((next + br0) * n + n0 + bc0);
+                    pb1 = b.vload<4>((next + br1) * n + n0 + bc0);
+                }
+                uint32 kk = 0;
+                while (kk < 16) {
+                    Vector<float32,4> av0 = sa.vload<4>(kk * 132 + ty * 4);
+                    Vector<float32,4> av1 = sa.vload<4>(kk * 132 + 64 + ty * 4);
+                    Vector<float32,4> bv0 = sb.vload<4>(kk * 132 + tx * 4);
+                    Vector<float32,4> bv1 = sb.vload<4>(kk * 132 + 64 + tx * 4);
+                    float32 a0 = av0.x;
+                    float32 a1 = av0.y;
+                    float32 a2 = av0.z;
+                    float32 a3 = av0.w;
+                    float32 a4 = av1.x;
+                    float32 a5 = av1.y;
+                    float32 a6 = av1.z;
+                    float32 a7 = av1.w;
+                    float32 b0 = bv0.x;
+                    float32 b1 = bv0.y;
+                    float32 b2 = bv0.z;
+                    float32 b3 = bv0.w;
+                    float32 b4 = bv1.x;
+                    float32 b5 = bv1.y;
+                    float32 b6 = bv1.z;
+                    float32 b7 = bv1.w;
+                    c00 = Math.fma(a0, b0, c00);
+                    c01 = Math.fma(a0, b1, c01);
+                    c02 = Math.fma(a0, b2, c02);
+                    c03 = Math.fma(a0, b3, c03);
+                    c04 = Math.fma(a0, b4, c04);
+                    c05 = Math.fma(a0, b5, c05);
+                    c06 = Math.fma(a0, b6, c06);
+                    c07 = Math.fma(a0, b7, c07);
+                    c10 = Math.fma(a1, b0, c10);
+                    c11 = Math.fma(a1, b1, c11);
+                    c12 = Math.fma(a1, b2, c12);
+                    c13 = Math.fma(a1, b3, c13);
+                    c14 = Math.fma(a1, b4, c14);
+                    c15 = Math.fma(a1, b5, c15);
+                    c16 = Math.fma(a1, b6, c16);
+                    c17 = Math.fma(a1, b7, c17);
+                    c20 = Math.fma(a2, b0, c20);
+                    c21 = Math.fma(a2, b1, c21);
+                    c22 = Math.fma(a2, b2, c22);
+                    c23 = Math.fma(a2, b3, c23);
+                    c24 = Math.fma(a2, b4, c24);
+                    c25 = Math.fma(a2, b5, c25);
+                    c26 = Math.fma(a2, b6, c26);
+                    c27 = Math.fma(a2, b7, c27);
+                    c30 = Math.fma(a3, b0, c30);
+                    c31 = Math.fma(a3, b1, c31);
+                    c32 = Math.fma(a3, b2, c32);
+                    c33 = Math.fma(a3, b3, c33);
+                    c34 = Math.fma(a3, b4, c34);
+                    c35 = Math.fma(a3, b5, c35);
+                    c36 = Math.fma(a3, b6, c36);
+                    c37 = Math.fma(a3, b7, c37);
+                    c40 = Math.fma(a4, b0, c40);
+                    c41 = Math.fma(a4, b1, c41);
+                    c42 = Math.fma(a4, b2, c42);
+                    c43 = Math.fma(a4, b3, c43);
+                    c44 = Math.fma(a4, b4, c44);
+                    c45 = Math.fma(a4, b5, c45);
+                    c46 = Math.fma(a4, b6, c46);
+                    c47 = Math.fma(a4, b7, c47);
+                    c50 = Math.fma(a5, b0, c50);
+                    c51 = Math.fma(a5, b1, c51);
+                    c52 = Math.fma(a5, b2, c52);
+                    c53 = Math.fma(a5, b3, c53);
+                    c54 = Math.fma(a5, b4, c54);
+                    c55 = Math.fma(a5, b5, c55);
+                    c56 = Math.fma(a5, b6, c56);
+                    c57 = Math.fma(a5, b7, c57);
+                    c60 = Math.fma(a6, b0, c60);
+                    c61 = Math.fma(a6, b1, c61);
+                    c62 = Math.fma(a6, b2, c62);
+                    c63 = Math.fma(a6, b3, c63);
+                    c64 = Math.fma(a6, b4, c64);
+                    c65 = Math.fma(a6, b5, c65);
+                    c66 = Math.fma(a6, b6, c66);
+                    c67 = Math.fma(a6, b7, c67);
+                    c70 = Math.fma(a7, b0, c70);
+                    c71 = Math.fma(a7, b1, c71);
+                    c72 = Math.fma(a7, b2, c72);
+                    c73 = Math.fma(a7, b3, c73);
+                    c74 = Math.fma(a7, b4, c74);
+                    c75 = Math.fma(a7, b5, c75);
+                    c76 = Math.fma(a7, b6, c76);
+                    c77 = Math.fma(a7, b7, c77);
+                    kk = kk + 1;
+                }
+                Barrier.workgroup();
+                if (more) {
+                    sa[(ac0 + 0) * 132 + ar0] = (float32) pa0.x;
+                    sa[(ac0 + 1) * 132 + ar0] = (float32) pa0.y;
+                    sa[(ac0 + 2) * 132 + ar0] = (float32) pa0.z;
+                    sa[(ac0 + 3) * 132 + ar0] = (float32) pa0.w;
+                    sa[(ac0 + 0) * 132 + ar1] = (float32) pa1.x;
+                    sa[(ac0 + 1) * 132 + ar1] = (float32) pa1.y;
+                    sa[(ac0 + 2) * 132 + ar1] = (float32) pa1.z;
+                    sa[(ac0 + 3) * 132 + ar1] = (float32) pa1.w;
+                    sb[br0 * 132 + bc0 + 0] = (float32) pb0.x;
+                    sb[br0 * 132 + bc0 + 1] = (float32) pb0.y;
+                    sb[br0 * 132 + bc0 + 2] = (float32) pb0.z;
+                    sb[br0 * 132 + bc0 + 3] = (float32) pb0.w;
+                    sb[br1 * 132 + bc0 + 0] = (float32) pb1.x;
+                    sb[br1 * 132 + bc0 + 1] = (float32) pb1.y;
+                    sb[br1 * 132 + bc0 + 2] = (float32) pb1.z;
+                    sb[br1 * 132 + bc0 + 3] = (float32) pb1.w;
+                    Barrier.workgroup();
+                }
+                k0 = next;
+            }
+        }
+        while (k0 < kEnd) {
+            uint32 idx = t;
+            while (idx < 2048) {
+                uint32 ar = idx / 16;
+                uint32 ak = idx - ar * 16;
+                float32 va = 0.0f;
+                if (m0 + ar < m && k0 + ak < kEnd) { va = (float32) a[(m0 + ar) * k + k0 + ak]; }
+                sa[ak * 132 + ar] = va;
+                uint32 bk = idx / 128;
+                uint32 bc = idx - bk * 128;
+                float32 vb = 0.0f;
+                if (k0 + bk < kEnd && n0 + bc < n) { vb = (float32) b[(k0 + bk) * n + n0 + bc]; }
+                sb[bk * 132 + bc] = vb;
+                idx = idx + 256;
+            }
+            Barrier.workgroup();
+            uint32 kk = 0;
+            while (kk < 16) {
+                Vector<float32,4> av0 = sa.vload<4>(kk * 132 + ty * 4);
+                Vector<float32,4> av1 = sa.vload<4>(kk * 132 + 64 + ty * 4);
+                Vector<float32,4> bv0 = sb.vload<4>(kk * 132 + tx * 4);
+                Vector<float32,4> bv1 = sb.vload<4>(kk * 132 + 64 + tx * 4);
+                float32 a0 = av0.x;
+                float32 a1 = av0.y;
+                float32 a2 = av0.z;
+                float32 a3 = av0.w;
+                float32 a4 = av1.x;
+                float32 a5 = av1.y;
+                float32 a6 = av1.z;
+                float32 a7 = av1.w;
+                float32 b0 = bv0.x;
+                float32 b1 = bv0.y;
+                float32 b2 = bv0.z;
+                float32 b3 = bv0.w;
+                float32 b4 = bv1.x;
+                float32 b5 = bv1.y;
+                float32 b6 = bv1.z;
+                float32 b7 = bv1.w;
+                c00 = Math.fma(a0, b0, c00);
+                c01 = Math.fma(a0, b1, c01);
+                c02 = Math.fma(a0, b2, c02);
+                c03 = Math.fma(a0, b3, c03);
+                c04 = Math.fma(a0, b4, c04);
+                c05 = Math.fma(a0, b5, c05);
+                c06 = Math.fma(a0, b6, c06);
+                c07 = Math.fma(a0, b7, c07);
+                c10 = Math.fma(a1, b0, c10);
+                c11 = Math.fma(a1, b1, c11);
+                c12 = Math.fma(a1, b2, c12);
+                c13 = Math.fma(a1, b3, c13);
+                c14 = Math.fma(a1, b4, c14);
+                c15 = Math.fma(a1, b5, c15);
+                c16 = Math.fma(a1, b6, c16);
+                c17 = Math.fma(a1, b7, c17);
+                c20 = Math.fma(a2, b0, c20);
+                c21 = Math.fma(a2, b1, c21);
+                c22 = Math.fma(a2, b2, c22);
+                c23 = Math.fma(a2, b3, c23);
+                c24 = Math.fma(a2, b4, c24);
+                c25 = Math.fma(a2, b5, c25);
+                c26 = Math.fma(a2, b6, c26);
+                c27 = Math.fma(a2, b7, c27);
+                c30 = Math.fma(a3, b0, c30);
+                c31 = Math.fma(a3, b1, c31);
+                c32 = Math.fma(a3, b2, c32);
+                c33 = Math.fma(a3, b3, c33);
+                c34 = Math.fma(a3, b4, c34);
+                c35 = Math.fma(a3, b5, c35);
+                c36 = Math.fma(a3, b6, c36);
+                c37 = Math.fma(a3, b7, c37);
+                c40 = Math.fma(a4, b0, c40);
+                c41 = Math.fma(a4, b1, c41);
+                c42 = Math.fma(a4, b2, c42);
+                c43 = Math.fma(a4, b3, c43);
+                c44 = Math.fma(a4, b4, c44);
+                c45 = Math.fma(a4, b5, c45);
+                c46 = Math.fma(a4, b6, c46);
+                c47 = Math.fma(a4, b7, c47);
+                c50 = Math.fma(a5, b0, c50);
+                c51 = Math.fma(a5, b1, c51);
+                c52 = Math.fma(a5, b2, c52);
+                c53 = Math.fma(a5, b3, c53);
+                c54 = Math.fma(a5, b4, c54);
+                c55 = Math.fma(a5, b5, c55);
+                c56 = Math.fma(a5, b6, c56);
+                c57 = Math.fma(a5, b7, c57);
+                c60 = Math.fma(a6, b0, c60);
+                c61 = Math.fma(a6, b1, c61);
+                c62 = Math.fma(a6, b2, c62);
+                c63 = Math.fma(a6, b3, c63);
+                c64 = Math.fma(a6, b4, c64);
+                c65 = Math.fma(a6, b5, c65);
+                c66 = Math.fma(a6, b6, c66);
+                c67 = Math.fma(a6, b7, c67);
+                c70 = Math.fma(a7, b0, c70);
+                c71 = Math.fma(a7, b1, c71);
+                c72 = Math.fma(a7, b2, c72);
+                c73 = Math.fma(a7, b3, c73);
+                c74 = Math.fma(a7, b4, c74);
+                c75 = Math.fma(a7, b5, c75);
+                c76 = Math.fma(a7, b6, c76);
+                c77 = Math.fma(a7, b7, c77);
+                kk = kk + 1;
+            }
+            Barrier.workgroup();
+            k0 = k0 + 16;
+        }
+        uint32 r0 = m0 + ty * 4 + 0;
+        uint32 r1 = m0 + ty * 4 + 1;
+        uint32 r2 = m0 + ty * 4 + 2;
+        uint32 r3 = m0 + ty * 4 + 3;
+        uint32 r4 = m0 + 64 + ty * 4 + 0;
+        uint32 r5 = m0 + 64 + ty * 4 + 1;
+        uint32 r6 = m0 + 64 + ty * 4 + 2;
+        uint32 r7 = m0 + 64 + ty * 4 + 3;
+        uint32 q0 = n0 + tx * 4 + 0;
+        uint32 q1 = n0 + tx * 4 + 1;
+        uint32 q2 = n0 + tx * 4 + 2;
+        uint32 q3 = n0 + tx * 4 + 3;
+        uint32 q4 = n0 + 64 + tx * 4 + 0;
+        uint32 q5 = n0 + 64 + tx * 4 + 1;
+        uint32 q6 = n0 + 64 + tx * 4 + 2;
+        uint32 q7 = n0 + 64 + tx * 4 + 3;
+        if (r0 < m && q0 < n) { parts[sp * m * n + r0 * n + q0] = c00; }
+        if (r0 < m && q1 < n) { parts[sp * m * n + r0 * n + q1] = c01; }
+        if (r0 < m && q2 < n) { parts[sp * m * n + r0 * n + q2] = c02; }
+        if (r0 < m && q3 < n) { parts[sp * m * n + r0 * n + q3] = c03; }
+        if (r0 < m && q4 < n) { parts[sp * m * n + r0 * n + q4] = c04; }
+        if (r0 < m && q5 < n) { parts[sp * m * n + r0 * n + q5] = c05; }
+        if (r0 < m && q6 < n) { parts[sp * m * n + r0 * n + q6] = c06; }
+        if (r0 < m && q7 < n) { parts[sp * m * n + r0 * n + q7] = c07; }
+        if (r1 < m && q0 < n) { parts[sp * m * n + r1 * n + q0] = c10; }
+        if (r1 < m && q1 < n) { parts[sp * m * n + r1 * n + q1] = c11; }
+        if (r1 < m && q2 < n) { parts[sp * m * n + r1 * n + q2] = c12; }
+        if (r1 < m && q3 < n) { parts[sp * m * n + r1 * n + q3] = c13; }
+        if (r1 < m && q4 < n) { parts[sp * m * n + r1 * n + q4] = c14; }
+        if (r1 < m && q5 < n) { parts[sp * m * n + r1 * n + q5] = c15; }
+        if (r1 < m && q6 < n) { parts[sp * m * n + r1 * n + q6] = c16; }
+        if (r1 < m && q7 < n) { parts[sp * m * n + r1 * n + q7] = c17; }
+        if (r2 < m && q0 < n) { parts[sp * m * n + r2 * n + q0] = c20; }
+        if (r2 < m && q1 < n) { parts[sp * m * n + r2 * n + q1] = c21; }
+        if (r2 < m && q2 < n) { parts[sp * m * n + r2 * n + q2] = c22; }
+        if (r2 < m && q3 < n) { parts[sp * m * n + r2 * n + q3] = c23; }
+        if (r2 < m && q4 < n) { parts[sp * m * n + r2 * n + q4] = c24; }
+        if (r2 < m && q5 < n) { parts[sp * m * n + r2 * n + q5] = c25; }
+        if (r2 < m && q6 < n) { parts[sp * m * n + r2 * n + q6] = c26; }
+        if (r2 < m && q7 < n) { parts[sp * m * n + r2 * n + q7] = c27; }
+        if (r3 < m && q0 < n) { parts[sp * m * n + r3 * n + q0] = c30; }
+        if (r3 < m && q1 < n) { parts[sp * m * n + r3 * n + q1] = c31; }
+        if (r3 < m && q2 < n) { parts[sp * m * n + r3 * n + q2] = c32; }
+        if (r3 < m && q3 < n) { parts[sp * m * n + r3 * n + q3] = c33; }
+        if (r3 < m && q4 < n) { parts[sp * m * n + r3 * n + q4] = c34; }
+        if (r3 < m && q5 < n) { parts[sp * m * n + r3 * n + q5] = c35; }
+        if (r3 < m && q6 < n) { parts[sp * m * n + r3 * n + q6] = c36; }
+        if (r3 < m && q7 < n) { parts[sp * m * n + r3 * n + q7] = c37; }
+        if (r4 < m && q0 < n) { parts[sp * m * n + r4 * n + q0] = c40; }
+        if (r4 < m && q1 < n) { parts[sp * m * n + r4 * n + q1] = c41; }
+        if (r4 < m && q2 < n) { parts[sp * m * n + r4 * n + q2] = c42; }
+        if (r4 < m && q3 < n) { parts[sp * m * n + r4 * n + q3] = c43; }
+        if (r4 < m && q4 < n) { parts[sp * m * n + r4 * n + q4] = c44; }
+        if (r4 < m && q5 < n) { parts[sp * m * n + r4 * n + q5] = c45; }
+        if (r4 < m && q6 < n) { parts[sp * m * n + r4 * n + q6] = c46; }
+        if (r4 < m && q7 < n) { parts[sp * m * n + r4 * n + q7] = c47; }
+        if (r5 < m && q0 < n) { parts[sp * m * n + r5 * n + q0] = c50; }
+        if (r5 < m && q1 < n) { parts[sp * m * n + r5 * n + q1] = c51; }
+        if (r5 < m && q2 < n) { parts[sp * m * n + r5 * n + q2] = c52; }
+        if (r5 < m && q3 < n) { parts[sp * m * n + r5 * n + q3] = c53; }
+        if (r5 < m && q4 < n) { parts[sp * m * n + r5 * n + q4] = c54; }
+        if (r5 < m && q5 < n) { parts[sp * m * n + r5 * n + q5] = c55; }
+        if (r5 < m && q6 < n) { parts[sp * m * n + r5 * n + q6] = c56; }
+        if (r5 < m && q7 < n) { parts[sp * m * n + r5 * n + q7] = c57; }
+        if (r6 < m && q0 < n) { parts[sp * m * n + r6 * n + q0] = c60; }
+        if (r6 < m && q1 < n) { parts[sp * m * n + r6 * n + q1] = c61; }
+        if (r6 < m && q2 < n) { parts[sp * m * n + r6 * n + q2] = c62; }
+        if (r6 < m && q3 < n) { parts[sp * m * n + r6 * n + q3] = c63; }
+        if (r6 < m && q4 < n) { parts[sp * m * n + r6 * n + q4] = c64; }
+        if (r6 < m && q5 < n) { parts[sp * m * n + r6 * n + q5] = c65; }
+        if (r6 < m && q6 < n) { parts[sp * m * n + r6 * n + q6] = c66; }
+        if (r6 < m && q7 < n) { parts[sp * m * n + r6 * n + q7] = c67; }
+        if (r7 < m && q0 < n) { parts[sp * m * n + r7 * n + q0] = c70; }
+        if (r7 < m && q1 < n) { parts[sp * m * n + r7 * n + q1] = c71; }
+        if (r7 < m && q2 < n) { parts[sp * m * n + r7 * n + q2] = c72; }
+        if (r7 < m && q3 < n) { parts[sp * m * n + r7 * n + q3] = c73; }
+        if (r7 < m && q4 < n) { parts[sp * m * n + r7 * n + q4] = c74; }
+        if (r7 < m && q5 < n) { parts[sp * m * n + r7 * n + q5] = c75; }
+        if (r7 < m && q6 < n) { parts[sp * m * n + r7 * n + q6] = c76; }
+        if (r7 < m && q7 < n) { parts[sp * m * n + r7 * n + q7] = c77; }
+    }
+
+    /** gemmTiled128Split with A stored transposed (k x m): a^T . b over one slice of K, A's tile loaded as B's is. */
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void gemmTiled128SplitTN<E>(KernelBuffer<float32> parts, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k,
+                                            uint32 kChunk) {
+        Shared<float32> sa = shared float32[2112];
+        Shared<float32> sb = shared float32[2112];
+        uint32 t = KernelThread.x();
+        uint32 tx = t % 16;
+        uint32 ty = t / 16;
+        uint32 ntiles = (n + 127) / 128;
+        uint32 tilesAll = ((m + 127) / 128) * ntiles;
+        uint32 sp = Workgroup.x() / tilesAll;
+        uint32 wid = Workgroup.x() - sp * tilesAll;
+        uint32 kBeg = sp * kChunk;
+        uint32 kEnd = kBeg + kChunk;
+        if (kEnd > k) { kEnd = k; }
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid - mi * ntiles;
+        uint32 m0 = mi * 128;
+        uint32 n0 = nj * 128;
+        float32 c00 = 0.0f;
+        float32 c01 = 0.0f;
+        float32 c02 = 0.0f;
+        float32 c03 = 0.0f;
+        float32 c04 = 0.0f;
+        float32 c05 = 0.0f;
+        float32 c06 = 0.0f;
+        float32 c07 = 0.0f;
+        float32 c10 = 0.0f;
+        float32 c11 = 0.0f;
+        float32 c12 = 0.0f;
+        float32 c13 = 0.0f;
+        float32 c14 = 0.0f;
+        float32 c15 = 0.0f;
+        float32 c16 = 0.0f;
+        float32 c17 = 0.0f;
+        float32 c20 = 0.0f;
+        float32 c21 = 0.0f;
+        float32 c22 = 0.0f;
+        float32 c23 = 0.0f;
+        float32 c24 = 0.0f;
+        float32 c25 = 0.0f;
+        float32 c26 = 0.0f;
+        float32 c27 = 0.0f;
+        float32 c30 = 0.0f;
+        float32 c31 = 0.0f;
+        float32 c32 = 0.0f;
+        float32 c33 = 0.0f;
+        float32 c34 = 0.0f;
+        float32 c35 = 0.0f;
+        float32 c36 = 0.0f;
+        float32 c37 = 0.0f;
+        float32 c40 = 0.0f;
+        float32 c41 = 0.0f;
+        float32 c42 = 0.0f;
+        float32 c43 = 0.0f;
+        float32 c44 = 0.0f;
+        float32 c45 = 0.0f;
+        float32 c46 = 0.0f;
+        float32 c47 = 0.0f;
+        float32 c50 = 0.0f;
+        float32 c51 = 0.0f;
+        float32 c52 = 0.0f;
+        float32 c53 = 0.0f;
+        float32 c54 = 0.0f;
+        float32 c55 = 0.0f;
+        float32 c56 = 0.0f;
+        float32 c57 = 0.0f;
+        float32 c60 = 0.0f;
+        float32 c61 = 0.0f;
+        float32 c62 = 0.0f;
+        float32 c63 = 0.0f;
+        float32 c64 = 0.0f;
+        float32 c65 = 0.0f;
+        float32 c66 = 0.0f;
+        float32 c67 = 0.0f;
+        float32 c70 = 0.0f;
+        float32 c71 = 0.0f;
+        float32 c72 = 0.0f;
+        float32 c73 = 0.0f;
+        float32 c74 = 0.0f;
+        float32 c75 = 0.0f;
+        float32 c76 = 0.0f;
+        float32 c77 = 0.0f;
+        boolean wide = m0 + 128 <= m && n0 + 128 <= n && (m % 4) == 0 && (n % 4) == 0;
+        uint32 kFull = 0;
+        if (wide) { kFull = kBeg + ((kEnd - kBeg) / 16) * 16; }
+        uint32 ar0 = t / 4;
+        uint32 ac0 = (t - ar0 * 4) * 4;
+        uint32 ar1 = ar0 + 64;
+        uint32 br0 = t / 32;
+        uint32 bc0 = (t - br0 * 32) * 4;
+        uint32 br1 = br0 + 8;
+        uint32 k0 = kBeg;
+        if (kFull > kBeg) {
+            Vector<E,4> pa0 = a.vload<4>((kBeg + br0) * m + m0 + bc0);
+            Vector<E,4> pa1 = a.vload<4>((kBeg + br1) * m + m0 + bc0);
+            Vector<E,4> pb0 = b.vload<4>((kBeg + br0) * n + n0 + bc0);
+            Vector<E,4> pb1 = b.vload<4>((kBeg + br1) * n + n0 + bc0);
+            sa[br0 * 132 + bc0 + 0] = (float32) pa0.x;
+            sa[br0 * 132 + bc0 + 1] = (float32) pa0.y;
+            sa[br0 * 132 + bc0 + 2] = (float32) pa0.z;
+            sa[br0 * 132 + bc0 + 3] = (float32) pa0.w;
+            sa[br1 * 132 + bc0 + 0] = (float32) pa1.x;
+            sa[br1 * 132 + bc0 + 1] = (float32) pa1.y;
+            sa[br1 * 132 + bc0 + 2] = (float32) pa1.z;
+            sa[br1 * 132 + bc0 + 3] = (float32) pa1.w;
+            sb[br0 * 132 + bc0 + 0] = (float32) pb0.x;
+            sb[br0 * 132 + bc0 + 1] = (float32) pb0.y;
+            sb[br0 * 132 + bc0 + 2] = (float32) pb0.z;
+            sb[br0 * 132 + bc0 + 3] = (float32) pb0.w;
+            sb[br1 * 132 + bc0 + 0] = (float32) pb1.x;
+            sb[br1 * 132 + bc0 + 1] = (float32) pb1.y;
+            sb[br1 * 132 + bc0 + 2] = (float32) pb1.z;
+            sb[br1 * 132 + bc0 + 3] = (float32) pb1.w;
+            Barrier.workgroup();
+            while (k0 < kFull) {
+                uint32 next = k0 + 16;
+                boolean more = next < kFull;
+                if (more) {
+                    pa0 = a.vload<4>((next + br0) * m + m0 + bc0);
+                    pa1 = a.vload<4>((next + br1) * m + m0 + bc0);
+                    pb0 = b.vload<4>((next + br0) * n + n0 + bc0);
+                    pb1 = b.vload<4>((next + br1) * n + n0 + bc0);
+                }
+                uint32 kk = 0;
+                while (kk < 16) {
+                    Vector<float32,4> av0 = sa.vload<4>(kk * 132 + ty * 4);
+                    Vector<float32,4> av1 = sa.vload<4>(kk * 132 + 64 + ty * 4);
+                    Vector<float32,4> bv0 = sb.vload<4>(kk * 132 + tx * 4);
+                    Vector<float32,4> bv1 = sb.vload<4>(kk * 132 + 64 + tx * 4);
+                    float32 a0 = av0.x;
+                    float32 a1 = av0.y;
+                    float32 a2 = av0.z;
+                    float32 a3 = av0.w;
+                    float32 a4 = av1.x;
+                    float32 a5 = av1.y;
+                    float32 a6 = av1.z;
+                    float32 a7 = av1.w;
+                    float32 b0 = bv0.x;
+                    float32 b1 = bv0.y;
+                    float32 b2 = bv0.z;
+                    float32 b3 = bv0.w;
+                    float32 b4 = bv1.x;
+                    float32 b5 = bv1.y;
+                    float32 b6 = bv1.z;
+                    float32 b7 = bv1.w;
+                    c00 = Math.fma(a0, b0, c00);
+                    c01 = Math.fma(a0, b1, c01);
+                    c02 = Math.fma(a0, b2, c02);
+                    c03 = Math.fma(a0, b3, c03);
+                    c04 = Math.fma(a0, b4, c04);
+                    c05 = Math.fma(a0, b5, c05);
+                    c06 = Math.fma(a0, b6, c06);
+                    c07 = Math.fma(a0, b7, c07);
+                    c10 = Math.fma(a1, b0, c10);
+                    c11 = Math.fma(a1, b1, c11);
+                    c12 = Math.fma(a1, b2, c12);
+                    c13 = Math.fma(a1, b3, c13);
+                    c14 = Math.fma(a1, b4, c14);
+                    c15 = Math.fma(a1, b5, c15);
+                    c16 = Math.fma(a1, b6, c16);
+                    c17 = Math.fma(a1, b7, c17);
+                    c20 = Math.fma(a2, b0, c20);
+                    c21 = Math.fma(a2, b1, c21);
+                    c22 = Math.fma(a2, b2, c22);
+                    c23 = Math.fma(a2, b3, c23);
+                    c24 = Math.fma(a2, b4, c24);
+                    c25 = Math.fma(a2, b5, c25);
+                    c26 = Math.fma(a2, b6, c26);
+                    c27 = Math.fma(a2, b7, c27);
+                    c30 = Math.fma(a3, b0, c30);
+                    c31 = Math.fma(a3, b1, c31);
+                    c32 = Math.fma(a3, b2, c32);
+                    c33 = Math.fma(a3, b3, c33);
+                    c34 = Math.fma(a3, b4, c34);
+                    c35 = Math.fma(a3, b5, c35);
+                    c36 = Math.fma(a3, b6, c36);
+                    c37 = Math.fma(a3, b7, c37);
+                    c40 = Math.fma(a4, b0, c40);
+                    c41 = Math.fma(a4, b1, c41);
+                    c42 = Math.fma(a4, b2, c42);
+                    c43 = Math.fma(a4, b3, c43);
+                    c44 = Math.fma(a4, b4, c44);
+                    c45 = Math.fma(a4, b5, c45);
+                    c46 = Math.fma(a4, b6, c46);
+                    c47 = Math.fma(a4, b7, c47);
+                    c50 = Math.fma(a5, b0, c50);
+                    c51 = Math.fma(a5, b1, c51);
+                    c52 = Math.fma(a5, b2, c52);
+                    c53 = Math.fma(a5, b3, c53);
+                    c54 = Math.fma(a5, b4, c54);
+                    c55 = Math.fma(a5, b5, c55);
+                    c56 = Math.fma(a5, b6, c56);
+                    c57 = Math.fma(a5, b7, c57);
+                    c60 = Math.fma(a6, b0, c60);
+                    c61 = Math.fma(a6, b1, c61);
+                    c62 = Math.fma(a6, b2, c62);
+                    c63 = Math.fma(a6, b3, c63);
+                    c64 = Math.fma(a6, b4, c64);
+                    c65 = Math.fma(a6, b5, c65);
+                    c66 = Math.fma(a6, b6, c66);
+                    c67 = Math.fma(a6, b7, c67);
+                    c70 = Math.fma(a7, b0, c70);
+                    c71 = Math.fma(a7, b1, c71);
+                    c72 = Math.fma(a7, b2, c72);
+                    c73 = Math.fma(a7, b3, c73);
+                    c74 = Math.fma(a7, b4, c74);
+                    c75 = Math.fma(a7, b5, c75);
+                    c76 = Math.fma(a7, b6, c76);
+                    c77 = Math.fma(a7, b7, c77);
+                    kk = kk + 1;
+                }
+                Barrier.workgroup();
+                if (more) {
+                    sa[br0 * 132 + bc0 + 0] = (float32) pa0.x;
+                    sa[br0 * 132 + bc0 + 1] = (float32) pa0.y;
+                    sa[br0 * 132 + bc0 + 2] = (float32) pa0.z;
+                    sa[br0 * 132 + bc0 + 3] = (float32) pa0.w;
+                    sa[br1 * 132 + bc0 + 0] = (float32) pa1.x;
+                    sa[br1 * 132 + bc0 + 1] = (float32) pa1.y;
+                    sa[br1 * 132 + bc0 + 2] = (float32) pa1.z;
+                    sa[br1 * 132 + bc0 + 3] = (float32) pa1.w;
+                    sb[br0 * 132 + bc0 + 0] = (float32) pb0.x;
+                    sb[br0 * 132 + bc0 + 1] = (float32) pb0.y;
+                    sb[br0 * 132 + bc0 + 2] = (float32) pb0.z;
+                    sb[br0 * 132 + bc0 + 3] = (float32) pb0.w;
+                    sb[br1 * 132 + bc0 + 0] = (float32) pb1.x;
+                    sb[br1 * 132 + bc0 + 1] = (float32) pb1.y;
+                    sb[br1 * 132 + bc0 + 2] = (float32) pb1.z;
+                    sb[br1 * 132 + bc0 + 3] = (float32) pb1.w;
+                    Barrier.workgroup();
+                }
+                k0 = next;
+            }
+        }
+        while (k0 < kEnd) {
+            uint32 idx = t;
+            while (idx < 2048) {
+                uint32 ar = idx / 16;
+                uint32 ak = idx - ar * 16;
+                float32 va = 0.0f;
+                if (m0 + ar < m && k0 + ak < kEnd) { va = (float32) a[(k0 + ak) * m + m0 + ar]; }
+                sa[ak * 132 + ar] = va;
+                uint32 bk = idx / 128;
+                uint32 bc = idx - bk * 128;
+                float32 vb = 0.0f;
+                if (k0 + bk < kEnd && n0 + bc < n) { vb = (float32) b[(k0 + bk) * n + n0 + bc]; }
+                sb[bk * 132 + bc] = vb;
+                idx = idx + 256;
+            }
+            Barrier.workgroup();
+            uint32 kk = 0;
+            while (kk < 16) {
+                Vector<float32,4> av0 = sa.vload<4>(kk * 132 + ty * 4);
+                Vector<float32,4> av1 = sa.vload<4>(kk * 132 + 64 + ty * 4);
+                Vector<float32,4> bv0 = sb.vload<4>(kk * 132 + tx * 4);
+                Vector<float32,4> bv1 = sb.vload<4>(kk * 132 + 64 + tx * 4);
+                float32 a0 = av0.x;
+                float32 a1 = av0.y;
+                float32 a2 = av0.z;
+                float32 a3 = av0.w;
+                float32 a4 = av1.x;
+                float32 a5 = av1.y;
+                float32 a6 = av1.z;
+                float32 a7 = av1.w;
+                float32 b0 = bv0.x;
+                float32 b1 = bv0.y;
+                float32 b2 = bv0.z;
+                float32 b3 = bv0.w;
+                float32 b4 = bv1.x;
+                float32 b5 = bv1.y;
+                float32 b6 = bv1.z;
+                float32 b7 = bv1.w;
+                c00 = Math.fma(a0, b0, c00);
+                c01 = Math.fma(a0, b1, c01);
+                c02 = Math.fma(a0, b2, c02);
+                c03 = Math.fma(a0, b3, c03);
+                c04 = Math.fma(a0, b4, c04);
+                c05 = Math.fma(a0, b5, c05);
+                c06 = Math.fma(a0, b6, c06);
+                c07 = Math.fma(a0, b7, c07);
+                c10 = Math.fma(a1, b0, c10);
+                c11 = Math.fma(a1, b1, c11);
+                c12 = Math.fma(a1, b2, c12);
+                c13 = Math.fma(a1, b3, c13);
+                c14 = Math.fma(a1, b4, c14);
+                c15 = Math.fma(a1, b5, c15);
+                c16 = Math.fma(a1, b6, c16);
+                c17 = Math.fma(a1, b7, c17);
+                c20 = Math.fma(a2, b0, c20);
+                c21 = Math.fma(a2, b1, c21);
+                c22 = Math.fma(a2, b2, c22);
+                c23 = Math.fma(a2, b3, c23);
+                c24 = Math.fma(a2, b4, c24);
+                c25 = Math.fma(a2, b5, c25);
+                c26 = Math.fma(a2, b6, c26);
+                c27 = Math.fma(a2, b7, c27);
+                c30 = Math.fma(a3, b0, c30);
+                c31 = Math.fma(a3, b1, c31);
+                c32 = Math.fma(a3, b2, c32);
+                c33 = Math.fma(a3, b3, c33);
+                c34 = Math.fma(a3, b4, c34);
+                c35 = Math.fma(a3, b5, c35);
+                c36 = Math.fma(a3, b6, c36);
+                c37 = Math.fma(a3, b7, c37);
+                c40 = Math.fma(a4, b0, c40);
+                c41 = Math.fma(a4, b1, c41);
+                c42 = Math.fma(a4, b2, c42);
+                c43 = Math.fma(a4, b3, c43);
+                c44 = Math.fma(a4, b4, c44);
+                c45 = Math.fma(a4, b5, c45);
+                c46 = Math.fma(a4, b6, c46);
+                c47 = Math.fma(a4, b7, c47);
+                c50 = Math.fma(a5, b0, c50);
+                c51 = Math.fma(a5, b1, c51);
+                c52 = Math.fma(a5, b2, c52);
+                c53 = Math.fma(a5, b3, c53);
+                c54 = Math.fma(a5, b4, c54);
+                c55 = Math.fma(a5, b5, c55);
+                c56 = Math.fma(a5, b6, c56);
+                c57 = Math.fma(a5, b7, c57);
+                c60 = Math.fma(a6, b0, c60);
+                c61 = Math.fma(a6, b1, c61);
+                c62 = Math.fma(a6, b2, c62);
+                c63 = Math.fma(a6, b3, c63);
+                c64 = Math.fma(a6, b4, c64);
+                c65 = Math.fma(a6, b5, c65);
+                c66 = Math.fma(a6, b6, c66);
+                c67 = Math.fma(a6, b7, c67);
+                c70 = Math.fma(a7, b0, c70);
+                c71 = Math.fma(a7, b1, c71);
+                c72 = Math.fma(a7, b2, c72);
+                c73 = Math.fma(a7, b3, c73);
+                c74 = Math.fma(a7, b4, c74);
+                c75 = Math.fma(a7, b5, c75);
+                c76 = Math.fma(a7, b6, c76);
+                c77 = Math.fma(a7, b7, c77);
+                kk = kk + 1;
+            }
+            Barrier.workgroup();
+            k0 = k0 + 16;
+        }
+        uint32 r0 = m0 + ty * 4 + 0;
+        uint32 r1 = m0 + ty * 4 + 1;
+        uint32 r2 = m0 + ty * 4 + 2;
+        uint32 r3 = m0 + ty * 4 + 3;
+        uint32 r4 = m0 + 64 + ty * 4 + 0;
+        uint32 r5 = m0 + 64 + ty * 4 + 1;
+        uint32 r6 = m0 + 64 + ty * 4 + 2;
+        uint32 r7 = m0 + 64 + ty * 4 + 3;
+        uint32 q0 = n0 + tx * 4 + 0;
+        uint32 q1 = n0 + tx * 4 + 1;
+        uint32 q2 = n0 + tx * 4 + 2;
+        uint32 q3 = n0 + tx * 4 + 3;
+        uint32 q4 = n0 + 64 + tx * 4 + 0;
+        uint32 q5 = n0 + 64 + tx * 4 + 1;
+        uint32 q6 = n0 + 64 + tx * 4 + 2;
+        uint32 q7 = n0 + 64 + tx * 4 + 3;
+        if (r0 < m && q0 < n) { parts[sp * m * n + r0 * n + q0] = c00; }
+        if (r0 < m && q1 < n) { parts[sp * m * n + r0 * n + q1] = c01; }
+        if (r0 < m && q2 < n) { parts[sp * m * n + r0 * n + q2] = c02; }
+        if (r0 < m && q3 < n) { parts[sp * m * n + r0 * n + q3] = c03; }
+        if (r0 < m && q4 < n) { parts[sp * m * n + r0 * n + q4] = c04; }
+        if (r0 < m && q5 < n) { parts[sp * m * n + r0 * n + q5] = c05; }
+        if (r0 < m && q6 < n) { parts[sp * m * n + r0 * n + q6] = c06; }
+        if (r0 < m && q7 < n) { parts[sp * m * n + r0 * n + q7] = c07; }
+        if (r1 < m && q0 < n) { parts[sp * m * n + r1 * n + q0] = c10; }
+        if (r1 < m && q1 < n) { parts[sp * m * n + r1 * n + q1] = c11; }
+        if (r1 < m && q2 < n) { parts[sp * m * n + r1 * n + q2] = c12; }
+        if (r1 < m && q3 < n) { parts[sp * m * n + r1 * n + q3] = c13; }
+        if (r1 < m && q4 < n) { parts[sp * m * n + r1 * n + q4] = c14; }
+        if (r1 < m && q5 < n) { parts[sp * m * n + r1 * n + q5] = c15; }
+        if (r1 < m && q6 < n) { parts[sp * m * n + r1 * n + q6] = c16; }
+        if (r1 < m && q7 < n) { parts[sp * m * n + r1 * n + q7] = c17; }
+        if (r2 < m && q0 < n) { parts[sp * m * n + r2 * n + q0] = c20; }
+        if (r2 < m && q1 < n) { parts[sp * m * n + r2 * n + q1] = c21; }
+        if (r2 < m && q2 < n) { parts[sp * m * n + r2 * n + q2] = c22; }
+        if (r2 < m && q3 < n) { parts[sp * m * n + r2 * n + q3] = c23; }
+        if (r2 < m && q4 < n) { parts[sp * m * n + r2 * n + q4] = c24; }
+        if (r2 < m && q5 < n) { parts[sp * m * n + r2 * n + q5] = c25; }
+        if (r2 < m && q6 < n) { parts[sp * m * n + r2 * n + q6] = c26; }
+        if (r2 < m && q7 < n) { parts[sp * m * n + r2 * n + q7] = c27; }
+        if (r3 < m && q0 < n) { parts[sp * m * n + r3 * n + q0] = c30; }
+        if (r3 < m && q1 < n) { parts[sp * m * n + r3 * n + q1] = c31; }
+        if (r3 < m && q2 < n) { parts[sp * m * n + r3 * n + q2] = c32; }
+        if (r3 < m && q3 < n) { parts[sp * m * n + r3 * n + q3] = c33; }
+        if (r3 < m && q4 < n) { parts[sp * m * n + r3 * n + q4] = c34; }
+        if (r3 < m && q5 < n) { parts[sp * m * n + r3 * n + q5] = c35; }
+        if (r3 < m && q6 < n) { parts[sp * m * n + r3 * n + q6] = c36; }
+        if (r3 < m && q7 < n) { parts[sp * m * n + r3 * n + q7] = c37; }
+        if (r4 < m && q0 < n) { parts[sp * m * n + r4 * n + q0] = c40; }
+        if (r4 < m && q1 < n) { parts[sp * m * n + r4 * n + q1] = c41; }
+        if (r4 < m && q2 < n) { parts[sp * m * n + r4 * n + q2] = c42; }
+        if (r4 < m && q3 < n) { parts[sp * m * n + r4 * n + q3] = c43; }
+        if (r4 < m && q4 < n) { parts[sp * m * n + r4 * n + q4] = c44; }
+        if (r4 < m && q5 < n) { parts[sp * m * n + r4 * n + q5] = c45; }
+        if (r4 < m && q6 < n) { parts[sp * m * n + r4 * n + q6] = c46; }
+        if (r4 < m && q7 < n) { parts[sp * m * n + r4 * n + q7] = c47; }
+        if (r5 < m && q0 < n) { parts[sp * m * n + r5 * n + q0] = c50; }
+        if (r5 < m && q1 < n) { parts[sp * m * n + r5 * n + q1] = c51; }
+        if (r5 < m && q2 < n) { parts[sp * m * n + r5 * n + q2] = c52; }
+        if (r5 < m && q3 < n) { parts[sp * m * n + r5 * n + q3] = c53; }
+        if (r5 < m && q4 < n) { parts[sp * m * n + r5 * n + q4] = c54; }
+        if (r5 < m && q5 < n) { parts[sp * m * n + r5 * n + q5] = c55; }
+        if (r5 < m && q6 < n) { parts[sp * m * n + r5 * n + q6] = c56; }
+        if (r5 < m && q7 < n) { parts[sp * m * n + r5 * n + q7] = c57; }
+        if (r6 < m && q0 < n) { parts[sp * m * n + r6 * n + q0] = c60; }
+        if (r6 < m && q1 < n) { parts[sp * m * n + r6 * n + q1] = c61; }
+        if (r6 < m && q2 < n) { parts[sp * m * n + r6 * n + q2] = c62; }
+        if (r6 < m && q3 < n) { parts[sp * m * n + r6 * n + q3] = c63; }
+        if (r6 < m && q4 < n) { parts[sp * m * n + r6 * n + q4] = c64; }
+        if (r6 < m && q5 < n) { parts[sp * m * n + r6 * n + q5] = c65; }
+        if (r6 < m && q6 < n) { parts[sp * m * n + r6 * n + q6] = c66; }
+        if (r6 < m && q7 < n) { parts[sp * m * n + r6 * n + q7] = c67; }
+        if (r7 < m && q0 < n) { parts[sp * m * n + r7 * n + q0] = c70; }
+        if (r7 < m && q1 < n) { parts[sp * m * n + r7 * n + q1] = c71; }
+        if (r7 < m && q2 < n) { parts[sp * m * n + r7 * n + q2] = c72; }
+        if (r7 < m && q3 < n) { parts[sp * m * n + r7 * n + q3] = c73; }
+        if (r7 < m && q4 < n) { parts[sp * m * n + r7 * n + q4] = c74; }
+        if (r7 < m && q5 < n) { parts[sp * m * n + r7 * n + q5] = c75; }
+        if (r7 < m && q6 < n) { parts[sp * m * n + r7 * n + q6] = c76; }
+        if (r7 < m && q7 < n) { parts[sp * m * n + r7 * n + q7] = c77; }
+    }
+
+    /**
      * gemmTiled128 with its 16-step K loop unrolled at constant shared offsets and the wide
      * loads stated `align: 16`, two workgroups a multiprocessor. On sm_89 it runs at torch's
      * pace (2.44 ms at 4096^3, the rolled body 2.8); on gfx1151 it needs 256 VGPRs and spills,
@@ -10524,9 +11381,9 @@ public final class Gemm {
         return (uint32) want;
     }
 
-    /** Whether the split-K member runs here: built, and built without spilling (as tiled128's unrolled body). */
+    /** Whether a split-K member runs here: the unrolled one where it builds without spilling, else the rolled one. */
     public static boolean splitKRuns() {
-        return Gemm.unrolledPays("gemmTiled128UnrolledSplit_float32");
+        return Gemm.unrolledPays("gemmTiled128UnrolledSplit_float32") || Device.kernelAvailable("gemmTiled128Split_float32");
     }
 
     /** The split-K partial planes, grown only past their high-water mark (see tiled128Split). */
@@ -10541,7 +11398,19 @@ public final class Gemm {
      * launch may still read the old ones.
      */
     public static void tiled128Split<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, uint32 splits) {
-        Gemm.splitInto<E>(c, a, b, m, n, k, splits, false);
+        Gemm.splitInto<E>(c, a, b, m, n, k, splits, false, 0);
+    }
+
+    /** tiled128Split (or with `transA`, tiled128SplitTN) on the unrolled members wherever they are built; queued on the current stream. */
+    public static void tiled128SplitUnrolled<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k,
+                                                uint32 splits, boolean transA) {
+        Gemm.splitInto<E>(c, a, b, m, n, k, splits, transA, 2);
+    }
+
+    /** tiled128Split (or with `transA`, tiled128SplitTN) on the rolled members whatever the backend; queued on the current stream. */
+    public static void tiled128SplitRolled<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k,
+                                              uint32 splits, boolean transA) {
+        Gemm.splitInto<E>(c, a, b, m, n, k, splits, transA, 1);
     }
 
     /**
@@ -10553,23 +11422,35 @@ public final class Gemm {
     public static boolean tiledTN<E>(KernelBuffer<E> c, KernelBuffer<E> at, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 splits = Gemm.splitsFor(m, n, k);
         if (splits <= (uint32) 1 || !Gemm.splitTNRuns()) { return false; }
-        Gemm.splitInto<E>(c, at, b, m, n, k, splits, true);
+        Gemm.splitInto<E>(c, at, b, m, n, k, splits, true, 0);
         return true;
     }
 
     /** `c` = `at`^T . `b` straight through the transposed-A split member with `splits` slices; queued on the current stream. */
     public static void tiled128SplitTN<E>(KernelBuffer<E> c, KernelBuffer<E> at, KernelBuffer<E> b, int64 m, int64 n, int64 k, uint32 splits) {
-        Gemm.splitInto<E>(c, at, b, m, n, k, splits, true);
+        Gemm.splitInto<E>(c, at, b, m, n, k, splits, true, 0);
     }
 
-    /** Whether the transposed-A split member runs here (as splitKRuns). */
+    /** The split-K member Gemm.tiled takes here: the unrolled one where it builds without spilling, else the rolled one. */
+    public static #String splitMember() {
+        if (Gemm.unrolledPays("gemmTiled128UnrolledSplit_float32")) { return "gemmTiled128UnrolledSplit_float32".clone(); }
+        return "gemmTiled128Split_float32".clone();
+    }
+
+    /** The transposed-A split member Gemm.tiledTN takes here (as splitMember). */
+    public static #String splitTNMember() {
+        if (Gemm.unrolledPays("gemmTiled128UnrolledSplitTN_float32")) { return "gemmTiled128UnrolledSplitTN_float32".clone(); }
+        return "gemmTiled128SplitTN_float32".clone();
+    }
+
+    /** Whether a transposed-A split member runs here (as splitKRuns). */
     public static boolean splitTNRuns() {
-        return Gemm.unrolledPays("gemmTiled128UnrolledSplitTN_float32");
+        return Gemm.unrolledPays("gemmTiled128UnrolledSplitTN_float32") || Device.kernelAvailable("gemmTiled128SplitTN_float32");
     }
 
-    /** tiled128Split's body, with A stored k x m when `transA`. */
+    /** tiled128Split's body, with A stored k x m when `transA`; `member` 0 takes the routed member, 1 the rolled, 2 the unrolled. */
     static void splitInto<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, uint32 splits,
-                             boolean transA) {
+                             boolean transA, int32 member) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 uk = (uint32) k;
@@ -10584,10 +11465,14 @@ public final class Gemm {
             Gemm.splitPartsCap = need;
         }
         KernelBuffer<float32> parts = Gemm.splitParts;
-        if (transA) {
+        if (transA && (member == 2 || (member == 0 && Gemm.unrolledPays("gemmTiled128UnrolledSplitTN_float32")))) {
             gemmTiled128UnrolledSplitTN.launch(s, grid: [tiles * used], block: [256])(parts, a, b, um, un, uk, chunk);
-        } else {
+        } else if (transA) {
+            gemmTiled128SplitTN.launch(s, grid: [tiles * used], block: [256])(parts, a, b, um, un, uk, chunk);
+        } else if (member == 2 || (member == 0 && Gemm.unrolledPays("gemmTiled128UnrolledSplit_float32"))) {
             gemmTiled128UnrolledSplit.launch(s, grid: [tiles * used], block: [256])(parts, a, b, um, un, uk, chunk);
+        } else {
+            gemmTiled128Split.launch(s, grid: [tiles * used], block: [256])(parts, a, b, um, un, uk, chunk);
         }
         uint32 mn = um * un;
         gemmSplitJoin.launch(s, grid: [(mn + 255) / 256], block: [256])(c, parts, mn, used);

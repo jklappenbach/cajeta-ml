@@ -83,8 +83,13 @@ public class GemmTest {
         GemmTest.tiledCaseVia<E>(kernel, m, n, k, (uint32) 0);
     }
 
-    /** tiledCase through Gemm.tiled, or with `splits` > 0 straight through Gemm.tiled128Split. */
+    /** tiledCase through Gemm.tiled, or with `splits` > 0 straight through the unrolled split member. */
     static void tiledCaseVia<E>(String kernel, int64 m, int64 n, int64 k, uint32 splits) {
+        GemmTest.tiledCaseVia<E>(kernel, m, n, k, splits, false);
+    }
+
+    /** tiledCaseVia, on the rolled split member when `rolled`. */
+    static void tiledCaseVia<E>(String kernel, int64 m, int64 n, int64 k, uint32 splits, boolean rolled) {
         E[] ha = heap E[m * k];
         E[] hb = heap E[k * n];
         float32[] fa = heap float32[m * k];
@@ -99,7 +104,8 @@ public class GemmTest {
         a.upload(ha);
         b.upload(hb);
         int64[] mk #= ValueCheck.mark();
-        if (splits > (uint32) 0) { Gemm.tiled128Split<E>(c, a, b, m, n, k, splits); }
+        if (rolled) { Gemm.tiled128SplitRolled<E>(c, a, b, m, n, k, splits, false); }
+        else if (splits > (uint32) 0) { Gemm.tiled128SplitUnrolled<E>(c, a, b, m, n, k, splits, false); }
         else { Gemm.tiled<E>(c, a, b, m, n, k); }
         E[] got = heap E[m * n];
         c.download(got);
@@ -176,13 +182,14 @@ public class GemmTest {
         Assert.isTrue(Gemm.splitsFor(512L, 512L, 8192L) > 1);
         Assert.isTrue(Gemm.splitsFor(4096L, 4096L, 4096L) == 1);
         Assert.isTrue(Gemm.splitsFor(300L, 500L, 100L) == 1);
-        int64 s0 = Device.kernelLaunchCount("gemmTiled128UnrolledSplit_float32");
-        GemmTest.tiledCase<float32>("gemmTiled128UnrolledSplit_float32", 256L, 128L, 4096L);
-        GemmTest.tiledCase<float32>("gemmTiled128UnrolledSplit_float32", 200L, 130L, 2050L);
-        Assert.isTrue(Device.kernelLaunchCount("gemmTiled128UnrolledSplit_float32") >= s0 + 2L);
-        int64 s1 = Device.kernelLaunchCount("gemmTiled128UnrolledSplit_float32");
+        String member #= Gemm.splitMember();
+        int64 s0 = Device.kernelLaunchCount(member);
+        GemmTest.tiledCase<float32>(member, 256L, 128L, 4096L);
+        GemmTest.tiledCase<float32>(member, 200L, 130L, 2050L);
+        Assert.isTrue(Device.kernelLaunchCount(member) >= s0 + 2L);
+        int64 s1 = Device.kernelLaunchCount(member);
         GemmTest.tiledCase<float32>("gemmTiled_float32", 300L, 500L, 100L);
-        Assert.equals(s1, Device.kernelLaunchCount("gemmTiled128UnrolledSplit_float32"));
+        Assert.equals(s1, Device.kernelLaunchCount(member));
         // Bit for bit, call to call.
         int64 m = 256L; int64 n = 128L; int64 k = 4096L;
         float32[] ha = heap float32[m * k];
@@ -208,6 +215,11 @@ public class GemmTest {
 
     /** C = at^T . B with `at` stored k x m, through the transposed-A split member (`route` via Gemm.tiledTN), against the host in float64. */
     static void tnCase(int64 m, int64 n, int64 k, uint32 splits, boolean route) {
+        GemmTest.tnCase(m, n, k, splits, route, false);
+    }
+
+    /** tnCase, on the rolled transposed-A member when `rolled`. */
+    static void tnCase(int64 m, int64 n, int64 k, uint32 splits, boolean route, boolean rolled) {
         float32[] fat = heap float32[k * m];
         float32[] fb = heap float32[k * n];
         int64 i = 0L;
@@ -220,8 +232,9 @@ public class GemmTest {
         at.upload(fat);
         b.upload(fb);
         int64[] mk #= ValueCheck.mark();
-        if (route) { Assert.isTrue(Gemm.tiledTN<float32>(c, at, b, m, n, k)); }
-        else { Gemm.tiled128SplitTN<float32>(c, at, b, m, n, k, splits); }
+        if (rolled) { Gemm.tiled128SplitRolled<float32>(c, at, b, m, n, k, splits, true); }
+        else if (route) { Assert.isTrue(Gemm.tiledTN<float32>(c, at, b, m, n, k)); }
+        else { Gemm.tiled128SplitUnrolled<float32>(c, at, b, m, n, k, splits, true); }
         float32[] got = heap float32[m * n];
         c.download(got);
         int32 bad = 0;
@@ -262,6 +275,37 @@ public class GemmTest {
         GemmTest.tnCase(256L, 128L, 4096L, (uint32) 0, true);
         KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) 64);
         Assert.isFalse(Gemm.tiledTN<float32>(x, x, x, 8L, 8L, 8L));
+    }
+
+    /** cajeta-ml-gpu 28.2.8: the rolled split-K members (gfx1151's, where the unrolled ones spill), plain and transposed-A,
+     *  at a ragged shape and a whole-tile one, against the host, and bit for bit call to call. */
+    @Test
+    public void theRolledSplitMembersMatchTheHost() {
+        if (!GemmTest.usable("gemmTiled128Split_float32") || !GemmTest.usable("gemmTiled128SplitTN_float32")) { return; }
+        GemmTest.tiledCaseVia<float32>("gemmTiled128Split_float32", 200L, 130L, 2050L, (uint32) 8, true);
+        GemmTest.tiledCaseVia<float32>("gemmTiled128Split_float32", 256L, 128L, 4096L, (uint32) 4, true);
+        GemmTest.tnCase(200L, 130L, 2050L, (uint32) 8, false, true);
+        GemmTest.tnCase(256L, 128L, 1024L, (uint32) 4, false, true);
+        int64 m = 256L; int64 n = 128L; int64 k = 2048L;
+        float32[] ha = heap float32[m * k];
+        float32[] hb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < m * k) { ha[(int32) i] = GemmTest.pattern(i); i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { hb[(int32) i] = GemmTest.pattern(i + 17L); i = i + 1L; }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>((uint64) (m * k));
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        Gemm.tiled128SplitRolled<float32>(c, a, b, m, n, k, (uint32) 4, false);
+        float32[] one = heap float32[m * n];
+        c.download(one);
+        Gemm.tiled128SplitRolled<float32>(c, a, b, m, n, k, (uint32) 4, false);
+        float32[] two = heap float32[m * n];
+        c.download(two);
+        i = 0L;
+        while (i < m * n) { Assert.isTrue(Cajeta.f32ToBits(one[(int32) i]) == Cajeta.f32ToBits(two[(int32) i])); i = i + 1L; }
     }
 
     @Test
