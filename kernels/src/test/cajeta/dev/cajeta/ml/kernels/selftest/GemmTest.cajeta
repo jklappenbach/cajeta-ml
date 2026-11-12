@@ -80,6 +80,11 @@ public class GemmTest {
 
     /** C = A . B through the plain tile at E, against the host in float64. */
     static void tiledCase<E>(String kernel, int64 m, int64 n, int64 k) {
+        GemmTest.tiledCaseVia<E>(kernel, m, n, k, (uint32) 0);
+    }
+
+    /** tiledCase through Gemm.tiled, or with `splits` > 0 straight through Gemm.tiled128Split. */
+    static void tiledCaseVia<E>(String kernel, int64 m, int64 n, int64 k, uint32 splits) {
         E[] ha = heap E[m * k];
         E[] hb = heap E[k * n];
         float32[] fa = heap float32[m * k];
@@ -94,7 +99,8 @@ public class GemmTest {
         a.upload(ha);
         b.upload(hb);
         int64[] mk #= ValueCheck.mark();
-        Gemm.tiled<E>(c, a, b, m, n, k);
+        if (splits > (uint32) 0) { Gemm.tiled128Split<E>(c, a, b, m, n, k, splits); }
+        else { Gemm.tiled<E>(c, a, b, m, n, k); }
         E[] got = heap E[m * n];
         c.download(got);
         int64 r = 0L;
@@ -151,6 +157,53 @@ public class GemmTest {
             GemmTest.tiledCase<float32>("gemmTiled_float32", 300L, 500L, 100L);
             GemmTest.routes("gemmTiled_float32", big, s0, b1);
         }
+    }
+
+    /**
+     * A small output over a long K (a weight gradient: 512 x 512 over 8192 rows) splits K
+     * across the wide tile: on the plain tile it took 659 us on a 4090, sixteen 128x128
+     * tiles being too few workgroups for the device (transformer-block-train, cajeta-ml-gpu
+     * 28.2.8). The slices are joined in order, so the result repeats bit for bit; shapes
+     * with enough tiles, or a short K, keep their routes.
+     */
+    @Test
+    public void aSmallOutputOverALongKSplitsKAndStaysRight() {
+        if (!GemmTest.usable("gemmTiled128UnrolledSplit_float32")) { return; }
+        // Straight through the member wherever it is built, the route only where it runs.
+        GemmTest.tiledCaseVia<float32>("gemmTiled128UnrolledSplit_float32", 200L, 130L, 2050L, (uint32) 8);
+        if (!Gemm.splitKRuns()) { return; }
+        Assert.isTrue(Gemm.splitsFor(256L, 128L, 4096L) > 1);
+        Assert.isTrue(Gemm.splitsFor(512L, 512L, 8192L) > 1);
+        Assert.isTrue(Gemm.splitsFor(4096L, 4096L, 4096L) == 1);
+        Assert.isTrue(Gemm.splitsFor(300L, 500L, 100L) == 1);
+        int64 s0 = Device.kernelLaunchCount("gemmTiled128UnrolledSplit_float32");
+        GemmTest.tiledCase<float32>("gemmTiled128UnrolledSplit_float32", 256L, 128L, 4096L);
+        GemmTest.tiledCase<float32>("gemmTiled128UnrolledSplit_float32", 200L, 130L, 2050L);
+        Assert.isTrue(Device.kernelLaunchCount("gemmTiled128UnrolledSplit_float32") >= s0 + 2L);
+        int64 s1 = Device.kernelLaunchCount("gemmTiled128UnrolledSplit_float32");
+        GemmTest.tiledCase<float32>("gemmTiled_float32", 300L, 500L, 100L);
+        Assert.equals(s1, Device.kernelLaunchCount("gemmTiled128UnrolledSplit_float32"));
+        // Bit for bit, call to call.
+        int64 m = 256L; int64 n = 128L; int64 k = 4096L;
+        float32[] ha = heap float32[m * k];
+        float32[] hb = heap float32[k * n];
+        int64 i = 0L;
+        while (i < m * k) { ha[(int32) i] = GemmTest.pattern(i); i = i + 1L; }
+        i = 0L;
+        while (i < k * n) { hb[(int32) i] = GemmTest.pattern(i + 17L); i = i + 1L; }
+        KernelBuffer<float32> a = heap KernelBuffer<float32>((uint64) (m * k));
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(ha);
+        b.upload(hb);
+        Gemm.tiled<float32>(c, a, b, m, n, k);
+        float32[] one = heap float32[m * n];
+        c.download(one);
+        Gemm.tiled<float32>(c, a, b, m, n, k);
+        float32[] two = heap float32[m * n];
+        c.download(two);
+        i = 0L;
+        while (i < m * n) { Assert.isTrue(Cajeta.f32ToBits(one[(int32) i]) == Cajeta.f32ToBits(two[(int32) i])); i = i + 1L; }
     }
 
     @Test
