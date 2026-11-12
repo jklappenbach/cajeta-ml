@@ -206,6 +206,53 @@ public class PrimitivesTest {
         PrimitivesTest.transposeCase<int8>("transpose_int8", 255L, 3L);
     }
 
+    /** One last-two-axes transpose through the strided copy, against the host: `b0 x b1` batches of an `m x n` input
+     *  (row-major, at `inOff`) written as `n x m` at `outOff`. */
+    static void stridedTransposeCase(int64 b0, int64 b1, int64 m, int64 n, int64 inOff, int64 outOff) {
+        int64 total = b0 * b1 * m * n;
+        float32[] src = heap float32[total + inOff];
+        int64 i = 0L;
+        while (i < total + inOff) { src[(int32) i] = (float32) ((i * 37L) % 1009L) - 500.0f; i = i + 1L; }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) (total + inOff));
+        in.upload(src);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) (total + outOff));
+        int64[] dims = [b0, b1, n, m];
+        int64[] is = [b1 * m * n, m * n, 1L, n];
+        int64[] os = [b1 * m * n, m * n, m, 1L];
+        Copy.stridedInto<float32>(out, in, dims, is, os, inOff, outOff);
+        float32[] got = heap float32[total + outOff];
+        out.download(got);
+        int64 a = 0L;
+        while (a < b0 * b1) {
+            int64 r = 0L;
+            while (r < m) {
+                int64 c = 0L;
+                while (c < n) {
+                    float32 want = src[(int32) (inOff + a * m * n + r * n + c)];
+                    float32 have = got[(int32) (outOff + a * m * n + c * m + r)];
+                    if (have != want) {
+                        Assert.fail("strided transpose " + b0 + "x" + b1 + "x" + m + "x" + n + " at (" + a + "," + r + "," + c + "): " + have + " vs " + want);
+                    }
+                    c = c + 1L;
+                }
+                r = r + 1L;
+            }
+            a = a + 1L;
+        }
+    }
+
+    /** cajeta-ml-gpu 28.2.7: a last-two-axes transpose takes the tiled strided copy, whole and ragged tiles, batched, offset. */
+    @Test
+    public void stridedCopyTransposesThroughTiles() {
+        if (!PrimitivesTest.usable("strided_float32") || !PrimitivesTest.usable("stridedTile_float32")) { return; }
+        int64[] m #= ValueCheck.mark();
+        PrimitivesTest.stridedTransposeCase(1L, 1L, 300L, 700L, 0L, 0L);
+        PrimitivesTest.stridedTransposeCase(3L, 2L, 37L, 300L, 0L, 0L);
+        PrimitivesTest.stridedTransposeCase(1L, 2L, 64L, 288L, 11L, 7L);
+        PrimitivesTest.stridedTransposeCase(2L, 3L, 37L, 65L, 0L, 0L);
+        ValueCheck.credit(m);
+    }
+
     /** The strided copy as a permute (3x7x5 -> 5x3x7), a slice of the middle axis, and a
      *  concatenate's second half along axis 1, each against the host index arithmetic. */
     @Test

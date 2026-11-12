@@ -1,8 +1,11 @@
 package dev.cajeta.ml.kernels;
 
+import cajeta.xpu.Barrier;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
+import cajeta.xpu.Shared;
+import cajeta.xpu.Workgroup;
 
 /** Device-to-device copy at any dtype, contiguous or strided (spec §4.1). */
 public final class Copy {
@@ -39,6 +42,43 @@ public final class Copy {
         }
     }
 
+    /** The strided copy of a transpose of the last two axes (input contiguous along axis 2, output along axis 3): a
+     *  32x32 tile through shared memory a workgroup, so the read and the write both coalesce. */
+    @Kernel
+    public static void stridedTile<E>(KernelBuffer<E> out, KernelBuffer<E> in, uint32 r1, uint32 r2, uint32 r3,
+                                      uint32 is0, uint32 is1, uint32 is3, uint32 os0, uint32 os1, uint32 os2,
+                                      uint32 inOff, uint32 outOff) {
+        Shared<E> tile = shared E[1056];
+        uint32 tx = KernelThread.x() % 32;
+        uint32 ty = KernelThread.x() / 32;
+        uint32 t2n = (r2 + 31) / 32;
+        uint32 t3n = (r3 + 31) / 32;
+        uint32 wg = Workgroup.x();
+        uint32 b3 = wg % t3n;
+        uint32 q = wg / t3n;
+        uint32 b2 = q % t2n;
+        q = q / t2n;
+        uint32 i1 = q % r1;
+        uint32 i0 = q / r1;
+        uint32 ib = inOff + i0 * is0 + i1 * is1;
+        uint32 ob = outOff + i0 * os0 + i1 * os1;
+        uint32 i2 = b2 * 32 + tx;
+        uint32 k = 0;
+        while (k < 4) {
+            uint32 i3 = b3 * 32 + ty + 8 * k;
+            if (i2 < r2 && i3 < r3) { tile[(ty + 8 * k) * 33 + tx] = in[ib + i2 + i3 * is3]; }
+            k = k + 1;
+        }
+        Barrier.workgroup();
+        uint32 j3 = b3 * 32 + tx;
+        k = 0;
+        while (k < 4) {
+            uint32 j2 = b2 * 32 + ty + 8 * k;
+            if (j2 < r2 && j3 < r3) { out[ob + j2 * os2 + j3] = tile[tx * 33 + ty + 8 * k]; }
+            k = k + 1;
+        }
+    }
+
     /**
      * The strided copy over `dims` (1 to 4 axes, padded on the left) with per-axis input and
      * output strides and base offsets; queued on the current stream.
@@ -63,6 +103,12 @@ public final class Copy {
         }
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
+        if (si[2] == 1 && so[3] == 1 && si[3] >= 256 && r[2] >= 16 && r[3] >= 16) {
+            uint32 tiles = r[0] * r[1] * ((r[2] + 31) / 32) * ((r[3] + 31) / 32);
+            stridedTile.launch(s, grid: [tiles], block: [256])(out, in, r[1], r[2], r[3], si[0], si[1], si[3],
+                so[0], so[1], so[2], (uint32) inOff, (uint32) outOff);
+            return;
+        }
         strided.launch(s, grid: [(un + 255) / 256], block: [256])(out, in, un, r[1], r[2], r[3],
             si[0], si[1], si[2], si[3], so[0], so[1], so[2], so[3], (uint32) inOff, (uint32) outOff);
     }

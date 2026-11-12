@@ -47,7 +47,7 @@ public final class Kernels {
         + "scatter_float32|scatterPass|segmentCounts|sgd_float32|softmaxBack_bfloat16|"
         + "softmaxBack_float16|softmaxBack_float32|softmax_bfloat16|softmax_float16|"
         + "softmax_float32|split2_float16|split4_float16|split8_float16|splitFixup|"
-        + "stats_float32|strided_float32|toOrdered_float32|toOrdered_int32|topk_float32|"
+        + "stats_float32|strided_float32|stridedTile_float32|toOrdered_float32|toOrdered_int32|topk_float32|"
         + "topk_int32|transpose_float16|transpose_float32|transpose_int8|unary_bfloat16|"
         + "unary_float16|unary_float32|";
 
