@@ -550,6 +550,27 @@ public final class GradTape<E extends Floating> {
         return;
     }
 
+    /**
+     * accumTo for a contribution the backward just computed: it is the backward's own, so
+     * when no reduction is needed it moves into the cotangent where sumTo would copy it
+     * (cajeta-ml-gpu 28.2.8).
+     */
+    void accumOwnedTo(int32 node, #Tensor<E> contrib) {
+        Tensor<E> like = this.values.get(node);
+        boolean same = contrib.ndim() == like.ndim();
+        int32 d = 0;
+        while (same && d < like.ndim()) {
+            if (contrib.shapeAt(d) != like.shapeAt(d)) { same = false; }
+            d = d + 1;
+        }
+        if (same) {
+            this.accum(node, #contrib);
+            return;
+        }
+        this.accumTo(node, contrib);
+        return;
+    }
+
     /** Shape-restoring accumulate (broadcast backward). */
     void accumTo(int32 node, Tensor<E> contrib) {
         Tensor<E> like = this.values.get(node);
@@ -629,18 +650,18 @@ public final class GradTape<E extends Floating> {
             if (this.needsGrad[a]) { this.accumThrough(a, g); }
             if (this.needsGrad[b]) {
                 Tensor<E> ng #= Ops.run1<E>(Op.NEG, g, 0, (E) 0);
-                this.accumTo(b, ng);
+                this.accumOwnedTo(b, #ng);
             }
             return;
         }
         if (op == Op.MUL) {
             if (this.needsGrad[a]) {
                 Tensor<E> ga #= Tensor.mul<E>(g, this.values.get(b));
-                this.accumTo(a, ga);
+                this.accumOwnedTo(a, #ga);
             }
             if (this.needsGrad[b]) {
                 Tensor<E> gb #= Tensor.mul<E>(g, va);
-                this.accumTo(b, gb);
+                this.accumOwnedTo(b, #gb);
             }
             return;
         }
@@ -648,14 +669,14 @@ public final class GradTape<E extends Floating> {
             Tensor<E> vb = this.values.get(b);
             if (this.needsGrad[a]) {
                 Tensor<E> ga #= Ops.divK<E>(g, vb);
-                this.accumTo(a, ga);
+                this.accumOwnedTo(a, #ga);
             }
             if (this.needsGrad[b]) {
                 // d/db (a/b) = -a/b² → -out/b
                 Tensor<E> t1 #= Ops.divK<E>(vo, vb);
                 Tensor<E> t2 #= Tensor.mul<E>(g, t1);
                 Tensor<E> gb #= Ops.run1<E>(Op.NEG, t2, 0, (E) 0);
-                this.accumTo(b, gb);
+                this.accumOwnedTo(b, #gb);
             }
             return;
         }

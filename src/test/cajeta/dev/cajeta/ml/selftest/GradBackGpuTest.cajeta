@@ -373,6 +373,40 @@ public class GradBackGpuTest {
         GradBackGpuTest.sameGrad("residual add, b", wantB, d.gradOf(db));
     }
 
+    /**
+     * A same-shape product, quotient or difference moves the contribution it just computed
+     * into its input's cotangent: the tensor is the backward's own, so taking it costs
+     * nothing, where sumTo copied it once more before keeping it (cajeta-ml-gpu 28.2.8).
+     * No copy launches across the backward of mul, div and sub over two leaves, and the
+     * gradients still match the cpu tape.
+     */
+    @Test
+    public void aSameShapeProductKeepsTheContributionItComputed() {
+        int64[] s = [6L, 8L];
+        Tensor<float32> a #= GradBackGpuTest.fill(s, 59L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(s, 61L, true);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor la = t.leaf(a, true);
+        GradTensor lb = t.leaf(b, true);
+        GradTensor y = t.tanh(t.sub(t.mul(la, lb), t.div(la, lb)));
+        t.backward(y);
+        Tensor<float32> wantA = t.gradOf(la);
+        Tensor<float32> wantB = t.gradOf(lb);
+        Tensor<float32> ad #= GradBackGpuTest.onDevice(a);
+        Tensor<float32> bd #= GradBackGpuTest.onDevice(b);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor da = d.leaf(ad, true);
+        GradTensor db = d.leaf(bd, true);
+        GradTensor yd = d.tanh(d.sub(d.mul(da, db), d.div(da, db)));
+        int64 before = Device.kernelLaunchCount("copy_float32");
+        d.backward(yd);
+        int64 copies = Device.kernelLaunchCount("copy_float32") - before;
+        System.stdout.println("  same-shape product copies: " + copies);
+        Assert.equals(0L, copies);
+        GradBackGpuTest.sameGrad("mul, div, sub, a", wantA, d.gradOf(da));
+        GradBackGpuTest.sameGrad("mul, div, sub, b", wantB, d.gradOf(db));
+    }
+
     @Test
     public void binaryBackwardsMatchTheCpu() {
         int64[] s = [3L, 7L];
