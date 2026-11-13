@@ -645,8 +645,7 @@ public final class GradTape<E extends Floating> {
     /** The linear node's VJP from the cotangent `gm` of its pre-activation sum. */
     void linearBack(int32 i, int32 a, int32 b, Tensor<E> va, Tensor<E> vb, Tensor<E> gm) {
         if (this.needsGrad[a]) {
-            Tensor<E> bt #= Ops.run1<E>(Op.TRANSPOSE, vb, 0, (E) 0);
-            this.accum(a, Ops.run2<E>(Op.MATMUL, gm, bt));
+            this.accum(a, Ops.matmulNT<E>(gm, vb));
         }
         if (this.needsGrad[b]) {
             this.accum(b, Ops.matmulTN<E>(va, gm));
@@ -707,8 +706,7 @@ public final class GradTape<E extends Floating> {
         if (op == Op.MATMUL) {
             Tensor<E> vb = this.values.get(b);
             if (this.needsGrad[a]) {
-                Tensor<E> bt #= Ops.run1<E>(Op.TRANSPOSE, vb, 0, (E) 0);
-                this.accum(a, Ops.run2<E>(Op.MATMUL, g, bt));
+                this.accum(a, Ops.matmulNT<E>(g, vb));
             }
             if (this.needsGrad[b]) {
                 this.accum(b, Ops.matmulTN<E>(va, g));

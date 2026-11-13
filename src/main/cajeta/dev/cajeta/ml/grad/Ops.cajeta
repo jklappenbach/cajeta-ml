@@ -226,6 +226,30 @@ public final class Ops {
     }
 
     /**
+     * `a` . `b`^T for 2-D `a` (m x k) and `b` (n x k): on the device at Gemm.large shapes the
+     * wide tile's NT member reads `b` as stored, where it runs (Gemm.tiled128NT), else `b` is
+     * transposed and multiplied. A Linear's input gradient G . W^T is this shape, and the
+     * in-place read saves W^T's copy (cajeta-ml-gpu 28.2.8).
+     */
+    public static #Tensor<E> matmulNT<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        if (a.isOnGpu() && a.ndim() == 2 && b.ndim() == 2 && Gemm.large(a.shapeAt(0), b.shapeAt(0))) {
+            Ops.requireSame<E>("matmulNT", a, b);
+            Ops.requireF32<E>("matmulNT");
+            int64 m = a.shapeAt(0);
+            int64 k = a.shapeAt(1);
+            int64 n = b.shapeAt(0);
+            int64[] shp = [m, n];
+            Tensor<E> out #= Ewise.deviceOf<E>(shp);
+            if (Gemm.tiled128NT<E>(out.deviceView("matmulNT"), a.deviceView("matmulNT"), b.deviceView("matmulNT"), m, n, k)) {
+                return #out;
+            }
+        }
+        Tensor<E> bt #= Ops.run1<E>(Op.TRANSPOSE, b, 0, (E) 0);
+        Tensor<E> r #= Ops.run2<E>(Op.MATMUL, a, bt);
+        return #r;
+    }
+
+    /**
      * `a`^T . `b` for 2-D `a` (k x m) and `b` (k x n): on the device the transposed-A
      * split member reads `a` in place when the product splits K (Gemm.tiledTN), else `a`
      * is transposed and multiplied as before. A weight gradient X^T . G is this shape, and

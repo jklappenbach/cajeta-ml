@@ -288,6 +288,31 @@ public class GradBackGpuTest {
     }
 
     /**
+     * A large Linear's input gradient G . W^T reads the weight as stored, through the unrolled
+     * tile's NT member where it runs, where it copied W^T first: six copies a step in
+     * transformer-block-train (cajeta-ml-gpu 28.2.8). Plain matmul's left gradient alike.
+     * 1100 x 600 by 600 x 600 (45 tiles, no split): no strided launch across the backward on
+     * cuda, where the member runs, and the gradients match the cpu tape.
+     */
+    @Test
+    public void aLargeLinearGradientReadsItsWeightInPlace() {
+        int64[] xs = [1100L, 600L];
+        int64[] ws = [600L, 600L];
+        int64[] bs = [1L, 600L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 47L, false);
+        Tensor<float32> w #= GradBackGpuTest.fill(ws, 53L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(bs, 59L, false);
+        int64 before = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32");
+        GradBackGpuTest.linear("large linear gradient", 0, x, w, b);
+        GradBackGpuTest.binary("large matmul gradient", Op.MATMUL, x, w, 0);
+        int64 copies = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32") - before;
+        System.stdout.println("  large linear gradient copies: " + copies);
+        if (Device.activeBackend().equals("cuda")) {
+            Assert.equals(0L, copies);
+        }
+    }
+
+    /**
      * A weight gradient X^T . G at a shape that splits K reads X in place through the
      * transposed-A split member, where it runs, instead of materializing X^T (16 to 64 MB a
      * call in transformer-block-train, cajeta-ml-gpu 28.2.8); linear and matmul alike, the
