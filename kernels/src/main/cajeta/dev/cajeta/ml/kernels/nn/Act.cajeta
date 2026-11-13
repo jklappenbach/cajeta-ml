@@ -507,40 +507,96 @@ public final class Act {
         return 0.5f * (1.0f + th) + 0.5f * x * (1.0f - th * th) * dt;
     }
 
+    /**
+     * out = g * kind'(x). Tanh and sigmoid read the output `y`, every other kind the input
+     * `x`, and the launch loads only that one: GELU's backward read 64 MB of `y` it never
+     * used in transformer-block-train, a quarter of its traffic (cajeta-ml-gpu 28.2.8).
+     */
     @Kernel
     public static void actBack<E>(KernelBuffer<E> out, KernelBuffer<E> g, KernelBuffer<E> x, KernelBuffer<E> y, uint32 n, int32 kind) {
         uint32 i = KernelThread.globalIdX();
-        if (i < n) { out[i] = (E) ((float32) g[i] * Act.slope(kind, (float32) x[i], (float32) y[i])); }
+        if (i < n) {
+            float32 xv = 0.0f;
+            float32 yv = 0.0f;
+            if (kind == 3 || kind == 4) { yv = (float32) y[i]; } else { xv = (float32) x[i]; }
+            out[i] = (E) ((float32) g[i] * Act.slope(kind, xv, yv));
+        }
     }
 
-    /** The softmax VJP per row, s * (g - <g, s>), or with `logForm` the log-softmax VJP g - exp(ls) * sum(g). */
+    /**
+     * The softmax VJP per row, s * (g - <g, s>), or with `logForm` the log-softmax VJP
+     * g - exp(ls) * sum(g). Eight rows a workgroup as softmax's forward: a row of at most
+     * 16 waves' width takes a wave and no barriers; a wider one takes the workgroup and a
+     * shared-memory tree. A workgroup a row left half of it idle on attention's 128-wide
+     * rows and ran twice torch's backward (cajeta-ml-gpu 28.2.8).
+     */
     @Kernel
-    public static void softmaxBack<E>(KernelBuffer<E> out, KernelBuffer<E> y, KernelBuffer<E> g, uint32 cols, int32 logForm) {
+    public static void softmaxBack<E>(KernelBuffer<E> out, KernelBuffer<E> y, KernelBuffer<E> g, uint32 rows, uint32 cols, int32 logForm) {
         Shared<float32> part = shared float32[256];
         uint32 lane = KernelThread.x();
-        uint32 base = Workgroup.x() * cols;
-        float32 acc = 0.0f;
-        uint32 i = lane;
-        while (i < cols) {
-            float32 gv = (float32) g[base + i];
-            if (logForm != 0) { acc = acc + gv; } else { acc = acc + gv * (float32) y[base + i]; }
-            i = i + 256;
-        }
-        part[lane] = acc;
-        Barrier.workgroup();
-        uint32 s = 128;
-        while (s > 0) {
-            if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
-            Barrier.workgroup();
-            s = s / 2;
-        }
-        float32 tot = part[0];
-        uint32 j = lane;
-        while (j < cols) {
-            float32 gv = (float32) g[base + j];
-            float32 yv = (float32) y[base + j];
-            if (logForm != 0) { out[base + j] = (E) (gv - Math.exp(yv) * tot); } else { out[base + j] = (E) (yv * (gv - tot)); }
-            j = j + 256;
+        uint32 width = Wave.width();
+        uint32 first = Workgroup.x() * 8;
+        uint32 last = first + 8;
+        if (last > rows) { last = rows; }
+        if (cols <= 16 * width) {
+            uint32 wl = Wave.laneId();
+            uint32 waves = 256 / width;
+            uint32 reps = (8 + waves - 1) / waves;
+            uint32 k = 0;
+            while (k < reps) {
+                uint32 row = first + lane / width + k * waves;
+                boolean live = row < last;
+                if (!live) { row = rows - 1; }
+                uint32 base = row * cols;
+                float32 acc = 0.0f;
+                uint32 i = wl;
+                while (i < cols) {
+                    float32 gv = (float32) g[base + i];
+                    if (logForm != 0) { acc = acc + gv; } else { acc = acc + gv * (float32) y[base + i]; }
+                    i = i + width;
+                }
+                float32 tot = Wave.reduceSumF32(acc);
+                if (live) {
+                    uint32 j = wl;
+                    while (j < cols) {
+                        float32 gv = (float32) g[base + j];
+                        float32 yv = (float32) y[base + j];
+                        if (logForm != 0) { out[base + j] = (E) (gv - Math.exp(yv) * tot); } else { out[base + j] = (E) (yv * (gv - tot)); }
+                        j = j + width;
+                    }
+                }
+                k = k + 1;
+            }
+        } else {
+            uint32 row = first;
+            while (row < last) {
+                uint32 base = row * cols;
+                float32 acc = 0.0f;
+                uint32 i = lane;
+                while (i < cols) {
+                    float32 gv = (float32) g[base + i];
+                    if (logForm != 0) { acc = acc + gv; } else { acc = acc + gv * (float32) y[base + i]; }
+                    i = i + 256;
+                }
+                part[lane] = acc;
+                Barrier.workgroup();
+                uint32 s = 128;
+                while (s > 0) {
+                    if (lane < s) { part[lane] = part[lane] + part[lane + s]; }
+                    Barrier.workgroup();
+                    s = s / 2;
+                }
+                float32 tot = part[0];
+                Barrier.workgroup();
+                uint32 j = lane;
+                while (j < cols) {
+                    float32 gv = (float32) g[base + j];
+                    float32 yv = (float32) y[base + j];
+                    if (logForm != 0) { out[base + j] = (E) (gv - Math.exp(yv) * tot); } else { out[base + j] = (E) (yv * (gv - tot)); }
+                    j = j + 256;
+                }
+                row = row + 1;
+            }
         }
     }
 
@@ -591,6 +647,6 @@ public final class Act {
         int32 lf = 0;
         if (logForm) { lf = 1; }
         KernelStream s #= KernelStream.current();
-        softmaxBack.launch(s, grid: [(uint32) rows], block: [256])(out, y, g, (uint32) cols, lf);
+        softmaxBack.launch(s, grid: [((uint32) rows + 7) / 8], block: [256])(out, y, g, (uint32) rows, (uint32) cols, lf);
     }
 }

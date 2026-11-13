@@ -383,6 +383,8 @@ public class NormActTest {
     public void f32RowsMatchTheHost() {
         if (!NormActTest.usable("rmsnorm_float32") || !NormActTest.usable("act_float32")) { return; }
         NormActTest.rows<float32>(24, 37L, 1000L);
+        // attention's 128-wide score rows: a wave a row, a ragged last workgroup (cajeta-ml-gpu 28.2.8)
+        NormActTest.rows<float32>(24, 37L, 128L);
         NormActTest.rows<float32>(24, 3L, 1L);
         NormActTest.rows<float32>(24, 2L, 4096L);
     }
