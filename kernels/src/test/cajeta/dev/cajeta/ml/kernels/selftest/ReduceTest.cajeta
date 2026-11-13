@@ -225,6 +225,11 @@ public class ReduceTest {
         // held 8 warps an SM and ran 40 us where torch's reduction takes 12.
         Assert.isTrue(Reduce.axisSplits(512L, 8192L) == 256);
         Assert.isTrue(Reduce.axisSplits(2048L, 8192L) == 64);
+        // An axis under 1024 keeps the 32k-lane rule with slices of at least 64: on gfx1151
+        // cnn-train-step's 64- to 127-long axes ran cheaper whole, and splitting them cost
+        // 12% of the step (Proton, 2026-11-13).
+        Assert.isTrue(Reduce.axisSplits(64L, 100L) == 1);
+        Assert.isTrue(Reduce.axisSplits(64L, 512L) == 8);
         Assert.isTrue(Reduce.axisSplits(outer * inner, 8L) == 1);
         int64 n = outer * axisLen * inner;
         float32[] src = heap float32[n];

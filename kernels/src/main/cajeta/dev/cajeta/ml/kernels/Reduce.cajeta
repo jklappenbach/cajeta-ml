@@ -179,15 +179,23 @@ public final class Reduce {
 
     /**
      * Slices for an axis reduction of `total` outputs over `axisLen`: 1 (one lane per
-     * output) when the outputs alone fill the device, else enough slices of at least 32
-     * elements to give the launch about 128k lanes, up to 256. At 32k lanes a bias over
-     * 8192 rows held 8 warps an SM and ran three times torch's reduction on a 4090
-     * (cajeta-ml-gpu 28.2.8).
+     * output) when the outputs alone fill the device, else, up to 256, enough slices to
+     * give the launch about 32k lanes with slices of at least 64 elements, or for an axis
+     * of 1024 or more about 128k lanes with slices of at least 32. At 32k lanes a bias over
+     * 8192 rows held 8 warps an SM and ran three times torch's reduction on a 4090; under
+     * the long-axis rule cnn-train-step's 64- to 127-long axes split too and lost 12% on
+     * gfx1151, where they ran cheaper whole (cajeta-ml-gpu 28.2.8).
      */
     public static uint32 axisSplits(int64 total, int64 axisLen) {
         if (total >= 16384L) { return (uint32) 1; }
-        int64 want = (131072L + total - 1L) / total;
-        int64 most = axisLen / 32L;
+        int64 lanes = 32768L;
+        int64 minSlice = 64L;
+        if (axisLen >= 1024L) {
+            lanes = 131072L;
+            minSlice = 32L;
+        }
+        int64 want = (lanes + total - 1L) / total;
+        int64 most = axisLen / minSlice;
         if (want > most) { want = most; }
         if (want > 256L) { want = 256L; }
         if (want < 1L) { want = 1L; }
