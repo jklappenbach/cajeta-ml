@@ -872,4 +872,56 @@ public class StructuredTest {
         }
         ValueCheck.credit(m);
     }
+
+    /**
+     * The unrolled 128 tile's NT member reads B stored transposed (n x k), so a Linear's input
+     * gradient G . W^T reads the weight as stored instead of copying W^T first, six copies a
+     * step in transformer-block-train (cajeta-ml-gpu 28.2.8). 300 x 260 x 64 (whole tiles on
+     * the 4-wide path) and 150 x 200 x 37 (the ragged path) against the host. On cuda the
+     * launcher must take the member, which it does only while its build spills nothing;
+     * elsewhere the member runs straight when the launcher declines it.
+     */
+    @Test
+    public void wideTileReadsATransposedB() {
+        if (!StructuredTest.usable("gemmTiled128UnrolledNT_float32")) { return; }
+        int64[] ms = [300L, 150L];
+        int64[] ns = [260L, 200L];
+        int64[] ks = [64L, 37L];
+        int64[] m #= ValueCheck.mark();
+        int32 kase = 0;
+        while (kase < 2) {
+            int64 mm = ms[kase]; int64 nn = ns[kase]; int64 kk = ks[kase];
+            float64[] fa = heap float64[mm * kk];
+            float64[] fb = heap float64[nn * kk];
+            KernelBuffer<float32> a #= StructuredTest.upload(mm * kk, 109L, fa);
+            KernelBuffer<float32> b #= StructuredTest.upload(nn * kk, 113L, fb);
+            KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (mm * nn));
+            int64 unrolled = Device.kernelLaunchCount("gemmTiled128UnrolledNT_float32");
+            boolean ran = Gemm.tiled128NT<float32>(c, a, b, mm, nn, kk);
+            if (Device.activeBackend().equals("cuda")) {
+                Assert.isTrue(ran);
+            }
+            if (!ran) { Gemm.tiled128UnrolledNT<float32>(c, a, b, mm, nn, kk); }
+            Assert.equals(unrolled + 1L, Device.kernelLaunchCount("gemmTiled128UnrolledNT_float32"));
+            {
+                float32[] g = heap float32[mm * nn];
+                c.download(g);
+                StructuredTest.stage = "gemmTiled128UnrolledNT, " + mm + " x " + nn + " x " + kk;
+                int64 r = 0L;
+                while (r < mm) {
+                    int64 col = 0L;
+                    while (col < nn) {
+                        float64 acc = 0.0;
+                        int64 p = 0L;
+                        while (p < kk) { acc = acc + fa[(int32) (r * kk + p)] * fb[(int32) (col * kk + p)]; p = p + 1L; }
+                        StructuredTest.close((float64) g[(int32) (r * nn + col)], acc, (float64) kk * 1.0e-7);
+                        col = col + 1L;
+                    }
+                    r = r + 1L;
+                }
+            }
+            kase = kase + 1;
+        }
+        ValueCheck.credit(m);
+    }
 }

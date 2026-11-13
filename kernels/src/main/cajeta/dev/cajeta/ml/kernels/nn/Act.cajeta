@@ -542,6 +542,8 @@ public final class Act {
             uint32 wl = Wave.laneId();
             uint32 waves = 256 / width;
             uint32 reps = (8 + waves - 1) / waves;
+            // a row a whole number of 4-wide steps across the wave loads 4 floats a lane at a time
+            boolean quads = (cols % (4 * width)) == 0;
             uint32 k = 0;
             while (k < reps) {
                 uint32 row = first + lane / width + k * waves;
@@ -549,14 +551,47 @@ public final class Act {
                 if (!live) { row = rows - 1; }
                 uint32 base = row * cols;
                 float32 acc = 0.0f;
-                uint32 i = wl;
-                while (i < cols) {
-                    float32 gv = (float32) g[base + i];
-                    if (logForm != 0) { acc = acc + gv; } else { acc = acc + gv * (float32) y[base + i]; }
-                    i = i + width;
+                if (quads) {
+                    uint32 i4 = wl * 4;
+                    while (i4 < cols) {
+                        Vector<E,4> g4 = g.vload<4>(base + i4);
+                        if (logForm != 0) {
+                            acc = acc + (float32) g4.x + (float32) g4.y + (float32) g4.z + (float32) g4.w;
+                        } else {
+                            Vector<E,4> y4 = y.vload<4>(base + i4);
+                            acc = acc + (float32) g4.x * (float32) y4.x + (float32) g4.y * (float32) y4.y
+                                + (float32) g4.z * (float32) y4.z + (float32) g4.w * (float32) y4.w;
+                        }
+                        i4 = i4 + 4 * width;
+                    }
+                } else {
+                    uint32 i = wl;
+                    while (i < cols) {
+                        float32 gv = (float32) g[base + i];
+                        if (logForm != 0) { acc = acc + gv; } else { acc = acc + gv * (float32) y[base + i]; }
+                        i = i + width;
+                    }
                 }
                 float32 tot = Wave.reduceSumF32(acc);
-                if (live) {
+                if (live && quads) {
+                    uint32 j4 = wl * 4;
+                    while (j4 < cols) {
+                        Vector<E,4> g4 = g.vload<4>(base + j4);
+                        Vector<E,4> y4 = y.vload<4>(base + j4);
+                        if (logForm != 0) {
+                            out[base + j4] = (E) ((float32) g4.x - Math.exp((float32) y4.x) * tot);
+                            out[base + j4 + 1] = (E) ((float32) g4.y - Math.exp((float32) y4.y) * tot);
+                            out[base + j4 + 2] = (E) ((float32) g4.z - Math.exp((float32) y4.z) * tot);
+                            out[base + j4 + 3] = (E) ((float32) g4.w - Math.exp((float32) y4.w) * tot);
+                        } else {
+                            out[base + j4] = (E) ((float32) y4.x * ((float32) g4.x - tot));
+                            out[base + j4 + 1] = (E) ((float32) y4.y * ((float32) g4.y - tot));
+                            out[base + j4 + 2] = (E) ((float32) y4.z * ((float32) g4.z - tot));
+                            out[base + j4 + 3] = (E) ((float32) y4.w * ((float32) g4.w - tot));
+                        }
+                        j4 = j4 + 4 * width;
+                    }
+                } else if (live) {
                     uint32 j = wl;
                     while (j < cols) {
                         float32 gv = (float32) g[base + j];
