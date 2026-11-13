@@ -11549,17 +11549,21 @@ public final class Gemm {
     }
 
     /**
-     * gemmTiled64 over a leading batch axis: workgroup (batch, mi, nj) owns a 64x64 tile of
-     * one product. A is stored k x m per batch when `ta` is set and B n x k when `tb` is, and
-     * the staging loop walks each layout along its contiguous axis, so attention's q . k^T
-     * and both of a batched product's gradients read their operands in place. Every output
+     * gemmTiled64 over a batch axis: workgroup (batch, mi, nj) owns a 64x64 tile of one
+     * product. Batch `bt` splits as (bt / heads, bt % heads), and each operand places its
+     * element (r, c) of that batch at outer * (bt / heads) + inner * (bt % heads) + r * row +
+     * c * col. So a transposed operand, a head of a projection's rows and a context written
+     * straight into merged rows are all read and written in place. The staging loop walks
+     * whichever axis of each operand is contiguous, so its loads stay coalesced. Every output
      * is summed in k order and scaled by `alpha` as it is stored, so attention's 1/sqrt(d)
      * costs no pass over the scores (cajeta-ml-gpu 28.2.8).
      */
     @Kernel
     @Occupancy(maxThreads = 256)
     public static void gemmTiled64Batched<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k,
-                                             uint32 ta, uint32 tb, float32 alpha) {
+                                             uint32 heads, uint32 aout, uint32 ain, uint32 arow, uint32 acol,
+                                             uint32 bout, uint32 bin, uint32 brow, uint32 bcol,
+                                             uint32 cout, uint32 cin, uint32 crow, uint32 ccol, float32 alpha) {
         Shared<float32> sa = shared float32[1088];
         Shared<float32> sb = shared float32[1088];
         uint32 t = KernelThread.x();
@@ -11572,9 +11576,15 @@ public final class Gemm {
         uint32 rem = wid - bt * tiles;
         uint32 mi = rem / ntiles;
         uint32 nj = rem - mi * ntiles;
-        uint32 abase = bt * m * k;
-        uint32 bbase = bt * k * n;
-        uint32 cbase = bt * m * n;
+        uint32 bo = bt / heads;
+        uint32 bi = bt - bo * heads;
+        uint32 abase = bo * aout + bi * ain;
+        uint32 bbase = bo * bout + bi * bin;
+        uint32 cbase = bo * cout + bi * cin;
+        uint32 ta = 0;
+        uint32 tb = 0;
+        if (acol != 1) { ta = 1; }
+        if (bcol != 1) { tb = 1; }
         uint32 m0 = mi * 64;
         uint32 n0 = nj * 64;
         float32 c00 = 0.0f;
@@ -11605,8 +11615,7 @@ public final class Gemm {
                 }
                 float32 va = 0.0f;
                 if (m0 + ar < m && k0 + ak < k) {
-                    if (ta != 0) { va = (float32) a[abase + (k0 + ak) * m + m0 + ar]; }
-                    else { va = (float32) a[abase + (m0 + ar) * k + k0 + ak]; }
+                    va = (float32) a[abase + (m0 + ar) * arow + (k0 + ak) * acol];
                 }
                 sa[ak * 68 + ar] = va;
                 uint32 bk = idx / 64;
@@ -11617,8 +11626,7 @@ public final class Gemm {
                 }
                 float32 vb = 0.0f;
                 if (k0 + bk < k && n0 + bc < n) {
-                    if (tb != 0) { vb = (float32) b[bbase + (n0 + bc) * k + k0 + bk]; }
-                    else { vb = (float32) b[bbase + (k0 + bk) * n + n0 + bc]; }
+                    vb = (float32) b[bbase + (k0 + bk) * brow + (n0 + bc) * bcol];
                 }
                 sb[bk * 68 + bc] = vb;
                 idx = idx + 256;
@@ -11663,22 +11671,22 @@ public final class Gemm {
         uint32 q1 = q0 + 16;
         uint32 q2 = q0 + 32;
         uint32 q3 = q0 + 48;
-        if (r0 < m && q0 < n) { c[cbase + r0 * n + q0] = (E) (alpha * c00); }
-        if (r0 < m && q1 < n) { c[cbase + r0 * n + q1] = (E) (alpha * c01); }
-        if (r0 < m && q2 < n) { c[cbase + r0 * n + q2] = (E) (alpha * c02); }
-        if (r0 < m && q3 < n) { c[cbase + r0 * n + q3] = (E) (alpha * c03); }
-        if (r1 < m && q0 < n) { c[cbase + r1 * n + q0] = (E) (alpha * c10); }
-        if (r1 < m && q1 < n) { c[cbase + r1 * n + q1] = (E) (alpha * c11); }
-        if (r1 < m && q2 < n) { c[cbase + r1 * n + q2] = (E) (alpha * c12); }
-        if (r1 < m && q3 < n) { c[cbase + r1 * n + q3] = (E) (alpha * c13); }
-        if (r2 < m && q0 < n) { c[cbase + r2 * n + q0] = (E) (alpha * c20); }
-        if (r2 < m && q1 < n) { c[cbase + r2 * n + q1] = (E) (alpha * c21); }
-        if (r2 < m && q2 < n) { c[cbase + r2 * n + q2] = (E) (alpha * c22); }
-        if (r2 < m && q3 < n) { c[cbase + r2 * n + q3] = (E) (alpha * c23); }
-        if (r3 < m && q0 < n) { c[cbase + r3 * n + q0] = (E) (alpha * c30); }
-        if (r3 < m && q1 < n) { c[cbase + r3 * n + q1] = (E) (alpha * c31); }
-        if (r3 < m && q2 < n) { c[cbase + r3 * n + q2] = (E) (alpha * c32); }
-        if (r3 < m && q3 < n) { c[cbase + r3 * n + q3] = (E) (alpha * c33); }
+        if (r0 < m && q0 < n) { c[cbase + r0 * crow + q0 * ccol] = (E) (alpha * c00); }
+        if (r0 < m && q1 < n) { c[cbase + r0 * crow + q1 * ccol] = (E) (alpha * c01); }
+        if (r0 < m && q2 < n) { c[cbase + r0 * crow + q2 * ccol] = (E) (alpha * c02); }
+        if (r0 < m && q3 < n) { c[cbase + r0 * crow + q3 * ccol] = (E) (alpha * c03); }
+        if (r1 < m && q0 < n) { c[cbase + r1 * crow + q0 * ccol] = (E) (alpha * c10); }
+        if (r1 < m && q1 < n) { c[cbase + r1 * crow + q1 * ccol] = (E) (alpha * c11); }
+        if (r1 < m && q2 < n) { c[cbase + r1 * crow + q2 * ccol] = (E) (alpha * c12); }
+        if (r1 < m && q3 < n) { c[cbase + r1 * crow + q3 * ccol] = (E) (alpha * c13); }
+        if (r2 < m && q0 < n) { c[cbase + r2 * crow + q0 * ccol] = (E) (alpha * c20); }
+        if (r2 < m && q1 < n) { c[cbase + r2 * crow + q1 * ccol] = (E) (alpha * c21); }
+        if (r2 < m && q2 < n) { c[cbase + r2 * crow + q2 * ccol] = (E) (alpha * c22); }
+        if (r2 < m && q3 < n) { c[cbase + r2 * crow + q3 * ccol] = (E) (alpha * c23); }
+        if (r3 < m && q0 < n) { c[cbase + r3 * crow + q0 * ccol] = (E) (alpha * c30); }
+        if (r3 < m && q1 < n) { c[cbase + r3 * crow + q1 * ccol] = (E) (alpha * c31); }
+        if (r3 < m && q2 < n) { c[cbase + r3 * crow + q2 * ccol] = (E) (alpha * c32); }
+        if (r3 < m && q3 < n) { c[cbase + r3 * crow + q3 * ccol] = (E) (alpha * c33); }
     }
 
     /**
@@ -11688,15 +11696,30 @@ public final class Gemm {
      */
     public static void tiledBatchedT<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, int64 batch,
                                         boolean transA, boolean transB, float32 alpha) {
+        int64[] sa = [m * k, 0L, k, 1L];
+        if (transA) { sa[2] = 1L; sa[3] = m; }
+        int64[] sb = [k * n, 0L, n, 1L];
+        if (transB) { sb[2] = 1L; sb[3] = k; }
+        int64[] sc = [m * n, 0L, n, 1L];
+        Gemm.tiledStrided<E>(c, a, b, m, n, k, batch, 1L, sa, sb, sc, alpha);
+    }
+
+    /**
+     * `c` = `alpha` `a` . `b` over `batch` products through the batched register-blocked tile,
+     * each operand laid out by strides [outer, inner, row, col] in elements: batch `bt`'s
+     * element (r, c) sits at outer * (bt / heads) + inner * (bt % heads) + r * row + c * col.
+     * A head of a (rows x heads * d) projection is [rows_per_seq * heads * d, d, heads * d, 1];
+     * queued on the current stream.
+     */
+    public static void tiledStrided<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, int64 batch,
+                                       int64 heads, int64[] sa, int64[] sb, int64[] sc, float32 alpha) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 63) / 64) * ((un + 63) / 64);
-        uint32 ta = 0;
-        uint32 tb = 0;
-        if (transA) { ta = 1; }
-        if (transB) { tb = 1; }
         KernelStream s #= KernelStream.current();
-        gemmTiled64Batched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k, ta, tb, alpha);
+        gemmTiled64Batched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k, (uint32) heads,
+            (uint32) sa[0], (uint32) sa[1], (uint32) sa[2], (uint32) sa[3], (uint32) sb[0], (uint32) sb[1], (uint32) sb[2], (uint32) sb[3],
+            (uint32) sc[0], (uint32) sc[1], (uint32) sc[2], (uint32) sc[3], alpha);
     }
 
     /**

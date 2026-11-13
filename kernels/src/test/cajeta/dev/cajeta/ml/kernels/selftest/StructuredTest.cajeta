@@ -759,4 +759,71 @@ public class StructuredTest {
         }
         ValueCheck.credit(m);
     }
+
+    /** The element offset of (bt, r, col) under a strided-batch layout [outer, inner, row, col] with `heads` inner batches. */
+    static int64 at(int64[] st, int64 heads, int64 bt, int64 r, int64 col) {
+        return (bt / heads) * st[0] + (bt % heads) * st[1] + r * st[2] + col * st[3];
+    }
+
+    /** One strided product against the host: every output of `c` is the k-ordered dot of `a` and `b` under their layouts, scaled by `alpha`. */
+    static void stridedCase(String name, int64 batch, int64 heads, int64 mm, int64 nn, int64 kk, int64 na, int64 nb, int64 nc,
+                            int64[] sa, int64[] sb, int64[] sc, float32 alpha) {
+        float64[] fa = heap float64[na];
+        float64[] fb = heap float64[nb];
+        KernelBuffer<float32> a #= StructuredTest.upload(na, 91L, fa);
+        KernelBuffer<float32> b #= StructuredTest.upload(nb, 97L, fb);
+        float32[] g = heap float32[nc];
+        int64 i = 0L;
+        while (i < nc) { g[(int32) i] = 1.0e30f; i = i + 1L; }
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) nc);
+        c.upload(g);
+        Gemm.tiledStrided<float32>(c, a, b, mm, nn, kk, batch, heads, sa, sb, sc, alpha);
+        c.download(g);
+        StructuredTest.stage = name;
+        int64 bt = 0L;
+        while (bt < batch) {
+            int64 r = 0L;
+            while (r < mm) {
+                int64 col = 0L;
+                while (col < nn) {
+                    float64 acc = 0.0;
+                    int64 p = 0L;
+                    while (p < kk) {
+                        acc = acc + fa[(int32) StructuredTest.at(sa, heads, bt, r, p)] * fb[(int32) StructuredTest.at(sb, heads, bt, p, col)];
+                        p = p + 1L;
+                    }
+                    StructuredTest.close((float64) g[(int32) StructuredTest.at(sc, heads, bt, r, col)], (float64) alpha * acc,
+                                         (float64) kk * 1.0e-7);
+                    col = col + 1L;
+                }
+                r = r + 1L;
+            }
+            bt = bt + 1L;
+        }
+    }
+
+    /**
+     * The batched tile reads and writes each operand through strides, so attention's
+     * products take q, k and v as head views of their projections and write the context
+     * straight into the merged rows: no split or merge copies (cajeta-ml-gpu 28.2.8).
+     * Batch 2, 3 heads of width 13 (rows of 39), 37 queries and 21 keys, through the three
+     * shapes attention uses: the scores (k read transposed), the context (written as heads)
+     * and the key gradient (the probabilities read transposed).
+     */
+    @Test
+    public void stridedTiledGemmReadsAndWritesHeadViews() {
+        if (!StructuredTest.usable("gemmTiled64Batched_float32")) { return; }
+        int64 bb = 2L; int64 h = 3L; int64 d = 13L; int64 e = h * d; int64 tq = 37L; int64 tk = 21L;
+        int64 bh = bb * h;
+        int64[] m #= ValueCheck.mark();
+        int64[] qv = [tq * e, d, e, 1L];
+        int64[] kvT = [tk * e, d, 1L, e];
+        int64[] sco = [h * tq * tk, tq * tk, tk, 1L];
+        StructuredTest.stridedCase("strided scores", bh, h, tq, tk, d, bb * tq * e, bb * tk * e, bh * tq * tk, qv, kvT, sco, 0.25f);
+        int64[] kv = [tk * e, d, e, 1L];
+        StructuredTest.stridedCase("strided context", bh, h, tq, d, tk, bh * tq * tk, bb * tk * e, bb * tq * e, sco, kv, qv, 1.0f);
+        int64[] scoT = [h * tq * tk, tq * tk, 1L, tk];
+        StructuredTest.stridedCase("strided key gradient", bh, h, tk, d, tq, bh * tq * tk, bb * tq * e, bb * tk * e, scoT, qv, kv, 0.5f);
+        ValueCheck.credit(m);
+    }
 }
