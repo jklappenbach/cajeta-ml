@@ -51,9 +51,11 @@ public final class Train {
     /** The first element of `t`, read through a host copy when `t` lives on the device. */
     static float64 scalarOf(Tensor<float32> t) {
         if (t.isOnGpu()) {
-            Tensor<float32> h #= Ops.copyOf<float32>(t);
-            h.cpu();
-            return (float64) h.flatGet(0);
+            // one element straight off the device: a host copy of the tensor cost three
+            // kernels and an allocation a step, all on the path between forward and backward
+            float32[] one = heap float32[1];
+            t.deviceView("loss").download(one, 1L);
+            return (float64) one[0];
         }
         return (float64) t.flatGet(0);
     }
