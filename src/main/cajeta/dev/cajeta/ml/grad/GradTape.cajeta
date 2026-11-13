@@ -265,6 +265,26 @@ public final class GradTape<E extends Floating> {
         return this.push(Op.MATMULB, a.idx, b.idx, 1, (float64) alpha, #v);
     }
 
+    /**
+     * Attention's scaled scores straight from the query and key projections: alpha q . k^T
+     * per head, (seqs·Tq, E) and (seqs·Tk, E) → (seqs·heads, Tq, Tk). The heads are read
+     * where they sit, so splitting them copies nothing on the device (cajeta-ml-gpu 28.2.8).
+     */
+    public GradTensor headScores(GradTensor q, GradTensor k, int64 seqs, int32 heads, float32 alpha) {
+        Tensor<E> v #= Ops.headScores<E>(this.values.get(q.idx), this.values.get(k.idx), seqs, (int64) heads, alpha);
+        return this.push(Op.HEADSCORES, q.idx, k.idx, heads, (float64) alpha, #v);
+    }
+
+    /**
+     * Attention's context in merged rows: p . v per head, p (seqs·heads, Tq, Tk) and v a
+     * (seqs·Tk, E) projection → (seqs·Tq, E). The merge copies nothing on the device
+     * (cajeta-ml-gpu 28.2.8).
+     */
+    public GradTensor headContext(GradTensor p, GradTensor v, int32 heads) {
+        Tensor<E> o #= Ops.headContext<E>(this.values.get(p.idx), this.values.get(v.idx), (int64) heads, false, 1.0f);
+        return this.push(Op.HEADCONTEXT, p.idx, v.idx, heads, 0.0, #o);
+    }
+
     /** Swap the last two axes of a rank-3 node. */
     public GradTensor transposeBatch(GradTensor a) { return this.una(Op.TRANSPOSEB, a, 0, (E) 0); }
 
@@ -720,6 +740,29 @@ public final class GradTape<E extends Floating> {
                 } else {
                     this.accum(b, Ops.matmulBatchedT<E>(va, g, true, false, 1.0f));
                 }
+            }
+            return;
+        }
+        if (op == Op.HEADSCORES) {
+            // s = alpha q k^T per head: dq = alpha g k, dk = alpha g^T q, both into merged rows
+            int64 heads = (int64) this.axes[i];
+            float32 alpha = (float32) this.cs[i];
+            if (this.needsGrad[a]) {
+                this.accum(a, Ops.headContext<E>(g, this.values.get(b), heads, false, alpha));
+            }
+            if (this.needsGrad[b]) {
+                this.accum(b, Ops.headContext<E>(g, va, heads, true, alpha));
+            }
+            return;
+        }
+        if (op == Op.HEADCONTEXT) {
+            // o = p v per head: dp = g v^T per head, dv = p^T g into merged rows
+            int64 heads = (int64) this.axes[i];
+            if (this.needsGrad[a]) {
+                this.accum(a, Ops.headScores<E>(g, this.values.get(b), va.shapeAt(0) / heads, heads, 1.0f));
+            }
+            if (this.needsGrad[b]) {
+                this.accum(b, Ops.headContext<E>(va, g, heads, true, 1.0f));
             }
             return;
         }

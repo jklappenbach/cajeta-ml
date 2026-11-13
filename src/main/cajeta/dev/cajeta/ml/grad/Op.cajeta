@@ -61,7 +61,11 @@ public final class Op {
     public static int32 ROWNORM     = 40;
     /** y = act(x . w + b) in one node: a Linear layer's forward, bias as the third input, act in the axis slot. */
     public static int32 LINEAR      = 41;
+    /** alpha q . k^T per head over (B·T, E) projections → (B·H, Tq, Tk): attention's scores, heads in the axis slot. */
+    public static int32 HEADSCORES  = 42;
+    /** p . v per head, p (B·H, Tq, Tk) and v a (B·T, E) projection → merged (B·Tq, E): attention's context, heads in the axis slot. */
+    public static int32 HEADCONTEXT = 43;
 
     /** One past the largest id — the registry array length. */
-    public static int32 COUNT       = 42;
+    public static int32 COUNT       = 44;
 }

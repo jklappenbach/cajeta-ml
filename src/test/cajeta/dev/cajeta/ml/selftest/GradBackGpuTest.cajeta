@@ -9,6 +9,7 @@ import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
 import dev.cajeta.ml.grad.Op;
 import dev.cajeta.ml.grad.Ops;
+import dev.cajeta.ml.nn.MultiheadAttention;
 import dev.cajeta.ml.nn.Parameter;
 import dev.cajeta.ml.zoo.SmallCnn;
 
@@ -333,6 +334,102 @@ public class GradBackGpuTest {
         Assert.equals(0L, copies);
         GradBackGpuTest.sameGrad("q . k^T, q", wantQ, d.gradOf(dq));
         GradBackGpuTest.sameGrad("q . k^T, k", wantK, d.gradOf(dk));
+    }
+
+    /**
+     * The head products read q, k and v where their heads sit in the (B·T, E) projections
+     * and write the context straight into merged rows, forward and backward, so on the device
+     * they copy nothing. The split and merge they replace were eight strided copies of a whole
+     * activation a step in transformer-block-train (cajeta-ml-gpu 28.2.8). 2 sequences of 5
+     * queries and 7 keys, 3 heads of width 4, alpha 0.5: no strided launches, and every
+     * gradient matches the cpu tape's split, batched-product and merge form.
+     */
+    @Test
+    public void headProductsCopyNothing() {
+        int64[] qs = [10L, 12L];
+        int64[] ks = [14L, 12L];
+        Tensor<float32> q #= GradBackGpuTest.fill(qs, 67L, false);
+        Tensor<float32> k #= GradBackGpuTest.fill(ks, 71L, false);
+        Tensor<float32> v #= GradBackGpuTest.fill(ks, 73L, false);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor lq = t.leaf(q, true);
+        GradTensor lk = t.leaf(k, true);
+        GradTensor lv = t.leaf(v, true);
+        int64[] sq = [2L, 5L, 3L, 4L];
+        int64[] sk = [2L, 7L, 3L, 4L];
+        int32[] perm = [0, 2, 1, 3];
+        int64[] hq = [6L, 5L, 4L];
+        int64[] hk = [6L, 7L, 4L];
+        GradTensor qh = t.reshape(t.permute(t.reshape(lq, sq), perm), hq);
+        GradTensor kh = t.reshape(t.permute(t.reshape(lk, sk), perm), hk);
+        GradTensor vh = t.reshape(t.permute(t.reshape(lv, sk), perm), hk);
+        GradTensor ph = t.softmax(t.matmulBatchedNT(qh, kh, 0.5f));
+        int64[] m4 = [2L, 3L, 5L, 4L];
+        int64[] m2 = [10L, 12L];
+        GradTensor o = t.reshape(t.permute(t.reshape(t.matmulBatched(ph, vh), m4), perm), m2);
+        t.backward(t.tanh(o));
+        Tensor<float32> wantQ = t.gradOf(lq);
+        Tensor<float32> wantK = t.gradOf(lk);
+        Tensor<float32> wantV = t.gradOf(lv);
+        Tensor<float32> qd #= GradBackGpuTest.onDevice(q);
+        Tensor<float32> kd #= GradBackGpuTest.onDevice(k);
+        Tensor<float32> vd #= GradBackGpuTest.onDevice(v);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor dq = d.leaf(qd, true);
+        GradTensor dk = d.leaf(kd, true);
+        GradTensor dv = d.leaf(vd, true);
+        int64 before = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32");
+        GradTensor pd = d.softmax(d.headScores(dq, dk, 2L, 3, 0.5f));
+        d.backward(d.tanh(d.headContext(pd, dv, 3)));
+        int64 copies = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32") - before;
+        System.stdout.println("  head product copies: " + copies);
+        Assert.equals(0L, copies);
+        GradBackGpuTest.sameGrad("head products, q", wantQ, d.gradOf(dq));
+        GradBackGpuTest.sameGrad("head products, k", wantK, d.gradOf(dk));
+        GradBackGpuTest.sameGrad("head products, v", wantV, d.gradOf(dv));
+    }
+
+    /**
+     * MultiheadAttention takes its heads through the head products, so the split and merge
+     * copy nothing. Cross-attention under a mask, 2 sequences of 5 queries and 7 keys, 3 heads
+     * of width 4: the strided launches across the forward and backward fall from 16 to the
+     * projections' own 8 (each Linear's backward transposes its weight, and at these few rows
+     * its input too, since tiledTN takes only split shapes), and both inputs' gradients match
+     * the cpu tape (cajeta-ml-gpu 28.2.8).
+     */
+    @Test
+    public void attentionSplitsAndMergesHeadsInPlace() {
+        int64[] xs = [2L, 5L, 12L];
+        int64[] ms = [2L, 7L, 12L];
+        int64[] ks = [2L, 5L, 7L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 59L, false);
+        Tensor<float32> mem #= GradBackGpuTest.fill(ms, 61L, false);
+        Tensor<float32> mask #= Tensor.zeros<float32>(ks);
+        MultiheadAttention host = heap MultiheadAttention(12L, 3, 17L);
+        GradTape<float32> t = heap GradTape<float32>();
+        host.bindParameters(t);
+        GradTensor lx = t.leaf(x, true);
+        GradTensor lm = t.leaf(mem, true);
+        GradTensor y = t.tanh(host.forwardCross(t, lx, lm, mask));
+        t.backward(y);
+        Tensor<float32> wantX = t.gradOf(lx);
+        Tensor<float32> wantM = t.gradOf(lm);
+        MultiheadAttention dev = heap MultiheadAttention(12L, 3, 17L);
+        dev.toDevice();
+        Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+        Tensor<float32> md #= GradBackGpuTest.onDevice(mem);
+        GradTape<float32> d = heap GradTape<float32>();
+        dev.bindParameters(d);
+        GradTensor dx = d.leaf(xd, true);
+        GradTensor dm = d.leaf(md, true);
+        int64 before = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32");
+        GradTensor yd = d.tanh(dev.forwardCross(d, dx, dm, mask));
+        d.backward(yd);
+        int64 copies = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32") - before;
+        System.stdout.println("  attention strided copies: " + copies);
+        Assert.equals(8L, copies);
+        GradBackGpuTest.sameGrad("attention, queries", wantX, d.gradOf(dx));
+        GradBackGpuTest.sameGrad("attention, memory", wantM, d.gradOf(dm));
     }
 
     /**

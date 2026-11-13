@@ -297,6 +297,115 @@ public final class Ops {
         return Ops.run2<E>(Op.MATMULB, a, b);
     }
 
+    /**
+     * Strides [outer, inner, row, col] of one head's (rows x d) block of a (seqs·rows, heads·d)
+     * projection, or of its transpose, for Gemm.tiledStrided.
+     */
+    static #int64[] headStrides(int64 rows, int64 heads, int64 d, boolean trans) {
+        int64 e = heads * d;
+        int64[] st = [rows * e, d, e, 1L];
+        if (trans) { st[2] = 1L; st[3] = e; }
+        return #st;
+    }
+
+    /** Strides of one (r x c) matrix of a contiguous (seqs·heads, r, c) tensor, or of its transpose. */
+    static #int64[] plainStrides(int64 heads, int64 r, int64 c, boolean trans) {
+        int64[] st = [heads * r * c, r * c, c, 1L];
+        if (trans) { st[2] = 1L; st[3] = c; }
+        return #st;
+    }
+
+    /** `(seqs·T, E)` → `(seqs·heads, T, D)`, materialized: the host form of a head view. */
+    static #Tensor<E> splitHeads<E extends Floating>(Tensor<E> flat, int64 seqs, int64 heads) {
+        int64 t = flat.shapeAt(0) / seqs;
+        int64 d = flat.shapeAt(1) / heads;
+        int64[] s4 = [seqs, t, heads, d];
+        Tensor<E> r #= Ops.reshape<E>(flat, s4);
+        int32[] perm = [0, 2, 1, 3];
+        Tensor<E> p #= Ops.permute<E>(r, perm);
+        int64[] s3 = [seqs * heads, t, d];
+        return Ops.reshape<E>(p, s3);
+    }
+
+    /** The inverse of splitHeads: `(seqs·heads, T, D)` → `(seqs·T, E)`, materialized. */
+    static #Tensor<E> mergeHeads<E extends Floating>(Tensor<E> h3, int64 heads) {
+        int64 seqs = h3.shapeAt(0) / heads;
+        int64 t = h3.shapeAt(1);
+        int64 d = h3.shapeAt(2);
+        int64[] s4 = [seqs, heads, t, d];
+        Tensor<E> r #= Ops.reshape<E>(h3, s4);
+        int32[] perm = [0, 2, 1, 3];
+        Tensor<E> p #= Ops.permute<E>(r, perm);
+        int64[] s2 = [seqs * t, heads * d];
+        return Ops.reshape<E>(p, s2);
+    }
+
+    /**
+     * Attention's scores, alpha q . k^T per head, from the (seqs·Tq, E) and (seqs·Tk, E)
+     * projections into (seqs·heads, Tq, Tk). On the device the batched tile reads each head
+     * where it sits in the projection; elsewhere the heads are split out first
+     * (cajeta-ml-gpu 28.2.8).
+     */
+    public static #Tensor<E> headScores<E extends Floating>(Tensor<E> q, Tensor<E> k, int64 seqs, int64 heads, float32 alpha) {
+        if (q.ndim() != 2 || k.ndim() != 2 || q.shapeAt(1) != k.shapeAt(1)) {
+            throw heap MlException("ml.grad: headScores expects (seqs*T, E) projections of one width");
+        }
+        int64 tq = q.shapeAt(0) / seqs;
+        int64 tk = k.shapeAt(0) / seqs;
+        int64 d = q.shapeAt(1) / heads;
+        if (q.isOnGpu() && Device.kernelAvailable("gemmTiled64Batched_float32")) {
+            Ops.requireSame<E>("headScores", q, k);
+            Ops.requireF32<E>("headScores");
+            int64[] shp = [seqs * heads, tq, tk];
+            Tensor<E> out #= Ewise.deviceOf<E>(shp);
+            int64[] sa #= Ops.headStrides(tq, heads, d, false);
+            int64[] sb #= Ops.headStrides(tk, heads, d, true);
+            int64[] sc #= Ops.plainStrides(heads, tq, tk, false);
+            Gemm.tiledStrided<E>(out.deviceView("headScores"), q.deviceView("headScores"), k.deviceView("headScores"),
+                                 tq, tk, d, seqs * heads, heads, sa, sb, sc, alpha);
+            return #out;
+        }
+        Tensor<E> qh #= Ops.splitHeads<E>(q, seqs, heads);
+        Tensor<E> kh #= Ops.splitHeads<E>(k, seqs, heads);
+        return Ops.matmulBatchedT<E>(qh, kh, false, true, alpha);
+    }
+
+    /**
+     * Attention's context, alpha op(p) . v per head, p (seqs·heads, Tq, Tk) (read transposed
+     * when `transP`) and v a (seqs·Tk, E) projection, into merged (seqs·rows, E) rows. On the
+     * device the batched tile reads v's heads and writes the merged rows in place; elsewhere
+     * the heads are split out and merged back (cajeta-ml-gpu 28.2.8).
+     */
+    public static #Tensor<E> headContext<E extends Floating>(Tensor<E> p, Tensor<E> v, int64 heads, boolean transP, float32 alpha) {
+        if (p.ndim() != 3 || v.ndim() != 2) {
+            throw heap MlException("ml.grad: headContext expects (seqs*heads, Tq, Tk) weights and a (seqs*T, E) projection");
+        }
+        int64 seqs = p.shapeAt(0) / heads;
+        int64 rows = p.shapeAt(1);
+        int64 inner = p.shapeAt(2);
+        if (transP) { rows = p.shapeAt(2); inner = p.shapeAt(1); }
+        int64 e = v.shapeAt(1);
+        int64 d = e / heads;
+        if (v.shapeAt(0) != seqs * inner) {
+            throw heap MlException("ml.grad: headContext shape mismatch");
+        }
+        if (p.isOnGpu() && Device.kernelAvailable("gemmTiled64Batched_float32")) {
+            Ops.requireSame<E>("headContext", p, v);
+            Ops.requireF32<E>("headContext");
+            int64[] shp = [seqs * rows, e];
+            Tensor<E> out #= Ewise.deviceOf<E>(shp);
+            int64[] sa #= Ops.plainStrides(heads, p.shapeAt(1), p.shapeAt(2), transP);
+            int64[] sb #= Ops.headStrides(inner, heads, d, false);
+            int64[] sc #= Ops.headStrides(rows, heads, d, false);
+            Gemm.tiledStrided<E>(out.deviceView("headContext"), p.deviceView("headContext"), v.deviceView("headContext"),
+                                 rows, d, inner, seqs * heads, heads, sa, sb, sc, alpha);
+            return #out;
+        }
+        Tensor<E> vh #= Ops.splitHeads<E>(v, seqs, heads);
+        Tensor<E> ctx #= Ops.matmulBatchedT<E>(p, vh, transP, false, alpha);
+        return Ops.mergeHeads<E>(ctx, heads);
+    }
+
     /** A copy of `t` on its own device. */
     public static #Tensor<E> copyOf<E extends Floating>(Tensor<E> t) {
         if (t.isOnGpu()) {
@@ -1344,6 +1453,8 @@ public final class Ops {
         if (op == Op.PERMUTE) { return "permute"; }
         if (op == Op.ROWNORM) { return "rowNorm"; }
         if (op == Op.LINEAR) { return "linear"; }
+        if (op == Op.HEADSCORES) { return "headScores"; }
+        if (op == Op.HEADCONTEXT) { return "headContext"; }
         return "op" + op;
     }
 

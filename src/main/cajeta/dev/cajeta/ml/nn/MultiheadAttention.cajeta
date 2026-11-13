@@ -16,10 +16,11 @@ import dev.cajeta.ml.grad.Ops;
  * out   = (attn·v) merged · Wo
  * ```
  *
- * The head axis is handled by reshape + permute rather than a strided
- * view, so every intermediate is a materialized tape node: `(B,T,E)` →
- * `(B,T,H,D)` → `(B,H,T,D)` → `(B·H,T,D)`, which is the rank-3 shape the
- * batched matmul wants, and the reverse on the way out.
+ * The heads are never split out of the projections. The scores read each
+ * head of the `(B·T, E)` query and key projections where it sits and come
+ * out `(B·H, Tq, Tk)`, and the context reads the value heads the same way
+ * and is written straight into merged `(B·Tq, E)` rows, so on the device
+ * neither direction copies an activation to move the head axis.
  *
  * Projections are `Linear` sub-modules, so parameter names come out as
  * `wq.weight`, `wq.bias`, … — one dotted level per projection, the same
@@ -123,37 +124,6 @@ public class MultiheadAttention extends Module {
         return #s;
     }
 
-    static #int64[] shape4(int64 a, int64 b, int64 c, int64 d) {
-        int64[] s = heap int64[4];
-        s[0] = a; s[1] = b; s[2] = c; s[3] = d;
-        return #s;
-    }
-
-    /** `(B·T, E)` → `(B·H, T, D)`: split the embedding into heads and move
-     *  the head axis next to the batch. */
-    GradTensor splitHeads(GradTape<float32> tape, GradTensor flat, int64 b,
-                          int64 t, int64 d) {
-        int64[] s4 #= MultiheadAttention.shape4(b, t, (int64) this.heads, d);
-        GradTensor r = tape.reshape(flat, s4);
-        int32[] perm = heap int32[4];
-        perm[0] = 0; perm[1] = 2; perm[2] = 1; perm[3] = 3;
-        GradTensor p = tape.permute(r, perm);
-        int64[] s3 #= MultiheadAttention.shape3(b * (int64) this.heads, t, d);
-        return tape.reshape(p, s3);
-    }
-
-    /** The inverse of {@link #splitHeads}: `(B·H, T, D)` → `(B·T, E)`. */
-    GradTensor mergeHeads(GradTape<float32> tape, GradTensor heads3, int64 b,
-                          int64 t, int64 d) {
-        int64[] s4 #= MultiheadAttention.shape4(b, (int64) this.heads, t, d);
-        GradTensor r = tape.reshape(heads3, s4);
-        int32[] perm = heap int32[4];
-        perm[0] = 0; perm[1] = 2; perm[2] = 1; perm[3] = 3;
-        GradTensor p = tape.permute(r, perm);
-        int64[] s2 #= MultiheadAttention.shape2(b * t, this.embed);
-        return tape.reshape(p, s2);
-    }
-
     public GradTensor forward(GradTape<float32> tape, GradTensor x) {
         int64[] none = heap int64[1];
         none[0] = 1;
@@ -218,13 +188,13 @@ public class MultiheadAttention extends Module {
         GradTensor qFlat = tape.reshape(qIn, qFlatS);
         int64[] kFlatS #= MultiheadAttention.shape2(b * tk, this.embed);
         GradTensor kFlat = tape.reshape(kvIn, kFlatS);
-        GradTensor q = this.splitHeads(tape, this.wq.forward(tape, qFlat), b, tq, d);
-        GradTensor k = this.splitHeads(tape, this.wk.forward(tape, kFlat), b, tk, d);
-        GradTensor v = this.splitHeads(tape, this.wv.forward(tape, kFlat), b, tk, d);
+        GradTensor q = this.wq.forward(tape, qFlat);
+        GradTensor k = this.wk.forward(tape, kFlat);
+        GradTensor v = this.wv.forward(tape, kFlat);
 
         // scores = q · kᵀ / √D (+ mask), softmaxed over the key axis.
         float32 inv = 1.0f / Math.sqrt((float32) d);
-        GradTensor scaled = tape.matmulBatchedNT(q, k, inv);
+        GradTensor scaled = tape.headScores(q, k, b, this.heads, inv);
         if (hasMask) {
             // Tile (B, Tq, Tk) per head: (B·H, Tq, Tk), a constant leaf.
             int64[] ms #= MultiheadAttention.shape3(
@@ -260,8 +230,7 @@ public class MultiheadAttention extends Module {
         GradTensor attn = tape.softmax(scaled);
         this.lastAttnIdx = attn.index();
 
-        GradTensor ctx = tape.matmulBatched(attn, v);
-        GradTensor merged = this.mergeHeads(tape, ctx, b, tq, d);
+        GradTensor merged = tape.headContext(attn, v, this.heads);
         GradTensor out = this.wo.forward(tape, merged);
         int64[] s3 #= MultiheadAttention.shape3(b, tq, this.embed);
         return tape.reshape(out, s3);
