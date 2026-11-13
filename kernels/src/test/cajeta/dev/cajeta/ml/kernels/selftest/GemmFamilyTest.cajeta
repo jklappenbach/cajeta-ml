@@ -4,7 +4,9 @@ import cajeta.io.file.Path;
 import cajeta.lang.String;
 import cajeta.lang.System;
 import cajeta.time.Clock;
+import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.ShapeChoice;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
@@ -16,6 +18,7 @@ import dev.cajeta.ml.kernels.tune.TuneMode;
  * family that chooses between it and the 128x128 member per device and problem: timed at
  * first use and remembered, the first member when untimed, and a lone survivor of the
  * feasibility filter (the 256x128 member spills at 512 threads on sm_89) untimed.
+ * 23.2.12: each unrolled wide tile and its rolled twin, a choice of the same kind.
  */
 public class GemmFamilyTest {
     public GemmFamilyTest() { return; }
@@ -178,5 +181,99 @@ public class GemmFamilyTest {
         TuneMode.setUntimed(false);
         Assert.equals("gemm128_float16", member);
         Assert.isFalse(Gemm.lastLargeTimed());
+    }
+    /** Gemm.tiled at float32 against the float64 host product. */
+    static void pairCase(int64 m, int64 n, int64 k) {
+        float32[] fa #= GemmFamilyTest.fill(m * k, 0L);
+        float32[] fb #= GemmFamilyTest.fill(k * n, 17L);
+        KernelBuffer<float32> a = heap KernelBuffer<float32>((uint64) (m * k));
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) (k * n));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        a.upload(fa);
+        b.upload(fb);
+        int64[] mk #= ValueCheck.mark();
+        Gemm.tiled<float32>(c, a, b, m, n, k);
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        Assert.equals(0L, (int64) GemmFamilyTest.misses("pair", fa, fb, got, m, n, k));
+        ValueCheck.credit(mk);
+    }
+
+    /** With `family` overridden to `rolled`, Gemm.tiled at m x n x k launches `rolled` and stays right. */
+    static void rolledUnder(String family, String rolled, int64 m, int64 n, int64 k) {
+        ShapeChoice.setShapeOverride(family, rolled);
+        int64 r0 = Device.kernelLaunchCount(rolled);
+        GemmFamilyTest.pairCase(m, n, k);
+        ShapeChoice.clearShapeOverride(family);
+        Assert.isTrue(Device.kernelLaunchCount(rolled) > r0);
+        String ran #= Gemm.lastPairKernel();
+        Assert.equals(rolled, ran);
+    }
+
+    /**
+     * 23.2.12: an unrolled wide tile against its rolled twin is a choice per device and
+     * problem. With no store the unrolled member runs where its build spills nothing, as it
+     * did; under a store an override names the rolled twin for each of the five pairs, and
+     * where both members survive the first call times them and every later one, in this
+     * process or the next, reads the answer back untimed.
+     */
+    @Test
+    public void anUnrolledTileAndItsRolledTwinAreATimedChoiceUnderAStore() {
+        if (!GemmTileTest.usable("gemmTiled128_float32")) { return; }
+        TuneMode.setUntimed(false);
+        Gemm.tuneUnrolledIn("");
+        GemmFamilyTest.pairCase(1024L, 768L, 40L);
+        String rule #= Gemm.tiled128Member();
+        String ran #= Gemm.lastPairKernel();
+        Assert.equals(rule, ran);
+        Assert.isFalse(Gemm.lastPairTimed());
+
+        String store #= GemmFamilyTest.freshStore();
+        Gemm.tuneUnrolledIn(store);
+        GemmFamilyTest.rolledUnder("gemm-tiled128", "gemmTiled128_float32", 1024L, 768L, 40L);
+        if (Gemm.splitKRuns()) {
+            GemmFamilyTest.rolledUnder("gemm-tiled128-split", "gemmTiled128Split_float32", 256L, 128L, 4096L);
+        }
+        if (Gemm.splitTNRuns()) {
+            ShapeChoice.setShapeOverride("gemm-tiled128-split-tn", "gemmTiled128SplitTN_float32");
+            int64 t0 = Device.kernelLaunchCount("gemmTiled128SplitTN_float32");
+            GemmTest.tnCase(256L, 128L, 4096L, Gemm.splitsFor(256L, 128L, 4096L), true);
+            ShapeChoice.clearShapeOverride("gemm-tiled128-split-tn");
+            Assert.isTrue(Device.kernelLaunchCount("gemmTiled128SplitTN_float32") > t0);
+        }
+        // The NT member's twin is the transpose and the routed tile, so tiled128NT declines.
+        KernelBuffer<float32> na = heap KernelBuffer<float32>((uint64) (1024L * 40L));
+        KernelBuffer<float32> nb = heap KernelBuffer<float32>((uint64) (768L * 40L));
+        KernelBuffer<float32> nc = heap KernelBuffer<float32>((uint64) (1024L * 768L));
+        ShapeChoice.setShapeOverride("gemm-tiled128-nt", "gemmTiled128_float32");
+        boolean nt = Gemm.tiled128NT<float32>(nc, na, nb, 1024L, 768L, 40L);
+        ShapeChoice.clearShapeOverride("gemm-tiled128-nt");
+        Assert.isFalse(nt);
+        KernelBuffer<bfloat16> wa = heap KernelBuffer<bfloat16>((uint64) (300L * 72L));
+        KernelBuffer<bfloat16> wb = heap KernelBuffer<bfloat16>((uint64) (72L * 260L));
+        KernelBuffer<float32> wc = heap KernelBuffer<float32>((uint64) (300L * 260L));
+        ShapeChoice.setShapeOverride("gemm-wide", "gemmWide_bfloat16");
+        int64 w0 = Device.kernelLaunchCount("gemmWide_bfloat16");
+        Gemm.wide<bfloat16>(wc, wa, wb, 300L, 260L, 72L);
+        wc.download(heap float32[300L * 260L]);
+        ShapeChoice.clearShapeOverride("gemm-wide");
+        Assert.isTrue(Device.kernelLaunchCount("gemmWide_bfloat16") > w0);
+
+        if (rule.equals("gemmTiled128Unrolled_float32")) {
+            String fresh #= GemmFamilyTest.freshStore();
+            Gemm.tuneUnrolledIn(fresh);
+            GemmFamilyTest.pairCase(1024L, 768L, 40L);
+            Assert.isTrue(Gemm.lastPairTimed());
+            String first #= Gemm.lastPairKernel();
+            GemmFamilyTest.pairCase(1024L, 768L, 40L);
+            Assert.isFalse(Gemm.lastPairTimed());
+            // Naming the store again drops what this process remembers, so the answer comes from the store.
+            Gemm.tuneUnrolledIn(fresh);
+            GemmFamilyTest.pairCase(1024L, 768L, 40L);
+            Assert.isFalse(Gemm.lastPairTimed());
+            String again #= Gemm.lastPairKernel();
+            Assert.equals(first, again);
+        }
+        Gemm.tuneUnrolledIn("");
     }
 }

@@ -3,6 +3,7 @@ package bench.ml;
 import cajeta.collection.ArrayList;
 import cajeta.math.Tensor;
 import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.ml.nn.Module;
 import dev.cajeta.ml.optim.Adam;
 import dev.cajeta.ml.zoo.EncoderBlock;
@@ -26,6 +27,10 @@ import dev.cajeta.ml.zoo.SmallCnn;
  *          launch is asynchronous, and nothing else reads the output back); the
  *          check is the output within Tol.*_LOGITS / Tol.TRANSFORMER_OUT of
  *          torch's on the same weights.
+ *
+ * On `device` each unrolled GEMM tile is timed against its rolled twin at first use
+ * and the answer kept in GemmBench's store (cajeta-ml-gpu 23.2.12), so a device
+ * where the unrolled body builds clean but runs slower measures its faster member.
  */
 public class NeuralBench extends MlBenchmark {
 
@@ -146,6 +151,8 @@ public class NeuralBench extends MlBenchmark {
         this.ds = d + " batch " + Data.shape32(this.x) + " seed " + Data.SEED;
         this.onDevice = v.equals("device");
         if (this.onDevice) {
+            String store #= GemmBench.store();
+            Gemm.tuneUnrolledIn(store);
             this.net.toDevice();
             this.x.gpu();
             this.y.gpu();
