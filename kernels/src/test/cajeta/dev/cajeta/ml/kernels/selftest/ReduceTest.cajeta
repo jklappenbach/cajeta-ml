@@ -221,6 +221,10 @@ public class ReduceTest {
         int64 inner = 64L;
         Assert.isTrue(Reduce.axisSplits(outer * inner, axisLen) > 1);
         Assert.isTrue(Reduce.axisSplits(65536L, axisLen) == 1);
+        // A Linear's bias over 8192 rows keeps 128K lanes in flight: 64 slices of 128 rows
+        // held 8 warps an SM and ran 40 us where torch's reduction takes 12.
+        Assert.isTrue(Reduce.axisSplits(512L, 8192L) == 256);
+        Assert.isTrue(Reduce.axisSplits(2048L, 8192L) == 64);
         Assert.isTrue(Reduce.axisSplits(outer * inner, 8L) == 1);
         int64 n = outer * axisLen * inner;
         float32[] src = heap float32[n];

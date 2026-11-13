@@ -137,34 +137,57 @@ public final class Reduce {
         }
     }
 
-    /** out[t] = the `splits` partials of output t joined in slice order, then MEAN's divide. */
+    /**
+     * out[t] = the `splits` partials of output t joined, then MEAN's divide. A workgroup
+     * takes 32 neighbouring outputs, so a wave reads neighbouring partials, and 8 lanes an
+     * output: lane `sl` combines slices sl, sl + 8, ... in order, then a fixed shared-memory
+     * tree joins the 8, so the result repeats bit for bit. One lane an output walking 256
+     * slices ran 29 us for a 512-wide bias on a 4090 (cajeta-ml-gpu 28.2.8).
+     */
     @Kernel
     public static void axisJoin<E>(KernelBuffer<E> out, KernelBuffer<float32> part, uint32 total, uint32 splits, uint32 axisLen,
                                    int32 op) {
-        uint32 t = KernelThread.globalIdX();
+        Shared<float32> red = shared float32[256];
+        uint32 lt = KernelThread.x();
+        uint32 col = lt % 32;
+        uint32 sl = lt / 32;
+        uint32 t = Workgroup.x() * 32 + col;
+        int32 k = op;
+        if (k == 4 || k == 3) { k = 0; }
+        float32 acc = Reduce.identity(k);
         if (t < total) {
-            int32 k = op;
-            if (k == 4 || k == 3) { k = 0; }
-            float32 acc = Reduce.identity(k);
-            uint32 p = 0;
+            uint32 p = sl;
             while (p < splits) {
                 acc = Reduce.combine(k, acc, part[p * total + t]);
-                p = p + 1;
+                p = p + 8;
             }
-            if (op == 4) { acc = acc / (float32) axisLen; }
-            out[t] = (E) acc;
+        }
+        red[lt] = acc;
+        Barrier.workgroup();
+        uint32 w = 4;
+        while (w > 0) {
+            if (sl < w) { red[lt] = Reduce.combine(k, red[lt], red[lt + w * 32]); }
+            Barrier.workgroup();
+            w = w / 2;
+        }
+        if (sl == 0 && t < total) {
+            float32 r = red[lt];
+            if (op == 4) { r = r / (float32) axisLen; }
+            out[t] = (E) r;
         }
     }
 
     /**
      * Slices for an axis reduction of `total` outputs over `axisLen`: 1 (one lane per
-     * output) when the outputs alone fill the device, else enough slices of at least 64
-     * elements to give the launch about 32k lanes, up to 256.
+     * output) when the outputs alone fill the device, else enough slices of at least 32
+     * elements to give the launch about 128k lanes, up to 256. At 32k lanes a bias over
+     * 8192 rows held 8 warps an SM and ran three times torch's reduction on a 4090
+     * (cajeta-ml-gpu 28.2.8).
      */
     public static uint32 axisSplits(int64 total, int64 axisLen) {
         if (total >= 16384L) { return (uint32) 1; }
-        int64 want = (32768L + total - 1L) / total;
-        int64 most = axisLen / 64L;
+        int64 want = (131072L + total - 1L) / total;
+        int64 most = axisLen / 32L;
         if (want > most) { want = most; }
         if (want > 256L) { want = 256L; }
         if (want < 1L) { want = 1L; }
@@ -200,7 +223,7 @@ public final class Reduce {
         uint32 lanes = total * splits;
         axisPart.launch(s, grid: [(lanes + 255) / 256], block: [256])(part, in, (uint32) outer, (uint32) axisLen, (uint32) inner,
             op, splits);
-        axisJoin.launch(s, grid: [(total + 255) / 256], block: [256])(out, part, total, splits, (uint32) axisLen, op);
+        axisJoin.launch(s, grid: [(total + 31) / 32], block: [256])(out, part, total, splits, (uint32) axisLen, op);
     }
 
     /** The max-along-axis VJP: g[o][i] lands on the first j where in[o][j][i] equals mx[o][i]; the rest 0. */
