@@ -192,7 +192,12 @@ public final class Ops {
         return Ops.zerosOn<E>(sh, like);
     }
 
-    /** y = act(x . w + b): `x` (m x k) against `w` (k x n) with the bias `b` (n), act 0 none or 1 relu; one launch on the device below Gemm.large, else the composition. */
+    /**
+     * y = act(x . w + b): `x` (m x k) against `w` (k x n) with the bias `b` (n), act 0 none or
+     * 1 relu. One launch on the device: the fused small kernel below Gemm.large, the wide tile
+     * adding the bias as it stores at or above it (cajeta-ml-gpu 28.2.8). The composition
+     * where neither runs.
+     */
     public static #Tensor<E> linear<E extends Floating>(Tensor<E> x, Tensor<E> w, Tensor<E> b, int32 act) {
         if (x.isOnGpu()) {
             Ops.requireSame<E>("linear", x, w);
@@ -206,6 +211,12 @@ public final class Ops {
                 Tensor<E> out #= Ewise.deviceOf<E>(shp);
                 Linear.run<E>(out.deviceView("linear"), x.deviceView("linear"), w.deviceView("linear"), b.deviceView("linear"), m, n, k, true, act);
                 return #out;
+            }
+            int64[] wide = [m, n];
+            Tensor<E> wout #= Ewise.deviceOf<E>(wide);
+            if (Gemm.tiled128Bias<E>(wout.deviceView("linear"), x.deviceView("linear"), w.deviceView("linear"), b.deviceView("linear"),
+                                     m, n, k, act)) {
+                return #wout;
             }
         }
         Tensor<E> mm #= Ops.run2<E>(Op.MATMUL, x, w);

@@ -248,6 +248,46 @@ public class GradBackGpuTest {
     }
 
     /**
+     * A large Linear's forward adds its bias, and its relu, as the wide tile stores the
+     * product, where it ran a GEMM and then a pass over the whole output: six such passes a
+     * step in transformer-block-train, about 280 us (cajeta-ml-gpu 28.2.8). 1100 x 70 by
+     * 70 x 600 (45 tiles of 128, past Gemm.large, no split): no broadcast or elementwise
+     * launch in either forward, and the values and gradients match the cpu tape.
+     */
+    @Test
+    public void aLargeLinearAddsItsBiasInTheProduct() {
+        int64[] xs = [1100L, 70L];
+        int64[] ws = [70L, 600L];
+        int64[] bs = [1L, 600L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 37L, false);
+        Tensor<float32> w #= GradBackGpuTest.fill(ws, 41L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(bs, 43L, false);
+        // off the fill's 0.012 grid, so no output sits exactly on relu's kink
+        int64 f = 0L;
+        while (f < 600L) { b.flatSet(f, b.flatGet(f) + 0.0037f); f = f + 1L; }
+        Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+        Tensor<float32> wd #= GradBackGpuTest.onDevice(w);
+        Tensor<float32> bd #= GradBackGpuTest.onDevice(b);
+        int32 act = 0;
+        while (act < 2) {
+            GradTape<float32> d = heap GradTape<float32>();
+            GradTensor ldx = d.leaf(xd, false);
+            GradTensor ldw = d.leaf(wd, false);
+            GradTensor ldb = d.leaf(bd, false);
+            int64 before = Device.kernelLaunchCount("arithBroadcast_float32") + Device.kernelLaunchCount("arith_float32")
+                + Device.kernelLaunchCount("unary_float32") + Device.kernelLaunchCount("act_float32");
+            d.linear(ldx, ldw, ldb, act);
+            int64 passes = Device.kernelLaunchCount("arithBroadcast_float32") + Device.kernelLaunchCount("arith_float32")
+                + Device.kernelLaunchCount("unary_float32") + Device.kernelLaunchCount("act_float32") - before;
+            System.stdout.println("  large linear passes, act " + act + ": " + passes);
+            Assert.equals(0L, passes);
+            act = act + 1;
+        }
+        GradBackGpuTest.linear("large linear", 0, x, w, b);
+        GradBackGpuTest.linear("large linear relu", 1, x, w, b);
+    }
+
+    /**
      * A weight gradient X^T . G at a shape that splits K reads X in place through the
      * transposed-A split member, where it runs, instead of materializing X^T (16 to 64 MB a
      * call in transformer-block-train, cajeta-ml-gpu 28.2.8); linear and matmul alike, the
