@@ -1,7 +1,5 @@
 package dev.cajeta.ml.kernels.nn;
 
-import dev.cajeta.ml.kernels.Reduce;
-
 import cajeta.lang.Math;
 import cajeta.xpu.Barrier;
 import cajeta.xpu.GroupOp;
@@ -441,9 +439,21 @@ public final class Norm {
         }
     }
 
-    /** Row slices for the scale and shift VJPs: Reduce.axisSplits over `cols` outputs of `rows` rows. */
+    /**
+     * Row slices for the scale and shift VJPs over `cols` outputs of `rows` rows: 1 when the
+     * outputs fill the device, else about 32k lanes with slices of at least 64 rows, up to
+     * 256. Reduce.axisSplits's long-axis rule (128k lanes) lengthened the serial join here
+     * and cost about 95 us a step on gfx1151, so these sums keep the short rule
+     * (cajeta-ml-gpu 28.2.8).
+     */
     public static uint32 layerParamSplits(int64 rows, int64 cols) {
-        return Reduce.axisSplits(cols, rows);
+        if (cols >= 16384L) { return (uint32) 1; }
+        int64 want = (32768L + cols - 1L) / cols;
+        int64 most = rows / 64L;
+        if (want > most) { want = most; }
+        if (want > 256L) { want = 256L; }
+        if (want < 1L) { want = 1L; }
+        return (uint32) want;
     }
 
     /** The split VJPs' partials, grown only past their high-water mark (see layerParamGrads). */

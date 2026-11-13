@@ -461,6 +461,10 @@ public class StructuredBackTest {
         int64 rows = 4096L; int64 cols = 96L;
         Assert.isTrue(Norm.layerParamSplits(rows, cols) > 1);
         Assert.isTrue(Norm.layerParamSplits(7L, 300L) == 1);
+        // The scale and shift sums keep 32k lanes and slices of at least 64 rows: under the
+        // long-axis reduction rule their serial join grew 3.5x and the pair cost about 95 us
+        // a step more on gfx1151 (Proton, 2026-11-13).
+        Assert.isTrue(Norm.layerParamSplits(8192L, 512L) == 64);
         int64 total = rows * cols;
         float64[] fg = heap float64[total];
         float64[] fx = heap float64[total];
