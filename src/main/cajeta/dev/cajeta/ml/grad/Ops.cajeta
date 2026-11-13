@@ -611,6 +611,23 @@ public final class Ops {
         throw heap MlException("ml.grad: unknown binary op " + op);
     }
 
+    /**
+     * Reshape as a view of `a`'s storage when `a` is a contiguous device tensor, else
+     * {@link #reshape}. The view borrows: it must not outlive `a`, which a local does not
+     * guarantee (sumTo rebinds a local to a reshape of a temporary), so only the tape's
+     * reshape node uses it, where `a` is a tape value or a processed node's cotangent and
+     * lives as long as the tape (cajeta-ml-gpu 28.2.8).
+     */
+    public static #Tensor<E> reshapeView<E extends Floating>(Tensor<E> a, int64[] newShape) {
+        if (a.isOnGpu() && a.isContiguous()) {
+            Ops.requireF32<E>("reshape");
+            Tensor<E> vw #= a.reshape(newShape);
+            return #vw;
+        }
+        Tensor<E> r #= Ops.reshape<E>(a, newShape);
+        return #r;
+    }
+
     /** Reshape, materialized (records nothing: the tape keeps the input shape). */
     public static #Tensor<E> reshape<E extends Floating>(Tensor<E> a, int64[] newShape) {
         if (a.isOnGpu()) {

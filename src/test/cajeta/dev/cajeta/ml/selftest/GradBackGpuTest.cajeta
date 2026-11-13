@@ -269,6 +269,35 @@ public class GradBackGpuTest {
         }
     }
 
+    /**
+     * The tape's reshape node is a view on the device, forward and backward: its input's
+     * value and its own cotangent both live as long as the tape, so the view cannot
+     * outlive what it borrows. Each one copied the whole tensor, 18 of the 28 copies of
+     * 16 MB a step in transformer-block-train (cajeta-ml-gpu 28.2.8). No copy launches
+     * across the forward and the backward, and the gradient still matches the cpu tape.
+     */
+    @Test
+    public void aTapeReshapeIsAViewForwardAndBackward() {
+        int64[] s = [6L, 8L];
+        int64[] r = [3L, 16L];
+        Tensor<float32> a #= GradBackGpuTest.fill(s, 37L, false);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor la = t.leaf(a, true);
+        GradTensor y = t.tanh(t.reshape(t.tanh(la), r));
+        t.backward(y);
+        Tensor<float32> want = t.gradOf(la);
+        Tensor<float32> ad #= GradBackGpuTest.onDevice(a);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor ld = d.leaf(ad, true);
+        int64 before = Device.kernelLaunchCount("copy_float32");
+        GradTensor yd = d.tanh(d.reshape(d.tanh(ld), r));
+        d.backward(yd);
+        int64 copies = Device.kernelLaunchCount("copy_float32") - before;
+        System.stdout.println("  tape reshape copies: " + copies);
+        Assert.equals(0L, copies);
+        GradBackGpuTest.sameGrad("tape reshape view", want, d.gradOf(ld));
+    }
+
     @Test
     public void binaryBackwardsMatchTheCpu() {
         int64[] s = [3L, 7L];

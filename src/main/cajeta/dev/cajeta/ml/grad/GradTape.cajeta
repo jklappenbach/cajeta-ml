@@ -308,7 +308,8 @@ public final class GradTape<E extends Floating> {
 
     /** Reshape (records the input shape for the backward). */
     public GradTensor reshape(GradTensor a, int64[] newShape) {
-        Tensor<E> v #= Ops.reshape<E>(this.values.get(a.idx), newShape);
+        // A view: the input's value lives as long as the tape (Ops.reshapeView).
+        Tensor<E> v #= Ops.reshapeView<E>(this.values.get(a.idx), newShape);
         return this.push(Op.RESHAPE, a.idx, -1, 0, 0.0, #v);
     }
 
@@ -750,7 +751,8 @@ public final class GradTape<E extends Floating> {
             return;
         }
         if (op == Op.RESHAPE) {
-            this.accum(a, Ops.reshape<E>(g, GradTape.shapeOf<E>(va)));
+            // A view of this node's cotangent, which nothing replaces once its node ran.
+            this.accum(a, Ops.reshapeView<E>(g, GradTape.shapeOf<E>(va)));
             return;
         }
         if (op == Op.TRANSPOSE) {
