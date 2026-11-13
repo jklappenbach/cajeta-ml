@@ -325,7 +325,7 @@ public class GradBackGpuTest {
         GradTensor dq = d.leaf(qd, true);
         GradTensor dk = d.leaf(kd, true);
         int64 before = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32");
-        GradTensor sd = d.tanh(d.matmulBatchedNT(dq, dk));
+        GradTensor sd = d.tanh(d.matmulBatchedNT(dq, dk, 1.0f));
         GradTensor yd = d.tanh(d.matmulBatched(sd, dk));
         d.backward(yd);
         int64 copies = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32") - before;
@@ -435,6 +435,43 @@ public class GradBackGpuTest {
         GradBackGpuTest.sameGrad("sumTo row", wantRow, gotRow);
         Tensor<float32> gotFlat #= Ops.sumTo<float32>(gd, flatD);
         GradBackGpuTest.sameGrad("sumTo leading axis", wantFlat, gotFlat);
+    }
+
+    /**
+     * Attention's scaled scores are one node: q . k^T times a constant, the scale taken in the
+     * batched tile forward and backward instead of two passes over the score tensor
+     * (cajeta-ml-gpu 28.2.8). Against the cpu tape's product, transpose and constant multiply,
+     * with no elementwise multiply launched on the device.
+     */
+    @Test
+    public void scaledAttentionScoresAreOneNode() {
+        int64[] qs = [3L, 9L, 6L];
+        int64[] ks = [3L, 11L, 6L];
+        int64[] one = [1L];
+        Tensor<float32> q #= GradBackGpuTest.fill(qs, 71L, false);
+        Tensor<float32> k #= GradBackGpuTest.fill(ks, 73L, false);
+        Tensor<float32> sc #= Tensor.full<float32>(one, 0.25f);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor lq = t.leaf(q, true);
+        GradTensor lk = t.leaf(k, true);
+        GradTensor ls = t.leaf(sc, false);
+        GradTensor y = t.tanh(t.mul(t.matmulBatched(lq, t.transposeBatch(lk)), ls));
+        t.backward(y);
+        Tensor<float32> wantQ = t.gradOf(lq);
+        Tensor<float32> wantK = t.gradOf(lk);
+        Tensor<float32> qd #= GradBackGpuTest.onDevice(q);
+        Tensor<float32> kd #= GradBackGpuTest.onDevice(k);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor dq = d.leaf(qd, true);
+        GradTensor dk = d.leaf(kd, true);
+        int64 before = Device.kernelLaunchCount("arithBroadcast_float32") + Device.kernelLaunchCount("arith_float32");
+        GradTensor yd = d.tanh(d.matmulBatchedNT(dq, dk, 0.25f));
+        d.backward(yd);
+        int64 muls = Device.kernelLaunchCount("arithBroadcast_float32") + Device.kernelLaunchCount("arith_float32") - before;
+        System.stdout.println("  score scale passes: " + muls);
+        Assert.equals(0L, muls);
+        GradBackGpuTest.sameGrad("scaled scores, q", wantQ, d.gradOf(dq));
+        GradBackGpuTest.sameGrad("scaled scores, k", wantK, d.gradOf(dk));
     }
 
     @Test

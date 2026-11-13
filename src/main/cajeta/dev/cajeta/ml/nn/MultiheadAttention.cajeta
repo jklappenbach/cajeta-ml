@@ -223,14 +223,8 @@ public class MultiheadAttention extends Module {
         GradTensor v = this.splitHeads(tape, this.wv.forward(tape, kFlat), b, tk, d);
 
         // scores = q · kᵀ / √D (+ mask), softmaxed over the key axis.
-        GradTensor scores = tape.matmulBatchedNT(q, k);
-        int64[] one = heap int64[1];
-        one[0] = 1;
         float32 inv = 1.0f / Math.sqrt((float32) d);
-        // The constants live where the scores do: a host leaf against device scores
-        // is the mixed-device `mul` the device column refuses.
-        GradTensor scale = tape.leaf(Ops.fullOn<float32>(one, tape.valueOf(scores), inv), false);
-        GradTensor scaled = tape.mul(scores, scale);
+        GradTensor scaled = tape.matmulBatchedNT(q, k, inv);
         if (hasMask) {
             // Tile (B, Tq, Tk) per head: (B·H, Tq, Tk), a constant leaf.
             int64[] ms #= MultiheadAttention.shape3(
@@ -257,7 +251,7 @@ public class MultiheadAttention extends Module {
                 }
                 bi = bi + 1;
             }
-            if (tape.valueOf(scores).isOnGpu()) {
+            if (tape.valueOf(scaled).isOnGpu()) {
                 tiled.gpu();
             }
             GradTensor maskLeaf = tape.leaf(tiled, false);

@@ -11548,10 +11548,18 @@ public final class Gemm {
         gemmTiledBatched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k);
     }
 
+    /**
+     * gemmTiled64 over a leading batch axis: workgroup (batch, mi, nj) owns a 64x64 tile of
+     * one product. A is stored k x m per batch when `ta` is set and B n x k when `tb` is, and
+     * the staging loop walks each layout along its contiguous axis, so attention's q . k^T
+     * and both of a batched product's gradients read their operands in place. Every output
+     * is summed in k order and scaled by `alpha` as it is stored, so attention's 1/sqrt(d)
+     * costs no pass over the scores (cajeta-ml-gpu 28.2.8).
+     */
     @Kernel
     @Occupancy(maxThreads = 256)
     public static void gemmTiled64Batched<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k,
-                                             uint32 ta, uint32 tb) {
+                                             uint32 ta, uint32 tb, float32 alpha) {
         Shared<float32> sa = shared float32[1088];
         Shared<float32> sb = shared float32[1088];
         uint32 t = KernelThread.x();
@@ -11655,31 +11663,31 @@ public final class Gemm {
         uint32 q1 = q0 + 16;
         uint32 q2 = q0 + 32;
         uint32 q3 = q0 + 48;
-        if (r0 < m && q0 < n) { c[cbase + r0 * n + q0] = (E) c00; }
-        if (r0 < m && q1 < n) { c[cbase + r0 * n + q1] = (E) c01; }
-        if (r0 < m && q2 < n) { c[cbase + r0 * n + q2] = (E) c02; }
-        if (r0 < m && q3 < n) { c[cbase + r0 * n + q3] = (E) c03; }
-        if (r1 < m && q0 < n) { c[cbase + r1 * n + q0] = (E) c10; }
-        if (r1 < m && q1 < n) { c[cbase + r1 * n + q1] = (E) c11; }
-        if (r1 < m && q2 < n) { c[cbase + r1 * n + q2] = (E) c12; }
-        if (r1 < m && q3 < n) { c[cbase + r1 * n + q3] = (E) c13; }
-        if (r2 < m && q0 < n) { c[cbase + r2 * n + q0] = (E) c20; }
-        if (r2 < m && q1 < n) { c[cbase + r2 * n + q1] = (E) c21; }
-        if (r2 < m && q2 < n) { c[cbase + r2 * n + q2] = (E) c22; }
-        if (r2 < m && q3 < n) { c[cbase + r2 * n + q3] = (E) c23; }
-        if (r3 < m && q0 < n) { c[cbase + r3 * n + q0] = (E) c30; }
-        if (r3 < m && q1 < n) { c[cbase + r3 * n + q1] = (E) c31; }
-        if (r3 < m && q2 < n) { c[cbase + r3 * n + q2] = (E) c32; }
-        if (r3 < m && q3 < n) { c[cbase + r3 * n + q3] = (E) c33; }
+        if (r0 < m && q0 < n) { c[cbase + r0 * n + q0] = (E) (alpha * c00); }
+        if (r0 < m && q1 < n) { c[cbase + r0 * n + q1] = (E) (alpha * c01); }
+        if (r0 < m && q2 < n) { c[cbase + r0 * n + q2] = (E) (alpha * c02); }
+        if (r0 < m && q3 < n) { c[cbase + r0 * n + q3] = (E) (alpha * c03); }
+        if (r1 < m && q0 < n) { c[cbase + r1 * n + q0] = (E) (alpha * c10); }
+        if (r1 < m && q1 < n) { c[cbase + r1 * n + q1] = (E) (alpha * c11); }
+        if (r1 < m && q2 < n) { c[cbase + r1 * n + q2] = (E) (alpha * c12); }
+        if (r1 < m && q3 < n) { c[cbase + r1 * n + q3] = (E) (alpha * c13); }
+        if (r2 < m && q0 < n) { c[cbase + r2 * n + q0] = (E) (alpha * c20); }
+        if (r2 < m && q1 < n) { c[cbase + r2 * n + q1] = (E) (alpha * c21); }
+        if (r2 < m && q2 < n) { c[cbase + r2 * n + q2] = (E) (alpha * c22); }
+        if (r2 < m && q3 < n) { c[cbase + r2 * n + q3] = (E) (alpha * c23); }
+        if (r3 < m && q0 < n) { c[cbase + r3 * n + q0] = (E) (alpha * c30); }
+        if (r3 < m && q1 < n) { c[cbase + r3 * n + q1] = (E) (alpha * c31); }
+        if (r3 < m && q2 < n) { c[cbase + r3 * n + q2] = (E) (alpha * c32); }
+        if (r3 < m && q3 < n) { c[cbase + r3 * n + q3] = (E) (alpha * c33); }
     }
 
     /**
-     * `c` (batch x m x n) = op(`a`) . op(`b`) at E, op transposing an operand stored k x m
-     * (`transA`) or n x k (`transB`), through the batched register-blocked tile; queued on the
-     * current stream.
+     * `c` (batch x m x n) = `alpha` op(`a`) . op(`b`) at E, op transposing an operand stored
+     * k x m (`transA`) or n x k (`transB`), through the batched register-blocked tile; queued
+     * on the current stream.
      */
     public static void tiledBatchedT<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, int64 batch,
-                                        boolean transA, boolean transB) {
+                                        boolean transA, boolean transB, float32 alpha) {
         uint32 um = (uint32) m;
         uint32 un = (uint32) n;
         uint32 tiles = ((um + 63) / 64) * ((un + 63) / 64);
@@ -11688,7 +11696,7 @@ public final class Gemm {
         if (transA) { ta = 1; }
         if (transB) { tb = 1; }
         KernelStream s #= KernelStream.current();
-        gemmTiled64Batched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k, ta, tb);
+        gemmTiled64Batched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k, ta, tb, alpha);
     }
 
     /**

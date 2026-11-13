@@ -690,7 +690,7 @@ public class StructuredTest {
         while (combo < 4) {
             boolean ta = (combo & 1) != 0;
             boolean tb = (combo & 2) != 0;
-            Gemm.tiledBatchedT<float32>(c, a, b, mm, nn, kk, batch, ta, tb);
+            Gemm.tiledBatchedT<float32>(c, a, b, mm, nn, kk, batch, ta, tb, 1.0f);
             c.download(g);
             StructuredTest.stage = "gemmTiled64Batched";
             int64 bt = 0L;
@@ -719,6 +719,44 @@ public class StructuredTest {
             combo = combo + 1;
         }
         Assert.equals(launches + 4L, Device.kernelLaunchCount("gemmTiled64Batched_float32"));
+        ValueCheck.credit(m);
+    }
+
+    /**
+     * The batched tile scales its product as it stores it, so attention's scores take their
+     * 1/sqrt(d) in the GEMM rather than in a pass over the whole score tensor
+     * (cajeta-ml-gpu 28.2.8). q . k^T at a ragged shape and alpha 0.125 against the host.
+     */
+    @Test
+    public void batchedTiledGemmScalesItsProduct() {
+        if (!StructuredTest.usable("gemmTiled64Batched_float32")) { return; }
+        int64 batch = 2L; int64 mm = 33L; int64 nn = 70L; int64 kk = 19L;
+        float64[] fa = heap float64[batch * mm * kk];
+        float64[] fb = heap float64[batch * kk * nn];
+        KernelBuffer<float32> a #= StructuredTest.upload(batch * mm * kk, 87L, fa);
+        KernelBuffer<float32> b #= StructuredTest.upload(batch * kk * nn, 89L, fb);
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (batch * mm * nn));
+        int64[] m #= ValueCheck.mark();
+        Gemm.tiledBatchedT<float32>(c, a, b, mm, nn, kk, batch, false, true, 0.125f);
+        float32[] g = heap float32[batch * mm * nn];
+        c.download(g);
+        StructuredTest.stage = "gemmTiled64Batched alpha";
+        int64 bt = 0L;
+        while (bt < batch) {
+            int64 r = 0L;
+            while (r < mm) {
+                int64 col = 0L;
+                while (col < nn) {
+                    float64 acc = 0.0;
+                    int64 p = 0L;
+                    while (p < kk) { acc = acc + fa[(int32) (bt * mm * kk + r * kk + p)] * fb[(int32) (bt * kk * nn + col * kk + p)]; p = p + 1L; }
+                    StructuredTest.close((float64) g[(int32) (bt * mm * nn + r * nn + col)], 0.125 * acc, (float64) kk * 1.0e-7);
+                    col = col + 1L;
+                }
+                r = r + 1L;
+            }
+            bt = bt + 1L;
+        }
         ValueCheck.credit(m);
     }
 }

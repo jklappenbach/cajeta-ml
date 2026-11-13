@@ -255,10 +255,14 @@ public final class GradTape<E extends Floating> {
      *  once the head axis is folded into the batch. */
     public GradTensor matmulBatched(GradTensor a, GradTensor b) { return this.bin2(Op.MATMULB, a, b); }
 
-    /** Rank-3 batched a . b^T: (B,M,K)·(B,N,K) → (B,M,N), the keys read as stored (cajeta-ml-gpu 28.2.8). */
-    public GradTensor matmulBatchedNT(GradTensor a, GradTensor b) {
-        Tensor<E> v #= Ops.matmulBatchedT<E>(this.values.get(a.idx), this.values.get(b.idx), false, true);
-        return this.push(Op.MATMULB, a.idx, b.idx, 1, 0.0, #v);
+    /**
+     * Rank-3 batched alpha a . b^T: (B,M,K)·(B,N,K) → (B,M,N), the keys read as stored and
+     * the scale taken in the product, attention's scaled scores as one node
+     * (cajeta-ml-gpu 28.2.8).
+     */
+    public GradTensor matmulBatchedNT(GradTensor a, GradTensor b, float32 alpha) {
+        Tensor<E> v #= Ops.matmulBatchedT<E>(this.values.get(a.idx), this.values.get(b.idx), false, true, alpha);
+        return this.push(Op.MATMULB, a.idx, b.idx, 1, (float64) alpha, #v);
     }
 
     /** Swap the last two axes of a rank-3 node. */
@@ -702,17 +706,19 @@ public final class GradTape<E extends Floating> {
             return;
         }
         if (op == Op.MATMULB) {
-            // axis 1 is a . b^T; either way the products read their operands as stored
+            // axis 1 is alpha a . b^T; either way the products read their operands as stored
             Tensor<E> vb = this.values.get(b);
             boolean nt = this.axes[i] == 1;
+            float32 alpha = 1.0f;
+            if (nt) { alpha = (float32) this.cs[i]; }
             if (this.needsGrad[a]) {
-                this.accum(a, Ops.matmulBatchedT<E>(g, vb, false, !nt));
+                this.accum(a, Ops.matmulBatchedT<E>(g, vb, false, !nt, alpha));
             }
             if (this.needsGrad[b]) {
                 if (nt) {
-                    this.accum(b, Ops.matmulBatchedT<E>(g, va, true, false));
+                    this.accum(b, Ops.matmulBatchedT<E>(g, va, true, false, alpha));
                 } else {
-                    this.accum(b, Ops.matmulBatchedT<E>(va, g, true, false));
+                    this.accum(b, Ops.matmulBatchedT<E>(va, g, true, false, 1.0f));
                 }
             }
             return;
