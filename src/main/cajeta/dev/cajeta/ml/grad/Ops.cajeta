@@ -360,7 +360,27 @@ public final class Ops {
         Ops.requireF32<E>("sumTo");
         int32 gd = g.ndim();
         int32 ld = like.ndim();
-        Tensor<E> cur #= Ops.copyOf<E>(g);
+        // The first reduction reads `g` in place; only a sum that reduces nothing copies
+        // (cajeta-ml-gpu 28.2.8).
+        int32 first = -1;
+        if (gd > ld) {
+            first = 0;
+        } else {
+            int32 f = 0;
+            while (f < ld && first < 0) {
+                if (like.shapeAt(f) == 1 && g.shapeAt(f) != 1) { first = f; }
+                f = f + 1;
+            }
+        }
+        if (first < 0) { return Ops.copyOf<E>(g); }
+        Tensor<E> cur #= Ops.reduceAxisGpu<E>("sumTo", g, first, Reduce.SUM);
+        if (gd > ld) {
+            int64[] sh0 #= Ops.shapeOf<E>(cur);
+            int64[] dropped0 = heap int64[cur.ndim() - 1];
+            int32 k0 = 1;
+            while (k0 < cur.ndim()) { dropped0[k0 - 1] = sh0[k0]; k0 = k0 + 1; }
+            cur #= Ops.reshape<E>(cur, dropped0);
+        }
         // leading axes `like` does not have: reduce axis 0 and drop it
         while (cur.ndim() > ld) {
             Tensor<E> red #= Ops.reduceAxisGpu<E>("sumTo", cur, 0, Reduce.SUM);

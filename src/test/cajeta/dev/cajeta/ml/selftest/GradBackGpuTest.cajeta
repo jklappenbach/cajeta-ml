@@ -407,6 +407,36 @@ public class GradBackGpuTest {
         GradBackGpuTest.sameGrad("mul, div, sub, b", wantB, d.gradOf(db));
     }
 
+    /**
+     * A broadcast VJP reduces its cotangent in place: sumTo copied the whole cotangent before
+     * its first reduction, one 16 MB copy for every Linear's bias gradient in
+     * transformer-block-train and a 64 MB one for the feed-forward's (cajeta-ml-gpu 28.2.8).
+     * No copy launch summing a 6 x 8 cotangent down to a row, and the sums match the host,
+     * also for a leading axis the target does not have.
+     */
+    @Test
+    public void aBroadcastSumReadsItsCotangentInPlace() {
+        int64[] gs = [6L, 8L];
+        int64[] row = [1L, 8L];
+        int64[] flat = [8L];
+        Tensor<float32> g #= GradBackGpuTest.fill(gs, 67L, false);
+        Tensor<float32> likeRow #= Tensor.zeros<float32>(row);
+        Tensor<float32> likeFlat #= Tensor.zeros<float32>(flat);
+        Tensor<float32> wantRow #= Tensor.sumTo<float32>(g, likeRow);
+        Tensor<float32> wantFlat #= Tensor.sumTo<float32>(g, likeFlat);
+        Tensor<float32> gd #= GradBackGpuTest.onDevice(g);
+        Tensor<float32> rowD #= GradBackGpuTest.onDevice(likeRow);
+        Tensor<float32> flatD #= GradBackGpuTest.onDevice(likeFlat);
+        int64 before = Device.kernelLaunchCount("copy_float32");
+        Tensor<float32> gotRow #= Ops.sumTo<float32>(gd, rowD);
+        int64 copies = Device.kernelLaunchCount("copy_float32") - before;
+        System.stdout.println("  broadcast sum copies: " + copies);
+        Assert.equals(0L, copies);
+        GradBackGpuTest.sameGrad("sumTo row", wantRow, gotRow);
+        Tensor<float32> gotFlat #= Ops.sumTo<float32>(gd, flatD);
+        GradBackGpuTest.sameGrad("sumTo leading axis", wantFlat, gotFlat);
+    }
+
     @Test
     public void binaryBackwardsMatchTheCpu() {
         int64[] s = [3L, 7L];
