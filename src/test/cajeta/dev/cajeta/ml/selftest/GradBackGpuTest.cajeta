@@ -335,6 +335,44 @@ public class GradBackGpuTest {
         GradBackGpuTest.sameGrad("q . k^T, k", wantK, d.gradOf(dk));
     }
 
+    /**
+     * A same-shape add hands its cotangent to an intermediate input as a view on the device:
+     * the cotangent lives as long as the tape and a later contribution adds into a new
+     * tensor. A residual add copied the whole activation twice, four of the ten 16 MB copies
+     * a step in transformer-block-train (cajeta-ml-gpu 28.2.8). A leaf still gets its own
+     * copy, since the caller may move its gradient to the host (binaryBackwardsMatchTheCpu's
+     * plain add does). One copy across the backward, the leaf `b`'s, and the gradients still
+     * match the cpu tape, including an input that a second path reaches.
+     */
+    @Test
+    public void aSameShapeAddPassesItsCotangentThrough() {
+        int64[] s = [6L, 8L];
+        Tensor<float32> a #= GradBackGpuTest.fill(s, 47L, false);
+        Tensor<float32> b #= GradBackGpuTest.fill(s, 53L, false);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor la = t.leaf(a, true);
+        GradTensor lb = t.leaf(b, true);
+        GradTensor ta = t.tanh(la);
+        GradTensor y = t.tanh(t.add(t.add(ta, lb), ta));
+        t.backward(y);
+        Tensor<float32> wantA = t.gradOf(la);
+        Tensor<float32> wantB = t.gradOf(lb);
+        Tensor<float32> ad #= GradBackGpuTest.onDevice(a);
+        Tensor<float32> bd #= GradBackGpuTest.onDevice(b);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor da = d.leaf(ad, true);
+        GradTensor db = d.leaf(bd, true);
+        GradTensor tad = d.tanh(da);
+        GradTensor yd = d.tanh(d.add(d.add(tad, db), tad));
+        int64 before = Device.kernelLaunchCount("copy_float32");
+        d.backward(yd);
+        int64 copies = Device.kernelLaunchCount("copy_float32") - before;
+        System.stdout.println("  same-shape add copies: " + copies);
+        Assert.equals(1L, copies);
+        GradBackGpuTest.sameGrad("residual add, a", wantA, d.gradOf(da));
+        GradBackGpuTest.sameGrad("residual add, b", wantB, d.gradOf(db));
+    }
+
     @Test
     public void binaryBackwardsMatchTheCpu() {
         int64[] s = [3L, 7L];

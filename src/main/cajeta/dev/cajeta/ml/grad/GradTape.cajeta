@@ -523,6 +523,33 @@ public final class GradTape<E extends Floating> {
         return;
     }
 
+    /**
+     * Accumulate node `i`'s own cotangent `g` into an input. When the shapes match on the
+     * device the input takes a view of `g`: a processed node's cotangent lives as long as the
+     * tape and accum never adds in place, so the view cannot outlive what it borrows
+     * (cajeta-ml-gpu 28.2.8). A leaf's gradient is handed to the caller, who may move it to
+     * the host, which would take every other view's storage with it, so a leaf gets its own
+     * copy. Anything else goes through accumTo.
+     */
+    void accumThrough(int32 node, Tensor<E> g) {
+        Tensor<E> like = this.values.get(node);
+        if (!this.isLeafGrad[node] && g.isOnGpu() && g.isContiguous() && g.ndim() == like.ndim() && g.size() == like.size()) {
+            int64[] shp #= Ops.shapeOf<E>(like);
+            int32 d = 0;
+            boolean same = true;
+            while (d < g.ndim()) {
+                if (g.shapeAt(d) != shp[d]) { same = false; }
+                d = d + 1;
+            }
+            if (same) {
+                this.accum(node, Ops.reshapeView<E>(g, shp));
+                return;
+            }
+        }
+        this.accumTo(node, g);
+        return;
+    }
+
     /** Shape-restoring accumulate (broadcast backward). */
     void accumTo(int32 node, Tensor<E> contrib) {
         Tensor<E> like = this.values.get(node);
@@ -594,12 +621,12 @@ public final class GradTape<E extends Floating> {
         Tensor<E> vo = this.values.get(i);
 
         if (op == Op.ADD) {
-            if (this.needsGrad[a]) { this.accumTo(a, g); }
-            if (this.needsGrad[b]) { this.accumTo(b, g); }
+            if (this.needsGrad[a]) { this.accumThrough(a, g); }
+            if (this.needsGrad[b]) { this.accumThrough(b, g); }
             return;
         }
         if (op == Op.SUB) {
-            if (this.needsGrad[a]) { this.accumTo(a, g); }
+            if (this.needsGrad[a]) { this.accumThrough(a, g); }
             if (this.needsGrad[b]) {
                 Tensor<E> ng #= Ops.run1<E>(Op.NEG, g, 0, (E) 0);
                 this.accumTo(b, ng);
@@ -761,8 +788,13 @@ public final class GradTape<E extends Floating> {
             return;
         }
         if (op == Op.RESHAPE) {
-            // A view of this node's cotangent, which nothing replaces once its node ran.
-            this.accum(a, Ops.reshapeView<E>(g, GradTape.shapeOf<E>(va)));
+            // A view of this node's cotangent, which nothing replaces once its node ran. A
+            // leaf's gradient is the caller's and owns its storage (see accumThrough).
+            if (this.isLeafGrad[a]) {
+                this.accum(a, Ops.reshape<E>(g, GradTape.shapeOf<E>(va)));
+            } else {
+                this.accum(a, Ops.reshapeView<E>(g, GradTape.shapeOf<E>(va)));
+            }
             return;
         }
         if (op == Op.TRANSPOSE) {
