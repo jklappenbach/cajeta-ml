@@ -4,6 +4,7 @@ import cajeta.math.DType;
 import cajeta.math.Ewise;
 import cajeta.math.Tensor;
 import cajeta.math.stats.Stats;
+import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.MlException;
@@ -235,6 +236,53 @@ public final class Ops {
         Tensor<E> at #= Ops.run1<E>(Op.TRANSPOSE, a, 0, (E) 0);
         Tensor<E> r #= Ops.run2<E>(Op.MATMUL, at, b);
         return #r;
+    }
+
+    /**
+     * Rank-3 batched op(a) . op(b), op transposing the last two axes of `a` when `transA` and
+     * of `b` when `transB`. On the device the batched tile reads a transposed operand in place;
+     * elsewhere it is transposed and multiplied (cajeta-ml-gpu 28.2.8).
+     */
+    public static #Tensor<E> matmulBatchedT<E extends Floating>(Tensor<E> a, Tensor<E> b, boolean transA, boolean transB) {
+        if (a.ndim() != 3 || b.ndim() != 3) {
+            throw heap MlException("ml.grad: matmulBatched expects rank-3 inputs, got " + a.ndim() + " and " + b.ndim());
+        }
+        if (a.isOnGpu() && Device.kernelAvailable("gemmTiled64Batched_float32")) {
+            Ops.requireSame<E>("matmulBatched", a, b);
+            Ops.requireF32<E>("matmulBatched");
+            int64 batch = a.shapeAt(0);
+            int64 m = a.shapeAt(1);
+            int64 k = a.shapeAt(2);
+            if (transA) { m = a.shapeAt(2); k = a.shapeAt(1); }
+            int64 n = b.shapeAt(2);
+            int64 kb = b.shapeAt(1);
+            if (transB) { n = b.shapeAt(1); kb = b.shapeAt(2); }
+            if (b.shapeAt(0) != batch || kb != k) {
+                throw heap MlException("ml.grad: matmulBatched shape mismatch");
+            }
+            int64[] shp = [batch, m, n];
+            Tensor<E> out #= Ewise.deviceOf<E>(shp);
+            Gemm.tiledBatchedT<E>(out.deviceView("matmulBatched"), a.deviceView("matmulBatched"), b.deviceView("matmulBatched"),
+                                  m, n, k, batch, transA, transB);
+            return #out;
+        }
+        if (transA && transB) {
+            Tensor<E> at #= Ops.transposeLast2<E>(a);
+            Tensor<E> bt #= Ops.transposeLast2<E>(b);
+            Tensor<E> r #= Ops.run2<E>(Op.MATMULB, at, bt);
+            return #r;
+        }
+        if (transA) {
+            Tensor<E> at #= Ops.transposeLast2<E>(a);
+            Tensor<E> r #= Ops.run2<E>(Op.MATMULB, at, b);
+            return #r;
+        }
+        if (transB) {
+            Tensor<E> bt #= Ops.transposeLast2<E>(b);
+            Tensor<E> r #= Ops.run2<E>(Op.MATMULB, a, bt);
+            return #r;
+        }
+        return Ops.run2<E>(Op.MATMULB, a, b);
     }
 
     /** A copy of `t` on its own device. */
@@ -579,6 +627,7 @@ public final class Ops {
             return #out;
         }
         if (op == Op.MATMULB) {
+            if (Device.kernelAvailable("gemmTiled64Batched_float32")) { return Ops.matmulBatchedT<E>(a, b, false, false); }
             if (a.ndim() != 3 || b.ndim() != 3) {
                 throw heap MlException("ml.grad: matmulBatched expects rank-3 inputs, got " + a.ndim() + " and " + b.ndim());
             }

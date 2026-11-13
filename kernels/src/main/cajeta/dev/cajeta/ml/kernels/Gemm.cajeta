@@ -11548,6 +11548,149 @@ public final class Gemm {
         gemmTiledBatched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k);
     }
 
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void gemmTiled64Batched<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, uint32 m, uint32 n, uint32 k,
+                                             uint32 ta, uint32 tb) {
+        Shared<float32> sa = shared float32[1088];
+        Shared<float32> sb = shared float32[1088];
+        uint32 t = KernelThread.x();
+        uint32 tx = t % 16;
+        uint32 ty = t / 16;
+        uint32 ntiles = (n + 63) / 64;
+        uint32 tiles = ((m + 63) / 64) * ntiles;
+        uint32 wid = Workgroup.x();
+        uint32 bt = wid / tiles;
+        uint32 rem = wid - bt * tiles;
+        uint32 mi = rem / ntiles;
+        uint32 nj = rem - mi * ntiles;
+        uint32 abase = bt * m * k;
+        uint32 bbase = bt * k * n;
+        uint32 cbase = bt * m * n;
+        uint32 m0 = mi * 64;
+        uint32 n0 = nj * 64;
+        float32 c00 = 0.0f;
+        float32 c01 = 0.0f;
+        float32 c02 = 0.0f;
+        float32 c03 = 0.0f;
+        float32 c10 = 0.0f;
+        float32 c11 = 0.0f;
+        float32 c12 = 0.0f;
+        float32 c13 = 0.0f;
+        float32 c20 = 0.0f;
+        float32 c21 = 0.0f;
+        float32 c22 = 0.0f;
+        float32 c23 = 0.0f;
+        float32 c30 = 0.0f;
+        float32 c31 = 0.0f;
+        float32 c32 = 0.0f;
+        float32 c33 = 0.0f;
+        uint32 k0 = 0;
+        while (k0 < k) {
+            uint32 idx = t;
+            while (idx < 1024) {
+                uint32 ar = idx / 16;
+                uint32 ak = idx - ar * 16;
+                if (ta != 0) {
+                    ak = idx / 64;
+                    ar = idx - ak * 64;
+                }
+                float32 va = 0.0f;
+                if (m0 + ar < m && k0 + ak < k) {
+                    if (ta != 0) { va = (float32) a[abase + (k0 + ak) * m + m0 + ar]; }
+                    else { va = (float32) a[abase + (m0 + ar) * k + k0 + ak]; }
+                }
+                sa[ak * 68 + ar] = va;
+                uint32 bk = idx / 64;
+                uint32 bc = idx - bk * 64;
+                if (tb != 0) {
+                    bc = idx / 16;
+                    bk = idx - bc * 16;
+                }
+                float32 vb = 0.0f;
+                if (k0 + bk < k && n0 + bc < n) {
+                    if (tb != 0) { vb = (float32) b[bbase + (n0 + bc) * k + k0 + bk]; }
+                    else { vb = (float32) b[bbase + (k0 + bk) * n + n0 + bc]; }
+                }
+                sb[bk * 68 + bc] = vb;
+                idx = idx + 256;
+            }
+            Barrier.workgroup();
+            uint32 kk = 0;
+            while (kk < 16) {
+                float32 a0 = sa[kk * 68 + ty];
+                float32 a1 = sa[kk * 68 + ty + 16];
+                float32 a2 = sa[kk * 68 + ty + 32];
+                float32 a3 = sa[kk * 68 + ty + 48];
+                float32 b0 = sb[kk * 68 + tx];
+                float32 b1 = sb[kk * 68 + tx + 16];
+                float32 b2 = sb[kk * 68 + tx + 32];
+                float32 b3 = sb[kk * 68 + tx + 48];
+                c00 = c00 + a0 * b0;
+                c01 = c01 + a0 * b1;
+                c02 = c02 + a0 * b2;
+                c03 = c03 + a0 * b3;
+                c10 = c10 + a1 * b0;
+                c11 = c11 + a1 * b1;
+                c12 = c12 + a1 * b2;
+                c13 = c13 + a1 * b3;
+                c20 = c20 + a2 * b0;
+                c21 = c21 + a2 * b1;
+                c22 = c22 + a2 * b2;
+                c23 = c23 + a2 * b3;
+                c30 = c30 + a3 * b0;
+                c31 = c31 + a3 * b1;
+                c32 = c32 + a3 * b2;
+                c33 = c33 + a3 * b3;
+                kk = kk + 1;
+            }
+            Barrier.workgroup();
+            k0 = k0 + 16;
+        }
+        uint32 r0 = m0 + ty;
+        uint32 r1 = r0 + 16;
+        uint32 r2 = r0 + 32;
+        uint32 r3 = r0 + 48;
+        uint32 q0 = n0 + tx;
+        uint32 q1 = q0 + 16;
+        uint32 q2 = q0 + 32;
+        uint32 q3 = q0 + 48;
+        if (r0 < m && q0 < n) { c[cbase + r0 * n + q0] = (E) c00; }
+        if (r0 < m && q1 < n) { c[cbase + r0 * n + q1] = (E) c01; }
+        if (r0 < m && q2 < n) { c[cbase + r0 * n + q2] = (E) c02; }
+        if (r0 < m && q3 < n) { c[cbase + r0 * n + q3] = (E) c03; }
+        if (r1 < m && q0 < n) { c[cbase + r1 * n + q0] = (E) c10; }
+        if (r1 < m && q1 < n) { c[cbase + r1 * n + q1] = (E) c11; }
+        if (r1 < m && q2 < n) { c[cbase + r1 * n + q2] = (E) c12; }
+        if (r1 < m && q3 < n) { c[cbase + r1 * n + q3] = (E) c13; }
+        if (r2 < m && q0 < n) { c[cbase + r2 * n + q0] = (E) c20; }
+        if (r2 < m && q1 < n) { c[cbase + r2 * n + q1] = (E) c21; }
+        if (r2 < m && q2 < n) { c[cbase + r2 * n + q2] = (E) c22; }
+        if (r2 < m && q3 < n) { c[cbase + r2 * n + q3] = (E) c23; }
+        if (r3 < m && q0 < n) { c[cbase + r3 * n + q0] = (E) c30; }
+        if (r3 < m && q1 < n) { c[cbase + r3 * n + q1] = (E) c31; }
+        if (r3 < m && q2 < n) { c[cbase + r3 * n + q2] = (E) c32; }
+        if (r3 < m && q3 < n) { c[cbase + r3 * n + q3] = (E) c33; }
+    }
+
+    /**
+     * `c` (batch x m x n) = op(`a`) . op(`b`) at E, op transposing an operand stored k x m
+     * (`transA`) or n x k (`transB`), through the batched register-blocked tile; queued on the
+     * current stream.
+     */
+    public static void tiledBatchedT<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, int64 batch,
+                                        boolean transA, boolean transB) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 63) / 64) * ((un + 63) / 64);
+        uint32 ta = 0;
+        uint32 tb = 0;
+        if (transA) { ta = 1; }
+        if (transB) { tb = 1; }
+        KernelStream s #= KernelStream.current();
+        gemmTiled64Batched.launch(s, grid: [tiles * (uint32) batch], block: [256])(c, a, b, um, un, (uint32) k, ta, tb);
+    }
+
     /**
      * The number of 128x128 tiles of an m x n result at or above which the large members
      * win. Measured on the RTX 4090 (sm_89, 128 SMs) on 2026-11-09: at 16 tiles (512^2) the

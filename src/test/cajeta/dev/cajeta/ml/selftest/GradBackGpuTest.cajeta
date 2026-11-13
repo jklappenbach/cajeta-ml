@@ -298,6 +298,43 @@ public class GradBackGpuTest {
         GradBackGpuTest.sameGrad("tape reshape view", want, d.gradOf(ld));
     }
 
+    /**
+     * Attention's batched products read their operands in place on the device: q . k^T takes
+     * the keys as stored, and a batched product's backward takes its operands as stored, so
+     * neither direction transposes. Each transpose copied a whole score or head tensor, six a
+     * step in transformer-block-train (cajeta-ml-gpu 28.2.8). No strided copy launches across
+     * the forward and the backward, and both gradients still match the cpu tape.
+     */
+    @Test
+    public void attentionProductsReadTheirOperandsInPlace() {
+        int64[] qs = [4L, 9L, 6L];
+        int64[] ks = [4L, 11L, 6L];
+        Tensor<float32> q #= GradBackGpuTest.fill(qs, 41L, false);
+        Tensor<float32> k #= GradBackGpuTest.fill(ks, 43L, false);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor lq = t.leaf(q, true);
+        GradTensor lk = t.leaf(k, true);
+        GradTensor s = t.tanh(t.matmulBatched(lq, t.transposeBatch(lk)));
+        GradTensor y = t.tanh(t.matmulBatched(s, lk));
+        t.backward(y);
+        Tensor<float32> wantQ = t.gradOf(lq);
+        Tensor<float32> wantK = t.gradOf(lk);
+        Tensor<float32> qd #= GradBackGpuTest.onDevice(q);
+        Tensor<float32> kd #= GradBackGpuTest.onDevice(k);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor dq = d.leaf(qd, true);
+        GradTensor dk = d.leaf(kd, true);
+        int64 before = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32");
+        GradTensor sd = d.tanh(d.matmulBatchedNT(dq, dk));
+        GradTensor yd = d.tanh(d.matmulBatched(sd, dk));
+        d.backward(yd);
+        int64 copies = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32") - before;
+        System.stdout.println("  attention transposes: " + copies);
+        Assert.equals(0L, copies);
+        GradBackGpuTest.sameGrad("q . k^T, q", wantQ, d.gradOf(dq));
+        GradBackGpuTest.sameGrad("q . k^T, k", wantK, d.gradOf(dk));
+    }
+
     @Test
     public void binaryBackwardsMatchTheCpu() {
         int64[] s = [3L, 7L];

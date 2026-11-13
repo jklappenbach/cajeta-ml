@@ -223,7 +223,7 @@ public class MultiheadAttention extends Module {
         GradTensor v = this.splitHeads(tape, this.wv.forward(tape, kFlat), b, tk, d);
 
         // scores = q · kᵀ / √D (+ mask), softmaxed over the key axis.
-        GradTensor scores = tape.matmulBatched(q, tape.transposeBatch(k));
+        GradTensor scores = tape.matmulBatchedNT(q, k);
         int64[] one = heap int64[1];
         one[0] = 1;
         float32 inv = 1.0f / Math.sqrt((float32) d);
