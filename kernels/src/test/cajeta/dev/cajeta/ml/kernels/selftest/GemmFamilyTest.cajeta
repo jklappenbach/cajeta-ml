@@ -6,6 +6,7 @@ import cajeta.lang.System;
 import cajeta.time.Clock;
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelFacts;
 import cajeta.xpu.ShapeChoice;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.Gemm;
@@ -212,10 +213,10 @@ public class GemmFamilyTest {
 
     /**
      * 23.2.12: an unrolled wide tile against its rolled twin is a choice per device and
-     * problem. With no store the unrolled member runs where its build spills nothing, as it
-     * did; under a store an override names the rolled twin for each of the five pairs, and
-     * where both members survive the first call times them and every later one, in this
-     * process or the next, reads the answer back untimed.
+     * problem. With no store the rolled twin runs (23.2.13), and the NT member declines;
+     * under a store an override names the rolled twin for each of the five pairs, and where
+     * both members survive the first call times them and every later one, in this process
+     * or the next, reads the answer back untimed.
      */
     @Test
     public void anUnrolledTileAndItsRolledTwinAreATimedChoiceUnderAStore() {
@@ -223,10 +224,13 @@ public class GemmFamilyTest {
         TuneMode.setUntimed(false);
         Gemm.tuneUnrolledIn("");
         GemmFamilyTest.pairCase(1024L, 768L, 40L);
-        String rule #= Gemm.tiled128Member();
         String ran #= Gemm.lastPairKernel();
-        Assert.equals(rule, ran);
+        Assert.equals("gemmTiled128_float32", ran);
         Assert.isFalse(Gemm.lastPairTimed());
+        KernelBuffer<float32> na = heap KernelBuffer<float32>((uint64) (1024L * 40L));
+        KernelBuffer<float32> nb = heap KernelBuffer<float32>((uint64) (768L * 40L));
+        KernelBuffer<float32> nc = heap KernelBuffer<float32>((uint64) (1024L * 768L));
+        Assert.isFalse(Gemm.tiled128NT<float32>(nc, na, nb, 1024L, 768L, 40L));
 
         String store #= GemmFamilyTest.freshStore();
         Gemm.tuneUnrolledIn(store);
@@ -242,9 +246,6 @@ public class GemmFamilyTest {
             Assert.isTrue(Device.kernelLaunchCount("gemmTiled128SplitTN_float32") > t0);
         }
         // The NT member's twin is the transpose and the routed tile, so tiled128NT declines.
-        KernelBuffer<float32> na = heap KernelBuffer<float32>((uint64) (1024L * 40L));
-        KernelBuffer<float32> nb = heap KernelBuffer<float32>((uint64) (768L * 40L));
-        KernelBuffer<float32> nc = heap KernelBuffer<float32>((uint64) (1024L * 768L));
         ShapeChoice.setShapeOverride("gemm-tiled128-nt", "gemmTiled128_float32");
         boolean nt = Gemm.tiled128NT<float32>(nc, na, nb, 1024L, 768L, 40L);
         ShapeChoice.clearShapeOverride("gemm-tiled128-nt");
@@ -259,7 +260,8 @@ public class GemmFamilyTest {
         ShapeChoice.clearShapeOverride("gemm-wide");
         Assert.isTrue(Device.kernelLaunchCount("gemmWide_bfloat16") > w0);
 
-        if (rule.equals("gemmTiled128Unrolled_float32")) {
+        if (Device.kernelAvailable("gemmTiled128Unrolled_float32")
+                && KernelFacts.measured("gemmTiled128Unrolled_float32", 0).spillBytes == 0) {
             String fresh #= GemmFamilyTest.freshStore();
             Gemm.tuneUnrolledIn(fresh);
             GemmFamilyTest.pairCase(1024L, 768L, 40L);

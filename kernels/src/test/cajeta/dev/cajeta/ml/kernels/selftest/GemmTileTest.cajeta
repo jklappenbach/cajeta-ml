@@ -326,19 +326,17 @@ public class GemmTileTest {
         GemmTileTest.wideCase<bfloat16>("gemmWideUnrolled_bfloat16", 2, 7L, 1000L, 2049L);
     }
 
-    /** Rule R1 decides the body: the unrolled tile runs only where it has device code and
-     *  its build spills nothing (gfx1151 spills it and runs 5x slower, Proton 2026-11-10). */
-    static void unrolledOnlyWithoutSpills(String member, String rolled, String unrolled) {
-        boolean pays = Device.kernelAvailable(unrolled) && KernelFacts.measured(unrolled, 0).spillBytes == 0;
-        if (pays) { Assert.isTrue(member.equals(unrolled)); } else { Assert.isTrue(member.equals(rolled)); }
-    }
-
+    /** With no tune store the rolled wide tiles run on every backend (cajeta-ml-gpu 23.2.13):
+     *  the unrolled bodies run only where a store timed them faster. On gfx1151 they ran 5x
+     *  slower while they spilled and 5 to 28% slower once they did not; on sm_89 the rolled
+     *  tile is ahead at the transformer's shapes too. */
     @Test
-    public void theUnrolledWideTilesRunOnlyWhereTheyDoNotSpill() {
+    public void theRolledWideTilesRunWithNoStore() {
+        Gemm.tuneUnrolledIn("");
         String t #= Gemm.tiled128Member();
-        GemmTileTest.unrolledOnlyWithoutSpills(t, "gemmTiled128_float32", "gemmTiled128Unrolled_float32");
+        Assert.equals("gemmTiled128_float32", t);
         String w #= Gemm.wideMember();
-        GemmTileTest.unrolledOnlyWithoutSpills(w, "gemmWide_bfloat16", "gemmWideUnrolled_bfloat16");
+        Assert.equals("gemmWide_bfloat16", w);
         if (GemmTileTest.usable(t)) {
             int64 before = Device.kernelLaunchCount(t);
             GemmTileTest.plainCase<float32>(t, 128, 256L, 256L, 104L);

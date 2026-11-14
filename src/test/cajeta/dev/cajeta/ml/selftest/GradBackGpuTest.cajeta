@@ -1,8 +1,11 @@
 package dev.cajeta.ml.selftest;
 
+import cajeta.io.file.Path;
 import cajeta.lang.System;
 import cajeta.math.Tensor;
+import cajeta.time.Clock;
 import cajeta.xpu.Device;
+import cajeta.xpu.ShapeChoice;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.grad.GradTape;
@@ -291,8 +294,9 @@ public class GradBackGpuTest {
      * A large Linear's input gradient G . W^T reads the weight as stored, through the unrolled
      * tile's NT member where it runs, where it copied W^T first: six copies a step in
      * transformer-block-train (cajeta-ml-gpu 28.2.8). Plain matmul's left gradient alike.
-     * 1100 x 600 by 600 x 600 (45 tiles, no split): no strided launch across the backward on
-     * cuda, where the member runs, and the gradients match the cpu tape.
+     * 1100 x 600 by 600 x 600 (45 tiles, no split): under a store that picked the member (an
+     * override here, since with no store the transpose runs, cajeta-ml-gpu 23.2.13), no
+     * strided launch across the backward on cuda, and the gradients match the cpu tape.
      */
     @Test
     public void aLargeLinearGradientReadsItsWeightInPlace() {
@@ -302,9 +306,16 @@ public class GradBackGpuTest {
         Tensor<float32> x #= GradBackGpuTest.fill(xs, 47L, false);
         Tensor<float32> w #= GradBackGpuTest.fill(ws, 53L, false);
         Tensor<float32> b #= GradBackGpuTest.fill(bs, 59L, false);
+        String store #= "build/tune-nt-" + Clock.nanoTime();
+        Path dir #= Path.of(store);
+        dir.mkdirs();
+        Gemm.tuneUnrolledIn(store);
+        ShapeChoice.setShapeOverride("gemm-tiled128-nt", "gemmTiled128UnrolledNT_float32");
         int64 before = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32");
         GradBackGpuTest.linear("large linear gradient", 0, x, w, b);
         GradBackGpuTest.binary("large matmul gradient", Op.MATMUL, x, w, 0);
+        ShapeChoice.clearShapeOverride("gemm-tiled128-nt");
+        Gemm.tuneUnrolledIn("");
         int64 copies = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32") - before;
         System.stdout.println("  large linear gradient copies: " + copies);
         if (Device.activeBackend().equals("cuda")) {

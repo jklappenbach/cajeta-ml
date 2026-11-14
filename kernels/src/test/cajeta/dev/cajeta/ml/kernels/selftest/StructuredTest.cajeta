@@ -877,9 +877,9 @@ public class StructuredTest {
      * The unrolled 128 tile's NT member reads B stored transposed (n x k), so a Linear's input
      * gradient G . W^T reads the weight as stored instead of copying W^T first, six copies a
      * step in transformer-block-train (cajeta-ml-gpu 28.2.8). 300 x 260 x 64 (whole tiles on
-     * the 4-wide path) and 150 x 200 x 37 (the ragged path) against the host. On cuda the
-     * launcher must take the member, which it does only while its build spills nothing;
-     * elsewhere the member runs straight when the launcher declines it.
+     * the 4-wide path) and 150 x 200 x 37 (the ragged path) against the host. With no tune
+     * store the launcher declines it everywhere (cajeta-ml-gpu 23.2.13), and the member runs
+     * straight.
      */
     @Test
     public void wideTileReadsATransposedB() {
@@ -897,10 +897,9 @@ public class StructuredTest {
             KernelBuffer<float32> b #= StructuredTest.upload(nn * kk, 113L, fb);
             KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (mm * nn));
             int64 unrolled = Device.kernelLaunchCount("gemmTiled128UnrolledNT_float32");
+            Gemm.tuneUnrolledIn("");
             boolean ran = Gemm.tiled128NT<float32>(c, a, b, mm, nn, kk);
-            if (Device.activeBackend().equals("cuda")) {
-                Assert.isTrue(ran);
-            }
+            Assert.isFalse(ran);
             if (!ran) { Gemm.tiled128UnrolledNT<float32>(c, a, b, mm, nn, kk); }
             Assert.equals(unrolled + 1L, Device.kernelLaunchCount("gemmTiled128UnrolledNT_float32"));
             {

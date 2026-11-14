@@ -2485,9 +2485,8 @@ public final class Gemm {
         gemmWideUnrolled.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
     }
 
-    /** The kernel {@link #wide} runs on this backend at bfloat16 with no tune store (unrolledPays). */
+    /** The kernel {@link #wide} runs at bfloat16 with no tune store: the rolled body (cajeta-ml-gpu 23.2.13). */
     public static #String wideMember() {
-        if (Gemm.unrolledPays("gemmWideUnrolled_bfloat16")) { return "gemmWideUnrolled_bfloat16".clone(); }
         return "gemmWide_bfloat16".clone();
     }
 
@@ -12814,9 +12813,9 @@ public final class Gemm {
     /**
      * `c` (m x n) = `a` (m x k) . `b`^T, `b` stored n x k, through gemmTiled128UnrolledNT: a
      * Linear's input gradient G . W^T reads the weight as stored. False where the product
-     * would split K, or where the member is not chosen (it spills, or under a tune store the
-     * transpose and the routed tile timed faster), and the caller transposes and multiplies;
-     * queued on the current stream.
+     * would split K, or where no tune store picked the member (with no store the rolled side
+     * runs, which for this pair is the transpose and the routed tile), and the caller
+     * transposes and multiplies; queued on the current stream.
      */
     public static boolean tiled128NT<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         if (Gemm.splitsFor(m, n, k) > (uint32) 1 || !Gemm.unrolledChosen<E>(1, a, b, m, n, k, (uint32) 1)) { return false; }
@@ -12871,7 +12870,7 @@ public final class Gemm {
         return (uint32) want;
     }
 
-    /** Whether a split-K member runs here: the unrolled one where it builds without spilling, else the rolled one. */
+    /** Whether a split-K member runs here at all: the rolled one wherever it is built, or the unrolled one where it builds without spilling. */
     public static boolean splitKRuns() {
         return Gemm.unrolledPays("gemmTiled128UnrolledSplit_float32") || Device.kernelAvailable("gemmTiled128Split_float32");
     }
@@ -12921,15 +12920,13 @@ public final class Gemm {
         Gemm.splitInto<E>(c, at, b, m, n, k, splits, true, 0);
     }
 
-    /** The split-K member Gemm.tiled takes here: the unrolled one where it builds without spilling, else the rolled one. */
+    /** The split-K member Gemm.tiled takes with no tune store: the rolled one, which every backend builds. */
     public static #String splitMember() {
-        if (Gemm.unrolledPays("gemmTiled128UnrolledSplit_float32")) { return "gemmTiled128UnrolledSplit_float32".clone(); }
         return "gemmTiled128Split_float32".clone();
     }
 
     /** The transposed-A split member Gemm.tiledTN takes here (as splitMember). */
     public static #String splitTNMember() {
-        if (Gemm.unrolledPays("gemmTiled128UnrolledSplitTN_float32")) { return "gemmTiled128UnrolledSplitTN_float32".clone(); }
         return "gemmTiled128SplitTN_float32".clone();
     }
 
@@ -12974,17 +12971,16 @@ public final class Gemm {
         gemmSplitJoin.launch(s, grid: [(mn + 255) / 256], block: [256])(c, parts, mn, used);
     }
 
-    /** The kernel {@link #tiled128} runs on this backend with no tune store (unrolledPays). */
+    /** The kernel {@link #tiled128} runs with no tune store: the rolled body (cajeta-ml-gpu 23.2.13). */
     public static #String tiled128Member() {
-        if (Gemm.unrolledPays("gemmTiled128Unrolled_float32")) { return "gemmTiled128Unrolled_float32".clone(); }
         return "gemmTiled128_float32".clone();
     }
 
     /**
      * Rule R1 for the unrolled wide tiles: the body runs where the backend built it and its
      * build spills nothing. The float32 (tiled128) and bfloat16 (wide) members answer for
-     * every element type; where that member was not instantiated the rolled body runs. With
-     * no tune store this is the whole choice (unrolledChosen).
+     * every element type; where that member was not instantiated the rolled body runs. It
+     * decides whether a split member runs at all; which member runs is unrolledChosen's.
      */
     static boolean unrolledPays(String kernel) {
         if (!Device.kernelAvailable(kernel)) { return false; }
@@ -13007,9 +13003,11 @@ public final class Gemm {
     /**
      * Time each unrolled wide tile against its rolled twin per device and problem, and keep
      * the answers in `dir` under the device and the build. A device where the unrolled body
-     * builds clean but runs slower (gfx1151 at the NT member, 28% slower) then takes the
-     * twin, where the spill rule alone would not. An empty `dir` returns to that rule. Either
-     * way the choices this process remembers are dropped, so the next call asks the store.
+     * builds clean but runs faster takes it; with no store every pair runs its rolled twin
+     * (cajeta-ml-gpu 23.2.13: on gfx1151 the unrolled bodies run 5 to 28% slower, and on
+     * sm_89 the rolled tile is ahead at the transformer's shapes). An empty `dir` returns to
+     * the rolled twins. Either way the choices this process remembers are dropped, so the
+     * next call asks the store.
      */
     public static void tuneUnrolledIn(String dir) {
         Gemm.pairDir #= dir.clone();
@@ -13050,14 +13048,6 @@ public final class Gemm {
         return "gemmWide_bfloat16".clone();
     }
 
-    static boolean pairPaysByRule(int32 p) {
-        if (p == 0) { return Gemm.unrolledPays("gemmTiled128Unrolled_float32"); }
-        if (p == 1) { return Gemm.unrolledPays("gemmTiled128UnrolledNT_float32"); }
-        if (p == 2) { return Gemm.unrolledPays("gemmTiled128UnrolledSplit_float32"); }
-        if (p == 3) { return Gemm.unrolledPays("gemmTiled128UnrolledSplitTN_float32"); }
-        return Gemm.unrolledPays("gemmWideUnrolled_bfloat16");
-    }
-
     /** Pair `p`'s family: the unrolled member first, so with one survivor or a tie it is the one taken. */
     static TileFamily<PairShape> pairFamily(int32 p) {
         if (p == 0) {
@@ -13090,14 +13080,14 @@ public final class Gemm {
     }
 
     /**
-     * Whether pair `p` runs its unrolled member at m x n x k. With no tune store it is
-     * unrolledPays. Under a store the members that fit and build clean are timed at first use
+     * Whether pair `p` runs its unrolled member at m x n x k. With no tune store it does not
+     * (cajeta-ml-gpu 23.2.13). Under a store the members that fit and build clean are timed at first use
      * on `a` and `b` into scratch outputs, and the winner is kept per problem; a lead under 3%
      * goes to the unrolled member. The members are named by their float32 (bfloat16 for wide)
      * instantiations, so the first element type to meet a problem decides it for the others.
      */
     static boolean unrolledChosen<E>(int32 p, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, uint32 splits) {
-        if (Gemm.pairDir == null || Gemm.pairDir.byteLength() == 0) { return Gemm.pairSettled(p, !Gemm.pairPaysByRule(p), false); }
+        if (Gemm.pairDir == null || Gemm.pairDir.byteLength() == 0) { return Gemm.pairSettled(p, true, false); }
         TileFamily<PairShape> f = Gemm.pairFamily(p);
         int32 idx = f.remembered(m, n, k);
         boolean timed = false;
@@ -13112,7 +13102,7 @@ public final class Gemm {
 
     /** unrolledChosen for the wide pair, whose probe is its own so that wide at E does not instantiate the float32 tiles at E. */
     static boolean wideUnrolledChosen<E>(KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
-        if (Gemm.pairDir == null || Gemm.pairDir.byteLength() == 0) { return Gemm.pairSettled(4, !Gemm.pairPaysByRule(4), false); }
+        if (Gemm.pairDir == null || Gemm.pairDir.byteLength() == 0) { return Gemm.pairSettled(4, true, false); }
         TileFamily<PairShape> f = Gemm.pairFamily(4);
         int32 idx = f.remembered(m, n, k);
         boolean timed = false;
