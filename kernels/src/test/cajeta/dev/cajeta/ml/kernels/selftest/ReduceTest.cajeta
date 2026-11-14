@@ -147,6 +147,32 @@ public class ReduceTest {
         }
     }
 
+    /**
+     * A segment reduction stays queued: its partials live in a buffer kept across calls, so the
+     * stream is synced only on the call that grows it. A training step's loss mean synced the
+     * whole forward here, once a step in transformer-block-train (cajeta-ml-gpu 28.2.8).
+     */
+    @Test
+    public void aSegmentReductionQueuesWithoutASync() {
+        if (!ReduceTest.usable("partial_float32") || !ReduceTest.usable("finish")) { return; }
+        int64 n = 65536L;
+        float32[] src = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { src[(int32) i] = ReduceTest.pattern(i); i = i + 1L; }
+        KernelBuffer<float32> in = heap KernelBuffer<float32>((uint64) n);
+        in.upload(src);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(1);
+        int64[] m #= ValueCheck.mark();
+        Reduce.segments<float32>(out, in, n, 1L, Reduce.SUM);
+        int64 before = Device.streamSyncCount();
+        Reduce.segments<float32>(out, in, n, 1L, Reduce.SUM);
+        Assert.equals(before, Device.streamSyncCount());
+        float32[] got = heap float32[1];
+        out.download(got);
+        ReduceTest.close(got[0], ReduceTest.host(src, 0L, n, Reduce.SUM), Reduce.SUM);
+        ValueCheck.credit(m);
+    }
+
     /** out[o][i] = op over in[o][j][i] on a 3 x 7 x 5 buffer, each axis in turn, against the host in float64. */
     @Test
     public void axisReductionsMatchTheHost() {

@@ -267,17 +267,30 @@ public final class Reduce {
         return (uint32) c;
     }
 
-    /** `out[s]` = `op` over segment `s` of `in`, `segments` segments of `segLen` elements; synced, since it drops device temporaries. */
+    /** The segment partials, grown only past their high-water mark (see segments). */
+    static KernelBuffer<float32> segParts;
+    static uint64 segPartsCap;
+
+    /**
+     * `out[s]` = `op` over segment `s` of `in`, `segments` segments of `segLen` elements; queued
+     * on the current stream. The partials are kept across calls and the stream synced only on
+     * the call that grows them, since a queued launch may still read the old ones.
+     */
     public static void segments<E>(KernelBuffer<float32> out, KernelBuffer<E> in, int64 segLen,
                                    int64 segments, int32 op) {
         uint32 chunks = Reduce.chunksFor(segLen);
-        KernelBuffer<float32> parts = heap KernelBuffer<float32>((uint64) (segments * (int64) chunks));
+        uint64 need = (uint64) (segments * (int64) chunks);
         KernelStream s #= KernelStream.current();
+        if (Reduce.segParts == null || need > Reduce.segPartsCap) {
+            s.sync();
+            Reduce.segParts = heap KernelBuffer<float32>(need);
+            Reduce.segPartsCap = need;
+        }
+        KernelBuffer<float32> parts = Reduce.segParts;
         uint32 blocks = (uint32) segments * chunks;
         partial.launch(s, grid: [blocks], block: [256])(parts, in, (uint32) segLen, chunks, op);
         uint32 us = (uint32) segments;
         finish.launch(s, grid: [(us + 63) / 64], block: [64])(out, parts, chunks, us, op);
-        s.sync();
     }
 
     /** `op` over `in[0..n)`, accumulated in float32. */
