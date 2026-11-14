@@ -8,6 +8,7 @@ import cajeta.xpu.Device;
 import cajeta.xpu.ShapeChoice;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
 import dev.cajeta.ml.grad.Op;
@@ -288,6 +289,66 @@ public class GradBackGpuTest {
         }
         GradBackGpuTest.linear("large linear", 0, x, w, b);
         GradBackGpuTest.linear("large linear relu", 1, x, w, b);
+    }
+
+    /**
+     * A Linear whose input is a GELU's output carries its input gradient through the GELU in
+     * the product: the wide tile multiplies G . W^T by GELU's slope at the pre-activation as
+     * it stores, where a GEMM wrote the GELU's cotangent and a pass read it back, 64 MB each
+     * way a step in transformer-block-train (cajeta-ml-gpu 28.2.8). 1100 x 70 -> 600 -> 64
+     * (the second Linear's input gradient 1100 x 600 over 64, past Gemm.large, no split): no
+     * activation-backward launch on the device, the gradients match the cpu tape, and the
+     * GELU node's own cotangent, never formed, is refused by name.
+     */
+    @Test
+    public void aLinearInputGradientCarriesThroughGeluInTheProduct() {
+        int64[] xs = [1100L, 70L];
+        int64[] w1s = [70L, 600L];
+        int64[] b1s = [1L, 600L];
+        int64[] w2s = [600L, 64L];
+        int64[] b2s = [1L, 64L];
+        Tensor<float32> x #= GradBackGpuTest.fill(xs, 61L, false);
+        Tensor<float32> w1 #= GradBackGpuTest.fill(w1s, 67L, false);
+        Tensor<float32> b1 #= GradBackGpuTest.fill(b1s, 71L, false);
+        Tensor<float32> w2 #= GradBackGpuTest.fill(w2s, 73L, false);
+        Tensor<float32> b2 #= GradBackGpuTest.fill(b2s, 79L, false);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor lx = t.leaf(x, true);
+        GradTensor lw1 = t.leaf(w1, true);
+        GradTensor lb1 = t.leaf(b1, true);
+        GradTensor lw2 = t.leaf(w2, true);
+        GradTensor lb2 = t.leaf(b2, true);
+        GradTensor y = t.linear(t.gelu(t.linear(lx, lw1, lb1, 0)), lw2, lb2, 0);
+        t.backward(y);
+        Tensor<float32> xd #= GradBackGpuTest.onDevice(x);
+        Tensor<float32> w1d #= GradBackGpuTest.onDevice(w1);
+        Tensor<float32> b1d #= GradBackGpuTest.onDevice(b1);
+        Tensor<float32> w2d #= GradBackGpuTest.onDevice(w2);
+        Tensor<float32> b2d #= GradBackGpuTest.onDevice(b2);
+        GradTape<float32> d = heap GradTape<float32>();
+        GradTensor dx = d.leaf(xd, true);
+        GradTensor dw1 = d.leaf(w1d, true);
+        GradTensor db1 = d.leaf(b1d, true);
+        GradTensor dw2 = d.leaf(w2d, true);
+        GradTensor db2 = d.leaf(b2d, true);
+        GradTensor act = d.gelu(d.linear(dx, dw1, db1, 0));
+        GradTensor yd = d.linear(act, dw2, db2, 0);
+        int64 before = Device.kernelLaunchCount("actBack_float32");
+        d.backward(yd);
+        int64 actBacks = Device.kernelLaunchCount("actBack_float32") - before;
+        System.stdout.println("  gelu activation-backward launches: " + actBacks);
+        Assert.equals(0L, actBacks);
+        GradBackGpuTest.sameGrad("gelu chain dX", t.gradOf(lx), d.gradOf(dx));
+        GradBackGpuTest.sameGrad("gelu chain dW1", t.gradOf(lw1), d.gradOf(dw1));
+        GradBackGpuTest.sameGrad("gelu chain dB1", t.gradOf(lb1), d.gradOf(db1));
+        GradBackGpuTest.sameGrad("gelu chain dW2", t.gradOf(lw2), d.gradOf(dw2));
+        boolean refused = false;
+        try {
+            d.gradOf(act);
+        } catch (MlException e) {
+            refused = true;
+        }
+        Assert.isTrue(refused);
     }
 
     /**

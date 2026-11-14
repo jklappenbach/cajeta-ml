@@ -873,6 +873,58 @@ public class StructuredTest {
         ValueCheck.credit(m);
     }
 
+    /** GELU's derivative (the erf form) at x, in float64 for the host check. */
+    static float64 geluSlope(float64 x) {
+        float64 cdf = 0.5 * (1.0 + NormActTest.hostErf(x * 0.7071067811865476));
+        float64 pdf = 0.3989422804014327 * Math.exp(-0.5 * x * x);
+        return cdf + x * pdf;
+    }
+
+    /**
+     * The 128 tile multiplies each output by GELU's derivative at a same-shaped pre-activation
+     * as it stores, so a Linear's input gradient through GELU is one launch where it was a GEMM
+     * and a pass of 64 MB a step over the product in transformer-block-train (cajeta-ml-gpu
+     * 28.2.8). 300 x 260 x 64 and 150 x 200 x 37 against the host.
+     */
+    @Test
+    public void wideTileAppliesGeluSlopeAsItStores() {
+        if (!StructuredTest.usable("gemmTiled128_float32")) { return; }
+        int64[] ms = [300L, 150L];
+        int64[] ns = [260L, 200L];
+        int64[] ks = [64L, 37L];
+        int64[] m #= ValueCheck.mark();
+        int32 kase = 0;
+        while (kase < 2) {
+            int64 mm = ms[kase]; int64 nn = ns[kase]; int64 kk = ks[kase];
+            float64[] fa = heap float64[mm * kk];
+            float64[] fb = heap float64[kk * nn];
+            float64[] fh = heap float64[mm * nn];
+            KernelBuffer<float32> a #= StructuredTest.upload(mm * kk, 127L, fa);
+            KernelBuffer<float32> b #= StructuredTest.upload(kk * nn, 131L, fb);
+            KernelBuffer<float32> h #= StructuredTest.upload(mm * nn, 137L, fh);
+            KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (mm * nn));
+            Assert.isTrue(Gemm.tiled128GeluBack<float32>(c, a, b, h, mm, nn, kk));
+            float32[] g = heap float32[mm * nn];
+            c.download(g);
+            StructuredTest.stage = "gemmTiled128 gelu slope, " + mm + " x " + nn + " x " + kk;
+            int64 r = 0L;
+            while (r < mm) {
+                int64 col = 0L;
+                while (col < nn) {
+                    float64 acc = 0.0;
+                    int64 p = 0L;
+                    while (p < kk) { acc = acc + fa[(int32) (r * kk + p)] * fb[(int32) (p * nn + col)]; p = p + 1L; }
+                    acc = acc * StructuredTest.geluSlope(fh[(int32) (r * nn + col)]);
+                    StructuredTest.close((float64) g[(int32) (r * nn + col)], acc, (float64) kk * 1.0e-7);
+                    col = col + 1L;
+                }
+                r = r + 1L;
+            }
+            kase = kase + 1;
+        }
+        ValueCheck.credit(m);
+    }
+
     /**
      * The unrolled 128 tile's NT member reads B stored transposed (n x k), so a Linear's input
      * gradient G . W^T reads the weight as stored instead of copying W^T first, six copies a

@@ -17,6 +17,7 @@ import cajeta.xpu.ShapeCandidate;
 import cajeta.xpu.ShapeFilter;
 import cajeta.xpu.XpuLaunchException;
 import cajeta.xpu.ShapeProbe;
+import dev.cajeta.ml.kernels.nn.Act;
 import dev.cajeta.ml.kernels.tune.TileFamily;
 import dev.cajeta.ml.kernels.tune.TileShape;
 
@@ -5791,6 +5792,14 @@ public final class Gemm {
     }
 
     /** A 128 tile's stored value: the sum alone (epi 0), plus the column's bias (1), or that clamped at zero (2, a Linear's relu). */
+    /** stored, or with `epi` 3 the product times GELU's slope (the erf form) at `aux[at]`, a same-shaped pre-activation in the bias slot. */
+    @Device
+    static float32 storedAt<E>(float32 v, float32 bq, uint32 epi, KernelBuffer<E> aux, uint32 at) {
+        // 5 is Act.GELU_ERF: a kernel reads no other class's constants
+        if (epi == 3) { return v * Act.slope(5, (float32) aux[at], 0.0f); }
+        return Gemm.stored(v, bq, epi);
+    }
+
     @Device
     static float32 stored(float32 v, float32 bq, uint32 epi) {
         if (epi == 0) { return v; }
@@ -6166,85 +6175,85 @@ public final class Gemm {
         uint32 q6 = n0 + 64 + tx * 4 + 2;
         uint32 q7 = n0 + 64 + tx * 4 + 3;
         float32 bq0 = 0.0f;
-        if (epi != 0 && q0 < n) { bq0 = (float32) bias[q0]; }
+        if (epi != 0 && epi != 3 && q0 < n) { bq0 = (float32) bias[q0]; }
         float32 bq1 = 0.0f;
-        if (epi != 0 && q1 < n) { bq1 = (float32) bias[q1]; }
+        if (epi != 0 && epi != 3 && q1 < n) { bq1 = (float32) bias[q1]; }
         float32 bq2 = 0.0f;
-        if (epi != 0 && q2 < n) { bq2 = (float32) bias[q2]; }
+        if (epi != 0 && epi != 3 && q2 < n) { bq2 = (float32) bias[q2]; }
         float32 bq3 = 0.0f;
-        if (epi != 0 && q3 < n) { bq3 = (float32) bias[q3]; }
+        if (epi != 0 && epi != 3 && q3 < n) { bq3 = (float32) bias[q3]; }
         float32 bq4 = 0.0f;
-        if (epi != 0 && q4 < n) { bq4 = (float32) bias[q4]; }
+        if (epi != 0 && epi != 3 && q4 < n) { bq4 = (float32) bias[q4]; }
         float32 bq5 = 0.0f;
-        if (epi != 0 && q5 < n) { bq5 = (float32) bias[q5]; }
+        if (epi != 0 && epi != 3 && q5 < n) { bq5 = (float32) bias[q5]; }
         float32 bq6 = 0.0f;
-        if (epi != 0 && q6 < n) { bq6 = (float32) bias[q6]; }
+        if (epi != 0 && epi != 3 && q6 < n) { bq6 = (float32) bias[q6]; }
         float32 bq7 = 0.0f;
-        if (epi != 0 && q7 < n) { bq7 = (float32) bias[q7]; }
-        if (r0 < m && q0 < n) { c[r0 * n + q0] = (E) Gemm.stored(c00, bq0, epi); }
-        if (r0 < m && q1 < n) { c[r0 * n + q1] = (E) Gemm.stored(c01, bq1, epi); }
-        if (r0 < m && q2 < n) { c[r0 * n + q2] = (E) Gemm.stored(c02, bq2, epi); }
-        if (r0 < m && q3 < n) { c[r0 * n + q3] = (E) Gemm.stored(c03, bq3, epi); }
-        if (r0 < m && q4 < n) { c[r0 * n + q4] = (E) Gemm.stored(c04, bq4, epi); }
-        if (r0 < m && q5 < n) { c[r0 * n + q5] = (E) Gemm.stored(c05, bq5, epi); }
-        if (r0 < m && q6 < n) { c[r0 * n + q6] = (E) Gemm.stored(c06, bq6, epi); }
-        if (r0 < m && q7 < n) { c[r0 * n + q7] = (E) Gemm.stored(c07, bq7, epi); }
-        if (r1 < m && q0 < n) { c[r1 * n + q0] = (E) Gemm.stored(c10, bq0, epi); }
-        if (r1 < m && q1 < n) { c[r1 * n + q1] = (E) Gemm.stored(c11, bq1, epi); }
-        if (r1 < m && q2 < n) { c[r1 * n + q2] = (E) Gemm.stored(c12, bq2, epi); }
-        if (r1 < m && q3 < n) { c[r1 * n + q3] = (E) Gemm.stored(c13, bq3, epi); }
-        if (r1 < m && q4 < n) { c[r1 * n + q4] = (E) Gemm.stored(c14, bq4, epi); }
-        if (r1 < m && q5 < n) { c[r1 * n + q5] = (E) Gemm.stored(c15, bq5, epi); }
-        if (r1 < m && q6 < n) { c[r1 * n + q6] = (E) Gemm.stored(c16, bq6, epi); }
-        if (r1 < m && q7 < n) { c[r1 * n + q7] = (E) Gemm.stored(c17, bq7, epi); }
-        if (r2 < m && q0 < n) { c[r2 * n + q0] = (E) Gemm.stored(c20, bq0, epi); }
-        if (r2 < m && q1 < n) { c[r2 * n + q1] = (E) Gemm.stored(c21, bq1, epi); }
-        if (r2 < m && q2 < n) { c[r2 * n + q2] = (E) Gemm.stored(c22, bq2, epi); }
-        if (r2 < m && q3 < n) { c[r2 * n + q3] = (E) Gemm.stored(c23, bq3, epi); }
-        if (r2 < m && q4 < n) { c[r2 * n + q4] = (E) Gemm.stored(c24, bq4, epi); }
-        if (r2 < m && q5 < n) { c[r2 * n + q5] = (E) Gemm.stored(c25, bq5, epi); }
-        if (r2 < m && q6 < n) { c[r2 * n + q6] = (E) Gemm.stored(c26, bq6, epi); }
-        if (r2 < m && q7 < n) { c[r2 * n + q7] = (E) Gemm.stored(c27, bq7, epi); }
-        if (r3 < m && q0 < n) { c[r3 * n + q0] = (E) Gemm.stored(c30, bq0, epi); }
-        if (r3 < m && q1 < n) { c[r3 * n + q1] = (E) Gemm.stored(c31, bq1, epi); }
-        if (r3 < m && q2 < n) { c[r3 * n + q2] = (E) Gemm.stored(c32, bq2, epi); }
-        if (r3 < m && q3 < n) { c[r3 * n + q3] = (E) Gemm.stored(c33, bq3, epi); }
-        if (r3 < m && q4 < n) { c[r3 * n + q4] = (E) Gemm.stored(c34, bq4, epi); }
-        if (r3 < m && q5 < n) { c[r3 * n + q5] = (E) Gemm.stored(c35, bq5, epi); }
-        if (r3 < m && q6 < n) { c[r3 * n + q6] = (E) Gemm.stored(c36, bq6, epi); }
-        if (r3 < m && q7 < n) { c[r3 * n + q7] = (E) Gemm.stored(c37, bq7, epi); }
-        if (r4 < m && q0 < n) { c[r4 * n + q0] = (E) Gemm.stored(c40, bq0, epi); }
-        if (r4 < m && q1 < n) { c[r4 * n + q1] = (E) Gemm.stored(c41, bq1, epi); }
-        if (r4 < m && q2 < n) { c[r4 * n + q2] = (E) Gemm.stored(c42, bq2, epi); }
-        if (r4 < m && q3 < n) { c[r4 * n + q3] = (E) Gemm.stored(c43, bq3, epi); }
-        if (r4 < m && q4 < n) { c[r4 * n + q4] = (E) Gemm.stored(c44, bq4, epi); }
-        if (r4 < m && q5 < n) { c[r4 * n + q5] = (E) Gemm.stored(c45, bq5, epi); }
-        if (r4 < m && q6 < n) { c[r4 * n + q6] = (E) Gemm.stored(c46, bq6, epi); }
-        if (r4 < m && q7 < n) { c[r4 * n + q7] = (E) Gemm.stored(c47, bq7, epi); }
-        if (r5 < m && q0 < n) { c[r5 * n + q0] = (E) Gemm.stored(c50, bq0, epi); }
-        if (r5 < m && q1 < n) { c[r5 * n + q1] = (E) Gemm.stored(c51, bq1, epi); }
-        if (r5 < m && q2 < n) { c[r5 * n + q2] = (E) Gemm.stored(c52, bq2, epi); }
-        if (r5 < m && q3 < n) { c[r5 * n + q3] = (E) Gemm.stored(c53, bq3, epi); }
-        if (r5 < m && q4 < n) { c[r5 * n + q4] = (E) Gemm.stored(c54, bq4, epi); }
-        if (r5 < m && q5 < n) { c[r5 * n + q5] = (E) Gemm.stored(c55, bq5, epi); }
-        if (r5 < m && q6 < n) { c[r5 * n + q6] = (E) Gemm.stored(c56, bq6, epi); }
-        if (r5 < m && q7 < n) { c[r5 * n + q7] = (E) Gemm.stored(c57, bq7, epi); }
-        if (r6 < m && q0 < n) { c[r6 * n + q0] = (E) Gemm.stored(c60, bq0, epi); }
-        if (r6 < m && q1 < n) { c[r6 * n + q1] = (E) Gemm.stored(c61, bq1, epi); }
-        if (r6 < m && q2 < n) { c[r6 * n + q2] = (E) Gemm.stored(c62, bq2, epi); }
-        if (r6 < m && q3 < n) { c[r6 * n + q3] = (E) Gemm.stored(c63, bq3, epi); }
-        if (r6 < m && q4 < n) { c[r6 * n + q4] = (E) Gemm.stored(c64, bq4, epi); }
-        if (r6 < m && q5 < n) { c[r6 * n + q5] = (E) Gemm.stored(c65, bq5, epi); }
-        if (r6 < m && q6 < n) { c[r6 * n + q6] = (E) Gemm.stored(c66, bq6, epi); }
-        if (r6 < m && q7 < n) { c[r6 * n + q7] = (E) Gemm.stored(c67, bq7, epi); }
-        if (r7 < m && q0 < n) { c[r7 * n + q0] = (E) Gemm.stored(c70, bq0, epi); }
-        if (r7 < m && q1 < n) { c[r7 * n + q1] = (E) Gemm.stored(c71, bq1, epi); }
-        if (r7 < m && q2 < n) { c[r7 * n + q2] = (E) Gemm.stored(c72, bq2, epi); }
-        if (r7 < m && q3 < n) { c[r7 * n + q3] = (E) Gemm.stored(c73, bq3, epi); }
-        if (r7 < m && q4 < n) { c[r7 * n + q4] = (E) Gemm.stored(c74, bq4, epi); }
-        if (r7 < m && q5 < n) { c[r7 * n + q5] = (E) Gemm.stored(c75, bq5, epi); }
-        if (r7 < m && q6 < n) { c[r7 * n + q6] = (E) Gemm.stored(c76, bq6, epi); }
-        if (r7 < m && q7 < n) { c[r7 * n + q7] = (E) Gemm.stored(c77, bq7, epi); }
+        if (epi != 0 && epi != 3 && q7 < n) { bq7 = (float32) bias[q7]; }
+        if (r0 < m && q0 < n) { c[r0 * n + q0] = (E) Gemm.storedAt<E>(c00, bq0, epi, bias, r0 * n + q0); }
+        if (r0 < m && q1 < n) { c[r0 * n + q1] = (E) Gemm.storedAt<E>(c01, bq1, epi, bias, r0 * n + q1); }
+        if (r0 < m && q2 < n) { c[r0 * n + q2] = (E) Gemm.storedAt<E>(c02, bq2, epi, bias, r0 * n + q2); }
+        if (r0 < m && q3 < n) { c[r0 * n + q3] = (E) Gemm.storedAt<E>(c03, bq3, epi, bias, r0 * n + q3); }
+        if (r0 < m && q4 < n) { c[r0 * n + q4] = (E) Gemm.storedAt<E>(c04, bq4, epi, bias, r0 * n + q4); }
+        if (r0 < m && q5 < n) { c[r0 * n + q5] = (E) Gemm.storedAt<E>(c05, bq5, epi, bias, r0 * n + q5); }
+        if (r0 < m && q6 < n) { c[r0 * n + q6] = (E) Gemm.storedAt<E>(c06, bq6, epi, bias, r0 * n + q6); }
+        if (r0 < m && q7 < n) { c[r0 * n + q7] = (E) Gemm.storedAt<E>(c07, bq7, epi, bias, r0 * n + q7); }
+        if (r1 < m && q0 < n) { c[r1 * n + q0] = (E) Gemm.storedAt<E>(c10, bq0, epi, bias, r1 * n + q0); }
+        if (r1 < m && q1 < n) { c[r1 * n + q1] = (E) Gemm.storedAt<E>(c11, bq1, epi, bias, r1 * n + q1); }
+        if (r1 < m && q2 < n) { c[r1 * n + q2] = (E) Gemm.storedAt<E>(c12, bq2, epi, bias, r1 * n + q2); }
+        if (r1 < m && q3 < n) { c[r1 * n + q3] = (E) Gemm.storedAt<E>(c13, bq3, epi, bias, r1 * n + q3); }
+        if (r1 < m && q4 < n) { c[r1 * n + q4] = (E) Gemm.storedAt<E>(c14, bq4, epi, bias, r1 * n + q4); }
+        if (r1 < m && q5 < n) { c[r1 * n + q5] = (E) Gemm.storedAt<E>(c15, bq5, epi, bias, r1 * n + q5); }
+        if (r1 < m && q6 < n) { c[r1 * n + q6] = (E) Gemm.storedAt<E>(c16, bq6, epi, bias, r1 * n + q6); }
+        if (r1 < m && q7 < n) { c[r1 * n + q7] = (E) Gemm.storedAt<E>(c17, bq7, epi, bias, r1 * n + q7); }
+        if (r2 < m && q0 < n) { c[r2 * n + q0] = (E) Gemm.storedAt<E>(c20, bq0, epi, bias, r2 * n + q0); }
+        if (r2 < m && q1 < n) { c[r2 * n + q1] = (E) Gemm.storedAt<E>(c21, bq1, epi, bias, r2 * n + q1); }
+        if (r2 < m && q2 < n) { c[r2 * n + q2] = (E) Gemm.storedAt<E>(c22, bq2, epi, bias, r2 * n + q2); }
+        if (r2 < m && q3 < n) { c[r2 * n + q3] = (E) Gemm.storedAt<E>(c23, bq3, epi, bias, r2 * n + q3); }
+        if (r2 < m && q4 < n) { c[r2 * n + q4] = (E) Gemm.storedAt<E>(c24, bq4, epi, bias, r2 * n + q4); }
+        if (r2 < m && q5 < n) { c[r2 * n + q5] = (E) Gemm.storedAt<E>(c25, bq5, epi, bias, r2 * n + q5); }
+        if (r2 < m && q6 < n) { c[r2 * n + q6] = (E) Gemm.storedAt<E>(c26, bq6, epi, bias, r2 * n + q6); }
+        if (r2 < m && q7 < n) { c[r2 * n + q7] = (E) Gemm.storedAt<E>(c27, bq7, epi, bias, r2 * n + q7); }
+        if (r3 < m && q0 < n) { c[r3 * n + q0] = (E) Gemm.storedAt<E>(c30, bq0, epi, bias, r3 * n + q0); }
+        if (r3 < m && q1 < n) { c[r3 * n + q1] = (E) Gemm.storedAt<E>(c31, bq1, epi, bias, r3 * n + q1); }
+        if (r3 < m && q2 < n) { c[r3 * n + q2] = (E) Gemm.storedAt<E>(c32, bq2, epi, bias, r3 * n + q2); }
+        if (r3 < m && q3 < n) { c[r3 * n + q3] = (E) Gemm.storedAt<E>(c33, bq3, epi, bias, r3 * n + q3); }
+        if (r3 < m && q4 < n) { c[r3 * n + q4] = (E) Gemm.storedAt<E>(c34, bq4, epi, bias, r3 * n + q4); }
+        if (r3 < m && q5 < n) { c[r3 * n + q5] = (E) Gemm.storedAt<E>(c35, bq5, epi, bias, r3 * n + q5); }
+        if (r3 < m && q6 < n) { c[r3 * n + q6] = (E) Gemm.storedAt<E>(c36, bq6, epi, bias, r3 * n + q6); }
+        if (r3 < m && q7 < n) { c[r3 * n + q7] = (E) Gemm.storedAt<E>(c37, bq7, epi, bias, r3 * n + q7); }
+        if (r4 < m && q0 < n) { c[r4 * n + q0] = (E) Gemm.storedAt<E>(c40, bq0, epi, bias, r4 * n + q0); }
+        if (r4 < m && q1 < n) { c[r4 * n + q1] = (E) Gemm.storedAt<E>(c41, bq1, epi, bias, r4 * n + q1); }
+        if (r4 < m && q2 < n) { c[r4 * n + q2] = (E) Gemm.storedAt<E>(c42, bq2, epi, bias, r4 * n + q2); }
+        if (r4 < m && q3 < n) { c[r4 * n + q3] = (E) Gemm.storedAt<E>(c43, bq3, epi, bias, r4 * n + q3); }
+        if (r4 < m && q4 < n) { c[r4 * n + q4] = (E) Gemm.storedAt<E>(c44, bq4, epi, bias, r4 * n + q4); }
+        if (r4 < m && q5 < n) { c[r4 * n + q5] = (E) Gemm.storedAt<E>(c45, bq5, epi, bias, r4 * n + q5); }
+        if (r4 < m && q6 < n) { c[r4 * n + q6] = (E) Gemm.storedAt<E>(c46, bq6, epi, bias, r4 * n + q6); }
+        if (r4 < m && q7 < n) { c[r4 * n + q7] = (E) Gemm.storedAt<E>(c47, bq7, epi, bias, r4 * n + q7); }
+        if (r5 < m && q0 < n) { c[r5 * n + q0] = (E) Gemm.storedAt<E>(c50, bq0, epi, bias, r5 * n + q0); }
+        if (r5 < m && q1 < n) { c[r5 * n + q1] = (E) Gemm.storedAt<E>(c51, bq1, epi, bias, r5 * n + q1); }
+        if (r5 < m && q2 < n) { c[r5 * n + q2] = (E) Gemm.storedAt<E>(c52, bq2, epi, bias, r5 * n + q2); }
+        if (r5 < m && q3 < n) { c[r5 * n + q3] = (E) Gemm.storedAt<E>(c53, bq3, epi, bias, r5 * n + q3); }
+        if (r5 < m && q4 < n) { c[r5 * n + q4] = (E) Gemm.storedAt<E>(c54, bq4, epi, bias, r5 * n + q4); }
+        if (r5 < m && q5 < n) { c[r5 * n + q5] = (E) Gemm.storedAt<E>(c55, bq5, epi, bias, r5 * n + q5); }
+        if (r5 < m && q6 < n) { c[r5 * n + q6] = (E) Gemm.storedAt<E>(c56, bq6, epi, bias, r5 * n + q6); }
+        if (r5 < m && q7 < n) { c[r5 * n + q7] = (E) Gemm.storedAt<E>(c57, bq7, epi, bias, r5 * n + q7); }
+        if (r6 < m && q0 < n) { c[r6 * n + q0] = (E) Gemm.storedAt<E>(c60, bq0, epi, bias, r6 * n + q0); }
+        if (r6 < m && q1 < n) { c[r6 * n + q1] = (E) Gemm.storedAt<E>(c61, bq1, epi, bias, r6 * n + q1); }
+        if (r6 < m && q2 < n) { c[r6 * n + q2] = (E) Gemm.storedAt<E>(c62, bq2, epi, bias, r6 * n + q2); }
+        if (r6 < m && q3 < n) { c[r6 * n + q3] = (E) Gemm.storedAt<E>(c63, bq3, epi, bias, r6 * n + q3); }
+        if (r6 < m && q4 < n) { c[r6 * n + q4] = (E) Gemm.storedAt<E>(c64, bq4, epi, bias, r6 * n + q4); }
+        if (r6 < m && q5 < n) { c[r6 * n + q5] = (E) Gemm.storedAt<E>(c65, bq5, epi, bias, r6 * n + q5); }
+        if (r6 < m && q6 < n) { c[r6 * n + q6] = (E) Gemm.storedAt<E>(c66, bq6, epi, bias, r6 * n + q6); }
+        if (r6 < m && q7 < n) { c[r6 * n + q7] = (E) Gemm.storedAt<E>(c67, bq7, epi, bias, r6 * n + q7); }
+        if (r7 < m && q0 < n) { c[r7 * n + q0] = (E) Gemm.storedAt<E>(c70, bq0, epi, bias, r7 * n + q0); }
+        if (r7 < m && q1 < n) { c[r7 * n + q1] = (E) Gemm.storedAt<E>(c71, bq1, epi, bias, r7 * n + q1); }
+        if (r7 < m && q2 < n) { c[r7 * n + q2] = (E) Gemm.storedAt<E>(c72, bq2, epi, bias, r7 * n + q2); }
+        if (r7 < m && q3 < n) { c[r7 * n + q3] = (E) Gemm.storedAt<E>(c73, bq3, epi, bias, r7 * n + q3); }
+        if (r7 < m && q4 < n) { c[r7 * n + q4] = (E) Gemm.storedAt<E>(c74, bq4, epi, bias, r7 * n + q4); }
+        if (r7 < m && q5 < n) { c[r7 * n + q5] = (E) Gemm.storedAt<E>(c75, bq5, epi, bias, r7 * n + q5); }
+        if (r7 < m && q6 < n) { c[r7 * n + q6] = (E) Gemm.storedAt<E>(c76, bq6, epi, bias, r7 * n + q6); }
+        if (r7 < m && q7 < n) { c[r7 * n + q7] = (E) Gemm.storedAt<E>(c77, bq7, epi, bias, r7 * n + q7); }
     }
 
     /**
@@ -12807,6 +12816,24 @@ public final class Gemm {
         if (act == 1) { epi = 2; }
         KernelStream s #= KernelStream.current();
         gemmTiled128.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k, bias, epi);
+        return true;
+    }
+
+    /**
+     * `c` = (`a` . `b`) times GELU's slope (the erf form) at `h`, element by element, `h`
+     * the m x n pre-activation, through the rolled wide tile: the input gradient of a Linear
+     * whose input is a GELU's output, carried through the GELU in the same launch. False when
+     * the product would split K, where the caller composes it instead; queued on the current
+     * stream.
+     */
+    public static boolean tiled128GeluBack<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, KernelBuffer<E> h, int64 m,
+                                              int64 n, int64 k) {
+        if (Gemm.splitsFor(m, n, k) > (uint32) 1) { return false; }
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 127) / 128) * ((un + 127) / 128);
+        KernelStream s #= KernelStream.current();
+        gemmTiled128.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k, h, (uint32) 3);
         return true;
     }
 

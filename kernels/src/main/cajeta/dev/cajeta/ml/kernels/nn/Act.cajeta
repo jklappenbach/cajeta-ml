@@ -490,7 +490,7 @@ public final class Act {
 
     /** The derivative of activation `kind` at x (with y its output) times the cotangent g, for the kinds the op table differentiates. */
     @Device
-    static float32 slope(int32 kind, float32 x, float32 y) {
+    public static float32 slope(int32 kind, float32 x, float32 y) {
         if (kind == 0) { if (x > 0.0f) { return 1.0f; } return 0.0f; }
         if (kind == 3) { return 1.0f - y * y; }
         if (kind == 4) { return y * (1.0f - y); }

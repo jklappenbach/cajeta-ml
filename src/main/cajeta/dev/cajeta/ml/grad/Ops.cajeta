@@ -226,6 +226,40 @@ public final class Ops {
     }
 
     /**
+     * Whether geluBackNT runs here: `g` (m x k), `w` (n x k) and the pre-activation `h`
+     * (m x n) on the device at float32, the product past Gemm.large and unsplit.
+     */
+    public static boolean geluBackNTRuns<E extends Floating>(Tensor<E> g, Tensor<E> w, Tensor<E> h) {
+        if (!g.isOnGpu() || g.ndim() != 2 || w.ndim() != 2 || h.ndim() != 2) { return false; }
+        DType d #= DType.of<E>();
+        if (d.bits() != 32) { return false; }
+        int64 m = g.shapeAt(0);
+        int64 k = g.shapeAt(1);
+        int64 n = w.shapeAt(0);
+        if (w.shapeAt(1) != k || h.shapeAt(0) != m || h.shapeAt(1) != n) { return false; }
+        return Gemm.large(m, n) && Gemm.splitsFor(m, n, k) <= (uint32) 1;
+    }
+
+    /**
+     * (`g` . `w`^T) times GELU's slope (the erf form) at `h`, element by element: the input
+     * gradient of a Linear whose input is a GELU's output, carried through the GELU as the
+     * wide tile stores the product (Gemm.tiled128GeluBack), where a GEMM wrote the GELU's
+     * cotangent and a pass read it back. `w` is transposed first, as matmulNT does with no
+     * tune store. Callers check geluBackNTRuns.
+     */
+    public static #Tensor<E> geluBackNT<E extends Floating>(Tensor<E> g, Tensor<E> w, Tensor<E> h) {
+        int64 m = g.shapeAt(0);
+        int64 k = g.shapeAt(1);
+        int64 n = w.shapeAt(0);
+        Tensor<E> wt #= Ops.run1<E>(Op.TRANSPOSE, w, 0, (E) 0);
+        int64[] shp = [m, n];
+        Tensor<E> out #= Ewise.deviceOf<E>(shp);
+        Gemm.tiled128GeluBack<E>(out.deviceView("geluBackNT"), g.deviceView("geluBackNT"), wt.deviceView("geluBackNT"),
+                                 h.deviceView("geluBackNT"), m, n, k);
+        return #out;
+    }
+
+    /**
      * `a` . `b`^T for 2-D `a` (m x k) and `b` (n x k): on the device at Gemm.large shapes the
      * wide tile's NT member reads `b` as stored, where it runs (Gemm.tiled128NT), else `b` is
      * transposed and multiplied. A Linear's input gradient G . W^T is this shape, and the

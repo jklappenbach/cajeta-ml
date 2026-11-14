@@ -41,11 +41,13 @@ public final class GradTape<E extends Floating> {
     ArrayList<Tensor<E>> values;         // node forward values (owned, or borrowed for leafBorrow)
     ArrayList<Tensor<E>> grads;          // cotangents (allocated in backward)
     boolean[] reached;                   // the node's cotangent holds a contribution (sized in backward)
+    boolean[] carried;                   // the node's cotangent was carried into its consumer's product, never formed (sized in backward)
     ArrayList<Tensor<E>> auxT;           // saved forward state (owned)
     int32[] ops;                         // Op.* per node
     int32[] ain;                         // first-input node idx (-1 = none)
     int32[] bin;                         // second-input node idx (-1 = none)
     int32[] cin;                         // third-input node idx (-1 = none)
+    int32[] uses;                        // how many nodes take this one as an input
     int32[] axes;                        // axis payload
     int32[] pay;                         // PAY int payloads per node
     int32[] aux0;                        // auxT index, or -1
@@ -68,6 +70,7 @@ public final class GradTape<E extends Floating> {
         this.ain = heap int32[this.cap];
         this.bin = heap int32[this.cap];
         this.cin = heap int32[this.cap];
+        this.uses = heap int32[this.cap];
         this.axes = heap int32[this.cap];
         this.pay = heap int32[this.cap * this.payStride];
         this.aux0 = heap int32[this.cap];
@@ -88,6 +91,7 @@ public final class GradTape<E extends Floating> {
         int32[] na = heap int32[nc];
         int32[] nb = heap int32[nc];
         int32[] ncn = heap int32[nc];
+        int32[] nu = heap int32[nc];
         int32[] nx = heap int32[nc];
         int32[] npay = heap int32[nc * this.payStride];
         int32[] na0 = heap int32[nc];
@@ -101,6 +105,7 @@ public final class GradTape<E extends Floating> {
             na[i] = this.ain[i];
             nb[i] = this.bin[i];
             ncn[i] = this.cin[i];
+            nu[i] = this.uses[i];
             nx[i] = this.axes[i];
             na0[i] = this.aux0[i];
             na1[i] = this.aux1[i];
@@ -118,6 +123,7 @@ public final class GradTape<E extends Floating> {
         this.ain #= na;
         this.bin #= nb;
         this.cin #= ncn;
+        this.uses #= nu;
         this.axes #= nx;
         this.pay #= npay;
         this.aux0 #= na0;
@@ -146,6 +152,9 @@ public final class GradTape<E extends Floating> {
         this.needsGrad[i] = ng;
         this.isLeafGrad[i] = false;
         this.cin[i] = -1;
+        this.uses[i] = 0;
+        if (a >= 0) { this.uses[a] = this.uses[a] + 1; }
+        if (b >= 0) { this.uses[b] = this.uses[b] + 1; }
         this.aux0[i] = -1;
         this.aux1[i] = -1;
         int32 k = 0;
@@ -162,6 +171,7 @@ public final class GradTape<E extends Floating> {
      *  already pushed, propagating its grad-requirement. */
     void linkThird(int32 node, int32 c) {
         this.cin[node] = c;
+        if (c >= 0) { this.uses[c] = this.uses[c] + 1; }
         if (c >= 0 && this.needsGrad[c] && this.noGradDepth == 0) {
             this.needsGrad[node] = true;
         }
@@ -213,6 +223,10 @@ public final class GradTape<E extends Floating> {
         if (!this.needsGrad[t.idx]) {
             throw heap MlException("GradTape.gradOf: node " + t.idx
                 + " does not require grad");
+        }
+        if (this.carried[t.idx]) {
+            throw heap MlException("GradTape.gradOf: node " + t.idx + "'s cotangent was carried "
+                + "into its one consumer's product (a GELU feeding a Linear) and never formed");
         }
         if (!this.reached[t.idx]) {
             Tensor<E> z #= Ops.zerosLike<E>(this.values.get(t.idx));
@@ -619,6 +633,7 @@ public final class GradTape<E extends Floating> {
         // 16 MB a step in transformer-block-train on cuda (cajeta-ml-gpu 28.2.8). Until then a
         // node holds a one-element host placeholder.
         this.reached = heap boolean[this.n];
+        this.carried = heap boolean[this.n];
         int64[] one = [1L];
         int32 i = 0;
         while (i < this.n) {
@@ -644,7 +659,7 @@ public final class GradTape<E extends Floating> {
 
     /** The linear node's VJP from the cotangent `gm` of its pre-activation sum. */
     void linearBack(int32 i, int32 a, int32 b, Tensor<E> va, Tensor<E> vb, Tensor<E> gm) {
-        if (this.needsGrad[a]) {
+        if (this.needsGrad[a] && !this.carriedThroughGelu(a, gm, vb)) {
             this.accum(a, Ops.matmulNT<E>(gm, vb));
         }
         if (this.needsGrad[b]) {
@@ -654,6 +669,22 @@ public final class GradTape<E extends Floating> {
         if (c >= 0 && this.needsGrad[c]) {
             this.accum(c, Ops.sumTo<E>(gm, this.values.get(c)));
         }
+    }
+
+    /**
+     * When `a` is a GELU whose only consumer is this Linear, its input's cotangent in one
+     * product (Ops.geluBackNT) and `a`'s own never formed; false where that does not apply.
+     * One consumer and no contribution yet mean none can follow, so skipping `a` loses nothing.
+     */
+    boolean carriedThroughGelu(int32 a, Tensor<E> gm, Tensor<E> vb) {
+        if (this.ops[a] != Op.GELU || this.uses[a] != 1 || this.reached[a]) { return false; }
+        int32 h = this.ain[a];
+        if (h < 0 || !this.needsGrad[h]) { return false; }
+        Tensor<E> vh = this.values.get(h);
+        if (!Ops.geluBackNTRuns<E>(gm, vb, vh)) { return false; }
+        this.accum(h, Ops.geluBackNT<E>(gm, vb, vh));
+        this.carried[a] = true;
+        return true;
     }
 
     void backOne(int32 i) {
