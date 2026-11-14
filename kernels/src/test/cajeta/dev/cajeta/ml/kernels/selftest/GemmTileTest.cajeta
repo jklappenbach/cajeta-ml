@@ -330,6 +330,24 @@ public class GemmTileTest {
      *  the unrolled bodies run only where a store timed them faster. On gfx1151 they ran 5x
      *  slower while they spilled and 5 to 28% slower once they did not; on sm_89 the rolled
      *  tile is ahead at the transformer's shapes too. */
+    /** Split-K TN is the one pair whose unrolled member runs with no tune store, where it builds
+     *  clean (cajeta-ml-gpu 23.2.14): it wins on both devices (gfx1151 735 vs 765 us, sm_89
+     *  170.1 vs 190.8 us a launch in transformer-block-train) and its timed choice never flipped. */
+    @Test
+    public void splitTNKeepsItsUnrolledMemberWithNoStore() {
+        Gemm.tuneUnrolledIn("");
+        String tn #= Gemm.splitTNMember();
+        String un = "gemmTiled128UnrolledSplitTN_float32";
+        boolean clean = Device.kernelAvailable(un) && KernelFacts.measured(un, 0).spillBytes == 0;
+        if (clean) { Assert.equals(un, tn); } else { Assert.equals("gemmTiled128SplitTN_float32", tn); }
+        if (!Gemm.splitTNRuns()) { return; }
+        int64 before = Device.kernelLaunchCount(tn);
+        GemmTest.tnCase(256L, 128L, 4096L, Gemm.splitsFor(256L, 128L, 4096L), true);
+        Assert.isTrue(Device.kernelLaunchCount(tn) > before);
+        String ran #= Gemm.lastPairKernel();
+        Assert.equals(tn, ran);
+    }
+
     @Test
     public void theRolledWideTilesRunWithNoStore() {
         Gemm.tuneUnrolledIn("");

@@ -12925,8 +12925,9 @@ public final class Gemm {
         return "gemmTiled128Split_float32".clone();
     }
 
-    /** The transposed-A split member Gemm.tiledTN takes here (as splitMember). */
+    /** The transposed-A split member Gemm.tiledTN takes with no tune store: the unrolled one where it builds without spilling, else the rolled one (cajeta-ml-gpu 23.2.14). */
     public static #String splitTNMember() {
+        if (Gemm.unrolledPays("gemmTiled128UnrolledSplitTN_float32")) { return "gemmTiled128UnrolledSplitTN_float32".clone(); }
         return "gemmTiled128SplitTN_float32".clone();
     }
 
@@ -13003,8 +13004,8 @@ public final class Gemm {
     /**
      * Time each unrolled wide tile against its rolled twin per device and problem, and keep
      * the answers in `dir` under the device and the build. A device where the unrolled body
-     * builds clean but runs faster takes it; with no store every pair runs its rolled twin
-     * (cajeta-ml-gpu 23.2.13: on gfx1151 the unrolled bodies run 5 to 28% slower, and on
+     * builds clean but runs faster takes it; with no store every pair but split TN runs its
+     * rolled twin (cajeta-ml-gpu 23.2.13 and 23.2.14: on gfx1151 the unrolled bodies run 5 to 28% slower, and on
      * sm_89 the rolled tile is ahead at the transformer's shapes). An empty `dir` returns to
      * the rolled twins. Either way the choices this process remembers are dropped, so the
      * next call asks the store.
@@ -13081,13 +13082,17 @@ public final class Gemm {
 
     /**
      * Whether pair `p` runs its unrolled member at m x n x k. With no tune store it does not
-     * (cajeta-ml-gpu 23.2.13). Under a store the members that fit and build clean are timed at first use
+     * (cajeta-ml-gpu 23.2.13), except split TN where its build spills nothing: it wins on
+     * gfx1151 and sm_89 alike, and its timed choice never flipped (23.2.14). Under a store the members that fit and build clean are timed at first use
      * on `a` and `b` into scratch outputs, and the winner is kept per problem; a lead under 3%
      * goes to the unrolled member. The members are named by their float32 (bfloat16 for wide)
      * instantiations, so the first element type to meet a problem decides it for the others.
      */
     static boolean unrolledChosen<E>(int32 p, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k, uint32 splits) {
-        if (Gemm.pairDir == null || Gemm.pairDir.byteLength() == 0) { return Gemm.pairSettled(p, true, false); }
+        if (Gemm.pairDir == null || Gemm.pairDir.byteLength() == 0) {
+            if (p == 3) { return Gemm.pairSettled(3, !Gemm.unrolledPays("gemmTiled128UnrolledSplitTN_float32"), false); }
+            return Gemm.pairSettled(p, true, false);
+        }
         TileFamily<PairShape> f = Gemm.pairFamily(p);
         int32 idx = f.remembered(m, n, k);
         boolean timed = false;
