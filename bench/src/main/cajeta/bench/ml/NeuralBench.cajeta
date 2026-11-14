@@ -28,9 +28,12 @@ import dev.cajeta.ml.zoo.SmallCnn;
  *          check is the output within Tol.*_LOGITS / Tol.TRANSFORMER_OUT of
  *          torch's on the same weights.
  *
- * On `device` each unrolled GEMM tile is timed against its rolled twin at first use
- * and the answer kept in GemmBench's store (cajeta-ml-gpu 23.2.12), so a device
- * where the unrolled body builds clean but runs slower measures its faster member.
+ * Under CAJETA_ML_TUNE_UNROLLED=1, on `device` each unrolled GEMM tile is timed
+ * against its rolled twin at first use and the answer kept in GemmBench's store
+ * (cajeta-ml-gpu 23.2.12), so a device where the unrolled body builds clean but
+ * runs slower (gfx1151) measures its faster member. It is off by default because on
+ * a 4090 the first-use timings at the transformer's shapes flip between processes,
+ * and the row would move with them.
  */
 public class NeuralBench extends MlBenchmark {
 
@@ -151,8 +154,10 @@ public class NeuralBench extends MlBenchmark {
         this.ds = d + " batch " + Data.shape32(this.x) + " seed " + Data.SEED;
         this.onDevice = v.equals("device");
         if (this.onDevice) {
-            String store #= GemmBench.store();
-            Gemm.tuneUnrolledIn(store);
+            if (Data.tuneUnrolled()) {
+                String store #= GemmBench.store();
+                Gemm.tuneUnrolledIn(store);
+            }
             this.net.toDevice();
             this.x.gpu();
             this.y.gpu();

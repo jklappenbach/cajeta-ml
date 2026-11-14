@@ -13,6 +13,8 @@ import cajeta.math.npio.Npy;
  *   CAJETA_ML_BENCH_DATA   the data directory (bench.sh sets it)
  *   default                data/smoke under CAJETA_BENCH_SMOKE=1, else data/full
  *   CAJETA_BENCH_NO_GPU=1  the GPU is another session's: device rows skip
+ *   CAJETA_ML_TUNE_UNROLLED=1  the neural device rows time each unrolled GEMM
+ *                          tile against its rolled twin into build/tune
  */
 public final class Data {
 
@@ -31,6 +33,11 @@ public final class Data {
 
     public static boolean noGpu() {
         return Data.truthy(System.env.get("CAJETA_BENCH_NO_GPU"));
+    }
+
+    /** Whether the neural device rows time the unrolled GEMM tiles against their rolled twins (CAJETA_ML_TUNE_UNROLLED). */
+    public static boolean tuneUnrolled() {
+        return Data.truthy(System.env.get("CAJETA_ML_TUNE_UNROLLED"));
     }
 
     public static #String dir() {
