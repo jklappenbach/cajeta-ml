@@ -243,6 +243,85 @@ public class SpelaDeviceTest {
         }
     }
 
+    /**
+     * spela-kernels 3.1.3: a clipped device batch updates each layer in one optimizer launch, the
+     * clip's scale applied as the gradients are read, with no scaling launch of its own, and its
+     * curve follows the host's.
+     */
+    @Test
+    public void aLayerUpdatesInOneLaunchOnTheDevice() {
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 15L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaConfig hc = heap SpelaConfig(4);
+        hc.lr = 0.01f;
+        hc.seed = 41L;
+        hc.gradClipNorm = 0.05f;
+        SpelaTrainer host = heap SpelaTrainer(#SpelaDeviceTest.mlp(53L), #hc);
+        host.planSteps(6L);
+        SpelaConfig dc = heap SpelaConfig(4);
+        dc.lr = 0.01f;
+        dc.seed = 41L;
+        dc.gradClipNorm = 0.05f;
+        SpelaTrainer dev = heap SpelaTrainer(#SpelaDeviceTest.mlp(53L), #dc);
+        dev.planSteps(6L);
+        SpelaDeviceTest.toDevice(dev);
+        float64[] want #= SpelaDeviceTest.curve(host, x, y, 6);
+        if (!SpelaDeviceTest.onGpu(dev)) { return; }
+        Tensor<float32> xd #= x.copy();
+        xd.gpu();
+        Tensor<float32> yd #= y.copy();
+        yd.gpu();
+        int32 lc = dev.layerCount();
+        float64[] got = heap float64[6 * lc];
+        int64 adams = 0L;
+        int64 scales = 0L;
+        int32 st = 0;
+        while (st < 6) {
+            int64 a0 = Device.kernelLaunchCount("adamSlots_float32");
+            int64 s0 = Device.kernelLaunchCount("scaleBy_float32");
+            dev.trainBatch(xd, yd);
+            adams = Device.kernelLaunchCount("adamSlots_float32") - a0;
+            scales = Device.kernelLaunchCount("scaleBy_float32") - s0;
+            int32 l = 0;
+            while (l < lc) { got[st * lc + l] = dev.lastLossAt(l); l = l + 1; }
+            st = st + 1;
+        }
+        System.stdout.println("  clipped device batch: optimizer launches " + adams + ", scaling launches " + scales);
+        SpelaDeviceTest.sameCurve("one launch a layer", want, got, 2.0e-3);
+        Assert.equals((int64) lc, adams);
+        Assert.equals(0L, scales);
+    }
+
+    /**
+     * spela-kernels 3.1.4: a frozen layer launches no optimizer work, and unfrozen it updates in
+     * one launch again.
+     */
+    @Test
+    public void aFrozenLayerLaunchesNoUpdate() {
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 19L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaConfig dc = heap SpelaConfig(4);
+        dc.lr = 0.01f;
+        dc.seed = 43L;
+        SpelaTrainer dev = heap SpelaTrainer(#SpelaDeviceTest.mlp(59L), #dc);
+        dev.planSteps(6L);
+        SpelaDeviceTest.toDevice(dev);
+        if (!SpelaDeviceTest.onGpu(dev)) { return; }
+        Tensor<float32> xd #= x.copy();
+        xd.gpu();
+        Tensor<float32> yd #= y.copy();
+        yd.gpu();
+        dev.trainBatch(xd, yd);
+        dev.setLayerTrainable(0, false);
+        int64 a0 = Device.kernelLaunchCount("adamSlots_float32");
+        dev.trainBatch(xd, yd);
+        Assert.equals(1L, Device.kernelLaunchCount("adamSlots_float32") - a0);
+        dev.setLayerTrainable(0, true);
+        int64 a1 = Device.kernelLaunchCount("adamSlots_float32");
+        dev.trainBatch(xd, yd);
+        Assert.equals(2L, Device.kernelLaunchCount("adamSlots_float32") - a1);
+    }
+
     /** Every parameter of `dev`, read back, within `tol` of the same parameter of `host`. */
     static void sameWeights(SpelaTrainer host, SpelaTrainer dev, float64 tol) {
         int32 i = 0;

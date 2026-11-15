@@ -4,61 +4,45 @@ import cajeta.lang.Math;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
+import cajeta.xpu.XpuLaunchException;
 
 /**
  * Optimizer steps (spec §6.6), one lane per parameter element, in place on the parameter and
  * its state. SGD with momentum (v = m*v + g; p -= lr*v) and Adam (bias-corrected moments,
- * decoupled weight decay when `wd` is nonzero, as AdamW), both as cajeta-ml's host rules.
+ * decoupled weight decay when `wd` is nonzero, as AdamW), both as cajeta-ml's host rules. One
+ * kernel each serves one tensor or up to four (the slot launches), so a tensor updates with the
+ * same bits whichever way it is launched.
  */
 public final class Optim {
     public Optim() { return; }
 
-    @Kernel
-    public static void sgd<E>(KernelBuffer<E> p, KernelBuffer<E> v, KernelBuffer<E> g, uint32 n, float32 lr, float32 momentum, int32 useMomentum) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < n) {
-            float32 gv = (float32) g[i];
-            if (useMomentum != 0) {
-                float32 vv = momentum * (float32) v[i] + gv;
-                v[i] = (E) vv;
-                gv = vv;
-            }
-            p[i] = (E) ((float32) p[i] - lr * gv);
-        }
-    }
-
-    @Kernel
-    public static void adam<E>(KernelBuffer<E> p, KernelBuffer<E> m, KernelBuffer<E> v, KernelBuffer<E> g, uint32 n,
-                               float32 lr, float32 c1, float32 c2, float32 wd) {
-        uint32 i = KernelThread.globalIdX();
-        if (i < n) {
-            float32 gv = (float32) g[i];
-            float32 mv = 0.9f * (float32) m[i] + 0.1f * gv;
-            float32 vv = 0.999f * (float32) v[i] + 0.001f * gv * gv;
-            m[i] = (E) mv;
-            v[i] = (E) vv;
-            float32 mhat = mv / c1;
-            float32 vhat = vv / c2;
-            float32 pv = (float32) p[i];
-            p[i] = (E) (pv - lr * (mhat / (Math.sqrt(vhat) + 0.00000001f) + wd * pv));
-        }
-    }
-
     /** One SGD step over `n` elements; `v` is read and written only when `momentum` is nonzero; queued on the current stream. */
     public static void sgdStep<E>(KernelBuffer<E> p, KernelBuffer<E> v, KernelBuffer<E> g, int64 n, float32 lr, float32 momentum) {
-        uint32 un = (uint32) n;
-        int32 um = 0;
-        if (momentum != 0.0f) { um = 1; }
-        KernelStream s #= KernelStream.current();
-        sgd.launch(s, grid: [(un + 255) / 256], block: [256])(p, v, g, un, lr, momentum, um);
+        KernelBuffer<E>[] ps = heap KernelBuffer<E>[1];
+        KernelBuffer<E>[] vs = heap KernelBuffer<E>[1];
+        KernelBuffer<E>[] gs = heap KernelBuffer<E>[1];
+        ps[0] = p;
+        vs[0] = v;
+        gs[0] = g;
+        int64[] ns = [n];
+        Optim.sgdStepSlots<E>(ps, vs, gs, ns, 1, lr, momentum, null);
     }
 
     /** One Adam step with bias corrections `c1 = 1 - b1^t`, `c2 = 1 - b2^t` and decoupled decay `wd` (0 for Adam); queued on the current stream. */
     public static void adamStep<E>(KernelBuffer<E> p, KernelBuffer<E> m, KernelBuffer<E> v, KernelBuffer<E> g, int64 n,
                                    float32 lr, float32 c1, float32 c2, float32 wd) {
-        uint32 un = (uint32) n;
-        KernelStream s #= KernelStream.current();
-        adam.launch(s, grid: [(un + 255) / 256], block: [256])(p, m, v, g, un, lr, c1, c2, wd);
+        KernelBuffer<E>[] ps = heap KernelBuffer<E>[1];
+        KernelBuffer<E>[] ms = heap KernelBuffer<E>[1];
+        KernelBuffer<E>[] vs = heap KernelBuffer<E>[1];
+        KernelBuffer<E>[] gs = heap KernelBuffer<E>[1];
+        ps[0] = p;
+        ms[0] = m;
+        vs[0] = v;
+        gs[0] = g;
+        int64[] ns = [n];
+        float32[] a = [c1];
+        float32[] b = [c2];
+        Optim.adamStepSlots<E>(ps, ms, vs, gs, ns, 1, a, b, lr, wd, null);
     }
 
     /**
@@ -100,5 +84,168 @@ public final class Optim {
         uint32 un = (uint32) n;
         KernelStream s #= KernelStream.current();
         scaleBy.launch(s, grid: [(un + 255) / 256], block: [256])(x, scale, un);
+    }
+
+    /** One Adam element, the gradient read times `sc` (the clip's scale, or 1). */
+    @Device
+    static void adamAt<E>(KernelBuffer<E> p, KernelBuffer<E> m, KernelBuffer<E> v, KernelBuffer<E> g, uint32 i, float32 sc,
+                          float32 lr, float32 c1, float32 c2, float32 wd) {
+        float32 gv = (float32) g[i] * sc;
+        float32 mv = 0.9f * (float32) m[i] + 0.1f * gv;
+        float32 vv = 0.999f * (float32) v[i] + 0.001f * gv * gv;
+        m[i] = (E) mv;
+        v[i] = (E) vv;
+        float32 mhat = mv / c1;
+        float32 vhat = vv / c2;
+        float32 pv = (float32) p[i];
+        p[i] = (E) (pv - lr * (mhat / (Math.sqrt(vhat) + 0.00000001f) + wd * pv));
+    }
+
+    /** One SGD element, the gradient read times `sc`. */
+    @Device
+    static void sgdAt<E>(KernelBuffer<E> p, KernelBuffer<E> v, KernelBuffer<E> g, uint32 i, float32 sc, float32 lr,
+                         float32 momentum, int32 useMomentum) {
+        float32 gv = (float32) g[i] * sc;
+        if (useMomentum != 0) {
+            float32 vv = momentum * (float32) v[i] + gv;
+            v[i] = (E) vv;
+            gv = vv;
+        }
+        p[i] = (E) ((float32) p[i] - lr * gv);
+    }
+
+    /**
+     * Adam over up to four tensors in one launch, element i of the concatenation updating its
+     * own slot with that slot's bias corrections; the gradient is read times scale[0] when
+     * `useScale`. The slots are fixed arguments, not a buffer array, so a deferred stream
+     * records the launch (spela-kernels 3).
+     */
+    @Kernel
+    public static void adamSlots<E>(KernelBuffer<E> p0, KernelBuffer<E> m0, KernelBuffer<E> v0, KernelBuffer<E> g0,
+                                    KernelBuffer<E> p1, KernelBuffer<E> m1, KernelBuffer<E> v1, KernelBuffer<E> g1,
+                                    KernelBuffer<E> p2, KernelBuffer<E> m2, KernelBuffer<E> v2, KernelBuffer<E> g2,
+                                    KernelBuffer<E> p3, KernelBuffer<E> m3, KernelBuffer<E> v3, KernelBuffer<E> g3,
+                                    uint32 n0, uint32 n1, uint32 n2, uint32 n3, KernelBuffer<float32> scale, uint32 useScale,
+                                    float32 lr, float32 wd, float32 a0, float32 b0, float32 a1, float32 b1,
+                                    float32 a2, float32 b2, float32 a3, float32 b3) {
+        uint32 i = KernelThread.globalIdX();
+        float32 sc = 1.0f;
+        if (useScale != 0) { sc = scale[0]; }
+        uint32 e1 = n0 + n1;
+        uint32 e2 = e1 + n2;
+        uint32 e3 = e2 + n3;
+        if (i < n0) { Optim.adamAt<E>(p0, m0, v0, g0, i, sc, lr, a0, b0, wd); }
+        if (i >= n0 && i < e1) { Optim.adamAt<E>(p1, m1, v1, g1, i - n0, sc, lr, a1, b1, wd); }
+        if (i >= e1 && i < e2) { Optim.adamAt<E>(p2, m2, v2, g2, i - e1, sc, lr, a2, b2, wd); }
+        if (i >= e2 && i < e3) { Optim.adamAt<E>(p3, m3, v3, g3, i - e2, sc, lr, a3, b3, wd); }
+    }
+
+    /** SGD over up to four tensors in one launch, as adamSlots. */
+    @Kernel
+    public static void sgdSlots<E>(KernelBuffer<E> p0, KernelBuffer<E> v0, KernelBuffer<E> g0, KernelBuffer<E> p1, KernelBuffer<E> v1,
+                                   KernelBuffer<E> g1, KernelBuffer<E> p2, KernelBuffer<E> v2, KernelBuffer<E> g2,
+                                   KernelBuffer<E> p3, KernelBuffer<E> v3, KernelBuffer<E> g3,
+                                   uint32 n0, uint32 n1, uint32 n2, uint32 n3, KernelBuffer<float32> scale, uint32 useScale,
+                                   float32 lr, float32 momentum, int32 useMomentum) {
+        uint32 i = KernelThread.globalIdX();
+        float32 sc = 1.0f;
+        if (useScale != 0) { sc = scale[0]; }
+        uint32 e1 = n0 + n1;
+        uint32 e2 = e1 + n2;
+        uint32 e3 = e2 + n3;
+        if (i < n0) { Optim.sgdAt<E>(p0, v0, g0, i, sc, lr, momentum, useMomentum); }
+        if (i >= n0 && i < e1) { Optim.sgdAt<E>(p1, v1, g1, i - n0, sc, lr, momentum, useMomentum); }
+        if (i >= e1 && i < e2) { Optim.sgdAt<E>(p2, v2, g2, i - e1, sc, lr, momentum, useMomentum); }
+        if (i >= e2 && i < e3) { Optim.sgdAt<E>(p3, v3, g3, i - e2, sc, lr, momentum, useMomentum); }
+    }
+
+    /** The most tensors one slot launch updates. */
+    public static final int32 SLOTS = 4;
+
+    /**
+     * Adam over the first `count` (at most SLOTS) of `ps`, `ms`, `vs`, `gs`, `ns`, each with its
+     * own bias corrections `c1`, `c2`; the gradients are read times `scale[0]` when `scale` is not
+     * null. Unused slots are padded with slot 0 at size 0. Queued on the current stream.
+     */
+    public static void adamStepSlots<E>(KernelBuffer<E>[] ps, KernelBuffer<E>[] ms, KernelBuffer<E>[] vs, KernelBuffer<E>[] gs, int64[] ns,
+                                    int32 count, float32[] c1, float32[] c2, float32 lr, float32 wd, KernelBuffer<float32> scale) {
+        if (count < 1 || count > Optim.SLOTS) {
+            throw heap XpuLaunchException("Optim.adamStepSlots: " + count + " tensors, between 1 and " + Optim.SLOTS + " fit one launch");
+        }
+        uint32[] n = heap uint32[4];
+        float32[] a = heap float32[4];
+        float32[] b = heap float32[4];
+        int32 j = 0;
+        uint32 total = 0;
+        while (j < 4) {
+            n[j] = 0;
+            a[j] = 1.0f;
+            b[j] = 1.0f;
+            if (j < count) { n[j] = (uint32) ns[j]; a[j] = c1[j]; b[j] = c2[j]; total = total + n[j]; }
+            j = j + 1;
+        }
+        int32 k1 = Optim.slotOf(1, count);
+        int32 k2 = Optim.slotOf(2, count);
+        int32 k3 = Optim.slotOf(3, count);
+        KernelStream s #= KernelStream.current();
+        if (scale != null) {
+            adamSlots.launch(s, grid: [(total + 255) / 256], block: [256])(ps[0], ms[0], vs[0], gs[0], ps[k1], ms[k1], vs[k1], gs[k1],
+                ps[k2], ms[k2], vs[k2], gs[k2], ps[k3], ms[k3], vs[k3], gs[k3], n[0], n[1], n[2], n[3], scale, (uint32) 1, lr, wd,
+                a[0], b[0], a[1], b[1], a[2], b[2], a[3], b[3]);
+            return;
+        }
+        Optim.ensureUnit();
+        KernelBuffer<float32> u = Optim.unit;
+        adamSlots.launch(s, grid: [(total + 255) / 256], block: [256])(ps[0], ms[0], vs[0], gs[0], ps[k1], ms[k1], vs[k1], gs[k1],
+            ps[k2], ms[k2], vs[k2], gs[k2], ps[k3], ms[k3], vs[k3], gs[k3], n[0], n[1], n[2], n[3], u, (uint32) 0, lr, wd,
+            a[0], b[0], a[1], b[1], a[2], b[2], a[3], b[3]);
+    }
+
+    /** SGD over the first `count` of `ps`, `vs`, `gs`, `ns`, as adamSlots; `vs` is touched only with momentum. */
+    public static void sgdStepSlots<E>(KernelBuffer<E>[] ps, KernelBuffer<E>[] vs, KernelBuffer<E>[] gs, int64[] ns, int32 count,
+                                   float32 lr, float32 momentum, KernelBuffer<float32> scale) {
+        if (count < 1 || count > Optim.SLOTS) {
+            throw heap XpuLaunchException("Optim.sgdStepSlots: " + count + " tensors, between 1 and " + Optim.SLOTS + " fit one launch");
+        }
+        uint32[] n = heap uint32[4];
+        int32 j = 0;
+        uint32 total = 0;
+        while (j < 4) {
+            n[j] = 0;
+            if (j < count) { n[j] = (uint32) ns[j]; total = total + n[j]; }
+            j = j + 1;
+        }
+        int32 k1 = Optim.slotOf(1, count);
+        int32 k2 = Optim.slotOf(2, count);
+        int32 k3 = Optim.slotOf(3, count);
+        int32 um = 0;
+        if (momentum != 0.0f) { um = 1; }
+        KernelStream s #= KernelStream.current();
+        if (scale != null) {
+            sgdSlots.launch(s, grid: [(total + 255) / 256], block: [256])(ps[0], vs[0], gs[0], ps[k1], vs[k1], gs[k1], ps[k2], vs[k2], gs[k2],
+                ps[k3], vs[k3], gs[k3], n[0], n[1], n[2], n[3], scale, (uint32) 1, lr, momentum, um);
+            return;
+        }
+        Optim.ensureUnit();
+        KernelBuffer<float32> u = Optim.unit;
+        sgdSlots.launch(s, grid: [(total + 255) / 256], block: [256])(ps[0], vs[0], gs[0], ps[k1], vs[k1], gs[k1], ps[k2], vs[k2], gs[k2],
+            ps[k3], vs[k3], gs[k3], n[0], n[1], n[2], n[3], u, (uint32) 0, lr, momentum, um);
+    }
+
+    /** Slot `j`'s source index: itself when used, else slot 0 (a size-0 pad). */
+    static int32 slotOf(int32 j, int32 count) {
+        if (j < count) { return j; }
+        return 0;
+    }
+
+    static KernelBuffer<float32> unit;
+
+    /** Make `unit` a device 1.0, the scale an unscaled slot launch binds but does not read. */
+    static void ensureUnit() {
+        if (Optim.unit == null) {
+            float32[] one = [1.0f];
+            Optim.unit = heap KernelBuffer<float32>(1);
+            Optim.unit.upload(one);
+        }
     }
 }

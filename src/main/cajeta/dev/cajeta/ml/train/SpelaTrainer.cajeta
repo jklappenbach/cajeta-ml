@@ -2,6 +2,7 @@ package dev.cajeta.ml.train;
 
 import cajeta.collection.ArrayList;
 import cajeta.math.Tensor;
+import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.data.Batches;
@@ -11,6 +12,7 @@ import dev.cajeta.ml.grad.Op;
 import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.kernels.Copy;
 import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.kernels.Optim;
 import dev.cajeta.ml.nn.Nets;
 import dev.cajeta.ml.nn.Parameter;
 import dev.cajeta.ml.optim.Adam;
@@ -297,14 +299,28 @@ public class SpelaTrainer {
             this.noteLoss(i, tape.valueOf(loss));
             tape.backward(loss);
             Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
-            if (this.cfg.gradClipNorm > 0.0f) {
-                if (gs.count() > 0 && gs[0].isOnGpu()) {
-                    BackpropTrainer.clipQueued(gs, this.cfg.gradClipNorm);
+            if (this.cfg.gradClipNorm > 0.0f && gs.count() > 0 && gs[0].isOnGpu()) {
+                // The clip's scale stays on the device and the optimizer reads it with the
+                // gradients, one launch a layer (spela-kernels 3).
+                KernelBuffer<float32> scale #= BackpropTrainer.clipScaleQueued(gs, this.cfg.gradClipNorm);
+                if (opt instanceof AdamW aw) {
+                    aw.stepScaled(gs, scale);
+                } else if (opt instanceof SGD sg) {
+                    sg.stepScaled(gs, scale);
                 } else {
+                    int32 q = 0;
+                    while (q < (int32) gs.count()) {
+                        Optim.scaleByDevice<float32>(gs[q].deviceView("clip"), scale, gs[q].size());
+                        q = q + 1;
+                    }
+                    opt.step(gs);
+                }
+            } else {
+                if (this.cfg.gradClipNorm > 0.0f) {
                     BackpropTrainer.clipByGlobalNorm(gs, this.cfg.gradClipNorm);
                 }
+                opt.step(gs);
             }
-            opt.step(gs);
         }
         Tensor<float32> next #= Ops.copyOf<float32>(tape.valueOf(flatOut));
         layer.unbindParameters();

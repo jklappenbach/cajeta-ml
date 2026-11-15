@@ -1,6 +1,7 @@
 package dev.cajeta.ml.optim;
 
 import cajeta.math.Tensor;
+import cajeta.xpu.KernelBuffer;
 import dev.cajeta.ml.nn.Parameter;
 import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.kernels.Optim;
@@ -35,56 +36,103 @@ public final class AdamW implements Optimizer {
     public void setLr(float32 v) { this.lr = v; }
 
     public void step(Tensor<float32>[] grads) {
+        this.stepScaled(grads, null);
+    }
+
+    /**
+     * step with each gradient read times the device scalar `scale` (the global-norm clip's,
+     * spela-kernels 3), or as read when `scale` is null. On the device, with at most
+     * Optim.SLOTS parameters, every trainable parameter updates in one launch; otherwise one
+     * launch a parameter, the scale applied first.
+     */
+    public void stepScaled(Tensor<float32>[] grads, KernelBuffer<float32> scale) {
         Updates.validate(this.params, grads);
         int32 n = (int32) this.params.count();
-        if (!this.hasState) {
-            Tensor<float32>[] ms = heap Tensor<float32>[n];
-            Tensor<float32>[] vs = heap Tensor<float32>[n];
-            int32 j = 0;
-            while (j < n) {
-                ms[j] #= Ops.zerosLike<float32>(this.params[j].get());
-                vs[j] #= Ops.zerosLike<float32>(this.params[j].get());
-                j = j + 1;
+        this.ensureState(n);
+        if (n <= Optim.SLOTS && n > 0 && this.params[0].get().isOnGpu()) {
+            KernelBuffer<float32>[] ps = heap KernelBuffer<float32>[n];
+            KernelBuffer<float32>[] ms = heap KernelBuffer<float32>[n];
+            KernelBuffer<float32>[] vs = heap KernelBuffer<float32>[n];
+            KernelBuffer<float32>[] gs = heap KernelBuffer<float32>[n];
+            int64[] ns = heap int64[n];
+            float32[] c1 = heap float32[n];
+            float32[] c2 = heap float32[n];
+            int32 count = 0;
+            int32 i = 0;
+            while (i < n) {
+                if (this.advance(i)) {
+                    ps[count] = this.params[i].get().deviceView("adamw");
+                    ms[count] = this.m[i].deviceView("adamw");
+                    vs[count] = this.v[i].deviceView("adamw");
+                    gs[count] = grads[i].deviceView("adamw");
+                    ns[count] = this.params[i].get().size();
+                    c1[count] = 1.0f - this.beta1Power[i];
+                    c2[count] = 1.0f - this.beta2Power[i];
+                    count = count + 1;
+                }
+                i = i + 1;
             }
-            float32[] b1 = heap float32[n];
-            float32[] b2 = heap float32[n];
-            boolean[] ac = heap boolean[n];
-            int32 j2 = 0;
-            while (j2 < n) {
-                b1[j2] = 1.0f;
-                b2[j2] = 1.0f;
-                ac[j2] = true;
-                j2 = j2 + 1;
-            }
-            this.m #= ms;
-            this.v #= vs;
-            this.beta1Power #= b1;
-            this.beta2Power #= b2;
-            this.active #= ac;
-            this.hasState = true;
+            if (count > 0) { Optim.adamStepSlots<float32>(ps, ms, vs, gs, ns, count, c1, c2, this.lr, this.weightDecay, scale); }
+            return;
         }
         int32 i = 0;
         while (i < n) {
-            if (this.params[i].isTrainable()) {
-                // Frozen->trainable gets FRESH state (spec 13.5.2).
-                if (!this.active[i]) {
-                    Updates.zero(this.m[i]);
-                    Updates.zero(this.v[i]);
-                    this.beta1Power[i] = 1.0f;
-                    this.beta2Power[i] = 1.0f;
-                    this.active[i] = true;
-                }
-                this.beta1Power[i] = this.beta1Power[i] * 0.9f;
-                this.beta2Power[i] = this.beta2Power[i] * 0.999f;
+            if (this.advance(i)) {
+                if (scale != null) { Optim.scaleByDevice<float32>(grads[i].deviceView("adamw"), scale, grads[i].size()); }
                 AdamW.updateOne(this.params[i].get(), grads[i], this.m[i],
                                 this.v[i], this.lr, this.weightDecay,
                                 1.0f - this.beta1Power[i],
                                 1.0f - this.beta2Power[i]);
-            } else {
-                this.active[i] = false;
             }
             i = i + 1;
         }
+    }
+
+    /** Parameter i's bookkeeping for this step: false when frozen; true after advancing its powers. */
+    boolean advance(int32 i) {
+        if (!this.params[i].isTrainable()) {
+            this.active[i] = false;
+            return false;
+        }
+        // Frozen->trainable gets FRESH state (spec 13.5.2).
+        if (!this.active[i]) {
+            Updates.zero(this.m[i]);
+            Updates.zero(this.v[i]);
+            this.beta1Power[i] = 1.0f;
+            this.beta2Power[i] = 1.0f;
+            this.active[i] = true;
+        }
+        this.beta1Power[i] = this.beta1Power[i] * 0.9f;
+        this.beta2Power[i] = this.beta2Power[i] * 0.999f;
+        return true;
+    }
+
+    void ensureState(int32 n) {
+        if (this.hasState) { return; }
+        Tensor<float32>[] ms = heap Tensor<float32>[n];
+        Tensor<float32>[] vs = heap Tensor<float32>[n];
+        int32 j = 0;
+        while (j < n) {
+            ms[j] #= Ops.zerosLike<float32>(this.params[j].get());
+            vs[j] #= Ops.zerosLike<float32>(this.params[j].get());
+            j = j + 1;
+        }
+        float32[] b1 = heap float32[n];
+        float32[] b2 = heap float32[n];
+        boolean[] ac = heap boolean[n];
+        int32 j2 = 0;
+        while (j2 < n) {
+            b1[j2] = 1.0f;
+            b2[j2] = 1.0f;
+            ac[j2] = true;
+            j2 = j2 + 1;
+        }
+        this.m #= ms;
+        this.v #= vs;
+        this.beta1Power #= b1;
+        this.beta2Power #= b2;
+        this.active #= ac;
+        this.hasState = true;
     }
 
     static void updateOne(Tensor<float32> p, Tensor<float32> g,

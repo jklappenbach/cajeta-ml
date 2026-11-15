@@ -1,6 +1,7 @@
 package dev.cajeta.ml.optim;
 
 import cajeta.math.Tensor;
+import cajeta.xpu.KernelBuffer;
 import dev.cajeta.ml.nn.Parameter;
 import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.kernels.Optim;
@@ -37,8 +38,56 @@ public final class SGD implements Optimizer {
     public void setLr(float32 v) { this.lr = v; }
 
     public void step(Tensor<float32>[] grads) {
+        this.stepScaled(grads, null);
+    }
+
+    /**
+     * step with each gradient read times the device scalar `scale` (the global-norm clip's,
+     * spela-kernels 3), or as read when `scale` is null. On the device, with at most
+     * Optim.SLOTS parameters, every trainable parameter updates in one launch; otherwise one
+     * launch a parameter, the scale applied first.
+     */
+    public void stepScaled(Tensor<float32>[] grads, KernelBuffer<float32> scale) {
         Updates.validate(this.params, grads);
         int32 n = (int32) this.params.count();
+        if (n <= Optim.SLOTS && n > 0 && this.params[0].get().isOnGpu()) {
+            if (this.momentum != 0.0f) { this.ensureVelocity(n); }
+            KernelBuffer<float32>[] ps = heap KernelBuffer<float32>[n];
+            KernelBuffer<float32>[] vs = heap KernelBuffer<float32>[n];
+            KernelBuffer<float32>[] gs = heap KernelBuffer<float32>[n];
+            int64[] ns = heap int64[n];
+            int32 count = 0;
+            int32 i = 0;
+            while (i < n) {
+                if (this.params[i].isTrainable()) {
+                    ps[count] = this.params[i].get().deviceView("sgd");
+                    // Without momentum the kernel never reads its velocity slot; the parameter stands in.
+                    vs[count] = this.params[i].get().deviceView("sgd");
+                    if (this.momentum != 0.0f) {
+                        if (!this.active[i]) {
+                            Updates.zero(this.velocity[i]);
+                            this.active[i] = true;
+                        }
+                        vs[count] = this.velocity[i].deviceView("sgd");
+                    }
+                    gs[count] = grads[i].deviceView("sgd");
+                    ns[count] = this.params[i].get().size();
+                    count = count + 1;
+                } else if (this.momentum != 0.0f) {
+                    this.active[i] = false;
+                }
+                i = i + 1;
+            }
+            if (count > 0) { Optim.sgdStepSlots<float32>(ps, vs, gs, ns, count, this.lr, this.momentum, scale); }
+            return;
+        }
+        if (scale != null) {
+            int32 q = 0;
+            while (q < n) {
+                if (grads[q].isOnGpu()) { Optim.scaleByDevice<float32>(grads[q].deviceView("sgd"), scale, grads[q].size()); }
+                q = q + 1;
+            }
+        }
         if (this.momentum == 0.0f) {
             int32 i = 0;
             while (i < n) {
@@ -52,23 +101,7 @@ public final class SGD implements Optimizer {
             }
             return;
         }
-        if (!this.hasState) {
-            Tensor<float32>[] vel = heap Tensor<float32>[n];
-            int32 j = 0;
-            while (j < n) {
-                vel[j] #= Ops.zerosLike<float32>(this.params[j].get());
-                j = j + 1;
-            }
-            boolean[] ac = heap boolean[n];
-            int32 j2 = 0;
-            while (j2 < n) {
-                ac[j2] = true;
-                j2 = j2 + 1;
-            }
-            this.velocity #= vel;
-            this.active #= ac;
-            this.hasState = true;
-        }
+        this.ensureVelocity(n);
         int32 i = 0;
         while (i < n) {
             // v = momentum*v + g (in place on the state), then p -= lr*v.
@@ -92,5 +125,24 @@ public final class SGD implements Optimizer {
             }
             i = i + 1;
         }
+    }
+
+    void ensureVelocity(int32 n) {
+        if (this.hasState) { return; }
+        Tensor<float32>[] vel = heap Tensor<float32>[n];
+        int32 j = 0;
+        while (j < n) {
+            vel[j] #= Ops.zerosLike<float32>(this.params[j].get());
+            j = j + 1;
+        }
+        boolean[] ac = heap boolean[n];
+        int32 j2 = 0;
+        while (j2 < n) {
+            ac[j2] = true;
+            j2 = j2 + 1;
+        }
+        this.velocity #= vel;
+        this.active #= ac;
+        this.hasState = true;
     }
 }

@@ -36,7 +36,7 @@ public class OptimTest {
 
     @Test
     public void sgdAndAdamStepsMatchTheHost() {
-        if (!OptimTest.usable("sgd_float32") || !OptimTest.usable("adam_float32")) { return; }
+        if (!OptimTest.usable("sgdSlots_float32") || !OptimTest.usable("adamSlots_float32")) { return; }
         int64 n = 1000L;
         float32[] hp = heap float32[n];
         float32[] hg = heap float32[n];
@@ -179,5 +179,124 @@ public class OptimTest {
         if (!OptimTest.usable("clipScale") || !OptimTest.usable("scaleBy_float32")) { return; }
         OptimTest.clipCase(0.05f);
         OptimTest.clipCase(1000.0f);
+    }
+
+    static #KernelBuffer<float32> filled(float32[] h) {
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) h.count());
+        b.upload(h);
+        return #b;
+    }
+
+    static #float32[] pattern(int64 n, int64 seed, float32 step) {
+        float32[] h = heap float32[n];
+        int64 i = 0L;
+        while (i < n) { h[(int32) i] = (float32) ((((i + seed) * 7919L) % 251L) - 125L) * step; i = i + 1L; }
+        return #h;
+    }
+
+    static void sameBits(String what, KernelBuffer<float32> a, KernelBuffer<float32> b, int64 n) {
+        float32[] ha = heap float32[n];
+        float32[] hb = heap float32[n];
+        a.download(ha);
+        b.download(hb);
+        int64 i = 0L;
+        while (i < n) {
+            if (Cajeta.f32ToBits(ha[(int32) i]) != Cajeta.f32ToBits(hb[(int32) i])) {
+                System.stdout.println("  " + what + " [" + i + "] slots " + (float64) ha[(int32) i] + " per tensor " + (float64) hb[(int32) i]);
+                Assert.isTrue(false);
+            }
+            i = i + 1L;
+        }
+    }
+
+    /** One case: a weight of 7 x 300 and a bias of 300, two steps, the slot launch against the per-tensor one, with or without a device scale. */
+    static void slotsCase(boolean adam, boolean scaled) {
+        int64[] ns = [2100L, 300L];
+        float32[] p0 #= OptimTest.pattern(2100L, 3L, 0.01f);
+        float32[] p1 #= OptimTest.pattern(300L, 5L, 0.01f);
+        float32[] g0 #= OptimTest.pattern(2100L, 11L, 0.002f);
+        float32[] g1 #= OptimTest.pattern(300L, 13L, 0.002f);
+        float32[] zero0 = heap float32[2100L];
+        float32[] zero1 = heap float32[300L];
+        KernelBuffer<float32> ap0 #= OptimTest.filled(p0);
+        KernelBuffer<float32> ap1 #= OptimTest.filled(p1);
+        KernelBuffer<float32> bp0 #= OptimTest.filled(p0);
+        KernelBuffer<float32> bp1 #= OptimTest.filled(p1);
+        KernelBuffer<float32> am0 #= OptimTest.filled(zero0);
+        KernelBuffer<float32> am1 #= OptimTest.filled(zero1);
+        KernelBuffer<float32> av0 #= OptimTest.filled(zero0);
+        KernelBuffer<float32> av1 #= OptimTest.filled(zero1);
+        KernelBuffer<float32> bm0 #= OptimTest.filled(zero0);
+        KernelBuffer<float32> bm1 #= OptimTest.filled(zero1);
+        KernelBuffer<float32> bv0 #= OptimTest.filled(zero0);
+        KernelBuffer<float32> bv1 #= OptimTest.filled(zero1);
+        KernelBuffer<float32> ag0 #= OptimTest.filled(g0);
+        KernelBuffer<float32> ag1 #= OptimTest.filled(g1);
+        KernelBuffer<float32> bg0 #= OptimTest.filled(g0);
+        KernelBuffer<float32> bg1 #= OptimTest.filled(g1);
+        float32[] sc = [0.37f];
+        KernelBuffer<float32> scale #= OptimTest.filled(sc);
+        KernelBuffer<float32>[] ps = heap KernelBuffer<float32>[2];
+        KernelBuffer<float32>[] ms = heap KernelBuffer<float32>[2];
+        KernelBuffer<float32>[] vs = heap KernelBuffer<float32>[2];
+        KernelBuffer<float32>[] gs = heap KernelBuffer<float32>[2];
+        ps[0] = ap0; ps[1] = ap1;
+        ms[0] = am0; ms[1] = am1;
+        vs[0] = av0; vs[1] = av1;
+        gs[0] = ag0; gs[1] = ag1;
+        int64[] mk #= ValueCheck.mark();
+        int32 step = 1;
+        float32 b1 = 1.0f;
+        float32 b2 = 1.0f;
+        while (step <= 2) {
+            b1 = b1 * 0.9f;
+            b2 = b2 * 0.999f;
+            float32[] c1 = [1.0f - b1, 1.0f - b1];
+            float32[] c2 = [1.0f - b2, 1.0f - b2];
+            if (scaled) {
+                Optim.scaleByDevice<float32>(bg0, scale, 2100L);
+                Optim.scaleByDevice<float32>(bg1, scale, 300L);
+            }
+            if (adam) {
+                if (scaled) { Optim.adamStepSlots<float32>(ps, ms, vs, gs, ns, 2, c1, c2, 0.001f, 0.0001f, scale); }
+                else { Optim.adamStepSlots<float32>(ps, ms, vs, gs, ns, 2, c1, c2, 0.001f, 0.0001f, null); }
+                Optim.adamStep<float32>(bp0, bm0, bv0, bg0, 2100L, 0.001f, 1.0f - b1, 1.0f - b2, 0.0001f);
+                Optim.adamStep<float32>(bp1, bm1, bv1, bg1, 300L, 0.001f, 1.0f - b1, 1.0f - b2, 0.0001f);
+            } else {
+                if (scaled) { Optim.sgdStepSlots<float32>(ps, ms, gs, ns, 2, 0.01f, 0.9f, scale); }
+                else { Optim.sgdStepSlots<float32>(ps, ms, gs, ns, 2, 0.01f, 0.9f, null); }
+                Optim.sgdStep<float32>(bp0, bm0, bg0, 2100L, 0.01f, 0.9f);
+                Optim.sgdStep<float32>(bp1, bm1, bg1, 300L, 0.01f, 0.9f);
+            }
+            if (scaled) {
+                // The slot launch scales as it reads; the per-tensor gradients were scaled in place,
+                // so put them back for the next step.
+                bg0.upload(g0);
+                bg1.upload(g1);
+            }
+            step = step + 1;
+        }
+        String what = "sgd";
+        if (adam) { what = "adam"; }
+        if (scaled) { what = what + " scaled"; }
+        OptimTest.sameBits(what + " weight", ap0, bp0, 2100L);
+        OptimTest.sameBits(what + " bias", ap1, bp1, 300L);
+        OptimTest.sameBits(what + " weight moment", am0, bm0, 2100L);
+        if (adam) { OptimTest.sameBits(what + " weight second moment", av0, bv0, 2100L); }
+        ValueCheck.credit(mk);
+    }
+
+    /**
+     * spela-kernels 3.1.1, 3.1.2: one optimizer launch over up to four tensors (a Linear's weight
+     * and bias here) matches a launch per tensor bit for bit, for AdamW and SGD with momentum, and
+     * with the clip's device scale applied as the gradients are read it matches scaling first.
+     */
+    @Test
+    public void aLayerUpdatesInOneOptimizerLaunch() {
+        if (!OptimTest.usable("adamSlots_float32") || !OptimTest.usable("sgdSlots_float32")) { return; }
+        OptimTest.slotsCase(true, false);
+        OptimTest.slotsCase(true, true);
+        OptimTest.slotsCase(false, false);
+        OptimTest.slotsCase(false, true);
     }
 }
