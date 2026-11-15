@@ -6,6 +6,7 @@ import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.Optim;
+import dev.cajeta.ml.kernels.Reduce;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
 
@@ -111,5 +112,72 @@ public class OptimTest {
         i = 0L;
         while (i < n) { OptimTest.close("sgd velocity kept", (float64) gv2[(int32) i], vel[(int32) i]); i = i + 1L; }
         ValueCheck.credit(mk);
+    }
+
+    /** Run the device clip over three tensors at `maxNorm` and check each against the host rule. */
+    static void clipCase(float32 maxNorm) {
+        int64[] ns = [7L, 300L, 64L];
+        int64[] at = [0L, 7L, 307L];
+        float32[] hs = heap float32[371L];
+        KernelBuffer<float32>[] gs = heap KernelBuffer<float32>[3];
+        float64 sq = 0.0;
+        int32 t = 0;
+        while (t < 3) {
+            float32[] h = heap float32[ns[t]];
+            int64 i = 0L;
+            while (i < ns[t]) {
+                float32 v = (float32) ((((i + (int64) t * 31L) * 7919L) % 251L) - 125L) * 0.004f;
+                h[(int32) i] = v;
+                hs[(int32) (at[t] + i)] = v;
+                sq = sq + (float64) v * (float64) v;
+                i = i + 1L;
+            }
+            KernelBuffer<float32> g = heap KernelBuffer<float32>((uint64) ns[t]);
+            g.upload(h);
+            gs[t] #= g;
+            t = t + 1;
+        }
+        int64[] mk #= ValueCheck.mark();
+        KernelBuffer<float32> parts = heap KernelBuffer<float32>(3);
+        KernelBuffer<float32> scale = heap KernelBuffer<float32>(1);
+        t = 0;
+        while (t < 3) {
+            KernelBuffer<float32> slot #= parts.slice((uint64) t, 1);
+            Reduce.segments<float32>(slot, gs[t], ns[t], 1L, Reduce.SUMSQ);
+            t = t + 1;
+        }
+        Optim.formClipScale(scale, parts, 3L, maxNorm);
+        t = 0;
+        while (t < 3) {
+            Optim.scaleByDevice<float32>(gs[t], scale, ns[t]);
+            t = t + 1;
+        }
+        float64 total = Math.sqrt(sq);
+        float64 want = 1.0;
+        if (total > (float64) maxNorm) { want = (float64) maxNorm / total; }
+        t = 0;
+        while (t < 3) {
+            float32[] got = heap float32[ns[t]];
+            gs[t].download(got);
+            int64 i = 0L;
+            while (i < ns[t]) {
+                OptimTest.close("clipped element", (float64) got[(int32) i], (float64) hs[(int32) (at[t] + i)] * want);
+                i = i + 1L;
+            }
+            t = t + 1;
+        }
+        ValueCheck.credit(mk);
+    }
+
+    /**
+     * spela-kernels 2.1.2: the global-norm clip on the device, with no readback: each tensor's
+     * sum of squares into its own slot, the scale min(1, maxNorm / norm) formed on the device, and
+     * every tensor scaled by it, as the host clip does. A norm under the limit leaves the values.
+     */
+    @Test
+    public void theGlobalNormClipRunsOnTheDevice() {
+        if (!OptimTest.usable("clipScale") || !OptimTest.usable("scaleBy_float32")) { return; }
+        OptimTest.clipCase(0.05f);
+        OptimTest.clipCase(1000.0f);
     }
 }

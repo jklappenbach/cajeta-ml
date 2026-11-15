@@ -1,12 +1,14 @@
 package dev.cajeta.ml.train;
 
 import cajeta.math.Tensor;
+import cajeta.xpu.KernelBuffer;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.data.Batches;
 import dev.cajeta.ml.grad.GradTape;
 import dev.cajeta.ml.grad.GradTensor;
 import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.kernels.Elementwise;
+import dev.cajeta.ml.kernels.Optim;
 import dev.cajeta.ml.kernels.Reduce;
 import dev.cajeta.ml.nn.Module;
 import dev.cajeta.ml.nn.Nets;
@@ -161,6 +163,30 @@ public class BackpropTrainer {
             i = i + 1;
         }
         return total;
+    }
+
+    /**
+     * The clip over device-resident gradients with no readback: each tensor's sum of squares
+     * into its own slot, the scale min(1, maxNorm / norm) formed on the device, and every tensor
+     * scaled by it, so a training step that clips stays queued (spela-kernels 2.1.2). The norm
+     * is not returned; the host rule's result is the same.
+     */
+    static void clipQueued(Tensor<float32>[] grads, float32 maxNorm) {
+        int64 nt = (int64) grads.count();
+        KernelBuffer<float32> parts = heap KernelBuffer<float32>((uint64) nt);
+        KernelBuffer<float32> scale = heap KernelBuffer<float32>(1);
+        int32 i = 0;
+        while (i < (int32) nt) {
+            KernelBuffer<float32> slot #= parts.slice((uint64) i, 1);
+            Reduce.segments<float32>(slot, grads[i].deviceView("clip"), grads[i].size(), 1L, Reduce.SUMSQ);
+            i = i + 1;
+        }
+        Optim.formClipScale(scale, parts, nt, maxNorm);
+        i = 0;
+        while (i < (int32) nt) {
+            Optim.scaleByDevice<float32>(grads[i].deviceView("clip"), scale, grads[i].size());
+            i = i + 1;
+        }
     }
 
     public static float64 clipByGlobalNorm(Tensor<float32>[] grads,

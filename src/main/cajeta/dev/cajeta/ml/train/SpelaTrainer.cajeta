@@ -2,6 +2,7 @@ package dev.cajeta.ml.train;
 
 import cajeta.collection.ArrayList;
 import cajeta.math.Tensor;
+import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.data.Batches;
 import dev.cajeta.ml.grad.GradTape;
@@ -234,6 +235,12 @@ public class SpelaTrainer {
         int32 lcount = this.layers.count();
         float32 lr = this.currentLr();
         boolean dev = this.onDevice();
+        // The step queues on a deferred default stream: nothing in it reads back before the loss
+        // row, so on CUDA the second batch of a shape records a graph and later ones replay it,
+        // patching the learning rate and other scalars; elsewhere deferral is a no-op
+        // (spela-kernels 2.1.3). Deferral ends with the batch, so code around it is unchanged.
+        KernelStream st #= KernelStream.current();
+        if (dev) { st.setDeferred(true); }
         Tensor<float32> h #= SpelaTrainer.staged(x, dev);
         Tensor<float32> labels #= SpelaTrainer.staged(y, dev);
         SpelaTrainer.placeLike(this.lossRow, h);
@@ -243,6 +250,7 @@ public class SpelaTrainer {
             i = i + 1;
         }
         float64 total = this.readLosses();
+        if (dev) { st.setDeferred(false); }
         this.stepCount = this.stepCount + 1;
         return total / (float64) lcount;
     }
@@ -290,7 +298,11 @@ public class SpelaTrainer {
             tape.backward(loss);
             Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
             if (this.cfg.gradClipNorm > 0.0f) {
-                BackpropTrainer.clipByGlobalNorm(gs, this.cfg.gradClipNorm);
+                if (gs.count() > 0 && gs[0].isOnGpu()) {
+                    BackpropTrainer.clipQueued(gs, this.cfg.gradClipNorm);
+                } else {
+                    BackpropTrainer.clipByGlobalNorm(gs, this.cfg.gradClipNorm);
+                }
             }
             opt.step(gs);
         }

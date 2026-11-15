@@ -60,4 +60,45 @@ public final class Optim {
         KernelStream s #= KernelStream.current();
         adam.launch(s, grid: [(un + 255) / 256], block: [256])(p, m, v, g, un, lr, c1, c2, wd);
     }
+
+    /**
+     * scale[0] = min(1, `maxNorm` / sqrt(the sum of `parts[0..count)`)), the parts summed in order
+     * so the result repeats bit for bit: the global-norm clip's scale, formed on the device so
+     * the step reads nothing back. A norm of zero gives 1, as the host clip does.
+     */
+    @Kernel
+    public static void clipScale(KernelBuffer<float32> scale, KernelBuffer<float32> parts, uint32 count, float32 maxNorm) {
+        if (KernelThread.globalIdX() == 0) {
+            float32 sq = 0.0f;
+            uint32 i = 0;
+            while (i < count) {
+                sq = sq + parts[i];
+                i = i + 1;
+            }
+            float32 norm = Math.sqrt(sq);
+            float32 r = 1.0f;
+            if (norm > maxNorm) { r = maxNorm / norm; }
+            scale[0] = r;
+        }
+    }
+
+    /** x[i] *= scale[0], the scale a device scalar. */
+    @Kernel
+    public static void scaleBy<E>(KernelBuffer<E> x, KernelBuffer<float32> scale, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { x[i] = (E) ((float32) x[i] * scale[0]); }
+    }
+
+    /** clipScale over `count` per-tensor sums of squares; queued on the current stream. */
+    public static void formClipScale(KernelBuffer<float32> scale, KernelBuffer<float32> parts, int64 count, float32 maxNorm) {
+        KernelStream s #= KernelStream.current();
+        clipScale.launch(s, grid: [1], block: [64])(scale, parts, (uint32) count, maxNorm);
+    }
+
+    /** `x` (n) scaled in place by the device scalar `scale`; queued on the current stream. */
+    public static void scaleByDevice<E>(KernelBuffer<E> x, KernelBuffer<float32> scale, int64 n) {
+        uint32 un = (uint32) n;
+        KernelStream s #= KernelStream.current();
+        scaleBy.launch(s, grid: [(un + 255) / 256], block: [256])(x, scale, un);
+    }
 }

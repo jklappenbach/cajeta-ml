@@ -1384,9 +1384,9 @@ public final class Ops {
             Tensor<E> rowLoss #= Ewise.deviceOf<E>(rs);
             Tensor<E> out #= Ewise.deviceOf<E>(sh);
             Act.crossEntropyRows<E>(lse.deviceView("crossEntropy"), rowLoss.deviceView("crossEntropy"), logits.deviceView("crossEntropy"), targets.deviceView("crossEntropy"), rows, cls);
+            // No sync: the row-loss temporary goes back to the device block cache, and its next
+            // use is ordered after this launch on the same stream (spela-kernels 2.1.1).
             Loss.meanOf<E>(out.deviceView("crossEntropy"), rowLoss.deviceView("crossEntropy"), rows);
-            KernelStream s #= KernelStream.current();
-            s.sync();
             return #out;
         }
         return StructKernels.crossEntropy<E>(logits, targets, lse);
