@@ -50,6 +50,7 @@ WT = {
     "mlp-train-step": (5, 50), "mlp-infer": (5, 50), "cnn-train-step": (3, 20),
     "cnn-infer": (3, 20), "transformer-block-train": (2, 5), "transformer-block-infer": (2, 5),
     "autodiff-overhead": (5, 50), "checkpoint-load": (2, 10), "spela-train-step": (5, 50),
+    "spela-head-step": (3, 20),
 }
 # The per-op rows: id -> (torch forward over the loaded inputs, tolerance key).
 OPS = ["op-add", "op-relu", "op-gelu", "op-tanh", "op-sigmoid", "op-softmax", "op-layernorm",
@@ -64,14 +65,14 @@ for _n in GEMMS:
 
 CLASSICAL = ["linear-regression", "logistic-regression", "kmeans", "knn", "pca", "standard-scaler"]
 NEURAL = ["mlp-train-step", "mlp-infer", "cnn-train-step", "cnn-infer",
-          "transformer-block-train", "transformer-block-infer", "spela-train-step",
+          "transformer-block-train", "transformer-block-infer", "spela-train-step", "spela-head-step",
           "autodiff-overhead", "checkpoint-load"]
 VARIANTS = {
     "linear-regression": ["synthetic", "housing"],
     "logistic-regression": ["synthetic", "digits"],
     "kmeans": ["synthetic", "digits"],
     "knn": ["synthetic"], "pca": ["synthetic"], "standard-scaler": ["synthetic"],
-    "autodiff-overhead": ["cpu"], "checkpoint-load": ["cpu"],
+    "autodiff-overhead": ["cpu"], "checkpoint-load": ["cpu"], "spela-head-step": ["device"],
 }
 for _n in NEURAL + OPS:
     VARIANTS.setdefault(_n, ["cpu", "device"])
@@ -402,6 +403,36 @@ def run_neural(name, variant, d):
         return bc.measured_row(samples, w, input_size=x.shape[0], unit="samples/s", check_ok=ok,
                                note=note, model=f"spela {n_in}-{hid}-{n_out} cosface f32",
                                dataset_name=f"mlp batch {size_note(x)}", **meta)
+
+    if name == "spela-head-step":
+        rows, hd, hc = (int(v) for v in load(d, "spela-head/config.npy"))
+        layer = torch.nn.Linear(hd, hd).to(dev)
+        x = torch.from_numpy(load(d, "spela-head/x.npy")).to(dev)
+        y = torch.from_numpy(load(d, "spela-head/y.npy")).to(dev).long()
+        g = torch.Generator().manual_seed(20261025)
+        vt = (30.0 * F.normalize(torch.randn(hc, hd, generator=g), dim=1).t()).contiguous().to(dev)
+        margin = torch.zeros(rows, hc, device=dev).scatter_(1, y[:, None], 30.0 * 0.35)
+        opt = torch.optim.AdamW(layer.parameters(), lr=1e-3, weight_decay=1e-4)
+        losses = []
+
+        def step():
+            out = layer(F.normalize(x, dim=1, eps=1e-8))
+            loss = F.cross_entropy(F.normalize(out, dim=1, eps=1e-8) @ vt - margin, y)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            losses.append(float(loss.detach()))
+            sync()
+
+        samples = bc.measure(step, w, t)
+        while len(losses) < steps:
+            step()
+        ok = losses[steps - 1] < losses[0]
+        note = (f"SPELA cosface scale 30 margin 0.35, AdamW lr 1e-3; local loss {losses[0]:.6g} -> "
+                f"{losses[steps - 1]:.6g} over {steps} steps; " + torch_threads_note())
+        return bc.measured_row(samples, w, input_size=x.shape[0], unit="samples/s", check_ok=ok,
+                               note=note, model=f"spela {hd}-{hd} head {hc} cosface m0.35 f32",
+                               dataset_name=f"spela-head batch {size_note(x)}", **meta)
 
     if name == "autodiff-overhead":
         m, x, y, mdl = model_and_batch("mlp")

@@ -5792,11 +5792,16 @@ public final class Gemm {
     }
 
     /** A 128 tile's stored value: the sum alone (epi 0), plus the column's bias (1), or that clamped at zero (2, a Linear's relu). */
-    /** stored, or with `epi` 3 the product times GELU's slope (the erf form) at `aux[at]`, a same-shaped pre-activation in the bias slot. */
+    /**
+     * stored, or with `epi` 3 the product times GELU's slope (the erf form) at `aux[at]`, a
+     * same-shaped pre-activation in the bias slot, or with 4 the product plus `aux[at]`, the
+     * output itself in the bias slot (each work-item reads its own element before it stores it).
+     */
     @Device
     static float32 storedAt<E>(float32 v, float32 bq, uint32 epi, KernelBuffer<E> aux, uint32 at) {
         // 5 is Act.GELU_ERF: a kernel reads no other class's constants
         if (epi == 3) { return v * Act.slope(5, (float32) aux[at], 0.0f); }
+        if (epi == 4) { return v + (float32) aux[at]; }
         return Gemm.stored(v, bq, epi);
     }
 
@@ -6175,21 +6180,21 @@ public final class Gemm {
         uint32 q6 = n0 + 64 + tx * 4 + 2;
         uint32 q7 = n0 + 64 + tx * 4 + 3;
         float32 bq0 = 0.0f;
-        if (epi != 0 && epi != 3 && q0 < n) { bq0 = (float32) bias[q0]; }
+        if ((epi == 1 || epi == 2) && q0 < n) { bq0 = (float32) bias[q0]; }
         float32 bq1 = 0.0f;
-        if (epi != 0 && epi != 3 && q1 < n) { bq1 = (float32) bias[q1]; }
+        if ((epi == 1 || epi == 2) && q1 < n) { bq1 = (float32) bias[q1]; }
         float32 bq2 = 0.0f;
-        if (epi != 0 && epi != 3 && q2 < n) { bq2 = (float32) bias[q2]; }
+        if ((epi == 1 || epi == 2) && q2 < n) { bq2 = (float32) bias[q2]; }
         float32 bq3 = 0.0f;
-        if (epi != 0 && epi != 3 && q3 < n) { bq3 = (float32) bias[q3]; }
+        if ((epi == 1 || epi == 2) && q3 < n) { bq3 = (float32) bias[q3]; }
         float32 bq4 = 0.0f;
-        if (epi != 0 && epi != 3 && q4 < n) { bq4 = (float32) bias[q4]; }
+        if ((epi == 1 || epi == 2) && q4 < n) { bq4 = (float32) bias[q4]; }
         float32 bq5 = 0.0f;
-        if (epi != 0 && epi != 3 && q5 < n) { bq5 = (float32) bias[q5]; }
+        if ((epi == 1 || epi == 2) && q5 < n) { bq5 = (float32) bias[q5]; }
         float32 bq6 = 0.0f;
-        if (epi != 0 && epi != 3 && q6 < n) { bq6 = (float32) bias[q6]; }
+        if ((epi == 1 || epi == 2) && q6 < n) { bq6 = (float32) bias[q6]; }
         float32 bq7 = 0.0f;
-        if (epi != 0 && epi != 3 && q7 < n) { bq7 = (float32) bias[q7]; }
+        if ((epi == 1 || epi == 2) && q7 < n) { bq7 = (float32) bias[q7]; }
         if (r0 < m && q0 < n) { c[r0 * n + q0] = (E) Gemm.storedAt<E>(c00, bq0, epi, bias, r0 * n + q0); }
         if (r0 < m && q1 < n) { c[r0 * n + q1] = (E) Gemm.storedAt<E>(c01, bq1, epi, bias, r0 * n + q1); }
         if (r0 < m && q2 < n) { c[r0 * n + q2] = (E) Gemm.storedAt<E>(c02, bq2, epi, bias, r0 * n + q2); }
@@ -12835,6 +12840,19 @@ public final class Gemm {
         KernelStream s #= KernelStream.current();
         gemmTiled128.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k, h, (uint32) 3);
         return true;
+    }
+
+    /**
+     * `c` (m x n) += `a` (m x k) . `b` (k x n) through the rolled wide tile, each output read and
+     * stored by the work-item that sums it: a product accumulated over column blocks, as the
+     * many-class loss head forms its gradient. It never splits K; queued on the current stream.
+     */
+    public static void tiled128Acc<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 127) / 128) * ((un + 127) / 128);
+        KernelStream s #= KernelStream.current();
+        gemmTiled128.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k, c, (uint32) 4);
     }
 
     /**

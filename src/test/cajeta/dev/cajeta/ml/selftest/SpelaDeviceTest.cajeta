@@ -7,6 +7,7 @@ import cajeta.xpu.Device;
 import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.kernels.nn.SpelaHead;
 import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.nn.Conv2d;
 import dev.cajeta.ml.nn.Linear;
@@ -386,7 +387,7 @@ public class SpelaDeviceTest {
         Assert.isTrue(launches <= 25L);
     }
 
-    /** Every parameter of `dev`, read back, within `tol` of the same parameter of `host`. */
+    /** Every parameter of `dev`, read back, within `tol` of the same parameter of `host` (either may be on the device). */
     static void sameWeights(SpelaTrainer host, SpelaTrainer dev, float64 tol) {
         int32 i = 0;
         while (i < host.layerCount()) {
@@ -395,7 +396,8 @@ public class SpelaDeviceTest {
             Assert.equals(hp.count(), dp.count());
             int32 k = 0;
             while (k < (int32) hp.count()) {
-                Tensor<float32> hv = hp[k].get();
+                Tensor<float32> hv #= Ops.copyOf<float32>(hp[k].get());
+                if (hv.isOnGpu()) { hv.cpu(); }
                 Tensor<float32> dv #= Ops.copyOf<float32>(dp[k].get());
                 if (dv.isOnGpu()) { dv.cpu(); }
                 int64 e = 0L;
@@ -415,6 +417,99 @@ public class SpelaDeviceTest {
             }
             i = i + 1;
         }
+    }
+
+    /** `rows` x `d` of a fixed pattern in [-1.25, 1.25], and `rows` labels spread over `c` classes. */
+    static #Tensor<float32> patternRows(int64 rows, int64 d) {
+        float32[] a = heap float32[rows * d];
+        int64 i = 0L;
+        while (i < rows * d) {
+            a[(int32) i] = (float32) (((i * 7919L + 13L) % 251L) - 125L) * 0.01f;
+            i = i + 1L;
+        }
+        int64[] sh = [rows, d];
+        Tensor<float32> t #= Tensor.of<float32>(a, sh);
+        return #t;
+    }
+
+    static #Tensor<float32> spreadLabels(int64 rows, int64 c) {
+        float32[] a = heap float32[rows];
+        int64 i = 0L;
+        while (i < rows) {
+            a[(int32) i] = (float32) ((i * 6151L + 5L) % c);
+            i = i + 1L;
+        }
+        int64[] sh = [rows];
+        Tensor<float32> t #= Tensor.of<float32>(a, sh);
+        return #t;
+    }
+
+    /**
+     * One Linear(d, d) layer at `c` classes, one SGD step on the device with the fused head and
+     * one with the tape-composed head: the same loss and the same weights after. False where
+     * the device or the route's kernels are missing.
+     */
+    static boolean manyClassStep(int64 rows, int64 d, int64 c, int32 lossType) {
+        SpelaConfig fc = heap SpelaConfig(c);
+        fc.optimizer = SpelaConfig.SGD;
+        fc.lr = 0.5f;
+        fc.seed = 71L;
+        fc.lossType = lossType;
+        fc.cosineMargin = 0.35;
+        fc.embeddingsMethod = SpelaConfig.RANDOM;
+        SpelaConfig cc = heap SpelaConfig(c);
+        cc.optimizer = SpelaConfig.SGD;
+        cc.lr = 0.5f;
+        cc.seed = 71L;
+        cc.lossType = lossType;
+        cc.cosineMargin = 0.35;
+        cc.embeddingsMethod = SpelaConfig.RANDOM;
+        ArrayList<Module> fl #= heap ArrayList<Module>();
+        Module a = heap Linear(d, d, 73L);
+        fl.add(#a);
+        ArrayList<Module> cl #= heap ArrayList<Module>();
+        Module b = heap Linear(d, d, 73L);
+        cl.add(#b);
+        SpelaTrainer fused = heap SpelaTrainer(#fl, #fc);
+        SpelaTrainer composed = heap SpelaTrainer(#cl, #cc);
+        composed.setFusedHead(false);
+        fused.planSteps(2L);
+        composed.planSteps(2L);
+        SpelaDeviceTest.toDevice(fused);
+        SpelaDeviceTest.toDevice(composed);
+        if (!SpelaDeviceTest.onGpu(fused)) { return false; }
+        String probe = "headStats_float32";
+        if (lossType == SpelaConfig.COSINE) { probe = "headCosine_float32"; }
+        if (!Device.kernelAvailable(probe)) { return false; }
+        Tensor<float32> x #= SpelaDeviceTest.patternRows(rows, d);
+        x.gpu();
+        Tensor<float32> y #= SpelaDeviceTest.spreadLabels(rows, c);
+        y.gpu();
+        int64 p0 = Device.kernelLaunchCount(probe);
+        fused.trainBatch(x, y);
+        Assert.isTrue(Device.kernelLaunchCount(probe) > p0);
+        int64 p1 = Device.kernelLaunchCount(probe);
+        composed.trainBatch(x, y);
+        Assert.equals(p1, Device.kernelLaunchCount(probe));
+        float64[] fv = [fused.lastLossAt(0)];
+        float64[] cv = [composed.lastLossAt(0)];
+        System.stdout.println("  " + c + " classes, " + rows + " rows of " + d + ": fused loss " + fv[0] + ", composed " + cv[0]);
+        SpelaDeviceTest.sameCurve("many-class loss", cv, fv, 1.0e-4);
+        SpelaDeviceTest.sameWeights(composed, fused, 1.0e-4);
+        return true;
+    }
+
+    @Test
+    public void anNcmSizedHeadMatchesTheTapeInOneBlockOfLogits() {
+        if (!SpelaDeviceTest.manyClassStep(4096L, 512L, 8192L, SpelaConfig.COSFACE)) { return; }
+        // the logit scratch held one column block, never the 4096 x 8192 matrix
+        Assert.isTrue(SpelaHead.logitFloats() <= 4096L * 1024L);
+    }
+
+    @Test
+    public void fortyThousandClassesBindTheSameRoute() {
+        if (!SpelaDeviceTest.manyClassStep(256L, 64L, 40960L, SpelaConfig.COSFACE)) { return; }
+        SpelaDeviceTest.manyClassStep(256L, 64L, 40960L, SpelaConfig.COSINE);
     }
 
     static boolean onGpu(SpelaTrainer tr) {

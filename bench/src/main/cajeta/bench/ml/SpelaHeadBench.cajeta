@@ -1,0 +1,102 @@
+package bench.ml;
+
+import cajeta.collection.ArrayList;
+import cajeta.math.Tensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaTrainer;
+
+/**
+ * spela-head-step: one SPELA step of a single Linear layer under an NCM-sized head, 4,096 rows of
+ * width 512 against 8,192 fixed class vectors, cosface scale 30 margin 0.35, AdamW (lr 1e-3,
+ * constant). It measures the many-class loss head, which on the device runs the class product
+ * in column blocks and never stores the rows x classes logits. torch runs the same local loss.
+ * Device only: at this size a cpu step takes seconds. The check runs on to config/train.npy[0]
+ * steps and passes when the last loss is below the first.
+ */
+public class SpelaHeadBench extends MlBenchmark {
+
+    SpelaTrainer tr;
+    Tensor<float32> x;
+    Tensor<float32> y;
+    ArrayList<float64> losses;
+    String mdl;
+    int64 steps;
+
+    public SpelaHeadBench() {
+        this.mdl = "";
+        this.steps = 0;
+    }
+
+    public String name() {
+        return "spela-head-step";
+    }
+
+    public String unit() {
+        return "samples/s";
+    }
+
+    public String model() {
+        return this.mdl;
+    }
+
+    public int32 warmupIters() {
+        return 3;
+    }
+
+    public int32 measuredIters() {
+        return 20;
+    }
+
+    public #ArrayList<String> variants() {
+        ArrayList<String> v = heap ArrayList<String>();
+        v.add("device");
+        return v;
+    }
+
+    public String probe(String variant) {
+        return "spela-head/x.npy";
+    }
+
+    public void prepare(String v) {
+        this.begin(v);
+        int64 d = Data.intAt("spela-head/config.npy", (int64) 1);
+        int64 c = Data.intAt("spela-head/config.npy", (int64) 2);
+        ArrayList<Module> layers #= heap ArrayList<Module>();
+        Module l0 = heap Linear(d, d, Data.SEED);
+        layers.add(#l0);
+        SpelaConfig cfg = heap SpelaConfig(c);
+        cfg.lrSchedule = SpelaConfig.CONSTANT;
+        cfg.cosineMargin = 0.35;
+        cfg.embeddingsMethod = SpelaConfig.RANDOM;
+        cfg.seed = Data.SEED;
+        this.tr = heap SpelaTrainer(#layers, #cfg);
+        this.mdl = "spela " + d + "-" + d + " head " + c + " cosface m0.35 f32";
+        this.x #= Data.f32("spela-head/x.npy");
+        this.y #= Data.f32("spela-head/y.npy");
+        this.nIn = this.x.shapeAt(0);
+        this.steps = Data.intAt("config/train.npy", (int64) 0);
+        this.ds = "spela-head batch " + Data.shape32(this.x) + " seed " + Data.SEED;
+        this.tr.layerAt(0).toDevice();
+        this.x.gpu();
+        this.y.gpu();
+        this.losses = heap ArrayList<float64>();
+    }
+
+    public void runVariant(String variant, int32 iterations) {
+        float64 l = this.tr.trainBatch(this.x, this.y);
+        this.losses.add(l);
+    }
+
+    public boolean checkResult() {
+        while ((int64) this.losses.count() < this.steps) {
+            this.runVariant(this.cur, 1);
+        }
+        float64 first = this.losses.get(0);
+        float64 last = this.losses.get((int32) this.steps - 1);
+        this.note = "SPELA cosface scale 30 margin 0.35, AdamW lr 1e-3; local loss " + first + " -> " + last
+            + " over " + this.steps + " steps";
+        return last < first;
+    }
+}

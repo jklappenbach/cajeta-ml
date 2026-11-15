@@ -32,10 +32,12 @@ def sizes(smoke):
     if smoke:
         return dict(n=10_000, p=20, knn_train=10_000, knn_q=1_000, pca_k=10,
                     mlp=(784, 512, 10, 64), cnn=(1, 8, 10, 28, 28, 64),
-                    tfm=(64, 4, 256, 16, 8), steps=20, loads=10, digits_train=360)
+                    tfm=(64, 4, 256, 16, 8), spela_head=(512, 128, 2048), steps=20, loads=10,
+                    digits_train=360)
     return dict(n=100_000, p=100, knn_train=100_000, knn_q=10_000, pca_k=20,
                 mlp=(784, 512, 10, 64), cnn=(1, 16, 10, 28, 28, 64),
-                tfm=(512, 8, 2048, 128, 64), steps=100, loads=100, digits_train=0)
+                tfm=(512, 8, 2048, 128, 64), spela_head=(4096, 512, 8192), steps=100, loads=100,
+                digits_train=0)
 
 
 class Out:
@@ -229,6 +231,14 @@ def neural(o, s, rng):
     o.file("transformer/model.pt")
     with torch.no_grad():
         o.f32("ref/transformer-out.npy", blk(torch.from_numpy(xt)).numpy())
+
+    # spela-head-step: rows of width d against c classes, an NCM-sized head. Its own generator, so
+    # the draws above and every later row's data stay what they were.
+    hr = np.random.default_rng(SEED + 7)
+    rows, hd, hc = s["spela_head"]
+    o.i64("spela-head/config.npy", [rows, hd, hc])
+    o.f32("spela-head/x.npy", hr.standard_normal((rows, hd)).astype(np.float32))
+    o.f32("spela-head/y.npy", hr.integers(0, hc, rows).astype(np.float32))
 
 
 def ops(o, s, rng):

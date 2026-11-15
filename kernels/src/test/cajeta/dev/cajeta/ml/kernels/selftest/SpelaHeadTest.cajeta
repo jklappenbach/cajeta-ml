@@ -10,9 +10,10 @@ import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
 
 /**
- * spela-kernels 4.1.1, 4.1.2: SPELA's few-class loss head, the loss and the gradient of a
- * layer's output, against a float64 host reference: cosface (scale 30, margin 0 and 0.35) and
- * cosine, with and without a row mask, 37 rows of width 70 over 5 classes.
+ * spela-kernels 4.1.1, 4.1.2, 5.1: SPELA's loss head, the loss and the gradient of a layer's
+ * output, against a float64 host reference: cosface (scale 30, margin 0 and 0.35) and cosine,
+ * with and without a row mask, 37 rows of width 70. The few-class route runs at 5 classes; the
+ * many-class route at 300 in blocks of 128, so three blocks with a ragged last one.
  */
 public class SpelaHeadTest {
     public SpelaHeadTest() { return; }
@@ -42,8 +43,11 @@ public class SpelaHeadTest {
     }
 
     /** One case on the device and on the host; `mode` 0 cosface, 1 cosine. */
-    static void headCase(int32 mode, float32 margin, boolean masked) {
-        int64 rows = 37L; int64 d = 70L; int64 c = 5L;
+    static void headCase(int32 mode, float32 margin, boolean masked) { SpelaHeadTest.headCaseAt(5L, mode, margin, masked); }
+
+    /** One case at `c` classes, through whichever route the head binds for that count. */
+    static void headCaseAt(int64 c, int32 mode, float32 margin, boolean masked) {
+        int64 rows = 37L; int64 d = 70L;
         float32 scale = 30.0f;
         float32[] h = heap float32[rows * d];
         float32[] v = heap float32[c * d];
@@ -77,6 +81,9 @@ public class SpelaHeadTest {
         KernelBuffer<float32> lb = heap KernelBuffer<float32>((uint64) rows);
         KernelBuffer<float32> mb = heap KernelBuffer<float32>((uint64) rows);
         KernelBuffer<float32> loss = heap KernelBuffer<float32>(1);
+        int64 pf = SpelaHead.packFloats(c, d);
+        if (pf == 0L) { pf = 1L; }
+        KernelBuffer<float32> pk = heap KernelBuffer<float32>((uint64) pf);
         hb.upload(h);
         vb.upload(v);
         lb.upload(lab);
@@ -84,8 +91,10 @@ public class SpelaHeadTest {
         float32 uscale = scale;
         if (mode == 1) { uscale = 1.0f; }
         int64[] mk #= ValueCheck.mark();
-        if (masked) { SpelaHead.loss<float32>(loss, dh, hb, vb, lb, mb, rows, d, c, mode, uscale, scale * margin, 0.00000001f); }
-        else { SpelaHead.loss<float32>(loss, dh, hb, vb, lb, null, rows, d, c, mode, uscale, scale * margin, 0.00000001f); }
+        // the packing is checked through the many-class outputs that read it
+        SpelaHead.pack<float32>(pk, vb, c, d);
+        if (masked) { SpelaHead.loss<float32>(loss, dh, hb, vb, pk, lb, mb, rows, d, c, mode, uscale, scale * margin, 0.00000001f); }
+        else { SpelaHead.loss<float32>(loss, dh, hb, vb, pk, lb, null, rows, d, c, mode, uscale, scale * margin, 0.00000001f); }
         float32[] got = heap float32[rows * d];
         dh.download(got);
         float32[] gl = heap float32[1];
@@ -168,5 +177,31 @@ public class SpelaHeadTest {
         SpelaHeadTest.headCase(1, 0.0f, false);
         SpelaHeadTest.headCase(0, 0.35f, true);
         SpelaHeadTest.headCase(1, 0.0f, true);
+    }
+
+    @Test
+    public void theClassCountPicksTheRoute() {
+        Assert.isTrue(!SpelaHead.manyClasses(5L));
+        Assert.isTrue(!SpelaHead.manyClasses(64L));
+        Assert.isTrue(SpelaHead.manyClasses(65L));
+        Assert.isTrue(SpelaHead.manyClasses(40960L));
+        Assert.isTrue(SpelaHead.packFloats(5L, 70L) == 0L);
+        Assert.isTrue(SpelaHead.packFloats(300L, 70L) == 21000L);
+    }
+
+    @Test
+    public void theManyClassHeadMatchesTheHost() {
+        if (!SpelaHeadTest.usable("headNorm_float32") || !SpelaHeadTest.usable("headStats_float32")
+            || !SpelaHeadTest.usable("headBlockGrad_float32") || !SpelaHeadTest.usable("headFinish_float32")
+            || !SpelaHeadTest.usable("headCosine_float32") || !SpelaHeadTest.usable("headPack_float32")) { return; }
+        SpelaHead.setBlockClasses(128L);
+        SpelaHeadTest.headCaseAt(300L, 0, 0.0f, false);
+        SpelaHeadTest.headCaseAt(300L, 0, 0.35f, false);
+        SpelaHeadTest.headCaseAt(300L, 1, 0.0f, false);
+        SpelaHeadTest.headCaseAt(300L, 0, 0.35f, true);
+        SpelaHeadTest.headCaseAt(300L, 1, 0.0f, true);
+        // one column block of logits, never the rows x classes matrix
+        Assert.isTrue(SpelaHead.logitFloats() <= 37L * 128L);
+        SpelaHead.setBlockClasses(1024L);
     }
 }
