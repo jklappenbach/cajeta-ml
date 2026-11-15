@@ -1,0 +1,220 @@
+package dev.cajeta.ml.kernels.nn;
+
+import cajeta.lang.Math;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Wave;
+import cajeta.xpu.Workgroup;
+import dev.cajeta.ml.kernels.Reduce;
+
+/**
+ * SPELA's few-class loss head (spela-kernels 4): a layer's output `h` (rows x d) against its
+ * class vectors `v` (c x d), the summed loss and the output's gradient in four launches where
+ * the composed head took about ten.
+ *
+ * Mode 0 is cosface: logits u (h . v_c) / max(|h|, eps), less `margin` (scale x margin) at the
+ * target, cross-entropy averaged over the rows. Mode 1 is cosine: minus the mean of
+ * h . v_y / max(|h| |v_y|, eps). A row mask weights each row's loss and gradient, and its sum is
+ * the divisor. headRows takes a wave a row and writes each row's loss, its logit gradient G
+ * (rows x c), q = <dn, n> and 1 / max(|h|, eps); headGrad forms the output's gradient
+ * inv (u G . v - h inv q), the row-norm backward with no reduction left in it.
+ */
+public final class SpelaHead {
+    public SpelaHead() { return; }
+
+    /** headRows: eight rows a workgroup, a wave a row; the loops and the branches around the wave ops are uniform (an out-of-range row clamps its loads and skips its stores). */
+    @Kernel
+    public static void headRows<E>(KernelBuffer<float32> g, KernelBuffer<float32> q, KernelBuffer<float32> inv,
+                                   KernelBuffer<float32> rowLoss, KernelBuffer<E> h, KernelBuffer<E> v, KernelBuffer<E> labels,
+                                   KernelBuffer<E> mask, KernelBuffer<float32> count, uint32 rows, uint32 d, uint32 c,
+                                   uint32 mode, float32 uscale, float32 margin, uint32 useMask, float32 invRows, float32 eps) {
+        uint32 lane = KernelThread.x();
+        uint32 width = Wave.width();
+        uint32 wl = Wave.laneId();
+        uint32 waves = 256 / width;
+        uint32 first = Workgroup.x() * 8;
+        uint32 last = first + 8;
+        if (last > rows) { last = rows; }
+        uint32 reps = (8 + waves - 1) / waves;
+        uint32 rep = 0;
+        while (rep < reps) {
+            uint32 row = first + lane / width + rep * waves;
+            boolean live = row < last;
+            if (!live) { row = rows - 1; }
+            uint32 hb = row * d;
+            float32 ss = 0.0f;
+            uint32 j = wl;
+            while (j < d) {
+                float32 x = (float32) h[hb + j];
+                ss = ss + x * x;
+                j = j + width;
+            }
+            float32 nrm = Math.sqrt(Wave.reduceSumF32(ss));
+            float32 den = nrm;
+            if (den < eps) { den = eps; }
+            float32 iv = 1.0f / den;
+            uint32 y = (uint32) ((float32) labels[row]);
+            float32 w = invRows;
+            if (useMask != 0) { w = (float32) mask[row] / count[0]; }
+            float32 loss = 0.0f;
+            float32 qq = 0.0f;
+            if (mode == 0) {
+                float32 mx = -3.4028235e38f;
+                float32 se = 0.0f;
+                float32 ly = 0.0f;
+                uint32 cc = 0;
+                while (cc < c) {
+                    float32 pd = 0.0f;
+                    j = wl;
+                    while (j < d) {
+                        pd = pd + (float32) h[hb + j] * (float32) v[cc * d + j];
+                        j = j + width;
+                    }
+                    float32 lg = uscale * Wave.reduceSumF32(pd) * iv;
+                    if (cc == y) {
+                        lg = lg - margin;
+                        ly = lg;
+                    }
+                    if (lg > mx) {
+                        se = se * Math.exp(mx - lg) + 1.0f;
+                        mx = lg;
+                    } else {
+                        se = se + Math.exp(lg - mx);
+                    }
+                    cc = cc + 1;
+                }
+                float32 lse = mx + Math.log(se);
+                loss = (lse - ly) * w;
+                cc = 0;
+                while (cc < c) {
+                    float32 pd = 0.0f;
+                    j = wl;
+                    while (j < d) {
+                        pd = pd + (float32) h[hb + j] * (float32) v[cc * d + j];
+                        j = j + width;
+                    }
+                    float32 dot = Wave.reduceSumF32(pd);
+                    float32 lg = uscale * dot * iv;
+                    float32 onehot = 0.0f;
+                    if (cc == y) {
+                        lg = lg - margin;
+                        onehot = 1.0f;
+                    }
+                    float32 gv = (Math.exp(lg - lse) - onehot) * w;
+                    qq = qq + gv * uscale * dot * iv;
+                    if (live && wl == 0) { g[row * c + cc] = gv; }
+                    cc = cc + 1;
+                }
+            } else {
+                float32 pd = 0.0f;
+                float32 pv = 0.0f;
+                j = wl;
+                while (j < d) {
+                    float32 vv = (float32) v[y * d + j];
+                    pd = pd + (float32) h[hb + j] * vv;
+                    pv = pv + vv * vv;
+                    j = j + width;
+                }
+                float32 dot = Wave.reduceSumF32(pd);
+                float32 vn = Math.sqrt(Wave.reduceSumF32(pv));
+                float32 cden = nrm * vn;
+                if (cden < eps) { cden = eps; }
+                float32 cs = dot / cden;
+                loss = 0.0f - cs * w;
+                float32 gy = (0.0f - w) / vn;
+                qq = gy * dot * iv;
+                uint32 cc = 0;
+                while (cc < c) {
+                    float32 gv = 0.0f;
+                    if (cc == y) { gv = gy; }
+                    if (live && wl == 0) { g[row * c + cc] = gv; }
+                    cc = cc + 1;
+                }
+            }
+            if (live && wl == 0) {
+                q[row] = qq;
+                inv[row] = iv;
+                rowLoss[row] = loss;
+            }
+            rep = rep + 1;
+        }
+    }
+
+    /** dh[r, j] = inv[r] (u sum_c G[r, c] v[c, j] - h[r, j] inv[r] q[r]), one work-item an element. */
+    @Kernel
+    public static void headGrad<E>(KernelBuffer<E> dh, KernelBuffer<E> h, KernelBuffer<E> v, KernelBuffer<float32> g,
+                                   KernelBuffer<float32> q, KernelBuffer<float32> inv, uint32 rows, uint32 d, uint32 c, float32 uscale) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < rows * d) {
+            uint32 r = i / d;
+            uint32 j = i - r * d;
+            float32 acc = 0.0f;
+            uint32 cc = 0;
+            while (cc < c) {
+                acc = acc + g[r * c + cc] * (float32) v[cc * d + j];
+                cc = cc + 1;
+            }
+            float32 iv = inv[r];
+            dh[i] = (E) (iv * (uscale * acc - (float32) h[i] * iv * q[r]));
+        }
+    }
+
+    // Scratch kept across calls, grown only past its high-water mark; the stream is synced only
+    // on the call that grows it, since a queued launch may still read the old buffers.
+    static KernelBuffer<float32> gBuf;
+    static KernelBuffer<float32> qBuf;
+    static KernelBuffer<float32> invBuf;
+    static KernelBuffer<float32> lossBuf;
+    static KernelBuffer<float32> countBuf;
+    static uint64 gCap;
+    static uint64 rowCap;
+
+    /**
+     * The head over `rows` rows: `loss[0]` receives the summed (row-weighted) loss and `dh` the
+     * gradient of that loss with respect to `h`. `mode` 0 cosface, 1 cosine; `uscale` is the
+     * cosface scale (1 for cosine); `margin` is scale x margin; `mask` (rows) is null for every
+     * row at weight 1 / rows. Queued on the current stream.
+     */
+    public static void loss<E>(KernelBuffer<float32> loss, KernelBuffer<E> dh, KernelBuffer<E> h, KernelBuffer<E> v,
+                               KernelBuffer<E> labels, KernelBuffer<E> mask, int64 rows, int64 d, int64 c, int32 mode,
+                               float32 uscale, float32 margin, float32 eps) {
+        uint64 needG = (uint64) (rows * c);
+        uint64 needR = (uint64) rows;
+        KernelStream s #= KernelStream.current();
+        if (SpelaHead.gBuf == null || needG > SpelaHead.gCap || needR > SpelaHead.rowCap) {
+            s.sync();
+            if (SpelaHead.gBuf == null || needG > SpelaHead.gCap) {
+                SpelaHead.gBuf = heap KernelBuffer<float32>(needG);
+                SpelaHead.gCap = needG;
+            }
+            if (SpelaHead.qBuf == null || needR > SpelaHead.rowCap) {
+                SpelaHead.qBuf = heap KernelBuffer<float32>(needR);
+                SpelaHead.invBuf = heap KernelBuffer<float32>(needR);
+                SpelaHead.lossBuf = heap KernelBuffer<float32>(needR);
+                SpelaHead.rowCap = needR;
+            }
+            if (SpelaHead.countBuf == null) { SpelaHead.countBuf = heap KernelBuffer<float32>(1); }
+        }
+        KernelBuffer<float32> gb = SpelaHead.gBuf;
+        KernelBuffer<float32> qb = SpelaHead.qBuf;
+        KernelBuffer<float32> ib = SpelaHead.invBuf;
+        KernelBuffer<float32> lb = SpelaHead.lossBuf;
+        KernelBuffer<float32> cb = SpelaHead.countBuf;
+        uint32 ur = (uint32) rows;
+        uint32 ud = (uint32) d;
+        uint32 uc = (uint32) c;
+        float32 invRows = 1.0f / (float32) rows;
+        if (mask != null) {
+            Reduce.segments<E>(cb, mask, rows, 1L, Reduce.SUM);
+            headRows.launch(s, grid: [(ur + 7) / 8], block: [256])(gb, qb, ib, lb, h, v, labels, mask, cb, ur, ud, uc,
+                (uint32) mode, uscale, margin, (uint32) 1, invRows, eps);
+        } else {
+            headRows.launch(s, grid: [(ur + 7) / 8], block: [256])(gb, qb, ib, lb, h, v, labels, h, cb, ur, ud, uc,
+                (uint32) mode, uscale, margin, (uint32) 0, invRows, eps);
+        }
+        uint32 total = ur * ud;
+        headGrad.launch(s, grid: [(total + 255) / 256], block: [256])(dh, h, v, gb, qb, ib, ur, ud, uc, uscale);
+        Reduce.segments<float32>(loss, lb, rows, 1L, Reduce.SUM);
+    }
+}

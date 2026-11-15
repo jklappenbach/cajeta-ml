@@ -1,0 +1,172 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.lang.System;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.nn.SpelaHead;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/**
+ * spela-kernels 4.1.1, 4.1.2: SPELA's few-class loss head, the loss and the gradient of a
+ * layer's output, against a float64 host reference: cosface (scale 30, margin 0 and 0.35) and
+ * cosine, with and without a row mask, 37 rows of width 70 over 5 classes.
+ */
+public class SpelaHeadTest {
+    public SpelaHeadTest() { return; }
+
+    static boolean usable(String kernel) {
+        if (!Device.kernelAvailable(kernel)) { DeviceSkip.noKernel(kernel, "spela-kernels 4"); return false; }
+        if (!Device.kernelUsable(kernel)) {
+            DeviceSkip.tracked(kernel + " on " + Device.activeBackend() + ": " + Device.kernelUnusableReason(kernel), "spela-kernels 4");
+            return false;
+        }
+        return true;
+    }
+
+    static float32 pattern(int64 i, float32 step) {
+        return (float32) ((((i * 7919L) % 251L) - 125L)) * step;
+    }
+
+    static void close(String what, float64 got, float64 want) {
+        float64 d = got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        float64 w = want;
+        if (w < 0.0) { w = 0.0 - w; }
+        if (d > 2.0e-5 * (w + 1.0)) {
+            System.stdout.println("  " + what + ": got " + got + " want " + want);
+            Assert.isTrue(false);
+        }
+    }
+
+    /** One case on the device and on the host; `mode` 0 cosface, 1 cosine. */
+    static void headCase(int32 mode, float32 margin, boolean masked) {
+        int64 rows = 37L; int64 d = 70L; int64 c = 5L;
+        float32 scale = 30.0f;
+        float32[] h = heap float32[rows * d];
+        float32[] v = heap float32[c * d];
+        float32[] lab = heap float32[rows];
+        float32[] msk = heap float32[rows];
+        int64 i = 0L;
+        while (i < rows * d) { h[(int32) i] = SpelaHeadTest.pattern(i + 3L, 0.01f); i = i + 1L; }
+        i = 0L;
+        while (i < c * d) { v[(int32) i] = SpelaHeadTest.pattern(i + 17L, 0.01f); i = i + 1L; }
+        // unit class vectors, as the trainer's are
+        int64 k = 0L;
+        while (k < c) {
+            float64 ss = 0.0;
+            int64 j = 0L;
+            while (j < d) { ss = ss + (float64) v[(int32) (k * d + j)] * (float64) v[(int32) (k * d + j)]; j = j + 1L; }
+            float64 inv = 1.0 / Math.sqrt(ss);
+            j = 0L;
+            while (j < d) { v[(int32) (k * d + j)] = (float32) ((float64) v[(int32) (k * d + j)] * inv); j = j + 1L; }
+            k = k + 1L;
+        }
+        i = 0L;
+        while (i < rows) {
+            lab[(int32) i] = (float32) ((i * 3L) % c);
+            msk[(int32) i] = 1.0f;
+            if (masked && (i % 4L) == 1L) { msk[(int32) i] = 0.0f; }
+            i = i + 1L;
+        }
+        KernelBuffer<float32> dh = heap KernelBuffer<float32>((uint64) (rows * d));
+        KernelBuffer<float32> hb = heap KernelBuffer<float32>((uint64) (rows * d));
+        KernelBuffer<float32> vb = heap KernelBuffer<float32>((uint64) (c * d));
+        KernelBuffer<float32> lb = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> mb = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> loss = heap KernelBuffer<float32>(1);
+        hb.upload(h);
+        vb.upload(v);
+        lb.upload(lab);
+        mb.upload(msk);
+        float32 uscale = scale;
+        if (mode == 1) { uscale = 1.0f; }
+        int64[] mk #= ValueCheck.mark();
+        if (masked) { SpelaHead.loss<float32>(loss, dh, hb, vb, lb, mb, rows, d, c, mode, uscale, scale * margin, 0.00000001f); }
+        else { SpelaHead.loss<float32>(loss, dh, hb, vb, lb, null, rows, d, c, mode, uscale, scale * margin, 0.00000001f); }
+        float32[] got = heap float32[rows * d];
+        dh.download(got);
+        float32[] gl = heap float32[1];
+        loss.download(gl);
+        // the host reference in float64
+        float64 count = 0.0;
+        i = 0L;
+        while (i < rows) { count = count + (float64) msk[(int32) i]; i = i + 1L; }
+        float64 total = 0.0;
+        int64 r = 0L;
+        while (r < rows) {
+            float64 w = (float64) msk[(int32) r] / count;
+            float64 ss = 0.0;
+            int64 j = 0L;
+            while (j < d) { ss = ss + (float64) h[(int32) (r * d + j)] * (float64) h[(int32) (r * d + j)]; j = j + 1L; }
+            float64 nrm = Math.sqrt(ss);
+            int64 y = (int64) lab[(int32) r];
+            float64[] dots = heap float64[c];
+            k = 0L;
+            while (k < c) {
+                float64 dt = 0.0;
+                j = 0L;
+                while (j < d) { dt = dt + (float64) h[(int32) (r * d + j)] * (float64) v[(int32) (k * d + j)]; j = j + 1L; }
+                dots[(int32) k] = dt;
+                k = k + 1L;
+            }
+            float64[] gc = heap float64[c];
+            float64 q = 0.0;
+            if (mode == 0) {
+                float64[] lg = heap float64[c];
+                float64 mx = -1.0e300;
+                k = 0L;
+                while (k < c) {
+                    lg[(int32) k] = (float64) uscale * dots[(int32) k] / nrm;
+                    if (k == y) { lg[(int32) k] = lg[(int32) k] - (float64) (scale * margin); }
+                    if (lg[(int32) k] > mx) { mx = lg[(int32) k]; }
+                    k = k + 1L;
+                }
+                float64 se = 0.0;
+                k = 0L;
+                while (k < c) { se = se + Math.exp(lg[(int32) k] - mx); k = k + 1L; }
+                float64 lse = mx + Math.log(se);
+                total = total + w * (lse - lg[(int32) y]);
+                k = 0L;
+                while (k < c) {
+                    float64 p = Math.exp(lg[(int32) k] - lse);
+                    float64 onehot = 0.0;
+                    if (k == y) { onehot = 1.0; }
+                    gc[(int32) k] = (p - onehot) * w;
+                    q = q + gc[(int32) k] * (float64) uscale * dots[(int32) k] / nrm;
+                    k = k + 1L;
+                }
+            } else {
+                float64 cosv = dots[(int32) y] / nrm;
+                total = total - w * cosv;
+                gc[(int32) y] = 0.0 - w;
+                q = 0.0 - w * cosv;
+            }
+            j = 0L;
+            while (j < d) {
+                float64 acc = 0.0;
+                k = 0L;
+                while (k < c) { acc = acc + gc[(int32) k] * (float64) v[(int32) (k * d + j)]; k = k + 1L; }
+                float64 want = (acc * (float64) uscale - (float64) h[(int32) (r * d + j)] / nrm * q) / nrm;
+                SpelaHeadTest.close("dh mode " + mode + " margin " + margin + " masked " + masked + " [" + r + "," + j + "]",
+                    (float64) got[(int32) (r * d + j)], want);
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
+        SpelaHeadTest.close("loss mode " + mode + " margin " + margin + " masked " + masked, (float64) gl[0], total);
+        ValueCheck.credit(mk);
+    }
+
+    @Test
+    public void theFewClassHeadMatchesTheHost() {
+        if (!SpelaHeadTest.usable("headRows_float32") || !SpelaHeadTest.usable("headGrad_float32")) { return; }
+        SpelaHeadTest.headCase(0, 0.0f, false);
+        SpelaHeadTest.headCase(0, 0.35f, false);
+        SpelaHeadTest.headCase(1, 0.0f, false);
+        SpelaHeadTest.headCase(0, 0.35f, true);
+        SpelaHeadTest.headCase(1, 0.0f, true);
+    }
+}

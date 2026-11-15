@@ -1,7 +1,9 @@
 package dev.cajeta.ml.train;
 
 import cajeta.collection.ArrayList;
+import cajeta.math.Ewise;
 import cajeta.math.Tensor;
+import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.MlException;
@@ -13,6 +15,7 @@ import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.kernels.Copy;
 import dev.cajeta.ml.nn.Module;
 import dev.cajeta.ml.kernels.Optim;
+import dev.cajeta.ml.kernels.nn.SpelaHead;
 import dev.cajeta.ml.nn.Nets;
 import dev.cajeta.ml.nn.Parameter;
 import dev.cajeta.ml.optim.Adam;
@@ -45,6 +48,8 @@ public class SpelaTrainer {
     ArrayList<Module> layers;
     SpelaConfig cfg;
     ArrayList<Tensor<float32>> classVectors;   // per layer; see `sized`
+    ArrayList<Tensor<float32>> headVecs;       // per layer: the class vectors on the device, for the fused head
+    boolean[] headPlaced;                      // has layer i's device copy been made?
     boolean[] sized;                           // has layer i's dim been fixed?
     ArrayList<Optimizer> optimizers;
     ArrayList<float64> lastLossPerLayer;
@@ -77,11 +82,13 @@ public class SpelaTrainer {
         this.layers #= layers;
         this.cfg #= cfg;
         this.classVectors = heap ArrayList<Tensor<float32>>();
+        this.headVecs = heap ArrayList<Tensor<float32>>();
         this.optimizers = heap ArrayList<Optimizer>();
         this.lastLossPerLayer = heap ArrayList<float64>();
         this.stepCount = 0;
         this.totalSteps = 0;
         this.sized = heap boolean[this.layers.count()];
+        this.headPlaced = heap boolean[this.layers.count()];
         this.bufX = heap ArrayList<Tensor<float32>>();
         this.bufY = heap ArrayList<float64>();
         this.observed = 0;
@@ -115,6 +122,9 @@ public class SpelaTrainer {
             this.classVectors.add(#placeholder);
             Tensor<float32> tablePlaceholder #= Tensor.zeros<float32>(one);
             this.lossTables.add(#tablePlaceholder);
+            Tensor<float32> headPlaceholder #= Tensor.zeros<float32>(one);
+            this.headVecs.add(#headPlaceholder);
+            this.headPlaced[i] = false;
             this.sized[i] = false;
             this.stepped[i] = false;
             // Built INLINE rather than through a `#Optimizer`-returning
@@ -292,12 +302,20 @@ public class SpelaTrainer {
                 layerLr = lr * this.cfg.lrMultipliers[i];
             }
             opt.setLr(layerLr);
-            GradTensor loss = this.localLoss(tape, i, flatOut, labels);
-            if (this.hasAnchors && this.cfg.anchorLambda > 0.0) {
-                loss = this.withAnchor(tape, i, ps, loss);
+            boolean anchored = this.hasAnchors && this.cfg.anchorLambda > 0.0;
+            if (!anchored && this.headRuns(tape.valueOf(flatOut))) {
+                // The fused head writes this layer's loss slot and the output's gradient, which
+                // seeds the layer's backward (spela-kernels 4).
+                Tensor<float32> dh #= this.headLoss(i, tape.valueOf(flatOut), labels);
+                tape.backwardFrom(flatOut, #dh);
+            } else {
+                GradTensor loss = this.localLoss(tape, i, flatOut, labels);
+                if (anchored) {
+                    loss = this.withAnchor(tape, i, ps, loss);
+                }
+                this.noteLoss(i, tape.valueOf(loss));
+                tape.backward(loss);
             }
-            this.noteLoss(i, tape.valueOf(loss));
-            tape.backward(loss);
             Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
             if (this.cfg.gradClipNorm > 0.0f && gs.count() > 0 && gs[0].isOnGpu()) {
                 // The clip's scale stays on the device and the optimizer reads it with the
@@ -515,6 +533,45 @@ public class SpelaTrainer {
         }
         throw heap MlException("SpelaTrainer: unknown lossType "
             + this.cfg.lossType);
+    }
+
+    /** The most classes the few-class head takes; more go through the composed head until the many-class route (spela-kernels 5). */
+    public static final int64 FEW_CLASSES = 64L;
+
+    /** Whether the fused few-class head serves this layer's output: on the device, rank 2, few classes, both kernels built. */
+    boolean headRuns(Tensor<float32> hv) {
+        if (!hv.isOnGpu() || hv.ndim() != 2) { return false; }
+        if (this.cfg.lossType != SpelaConfig.COSFACE && this.cfg.lossType != SpelaConfig.COSINE) { return false; }
+        if ((int64) this.cfg.numClasses > SpelaTrainer.FEW_CLASSES) { return false; }
+        return Device.kernelAvailable("headRows_float32") && Device.kernelAvailable("headGrad_float32");
+    }
+
+    /** The fused head over layer `i`'s output: its loss into the step's loss row, the output's gradient returned. */
+    #Tensor<float32> headLoss(int32 i, Tensor<float32> hv, Tensor<float32> labels) {
+        if (!this.headPlaced[i]) {
+            Tensor<float32> dv #= this.classVectors.get(i).copy();
+            dv.gpu();
+            this.headVecs.set(i, #dv);
+            this.headPlaced[i] = true;
+        }
+        Tensor<float32> vecs = this.headVecs.get(i);
+        int64 rows = hv.shapeAt(0);
+        int64 d = hv.shapeAt(1);
+        int64[] shp = [rows, d];
+        Tensor<float32> dh #= Ewise.deviceOf<float32>(shp);
+        int32 mode = 0;
+        float32 uscale = (float32) this.cfg.cosineScale;
+        float32 margin = (float32) (this.cfg.cosineScale * this.cfg.cosineMargin);
+        if (this.cfg.lossType == SpelaConfig.COSINE) {
+            mode = 1;
+            uscale = 1.0f;
+            margin = 0.0f;
+        }
+        KernelBuffer<float32> slot #= this.lossRow.deviceView("spela.loss").slice((uint64) i, 1);
+        SpelaHead.loss<float32>(slot, dh.deviceView("spela.head"), hv.deviceView("spela.head"), vecs.deviceView("spela.head"),
+            labels.deviceView("spela.head"), null, rows, d, (int64) this.cfg.numClasses, mode, uscale, margin, 0.00000001f);
+        this.stepped[i] = true;
+        return #dh;
     }
 
     /**

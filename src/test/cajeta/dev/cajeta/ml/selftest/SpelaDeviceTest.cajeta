@@ -322,6 +322,41 @@ public class SpelaDeviceTest {
         Assert.equals(2L, Device.kernelLaunchCount("adamSlots_float32") - a1);
     }
 
+    /**
+     * spela-kernels 4.1.1: a device batch computes each layer's loss and the output's gradient in
+     * the fused head, once a layer, and none of the composed head's kernels (the cross-entropy
+     * row and the backward of it and of the row norm) runs (the layer inputs' own row norm still does); the cosface and paper-exact curves above follow
+     * the host through it.
+     */
+    @Test
+    public void theFusedHeadReplacesTheComposedLoss() {
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 21L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaConfig dc = heap SpelaConfig(4);
+        dc.lr = 0.01f;
+        dc.seed = 47L;
+        dc.cosineMargin = 0.35;
+        SpelaTrainer dev = heap SpelaTrainer(#SpelaDeviceTest.mlp(61L), #dc);
+        dev.planSteps(4L);
+        SpelaDeviceTest.toDevice(dev);
+        if (!SpelaDeviceTest.onGpu(dev)) { return; }
+        Tensor<float32> xd #= x.copy();
+        xd.gpu();
+        Tensor<float32> yd #= y.copy();
+        yd.gpu();
+        dev.trainBatch(xd, yd);
+        int64 h0 = Device.kernelLaunchCount("headRows_float32");
+        int64 c0 = Device.kernelLaunchCount("crossEntropyRow_float32")
+            + Device.kernelLaunchCount("l2normBack_float32") + Device.kernelLaunchCount("nllBack_float32");
+        dev.trainBatch(xd, yd);
+        int64 heads = Device.kernelLaunchCount("headRows_float32") - h0;
+        int64 composed = Device.kernelLaunchCount("crossEntropyRow_float32")
+            + Device.kernelLaunchCount("l2normBack_float32") + Device.kernelLaunchCount("nllBack_float32") - c0;
+        System.stdout.println("  device batch: fused heads " + heads + ", composed-head launches " + composed);
+        Assert.equals((int64) dev.layerCount(), heads);
+        Assert.equals(0L, composed);
+    }
+
     /** Every parameter of `dev`, read back, within `tol` of the same parameter of `host`. */
     static void sameWeights(SpelaTrainer host, SpelaTrainer dev, float64 tol) {
         int32 i = 0;

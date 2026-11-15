@@ -617,7 +617,39 @@ public final class GradTape<E extends Floating> {
         return;
     }
 
+    /**
+     * backward from `out` with its cotangent given: `seed` (shaped like out's value, on its
+     * device) where backward seeds ones. A loss computed outside the tape enters this way with
+     * its gradient already formed, as SPELA's fused loss head does (spela-kernels 4).
+     */
+    public void backwardFrom(GradTensor out, #Tensor<E> seed) {
+        this.beginBackward(out);
+        this.grads.set(out.idx, #seed);
+        this.reached[out.idx] = true;
+        this.sweepFrom(out.idx);
+    }
+
     public void backward(GradTensor out) {
+        this.beginBackward(out);
+        // Seed d(out)/d(out) = 1.
+        Tensor<E> seedSrc = this.values.get(out.idx);
+        Tensor<E> seed #= Ops.fullOn<E>(GradTape.shapeOf<E>(seedSrc), seedSrc, (E) 1);
+        this.grads.set(out.idx, #seed);
+        this.reached[out.idx] = true;
+        this.sweepFrom(out.idx);
+    }
+
+    void sweepFrom(int32 top) {
+        int32 k = top;
+        while (k >= 0) {
+            if (this.needsGrad[k] && this.reached[k] && this.ops[k] != Op.LEAF) {
+                this.backOne(k);
+            }
+            k = k - 1;
+        }
+    }
+
+    void beginBackward(GradTensor out) {
         if (this.ranBackward) {
             throw heap MlException("GradTape.backward: this tape already ran "
                 + "backward (first-order only) — build a fresh tape per step");
@@ -640,19 +672,6 @@ public final class GradTape<E extends Floating> {
             Tensor<E> z #= Tensor.full<E>(one, (E) 0);
             this.grads.add(#z);
             i = i + 1;
-        }
-        // Seed d(out)/d(out) = 1.
-        Tensor<E> seedSrc = this.values.get(out.idx);
-        Tensor<E> seed #= Ops.fullOn<E>(GradTape.shapeOf<E>(seedSrc), seedSrc, (E) 1);
-        this.grads.set(out.idx, #seed);
-        this.reached[out.idx] = true;
-
-        int32 k = out.idx;
-        while (k >= 0) {
-            if (this.needsGrad[k] && this.reached[k] && this.ops[k] != Op.LEAF) {
-                this.backOne(k);
-            }
-            k = k - 1;
         }
         return;
     }
