@@ -5,6 +5,7 @@ import cajeta.lang.System;
 import cajeta.math.Tensor;
 import cajeta.time.Clock;
 import cajeta.xpu.Device;
+import cajeta.xpu.KernelFacts;
 import cajeta.xpu.ShapeChoice;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.unit.Assert;
@@ -371,7 +372,11 @@ public class GradBackGpuTest {
         Path dir #= Path.of(store);
         dir.mkdirs();
         Gemm.tuneUnrolledIn(store);
-        ShapeChoice.setShapeOverride("gemm-tiled128-nt", "gemmTiled128UnrolledNT_float32");
+        // The override can only name a survivor: where the NT member spills (gfx1151 before
+        // cajeta a65517be) the filter prunes it, the transpose runs, and only the gradients are checked.
+        String nt = "gemmTiled128UnrolledNT_float32";
+        boolean ntClean = Device.kernelAvailable(nt) && KernelFacts.measured(nt, 0).spillBytes == 0;
+        if (ntClean) { ShapeChoice.setShapeOverride("gemm-tiled128-nt", nt); }
         int64 before = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32");
         GradBackGpuTest.linear("large linear gradient", 0, x, w, b);
         GradBackGpuTest.binary("large matmul gradient", Op.MATMUL, x, w, 0);
@@ -379,7 +384,7 @@ public class GradBackGpuTest {
         Gemm.tuneUnrolledIn("");
         int64 copies = Device.kernelLaunchCount("strided_float32") + Device.kernelLaunchCount("stridedTile_float32") - before;
         System.stdout.println("  large linear gradient copies: " + copies);
-        if (Device.activeBackend().equals("cuda")) {
+        if (ntClean && Device.activeBackend().equals("cuda")) {
             Assert.equals(0L, copies);
         }
     }
