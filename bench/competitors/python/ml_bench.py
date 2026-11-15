@@ -589,7 +589,16 @@ def main():
     ap.add_argument("--out", default="python.csv")
     ap.add_argument("--bench")
     ap.add_argument("--list", action="store_true")
+    # torch's intra-op threads. Its default can collapse on an SMT box: OpenBLAS under OpenMP
+    # at 32 threads read 205 ms for a step 1 thread runs in 1.08 (proton, 2026-11-15), so a
+    # row's denominator is the best of a small sweep the caller runs, this count in its notes.
+    ap.add_argument("--threads", type=int, default=0)
     a = ap.parse_args()
+    if a.threads > 0:
+        os.environ["OMP_NUM_THREADS"] = str(a.threads)
+        os.environ["MKL_NUM_THREADS"] = str(a.threads)
+        import torch
+        torch.set_num_threads(a.threads)
     names = [n for n in CLASSICAL + NEURAL + OPS + GEMMS if a.bench in (None, n)]
     if a.list:
         for n in names:
