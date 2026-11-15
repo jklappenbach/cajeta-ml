@@ -100,6 +100,32 @@ public class HostPassTest {
     }
 
     @Test
+    public void aContiguousHostCopyIsOnePass() {
+        // a layer's detached output is copied each step; the stdlib copy reads it element by element
+        int64[] s = [67L, 37L];
+        Tensor<float32> a #= HostPassTest.fill(s, 23L);
+        int64 p0 = Ops.hostPasses();
+        Tensor<float32> c #= Ops.copyOf<float32>(a);
+        Assert.equals(p0 + 1L, Ops.hostPasses());
+        HostPassTest.close("copy", c, a, 0.0);
+        // the copy is its own storage
+        a.flatSet(0L, 99.0f);
+        Assert.isTrue(c.flatGet(0L) != 99.0f);
+        // a strided view keeps the stdlib copy, which lays it out contiguously
+        Tensor<float32> t #= a.transpose();
+        int64 p1 = Ops.hostPasses();
+        Tensor<float32> ct #= Ops.copyOf<float32>(t);
+        Assert.equals(p1, Ops.hostPasses());
+        Assert.isTrue(ct.isContiguous());
+        Assert.equals(37L, ct.shapeAt(0));
+        // row 1, column 0 of the transpose is a's row 0, column 1
+        float32 want = a.flatGet(1L);
+        float32 got = ct.flatGet(67L);
+        System.stdout.println("  view copy [1,0]: " + got + " want " + want);
+        Assert.isTrue(want == got);
+    }
+
+    @Test
     public void theRowNormRunsOnePassEachWay() {
         int64[] s = [9L, 37L];
         Tensor<float32> xv #= HostPassTest.fill(s, 17L);

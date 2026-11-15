@@ -539,6 +539,27 @@ public final class Ops {
             Copy.into<E>(dv.deviceView("copy"), t.deviceView("copy"), t.size());
             return #dv;
         }
+        if (t.isContiguous()) {
+            // sixteen lanes a load over the host arrays, where the stdlib's copy reads each
+            // element through its strides (spela-kernels 10.2.6)
+            Ops.passes = Ops.passes + 1L;
+            Tensor<E> o #= Ops.zerosLike<E>(t);
+            E[] oa = o.hostBuffer();
+            int64 oo = o.hostBase();
+            E[] ta = t.hostBuffer();
+            int64 to = t.hostBase();
+            int64 cnt = t.size();
+            int64 e = 0L;
+            while (e + 16L <= cnt) {
+                oa.vstore(oo + e, ta.vload<16>(to + e));
+                e = e + 16L;
+            }
+            while (e < cnt) {
+                oa[oo + e] = ta[to + e];
+                e = e + 1L;
+            }
+            return #o;
+        }
         return t.copy();
     }
 
