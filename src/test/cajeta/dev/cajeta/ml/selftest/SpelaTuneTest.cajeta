@@ -1,0 +1,74 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import cajeta.time.Clock;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.kernels.gemm.LayerProducts;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaTrainer;
+
+/**
+ * spela-kernels 6.1.2, 6.1.3, spec §2.4 and §2.7: the tune store a trainer uses comes from
+ * SpelaConfig.tuneDir, then CAJETA_ML_TUNE_DIR, then none; under a store the trainer settles
+ * its layer products before the first batch, so no batch times anything, a second trainer
+ * reads the first one's answers, and the losses follow the untuned trainer's.
+ */
+public class SpelaTuneTest {
+    public SpelaTuneTest() { return; }
+
+    @Test
+    public void theStoreIsTheOptionThenTheEnvironmentThenNone() {
+        String a #= SpelaConfig.resolveTuneDir("opt/dir", "env/dir");
+        Assert.equals("opt/dir", a);
+        String b #= SpelaConfig.resolveTuneDir("", "env/dir");
+        Assert.equals("env/dir", b);
+        String c #= SpelaConfig.resolveTuneDir("", null);
+        Assert.equals("", c);
+        String d #= SpelaConfig.resolveTuneDir("", "");
+        Assert.equals("", d);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.tuneDir = "opt/dir";
+        SpelaTrainer tr = heap SpelaTrainer(#SpelaDeviceTest.mlp(81L), #cfg);
+        Assert.equals("opt/dir", tr.tuneDir());
+    }
+
+    static #SpelaTrainer trainer(String store) {
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.seed = 83L;
+        cfg.tuneDir #= store.clone();
+        SpelaTrainer tr = heap SpelaTrainer(#SpelaDeviceTest.mlp(89L), #cfg);
+        tr.planSteps(4L);
+        SpelaDeviceTest.toDevice(tr);
+        return #tr;
+    }
+
+    @Test
+    public void underAStoreNoBatchTimesAndASecondTrainerReadsTheAnswers() {
+        String store #= "build/tune-spela-" + Clock.nanoTime();
+        Path dir #= Path.of(store);
+        dir.mkdirs();
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 91L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaTrainer plain #= SpelaTuneTest.trainer("");
+        if (!SpelaDeviceTest.onGpu(plain)) { return; }
+        float64[] want #= SpelaDeviceTest.curve(plain, x, y, 3);
+        SpelaTrainer tuned #= SpelaTuneTest.trainer(store);
+        tuned.prewarm(x.shapeAt(0));
+        int64 t0 = LayerProducts.timings();
+        float64[] got #= SpelaDeviceTest.curve(tuned, x, y, 3);
+        Assert.equals(t0, LayerProducts.timings());
+        System.stdout.println("  tuned layer products: forward " + LayerProducts.lastForward() + ", weight grad "
+            + LayerProducts.lastWeightGrad() + ", timings " + t0);
+        SpelaDeviceTest.sameCurve("tuned against untuned", want, got, 2.0e-3);
+        SpelaTrainer again #= SpelaTuneTest.trainer(store);
+        int64 t1 = LayerProducts.timings();
+        again.prewarm(x.shapeAt(0));
+        Assert.equals(t1, LayerProducts.timings());
+        LayerProducts.setTuneDir("");
+    }
+}

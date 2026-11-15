@@ -1,0 +1,360 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.lang.String;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.DeviceFacts;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelFacts;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.ShapeCandidate;
+import cajeta.xpu.ShapeFilter;
+import cajeta.xpu.ShapeProbe;
+import cajeta.xpu.XpuLaunchException;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.Transpose;
+import dev.cajeta.ml.kernels.tune.TileFamily;
+import dev.cajeta.ml.kernels.tune.TileShape;
+
+/**
+ * A layer's two products through tile families (spela-kernels 6, spec §2.4): the forward
+ * act(x . w + b), x (m x k) against w (k x n), and the weight gradient x^T . g, x (k x m)
+ * against g (k x n). Each problem's member is chosen once per device.
+ *
+ * With no tune store each product takes the rule the library has always used, untimed and
+ * the same in every process: the forward runs the fused Linear below Gemm.large and the wide
+ * tile with its bias epilogue at or above it; the weight gradient runs the split TN member
+ * where the product splits K and the transpose and the routed tile otherwise. Under a store
+ * (setTuneDir) the first use of a problem times the members that fit and are built here, on
+ * scratch operands of the problem's shape, and keeps the winner under the device and the build;
+ * later uses, in this process or the next, read it. A member that does not fit, has no device
+ * code or fails the feasibility filter is pruned with its reason.
+ *
+ * Timing synchronizes the stream, so a caller that queues on a deferred stream resolves its
+ * problems first (prewarm).
+ */
+public final class LayerProducts {
+    public LayerProducts() { return; }
+
+    // the members, by index
+    static final int32 FWD_LINEAR = 0;
+    static final int32 FWD_WIDE = 1;
+    static final int32 WG_SPLIT_TN = 0;
+    static final int32 WG_TILE16 = 1;
+    static final int32 WG_WIDE = 2;
+    // launches a timing runs back to back, so one launch's floor does not decide a choice
+    static final int32 REPS = 8;
+
+    static String dir;
+    static TileFamily<ProductShape> fwdFam;
+    static TileFamily<ProductShape> wgFam;
+    static boolean timedLast = false;
+    static int64 timingCount = 0L;
+    static String fwdLast;
+    static String wgLast;
+
+    /** Keep the choices in `dir` ("" for no store: today's rules, untimed); either way this process's remembered choices are dropped. */
+    public static void setTuneDir(String d) {
+        LayerProducts.dir #= d.clone();
+        if (LayerProducts.fwdFam != null) { LayerProducts.fwdFam.forget(); }
+        if (LayerProducts.wgFam != null) { LayerProducts.wgFam.forget(); }
+    }
+
+    /** Whether a tune store is set. */
+    public static boolean tuned() { return LayerProducts.dir != null && LayerProducts.dir.byteLength() > 0; }
+
+    /** Whether the last choice timed its members. */
+    public static boolean lastTimed() { return LayerProducts.timedLast; }
+
+    /** Member timings run in this process. */
+    public static int64 timings() { return LayerProducts.timingCount; }
+
+    /** The kernel the last forward ran, or "". */
+    public static #String lastForward() {
+        if (LayerProducts.fwdLast == null) { return "".clone(); }
+        return LayerProducts.fwdLast.clone();
+    }
+
+    /** The kernel the last weight gradient ran, or "". */
+    public static #String lastWeightGrad() {
+        if (LayerProducts.wgLast == null) { return "".clone(); }
+        return LayerProducts.wgLast.clone();
+    }
+
+    static TileFamily<ProductShape> forwardFamily() {
+        if (LayerProducts.fwdFam == null) {
+            LayerProducts.fwdFam = heap TileFamily<ProductShape>("layer-forward");
+            LayerProducts.fwdFam.add(#heap ProductShape("linear_float32", 16, 256, 0));
+            LayerProducts.fwdFam.add(#heap ProductShape("gemmTiled128_float32", 128, 256, 1));
+        }
+        return LayerProducts.fwdFam;
+    }
+
+    static TileFamily<ProductShape> weightGradFamily() {
+        if (LayerProducts.wgFam == null) {
+            LayerProducts.wgFam = heap TileFamily<ProductShape>("layer-weight-grad");
+            LayerProducts.wgFam.add(#heap ProductShape("gemmTiled128SplitTN_float32", 128, 256, 2));
+            LayerProducts.wgFam.add(#heap ProductShape("gemmTiled_float32", 16, 256, 0));
+            LayerProducts.wgFam.add(#heap ProductShape("gemmTiled128_float32", 128, 256, 0));
+        }
+        return LayerProducts.wgFam;
+    }
+
+    /** The forward family's verdict on member `kernel` at m x n x k: "" when it is a candidate, else why not. */
+    public static #String forwardPruneReason(String kernel, int64 m, int64 n, int64 k) {
+        return LayerProducts.forwardFamily().pruneReason(kernel, m, n, k);
+    }
+
+    /** The weight-gradient family's verdict on member `kernel` at m x n x k. */
+    public static #String weightGradPruneReason(String kernel, int64 m, int64 n, int64 k) {
+        return LayerProducts.weightGradFamily().pruneReason(kernel, m, n, k);
+    }
+
+    /** The forward member at m x n x k: today's rule with no store, else the family's choice. */
+    static int32 forwardChoice(int64 m, int64 n, int64 k) {
+        LayerProducts.timedLast = false;
+        if (!LayerProducts.tuned()) {
+            if (Gemm.large(m, n)) { return LayerProducts.FWD_WIDE; }
+            return LayerProducts.FWD_LINEAR;
+        }
+        TileFamily<ProductShape> f = LayerProducts.forwardFamily();
+        int32 idx = f.remembered(m, n, k);
+        if (idx >= 0) { return idx; }
+        ShapeFilter flt #= LayerProducts.filterOf(f, m, n, k);
+        ForwardProbe probe = heap ForwardProbe(flt, f, m, n, k);
+        idx = f.chooseWith(LayerProducts.dir, flt, probe, m, n, k);
+        LayerProducts.timedLast = probe.timed > 0;
+        return idx;
+    }
+
+    /** The weight-gradient member at m x n x k: today's rule with no store, else the family's choice. */
+    static int32 weightGradChoice(int64 m, int64 n, int64 k) {
+        LayerProducts.timedLast = false;
+        if (!LayerProducts.tuned()) {
+            if (Gemm.splitsFor(m, n, k) > (uint32) 1 && Gemm.splitTNRuns()) { return LayerProducts.WG_SPLIT_TN; }
+            return -1;
+        }
+        TileFamily<ProductShape> f = LayerProducts.weightGradFamily();
+        int32 idx = f.remembered(m, n, k);
+        if (idx >= 0) { return idx; }
+        ShapeFilter flt #= LayerProducts.filterOf(f, m, n, k);
+        WeightGradProbe probe = heap WeightGradProbe(flt, f, m, n, k);
+        idx = f.chooseWith(LayerProducts.dir, flt, probe, m, n, k);
+        LayerProducts.timedLast = probe.timed > 0;
+        return idx;
+    }
+
+    /**
+     * The feasibility filter over `f`'s members that fit and are built here. The rolled wide
+     * tile is the floor, as in Gemm's unrolled-or-rolled pairs: it is today's member at the
+     * large shapes and runs on every backend, so its own spill (24 bytes on sm_89 since its
+     * bias epilogue) does not prune it.
+     */
+    static #ShapeFilter filterOf(TileFamily<ProductShape> f, int64 m, int64 n, int64 k) {
+        ShapeFilter flt #= heap ShapeFilter(f.name(), DeviceFacts.current(), m, n, k);
+        int32 count = (int32) f.shapes().count();
+        int32 i = 0;
+        while (i < count) {
+            ProductShape sh = f.shapes().get(i);
+            String kn #= sh.kernel();
+            if (sh.fits(m, n, k) && Device.kernelAvailable(kn)) {
+                KernelFacts kf #= KernelFacts.measured(kn, 0);
+                if (kn.equals("gemmTiled128_float32")) { kf.spillBytes = 0; }
+                flt.consider(#heap ShapeCandidate(#kn, sh.tileM(), sh.tileN(), sh.threads(), 256, 8), #kf);
+            }
+            i = i + 1;
+        }
+        if (flt.survivorCount() == 0) {
+            String why #= flt.refusal();
+            throw heap XpuLaunchException(#why);
+        }
+        return #flt;
+    }
+
+    /** How many forward members survive the filter at m x n x k (one means the choice needs no timing). */
+    public static int32 forwardSurvivors(int64 m, int64 n, int64 k) {
+        ShapeFilter flt #= LayerProducts.filterOf(LayerProducts.forwardFamily(), m, n, k);
+        return flt.survivorCount();
+    }
+
+    /** How many weight-gradient members survive the filter at m x n x k. */
+    public static int32 weightGradSurvivors(int64 m, int64 n, int64 k) {
+        ShapeFilter flt #= LayerProducts.filterOf(LayerProducts.weightGradFamily(), m, n, k);
+        return flt.survivorCount();
+    }
+
+    /** Settle both products of a layer taking `rows` rows of `in` to `out`, timing them under a store, so a later step at that shape times nothing. */
+    public static void prewarm(int64 rows, int64 in, int64 out) {
+        LayerProducts.forwardChoice(rows, out, in);
+        LayerProducts.weightGradChoice(in, out, rows);
+    }
+
+    /**
+     * `c` (m x n) = act(`x` . `w` + `b`), act 0 none or 1 relu; queued on the current stream.
+     * False where the member would be the wide tile and the product splits K, where the caller
+     * composes it instead (the family never chooses that: the wide member does not fit there).
+     */
+    public static boolean forward<E>(KernelBuffer<E> c, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b, int64 m, int64 n,
+                                     int64 k, int32 act) {
+        int32 idx = LayerProducts.forwardChoice(m, n, k);
+        boolean ran = LayerProducts.runForward<E>(idx, c, x, w, b, m, n, k, act);
+        if (ran) { LayerProducts.fwdLast #= LayerProducts.forwardFamily().shapes().get(idx).kernel(); }
+        return ran;
+    }
+
+    static boolean runForward<E>(int32 idx, KernelBuffer<E> c, KernelBuffer<E> x, KernelBuffer<E> w, KernelBuffer<E> b, int64 m,
+                                 int64 n, int64 k, int32 act) {
+        if (idx == LayerProducts.FWD_LINEAR) {
+            Linear.run<E>(c, x, w, b, m, n, k, true, act);
+            return true;
+        }
+        return Gemm.tiled128Bias<E>(c, x, w, b, m, n, k, act);
+    }
+
+    /** Whether weightGrad at m x n x k reads x^T, which the caller then supplies. */
+    public static boolean weightGradReadsTranspose(int64 m, int64 n, int64 k) {
+        return LayerProducts.weightGradChoice(m, n, k) != LayerProducts.WG_SPLIT_TN;
+    }
+
+    /**
+     * `c` (m x n) = `x`^T . `g`, `x` (k x m) and `g` (k x n); `xt` (m x k) is `x` transposed
+     * where weightGradReadsTranspose said so, and unread otherwise. Queued on the current stream.
+     */
+    public static void weightGrad<E>(KernelBuffer<E> c, KernelBuffer<E> x, KernelBuffer<E> xt, KernelBuffer<E> g, int64 m, int64 n,
+                                     int64 k) {
+        int32 idx = LayerProducts.weightGradChoice(m, n, k);
+        if (idx < 0) {
+            Gemm.tiled<E>(c, xt, g, m, n, k);
+            if (Gemm.large(m, n)) { LayerProducts.wgLast #= "gemmTiled128_float32".clone(); }
+            else { LayerProducts.wgLast #= "gemmTiled_float32".clone(); }
+            return;
+        }
+        LayerProducts.runWeightGrad<E>(idx, c, x, xt, g, m, n, k);
+        LayerProducts.wgLast #= LayerProducts.weightGradFamily().shapes().get(idx).kernel();
+    }
+
+    static void runWeightGrad<E>(int32 idx, KernelBuffer<E> c, KernelBuffer<E> x, KernelBuffer<E> xt, KernelBuffer<E> g, int64 m,
+                                 int64 n, int64 k) {
+        if (idx == LayerProducts.WG_SPLIT_TN) {
+            if (!Gemm.tiledTN<E>(c, x, g, m, n, k)) {
+                String why #= "layer-weight-grad: the split TN member declined " + m + "x" + n + "x" + k;
+                throw heap XpuLaunchException(#why);
+            }
+            return;
+        }
+        if (idx == LayerProducts.WG_TILE16) {
+            Gemm.tiled16<E>(c, xt, g, m, n, k);
+            return;
+        }
+        Gemm.tiled128<E>(c, xt, g, m, n, k);
+    }
+}
+
+/** A layer-product member: its registered kernel, tile and threads, and its fit (0 every shape, 1 an unsplit product, 2 a product that splits K). */
+final class ProductShape implements TileShape {
+    String kn;
+    int32 tile;
+    int32 nthreads;
+    int32 rule;
+    public ProductShape(String kn, int32 tile, int32 nthreads, int32 rule) {
+        this.kn #= kn.clone();
+        this.tile = tile;
+        this.nthreads = nthreads;
+        this.rule = rule;
+    }
+    public #String kernel() { return this.kn.clone(); }
+    public int32 tileM() { return this.tile; }
+    public int32 tileN() { return this.tile; }
+    public int32 threads() { return this.nthreads; }
+    public boolean fits(int64 rows, int64 outDim, int64 cols) {
+        if (this.rule == 1) { return Gemm.splitsFor(rows, outDim, cols) <= (uint32) 1; }
+        if (this.rule == 2) { return Gemm.splitsFor(rows, outDim, cols) > (uint32) 1; }
+        return true;
+    }
+}
+
+/** Times one surviving forward member at the problem's shape on scratch operands. */
+final class ForwardProbe implements ShapeProbe {
+    ShapeFilter filter;
+    TileFamily<ProductShape> fam;
+    KernelBuffer<float32> x;
+    KernelBuffer<float32> w;
+    KernelBuffer<float32> b;
+    KernelBuffer<float32> c;
+    int64 m;
+    int64 n;
+    int64 k;
+    public int32 timed = 0;
+
+    public ForwardProbe(^ShapeFilter filter, ^TileFamily<ProductShape> fam, int64 m, int64 n, int64 k) {
+        this.filter = filter;
+        this.fam = fam;
+        this.m = m;
+        this.n = n;
+        this.k = k;
+        this.x = heap KernelBuffer<float32>((uint64) (m * k));
+        this.w = heap KernelBuffer<float32>((uint64) (k * n));
+        this.b = heap KernelBuffer<float32>((uint64) n);
+        this.c = heap KernelBuffer<float32>((uint64) (m * n));
+    }
+
+    public int64 timeNanos(int32 i) {
+        this.timed = this.timed + 1;
+        LayerProducts.timingCount = LayerProducts.timingCount + 1L;
+        int32 idx = this.fam.indexOf(this.filter.survivor(i).candidate.kernel);
+        KernelStream s #= KernelStream.current();
+        s.sync();
+        int64 t0 = Clock.nanoTime();
+        int32 r = 0;
+        while (r < LayerProducts.REPS) {
+            LayerProducts.runForward<float32>(idx, this.c, this.x, this.w, this.b, this.m, this.n, this.k, 0);
+            r = r + 1;
+        }
+        s.sync();
+        return Clock.nanoTime() - t0;
+    }
+}
+
+/** Times one surviving weight-gradient member at the problem's shape on scratch operands. */
+final class WeightGradProbe implements ShapeProbe {
+    ShapeFilter filter;
+    TileFamily<ProductShape> fam;
+    KernelBuffer<float32> x;
+    KernelBuffer<float32> xt;
+    KernelBuffer<float32> g;
+    KernelBuffer<float32> c;
+    int64 m;
+    int64 n;
+    int64 k;
+    public int32 timed = 0;
+
+    public WeightGradProbe(^ShapeFilter filter, ^TileFamily<ProductShape> fam, int64 m, int64 n, int64 k) {
+        this.filter = filter;
+        this.fam = fam;
+        this.m = m;
+        this.n = n;
+        this.k = k;
+        this.x = heap KernelBuffer<float32>((uint64) (k * m));
+        this.xt = heap KernelBuffer<float32>((uint64) (m * k));
+        this.g = heap KernelBuffer<float32>((uint64) (k * n));
+        this.c = heap KernelBuffer<float32>((uint64) (m * n));
+    }
+
+    public int64 timeNanos(int32 i) {
+        this.timed = this.timed + 1;
+        LayerProducts.timingCount = LayerProducts.timingCount + 1L;
+        int32 idx = this.fam.indexOf(this.filter.survivor(i).candidate.kernel);
+        KernelStream s #= KernelStream.current();
+        s.sync();
+        int64 t0 = Clock.nanoTime();
+        int32 r = 0;
+        while (r < LayerProducts.REPS) {
+            // a member that reads x^T pays for the transpose, as the step does
+            if (idx != LayerProducts.WG_SPLIT_TN) { Transpose.into<float32>(this.xt, this.x, this.k, this.m); }
+            LayerProducts.runWeightGrad<float32>(idx, this.c, this.x, this.xt, this.g, this.m, this.n, this.k);
+            r = r + 1;
+        }
+        s.sync();
+        return Clock.nanoTime() - t0;
+    }
+}

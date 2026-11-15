@@ -13471,6 +13471,15 @@ public final class Gemm {
         gemmTiled.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
     }
 
+    /** `c` (m x n) = `a` (m x k) . `b` (k x n), all at E, through the plain 16x16 tile at any size (a sequential float32 sum); queued on the current stream. */
+    public static void tiled16<E>(KernelBuffer<E> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
+        uint32 um = (uint32) m;
+        uint32 un = (uint32) n;
+        uint32 tiles = ((um + 15) / 16) * ((un + 15) / 16);
+        KernelStream s #= KernelStream.current();
+        gemmTiled.launch(s, grid: [tiles], block: [256])(c, a, b, um, un, (uint32) k);
+    }
+
     /** `c` (m x n, float32) = `a` (m x k) . `b` (k x n) at E through the 16x16 member; queued on the current stream. For f16 and bf16 at Gemm.large shapes, run128 is the faster member (run is instantiated at float32 too, where a 128x128 software tile would not pay). */
     public static void run<E>(KernelBuffer<float32> c, KernelBuffer<E> a, KernelBuffer<E> b, int64 m, int64 n, int64 k) {
         uint32 um = (uint32) m;

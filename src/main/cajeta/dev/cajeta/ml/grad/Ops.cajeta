@@ -15,6 +15,7 @@ import dev.cajeta.ml.kernels.Fill;
 import dev.cajeta.ml.kernels.Gemm;
 import dev.cajeta.ml.kernels.Reduce;
 import dev.cajeta.ml.kernels.gemm.Linear;
+import dev.cajeta.ml.kernels.gemm.LayerProducts;
 import dev.cajeta.ml.kernels.nn.Act;
 import dev.cajeta.ml.kernels.nn.BatchNorm;
 import dev.cajeta.ml.kernels.nn.Conv;
@@ -206,7 +207,15 @@ public final class Ops {
             int64 m = x.shapeAt(0);
             int64 k = x.shapeAt(1);
             int64 n = w.shapeAt(1);
-            if (!Gemm.large(m, n)) {
+            if (LayerProducts.tuned()) {
+                // under a tune store the layer-forward family chooses (spela-kernels 6)
+                int64[] tsh = [m, n];
+                Tensor<E> tout #= Ewise.deviceOf<E>(tsh);
+                if (LayerProducts.forward<E>(tout.deviceView("linear"), x.deviceView("linear"), w.deviceView("linear"),
+                                             b.deviceView("linear"), m, n, k, act)) {
+                    return #tout;
+                }
+            } else if (!Gemm.large(m, n)) {
                 int64[] shp = [m, n];
                 Tensor<E> out #= Ewise.deviceOf<E>(shp);
                 Linear.run<E>(out.deviceView("linear"), x.deviceView("linear"), w.deviceView("linear"), b.deviceView("linear"), m, n, k, true, act);
@@ -298,6 +307,18 @@ public final class Ops {
             int64 n = b.shapeAt(1);
             int64[] shp = [m, n];
             Tensor<E> out #= Ewise.deviceOf<E>(shp);
+            if (LayerProducts.tuned()) {
+                // under a tune store the layer-weight-grad family chooses (spela-kernels 6)
+                if (!LayerProducts.weightGradReadsTranspose(m, n, k)) {
+                    LayerProducts.weightGrad<E>(out.deviceView("matmulTN"), a.deviceView("matmulTN"), a.deviceView("matmulTN"),
+                                                b.deviceView("matmulTN"), m, n, k);
+                    return #out;
+                }
+                Tensor<E> tt #= Ops.run1<E>(Op.TRANSPOSE, a, 0, (E) 0);
+                LayerProducts.weightGrad<E>(out.deviceView("matmulTN"), a.deviceView("matmulTN"), tt.deviceView("matmulTN"),
+                                            b.deviceView("matmulTN"), m, n, k);
+                return #out;
+            }
             if (Gemm.tiledTN<E>(out.deviceView("matmulTN"), a.deviceView("matmulTN"), b.deviceView("matmulTN"), m, n, k)) {
                 return #out;
             }

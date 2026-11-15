@@ -82,6 +82,10 @@ public final class SpelaConfig {
     /** Train layer i only every `updateCadences[i]` observations (empty
      *  or 1 = every step) — a stronger form of the same idea. */
     public int32[] updateCadences;
+    /** Where the device keeps its timed choices of the layer products (spela-kernels 6,
+     *  spec §2.7). Empty reads `CAJETA_ML_TUNE_DIR`; with neither there is no store, and the
+     *  products take their untimed defaults. */
+    public String tuneDir;
 
     /** The reference's defaults — the MODERNIZED recipe. */
     public SpelaConfig(int64 numClasses) {
@@ -110,7 +114,15 @@ public final class SpelaConfig {
         this.anchorLambda = 0.0;
         this.lrMultipliers = heap float32[0];
         this.updateCadences = heap int32[0];
+        this.tuneDir = "";
         return;
+    }
+
+    /** The tune store a trainer uses: `option` when set, else `envValue` (CAJETA_ML_TUNE_DIR, null when unset), else none (""). */
+    public static #String resolveTuneDir(String option, String envValue) {
+        if (option != null && option.byteLength() > 0) { return option.clone(); }
+        if (envValue != null && envValue.byteLength() > 0) { return envValue.clone(); }
+        return "".clone();
     }
 
     /** Switch this config to the PAPER-EXACT recipe (Algorithm 1). */

@@ -1,6 +1,7 @@
 package dev.cajeta.ml.train;
 
 import cajeta.collection.ArrayList;
+import cajeta.lang.System;
 import cajeta.math.Ewise;
 import cajeta.math.Tensor;
 import cajeta.xpu.Device;
@@ -15,6 +16,7 @@ import dev.cajeta.ml.grad.Ops;
 import dev.cajeta.ml.kernels.Copy;
 import dev.cajeta.ml.nn.Module;
 import dev.cajeta.ml.kernels.Optim;
+import dev.cajeta.ml.kernels.gemm.LayerProducts;
 import dev.cajeta.ml.kernels.nn.SpelaHead;
 import dev.cajeta.ml.nn.Nets;
 import dev.cajeta.ml.nn.Parameter;
@@ -52,6 +54,8 @@ public class SpelaTrainer {
     ArrayList<Tensor<float32>> headPacked;     // per layer: those vectors packed for the many-class route
     boolean[] headPlaced;                      // has layer i's device copy been made?
     boolean fusedHead;                         // may the fused head serve a layer's loss?
+    String tuneStore;                          // the layer products' tune store ("" for none)
+    boolean warmed;                            // have the layer products been settled?
     boolean[] sized;                           // has layer i's dim been fixed?
     ArrayList<Optimizer> optimizers;
     ArrayList<float64> lastLossPerLayer;
@@ -87,6 +91,8 @@ public class SpelaTrainer {
         this.headVecs = heap ArrayList<Tensor<float32>>();
         this.headPacked = heap ArrayList<Tensor<float32>>();
         this.fusedHead = true;
+        this.tuneStore #= SpelaConfig.resolveTuneDir(this.cfg.tuneDir, System.env.get("CAJETA_ML_TUNE_DIR"));
+        this.warmed = false;
         this.optimizers = heap ArrayList<Optimizer>();
         this.lastLossPerLayer = heap ArrayList<float64>();
         this.stepCount = 0;
@@ -258,6 +264,8 @@ public class SpelaTrainer {
         // patching the learning rate and other scalars; elsewhere deferral is a no-op
         // (spela-kernels 2.1.3). Deferral ends with the batch, so code around it is unchanged.
         KernelStream st #= KernelStream.current();
+        // the layer products are settled before the deferred batch, where a timing would sync
+        if (dev && !this.warmed) { this.prewarm(x.shapeAt(0)); }
         if (dev) { st.setDeferred(true); }
         // Inputs already where the stack lives are read as they are; only a move across the
         // host-device line makes a copy (spela-kernels 4.3.1).
@@ -553,6 +561,33 @@ public class SpelaTrainer {
         }
         throw heap MlException("SpelaTrainer: unknown lossType "
             + this.cfg.lossType);
+    }
+
+    /** The tune store this trainer's layer products use: SpelaConfig.tuneDir, else CAJETA_ML_TUNE_DIR, else "" (none). */
+    public String tuneDir() { return this.tuneStore; }
+
+    /**
+     * Settle the forward and weight-gradient products of every Linear layer at `rows` rows
+     * (spela-kernels 6.2.2): under a tune store a problem the store has not seen is timed
+     * here, so the batches that follow time nothing. With no store the products take their
+     * untimed defaults and this does nothing. trainBatch calls it on the first device batch.
+     */
+    public void prewarm(int64 rows) {
+        LayerProducts.setTuneDir(this.tuneStore);
+        this.warmed = true;
+        if (!LayerProducts.tuned()) { return; }
+        int32 i = 0;
+        while (i < this.layers.count()) {
+            Parameter[] ps #= this.layers.get(i).parameters();
+            int32 k = 0;
+            while (k < (int32) ps.count()) {
+                Tensor<float32> w = ps[k].get();
+                // a Linear's weight is its rank-2 parameter, in x out
+                if (w.ndim() == 2 && w.isOnGpu()) { LayerProducts.prewarm(rows, w.shapeAt(0), w.shapeAt(1)); }
+                k = k + 1;
+            }
+            i = i + 1;
+        }
     }
 
     /**

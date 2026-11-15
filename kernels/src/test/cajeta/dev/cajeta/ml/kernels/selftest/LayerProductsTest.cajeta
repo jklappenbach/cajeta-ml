@@ -1,0 +1,190 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.io.file.Path;
+import cajeta.lang.String;
+import cajeta.lang.System;
+import cajeta.time.Clock;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.Gemm;
+import dev.cajeta.ml.kernels.Transpose;
+import dev.cajeta.ml.kernels.gemm.LayerProducts;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+import dev.cajeta.ml.kernels.tune.TuneMode;
+
+/**
+ * spela-kernels 6.1.1, spec §2.4: a layer's forward product act(x . w + b) and its weight
+ * gradient x^T . g go through tile families. With no store each takes today's rule untimed
+ * (the fused Linear below Gemm.large, the wide tile at or above it; the split TN member where
+ * the product splits K, else the transpose and the routed tile). Under a store the first use
+ * of a problem times the members that fit and are built, every later use reads the answer,
+ * and a member that does not fit is pruned with its reason. Every result is checked against a
+ * float64 host product.
+ */
+public class LayerProductsTest {
+    public LayerProductsTest() { return; }
+
+    static float32 pattern(int64 i) {
+        return (float32) ((((i * 7919L) % 251L) - 125L) % 7L) * 0.25f;
+    }
+
+    static #float32[] fill(int64 count, int64 seed) {
+        float32[] f = heap float32[count];
+        int64 i = 0L;
+        while (i < count) { f[(int32) i] = LayerProductsTest.pattern(i + seed); i = i + 1L; }
+        return #f;
+    }
+
+    static #String freshStore() {
+        String store #= "build/tune-layer-" + Clock.nanoTime();
+        Path dir #= Path.of(store);
+        dir.mkdirs();
+        return #store;
+    }
+
+    static void close(String what, float64 got, float64 want, float64 scale) {
+        float64 d = got - want;
+        if (d < 0.0) { d = 0.0 - d; }
+        if (d > 1.0e-4 * (scale + 1.0)) {
+            System.stdout.println("  " + what + ": got " + got + " want " + want);
+            Assert.isTrue(false);
+        }
+    }
+
+    /** act(x . w + b) with x (m x k), w (k x n), b (n) through LayerProducts.forward; the member that ran. */
+    static #String forwardCase(int64 m, int64 n, int64 k, int32 act) {
+        float32[] fx #= LayerProductsTest.fill(m * k, 3L);
+        float32[] fw #= LayerProductsTest.fill(k * n, 11L);
+        float32[] fb #= LayerProductsTest.fill(n, 29L);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) (m * k));
+        KernelBuffer<float32> w = heap KernelBuffer<float32>((uint64) (k * n));
+        KernelBuffer<float32> b = heap KernelBuffer<float32>((uint64) n);
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        x.upload(fx);
+        w.upload(fw);
+        b.upload(fb);
+        int64[] mk #= ValueCheck.mark();
+        Assert.isTrue(LayerProducts.forward<float32>(c, x, w, b, m, n, k, act));
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        int64 r = 0L;
+        while (r < m) {
+            int64 j = 0L;
+            while (j < n) {
+                float64 acc = (float64) fb[(int32) j];
+                float64 mag = 0.0;
+                int64 t = 0L;
+                while (t < k) {
+                    float64 p = (float64) fx[(int32) (r * k + t)] * (float64) fw[(int32) (t * n + j)];
+                    acc = acc + p;
+                    if (p < 0.0) { mag = mag - p; } else { mag = mag + p; }
+                    t = t + 1L;
+                }
+                if (act == 1 && acc < 0.0) { acc = 0.0; }
+                LayerProductsTest.close("forward [" + r + "," + j + "]", (float64) got[(int32) (r * n + j)], acc, mag);
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(mk);
+        return LayerProducts.lastForward();
+    }
+
+    /** x^T . g with x (k x m), g (k x n) through LayerProducts.weightGrad; the member that ran. */
+    static #String weightGradCase(int64 m, int64 n, int64 k) {
+        float32[] fx #= LayerProductsTest.fill(k * m, 5L);
+        float32[] fg #= LayerProductsTest.fill(k * n, 13L);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) (k * m));
+        KernelBuffer<float32> g = heap KernelBuffer<float32>((uint64) (k * n));
+        KernelBuffer<float32> xt = heap KernelBuffer<float32>((uint64) (m * k));
+        KernelBuffer<float32> c = heap KernelBuffer<float32>((uint64) (m * n));
+        x.upload(fx);
+        g.upload(fg);
+        int64[] mk #= ValueCheck.mark();
+        if (LayerProducts.weightGradReadsTranspose(m, n, k)) { Transpose.into<float32>(xt, x, k, m); }
+        LayerProducts.weightGrad<float32>(c, x, xt, g, m, n, k);
+        float32[] got = heap float32[m * n];
+        c.download(got);
+        int64 r = 0L;
+        while (r < m) {
+            int64 j = 0L;
+            while (j < n) {
+                float64 acc = 0.0;
+                float64 mag = 0.0;
+                int64 t = 0L;
+                while (t < k) {
+                    float64 p = (float64) fx[(int32) (t * m + r)] * (float64) fg[(int32) (t * n + j)];
+                    acc = acc + p;
+                    if (p < 0.0) { mag = mag - p; } else { mag = mag + p; }
+                    t = t + 1L;
+                }
+                LayerProductsTest.close("weight grad [" + r + "," + j + "]", (float64) got[(int32) (r * n + j)], acc, mag);
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(mk);
+        return LayerProducts.lastWeightGrad();
+    }
+
+    @Test
+    public void withNoStoreTheProductsTakeTodaysRuleUntimed() {
+        if (!Device.kernelAvailable("linear_float32") || !Device.kernelAvailable("gemmTiled128_float32")) { return; }
+        TuneMode.setUntimed(false);
+        LayerProducts.setTuneDir("");
+        // SPELA's 784-512-10 stack at batch 64: 16 tiles, under Gemm.large
+        String f0 #= LayerProductsTest.forwardCase(64L, 512L, 784L, 1);
+        Assert.equals("linear_float32", f0);
+        Assert.isFalse(LayerProducts.lastTimed());
+        String f1 #= LayerProductsTest.forwardCase(1024L, 640L, 96L, 0);
+        Assert.equals("gemmTiled128_float32", f1);
+        String w0 #= LayerProductsTest.weightGradCase(784L, 512L, 64L);
+        Assert.equals("gemmTiled_float32", w0);
+        Assert.isFalse(LayerProducts.lastTimed());
+        if (Gemm.splitTNRuns()) {
+            String w1 #= LayerProductsTest.weightGradCase(256L, 128L, 4096L);
+            Assert.equals("gemmTiled128SplitTN_float32", w1);
+        }
+    }
+
+    @Test
+    public void underAStoreTheFirstUseTimesAndLaterUsesRead() {
+        if (!Device.kernelAvailable("linear_float32") || !Device.kernelAvailable("gemmTiled128_float32")) { return; }
+        TuneMode.setUntimed(false);
+        String store #= LayerProductsTest.freshStore();
+        LayerProducts.setTuneDir(store);
+        int64 t0 = LayerProducts.timings();
+        String first #= LayerProductsTest.forwardCase(64L, 512L, 784L, 1);
+        boolean twoF = LayerProducts.forwardSurvivors(64L, 512L, 784L) > 1;
+        Assert.equals(twoF, LayerProducts.lastTimed());
+        Assert.equals(twoF, LayerProducts.timings() > t0);
+        Assert.isTrue(first.equals("linear_float32") || first.equals("gemmTiled128_float32"));
+        int64 t1 = LayerProducts.timings();
+        String again #= LayerProductsTest.forwardCase(64L, 512L, 784L, 1);
+        Assert.isFalse(LayerProducts.lastTimed());
+        Assert.equals(t1, LayerProducts.timings());
+        Assert.equals(first, again);
+        int64 tw = LayerProducts.timings();
+        String wfirst #= LayerProductsTest.weightGradCase(784L, 512L, 64L);
+        Assert.equals(LayerProducts.weightGradSurvivors(784L, 512L, 64L) > 1, LayerProducts.timings() > tw);
+        // naming the store again drops what this process remembers: the answers come from the store
+        LayerProducts.setTuneDir(store);
+        int64 t2 = LayerProducts.timings();
+        String read #= LayerProductsTest.forwardCase(64L, 512L, 784L, 1);
+        String wread #= LayerProductsTest.weightGradCase(784L, 512L, 64L);
+        Assert.equals(t2, LayerProducts.timings());
+        Assert.equals(first, read);
+        Assert.equals(wfirst, wread);
+        LayerProducts.setTuneDir("");
+    }
+
+    @Test
+    public void aMemberThatDoesNotFitIsPrunedWithItsReason() {
+        // 64 x 128 over K 4096 splits K, which the unsplit wide tile does not serve
+        String why #= LayerProducts.forwardPruneReason("gemmTiled128_float32", 64L, 128L, 4096L);
+        Assert.isTrue(why.indexOf("does not fit") >= 0);
+        String none #= LayerProducts.forwardPruneReason("gemmTiled128_float32", 1024L, 640L, 96L);
+        if (Device.kernelAvailable("gemmTiled128_float32")) { Assert.equals("", none); }
+    }
+}
