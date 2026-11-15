@@ -253,10 +253,22 @@ public class SpelaTrainer {
         // (spela-kernels 2.1.3). Deferral ends with the batch, so code around it is unchanged.
         KernelStream st #= KernelStream.current();
         if (dev) { st.setDeferred(true); }
-        Tensor<float32> h #= SpelaTrainer.staged(x, dev);
-        Tensor<float32> labels #= SpelaTrainer.staged(y, dev);
-        SpelaTrainer.placeLike(this.lossRow, h);
-        int32 i = 0;
+        // Inputs already where the stack lives are read as they are; only a move across the
+        // host-device line makes a copy (spela-kernels 4.3.1).
+        int64[] one = [1L];
+        boolean moveX = dev != x.isOnGpu();
+        boolean moveY = dev != y.isOnGpu();
+        Tensor<float32> xs #= Tensor.zeros<float32>(one);
+        Tensor<float32> ys #= Tensor.zeros<float32>(one);
+        if (moveX) { xs #= SpelaTrainer.staged(x, dev); }
+        if (moveY) { ys #= SpelaTrainer.staged(y, dev); }
+        Tensor<float32> xin = x;
+        if (moveX) { xin = xs; }
+        Tensor<float32> labels = y;
+        if (moveY) { labels = ys; }
+        SpelaTrainer.placeLike(this.lossRow, xin);
+        Tensor<float32> h #= this.layerStep(0, xin, labels, lr);
+        int32 i = 1;
         while (i < lcount) {
             h #= this.layerStep(i, h, labels, lr);
             i = i + 1;
@@ -316,7 +328,9 @@ public class SpelaTrainer {
                 this.noteLoss(i, tape.valueOf(loss));
                 tape.backward(loss);
             }
-            Tensor<float32>[] gs #= Nets.gradsOf(tape, ps);
+            // Borrowed from the tape, which outlives `gs` in this frame: the optimizer reads
+            // the cotangents in place instead of copying each one (spela-kernels 4.3.1).
+            Tensor<float32>[] gs #= Nets.gradsBorrowed(tape, ps);
             if (this.cfg.gradClipNorm > 0.0f && gs.count() > 0 && gs[0].isOnGpu()) {
                 // The clip's scale stays on the device and the optimizer reads it with the
                 // gradients, one launch a layer (spela-kernels 3).

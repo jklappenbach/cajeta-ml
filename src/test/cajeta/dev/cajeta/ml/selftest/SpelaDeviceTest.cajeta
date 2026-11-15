@@ -357,6 +357,35 @@ public class SpelaDeviceTest {
         Assert.equals(0L, composed);
     }
 
+    /**
+     * spela-kernels 4.3.1: a two-Linear device batch makes at most 25 launches, half of the 51
+     * before Units 2 to 4: the optimizer reads the tape's gradients in place, inputs already on
+     * the device are not copied, and the head sums its loss in its second kernel. Counted on
+     * CUDA, where the deferred queue sees every launch.
+     */
+    @Test
+    public void aDeviceBatchMakesAtMostTwentyFiveLaunches() {
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 23L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaConfig dc = heap SpelaConfig(4);
+        dc.lr = 0.01f;
+        dc.seed = 53L;
+        SpelaTrainer dev = heap SpelaTrainer(#SpelaDeviceTest.mlp(67L), #dc);
+        dev.planSteps(4L);
+        SpelaDeviceTest.toDevice(dev);
+        if (!SpelaDeviceTest.onGpu(dev) || !Device.activeBackend().equals("cuda")) { return; }
+        Tensor<float32> xd #= x.copy();
+        xd.gpu();
+        Tensor<float32> yd #= y.copy();
+        yd.gpu();
+        dev.trainBatch(xd, yd);
+        int64 q0 = KernelStream.deferStat(KernelStream.DEFER_QUEUED);
+        dev.trainBatch(xd, yd);
+        int64 launches = KernelStream.deferStat(KernelStream.DEFER_QUEUED) - q0;
+        System.stdout.println("  two-Linear device batch: " + launches + " launches");
+        Assert.isTrue(launches <= 25L);
+    }
+
     /** Every parameter of `dev`, read back, within `tol` of the same parameter of `host`. */
     static void sameWeights(SpelaTrainer host, SpelaTrainer dev, float64 tol) {
         int32 i = 0;

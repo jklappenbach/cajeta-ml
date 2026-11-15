@@ -11,7 +11,7 @@ import dev.cajeta.ml.kernels.Reduce;
 /**
  * SPELA's few-class loss head (spela-kernels 4): a layer's output `h` (rows x d) against its
  * class vectors `v` (c x d), the summed loss and the output's gradient in four launches where
- * the composed head took about ten.
+ * the composed head took about ten (three with no mask).
  *
  * Mode 0 is cosface: logits u (h . v_c) / max(|h|, eps), less `margin` (scale x margin) at the
  * target, cross-entropy averaged over the rows. Mode 1 is cosine: minus the mean of
@@ -141,11 +141,25 @@ public final class SpelaHead {
         }
     }
 
-    /** dh[r, j] = inv[r] (u sum_c G[r, c] v[c, j] - h[r, j] inv[r] q[r]), one work-item an element. */
+    /**
+     * dh[r, j] = inv[r] (u sum_c G[r, c] v[c, j] - h[r, j] inv[r] q[r]), one work-item an element;
+     * work-item 0 also sums the rows' losses into loss[0], in row order so the sum repeats bit
+     * for bit (headRows ran before it on the stream).
+     */
     @Kernel
     public static void headGrad<E>(KernelBuffer<E> dh, KernelBuffer<E> h, KernelBuffer<E> v, KernelBuffer<float32> g,
-                                   KernelBuffer<float32> q, KernelBuffer<float32> inv, uint32 rows, uint32 d, uint32 c, float32 uscale) {
+                                   KernelBuffer<float32> q, KernelBuffer<float32> inv, KernelBuffer<float32> loss,
+                                   KernelBuffer<float32> rowLoss, uint32 rows, uint32 d, uint32 c, float32 uscale) {
         uint32 i = KernelThread.globalIdX();
+        if (i == 0) {
+            float32 t = 0.0f;
+            uint32 r0 = 0;
+            while (r0 < rows) {
+                t = t + rowLoss[r0];
+                r0 = r0 + 1;
+            }
+            loss[0] = t;
+        }
         if (i < rows * d) {
             uint32 r = i / d;
             uint32 j = i - r * d;
@@ -214,7 +228,6 @@ public final class SpelaHead {
                 (uint32) mode, uscale, margin, (uint32) 0, invRows, eps);
         }
         uint32 total = ur * ud;
-        headGrad.launch(s, grid: [(total + 255) / 256], block: [256])(dh, h, v, gb, qb, ib, ur, ud, uc, uscale);
-        Reduce.segments<float32>(loss, lb, rows, 1L, Reduce.SUM);
+        headGrad.launch(s, grid: [(total + 255) / 256], block: [256])(dh, h, v, gb, qb, ib, loss, lb, ur, ud, uc, uscale);
     }
 }

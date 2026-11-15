@@ -100,6 +100,26 @@ public final class Nets {
      * some entries; the optimizers skip those by trainability, which is
      * what keeps weight decay from moving a weight nobody is training.
      */
+    /**
+     * gradsOf without the copies: each trainable parameter's slot BORROWS its cotangent on the
+     * tape, so the array must not outlive the tape (spela-kernels 4.3.1). A frozen parameter
+     * still gets owned zeros.
+     */
+    public static #Tensor<float32>[] gradsBorrowed(GradTape<float32> tape, Parameter[] ps) {
+        int32 n = (int32) ps.count();
+        Tensor<float32>[] gs = heap Tensor<float32>[n];
+        int32 i = 0;
+        while (i < n) {
+            if (ps[i].isTrainable()) {
+                gs[i] #= tape.gradOf(ps[i].node());
+            } else {
+                gs[i] #= Ops.zerosLike<float32>(ps[i].get());
+            }
+            i = i + 1;
+        }
+        return gs;
+    }
+
     public static #Tensor<float32>[] gradsOf(GradTape<float32> tape,
                                              Parameter[] ps) {
         int32 n = (int32) ps.count();
