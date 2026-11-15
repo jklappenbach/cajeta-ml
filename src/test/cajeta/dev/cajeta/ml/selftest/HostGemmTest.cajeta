@@ -1,0 +1,120 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.concurrent.Carriers;
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.grad.HostGemm;
+import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.grad.Ops;
+
+/**
+ * spela-kernels 10.2.1: the cpu step spent 84% of its time in the stdlib's element-wise
+ * triple loop (Tensor.matmul, measured 2026-11-15). A host product of contiguous tensors runs
+ * HostGemm instead: rows in register blocks over a contiguous inner loop, split across the
+ * carriers, with a^T . b reading `a` in place. Every result is checked against a float64
+ * host product.
+ */
+public class HostGemmTest {
+    public HostGemmTest() { return; }
+
+    static #Tensor<float32> fill(int64 rows, int64 cols, int64 seed) {
+        int64[] shape = [rows, cols];
+        Tensor<float32> t #= Tensor.full<float32>(shape, 0.0f);
+        int64 n = t.size();
+        int64 f = 0;
+        while (f < n) {
+            t.flatSet(f, (float32) (((((f + seed) * 7919L) % 251L) - 125L) % 7L) * 0.25f);
+            f = f + 1;
+        }
+        return #t;
+    }
+
+    /** `got` against sum_p A(i,p) B(p,j), A(i,p) read from `a` transposed when `ta`. */
+    static void matches(String what, Tensor<float32> got, Tensor<float32> a, Tensor<float32> b, boolean ta) {
+        int64 m = got.shapeAt(0);
+        int64 n = got.shapeAt(1);
+        int64 k = b.shapeAt(0);
+        Assert.equals(m, ta ? a.shapeAt(1) : a.shapeAt(0));
+        Assert.equals(n, b.shapeAt(1));
+        int64 i = 0;
+        while (i < m) {
+            int64 j = 0;
+            while (j < n) {
+                float64 acc = 0.0;
+                float64 mag = 0.0;
+                int64 p = 0;
+                while (p < k) {
+                    float64 av = (float64) a.flatGet(i * k + p);
+                    if (ta) { av = (float64) a.flatGet(p * m + i); }
+                    float64 v = av * (float64) b.flatGet(p * n + j);
+                    acc = acc + v;
+                    if (v < 0.0) { mag = mag - v; } else { mag = mag + v; }
+                    p = p + 1;
+                }
+                float64 d = (float64) got.flatGet(i * n + j) - acc;
+                if (d < 0.0) { d = 0.0 - d; }
+                if (d > 1.0e-5 * (mag + 1.0)) {
+                    System.stdout.println("  " + what + " [" + i + "," + j + "]: got " + got.flatGet(i * n + j) + " want " + acc);
+                    Assert.isTrue(false);
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    static void nnCase(int64 m, int64 n, int64 k) {
+        Tensor<float32> a #= HostGemmTest.fill(m, k, 3L);
+        Tensor<float32> b #= HostGemmTest.fill(k, n, 11L);
+        int64 before = HostGemm.products();
+        Tensor<float32> c #= Ops.run2<float32>(Op.MATMUL, a, b);
+        Assert.equals(before + 1L, HostGemm.products());
+        HostGemmTest.matches("nn " + m + "x" + n + "x" + k, c, a, b, false);
+    }
+
+    static void tnCase(int64 m, int64 n, int64 k) {
+        Tensor<float32> a #= HostGemmTest.fill(k, m, 5L);
+        Tensor<float32> b #= HostGemmTest.fill(k, n, 13L);
+        int64 before = HostGemm.products();
+        Tensor<float32> c #= Ops.matmulTN<float32>(a, b);
+        Assert.equals(before + 1L, HostGemm.products());
+        Assert.isTrue(HostGemm.lastReadATransposed());
+        HostGemmTest.matches("tn " + m + "x" + n + "x" + k, c, a, b, true);
+    }
+
+    @Test
+    public void aHostProductRunsHostGemmAndMatchesTheHost() {
+        HostGemmTest.nnCase(1L, 1L, 1L);
+        HostGemmTest.nnCase(5L, 7L, 3L);
+        // tails in every direction: rows past the register block, columns past the strip
+        HostGemmTest.nnCase(67L, 301L, 33L);
+        // SPELA's first layer at batch 64
+        HostGemmTest.nnCase(64L, 512L, 784L);
+    }
+
+    @Test
+    public void aTransposedProductReadsItsLeftOperandInPlace() {
+        HostGemmTest.tnCase(3L, 2L, 5L);
+        HostGemmTest.tnCase(65L, 259L, 17L);
+        // SPELA's first weight gradient: X^T . G over batch 64
+        HostGemmTest.tnCase(784L, 512L, 64L);
+    }
+
+    @Test
+    public void aLargeProductSplitsAcrossTheCarriers() {
+        Tensor<float32> a #= HostGemmTest.fill(64L, 784L, 3L);
+        Tensor<float32> b #= HostGemmTest.fill(784L, 512L, 11L);
+        Tensor<float32> c #= Ops.run2<float32>(Op.MATMUL, a, b);
+        int32 want = Carriers.count();
+        if (want > 16) { want = 16; }
+        System.stdout.println("  64x512x784 on " + HostGemm.lastParts() + " parts, " + Carriers.count() + " carriers");
+        Assert.equals(want, HostGemm.lastParts());
+        // a product too small to pay for a fiber runs on the caller
+        Tensor<float32> s #= HostGemmTest.fill(4L, 4L, 1L);
+        Tensor<float32> t #= HostGemmTest.fill(4L, 4L, 2L);
+        Tensor<float32> u #= Ops.run2<float32>(Op.MATMUL, s, t);
+        Assert.equals(1, HostGemm.lastParts());
+        HostGemmTest.matches("small", u, s, t, false);
+    }
+}

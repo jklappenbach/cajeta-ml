@@ -1,0 +1,156 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.grad.HostGemm;
+import dev.cajeta.ml.grad.Op;
+import dev.cajeta.ml.grad.Ops;
+
+/**
+ * spela-kernels 10.2.3: with the product and the optimizer fixed, a third of the cpu SPELA
+ * step was element-wise work on contiguous host tensors read and written through the stdlib's
+ * broadcasting and indexed accessors (measured 2026-11-15): the linear's bias and ReLU, its
+ * bias gradient, the ReLU's mask and the row norm both ways. Each is now one flat pass over
+ * the host arrays, checked here against the stdlib composition it replaces.
+ */
+public class HostPassTest {
+    public HostPassTest() { return; }
+
+    static #Tensor<float32> fill(int64[] shape, int64 seed) {
+        Tensor<float32> t #= Tensor.full<float32>(shape, 0.0f);
+        int64 i = 0;
+        while (i < t.size()) {
+            t.flatSet(i, (float32) ((((i + seed) * 7919L) % 251L) - 125L) * 0.01f);
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    static void close(String what, Tensor<float32> got, Tensor<float32> want, float64 tol) {
+        Assert.equals(want.size(), got.size());
+        Assert.equals(want.ndim(), got.ndim());
+        int64 i = 0;
+        while (i < want.size()) {
+            float64 w = (float64) want.flatGet(i);
+            float64 d = (float64) got.flatGet(i) - w;
+            if (d < 0.0) { d = 0.0 - d; }
+            if (w < 0.0) { w = 0.0 - w; }
+            if (d > tol * (w + 1.0)) {
+                System.stdout.println("  " + what + " [" + i + "]: got " + got.flatGet(i) + " want " + want.flatGet(i));
+                Assert.isTrue(false);
+            }
+            i = i + 1;
+        }
+    }
+
+    @Test
+    public void theHostLinearAddsItsBiasAndReluAsItStores() {
+        int64[] xs = [67L, 41L];
+        int64[] ws = [41L, 23L];
+        int64[] bs = [23L];
+        Tensor<float32> x #= HostPassTest.fill(xs, 3L);
+        Tensor<float32> w #= HostPassTest.fill(ws, 11L);
+        Tensor<float32> b #= HostPassTest.fill(bs, 29L);
+        Tensor<float32> mm #= Tensor.matmul<float32>(x, w);
+        Tensor<float32> pre #= Tensor.add<float32>(mm, b);
+        Tensor<float32> want #= Tensor.relu<float32>(pre);
+        int64 p0 = Ops.hostPasses();
+        int64 g0 = HostGemm.products();
+        Tensor<float32> got #= Ops.linear<float32>(x, w, b, 1);
+        Assert.equals(p0 + 1L, Ops.hostPasses());
+        Assert.equals(g0 + 1L, HostGemm.products());
+        HostPassTest.close("linear relu", got, want, 1.0e-5);
+        Tensor<float32> none #= Ops.linear<float32>(x, w, b, 0);
+        HostPassTest.close("linear", none, pre, 1.0e-5);
+    }
+
+    @Test
+    public void aBiasGradientSumsItsColumnsInOnePass() {
+        int64[] gs = [67L, 23L];
+        int64[] row = [1L, 23L];
+        int64[] flat = [23L];
+        Tensor<float32> g #= HostPassTest.fill(gs, 5L);
+        Tensor<float32> likeRow #= HostPassTest.fill(row, 0L);
+        Tensor<float32> likeFlat #= HostPassTest.fill(flat, 0L);
+        int64 p0 = Ops.hostPasses();
+        Tensor<float32> a #= Ops.sumTo<float32>(g, likeRow);
+        Tensor<float32> c #= Ops.sumTo<float32>(g, likeFlat);
+        Assert.equals(p0 + 2L, Ops.hostPasses());
+        Tensor<float32> wantRow #= Tensor.sumTo<float32>(g, likeRow);
+        Tensor<float32> wantFlat #= Tensor.sumTo<float32>(g, likeFlat);
+        HostPassTest.close("sumTo row", a, wantRow, 1.0e-6);
+        HostPassTest.close("sumTo flat", c, wantFlat, 1.0e-6);
+    }
+
+    @Test
+    public void aReluBackwardMasksInOnePass() {
+        int64[] s = [67L, 23L];
+        Tensor<float32> g #= HostPassTest.fill(s, 7L);
+        Tensor<float32> x #= HostPassTest.fill(s, 13L);
+        Tensor<float32> y #= Tensor.relu<float32>(x);
+        int64 p0 = Ops.hostPasses();
+        Tensor<float32> got #= Ops.actBack<float32>(Op.RELU, g, x, y);
+        Assert.equals(p0 + 1L, Ops.hostPasses());
+        Tensor<float32> mask #= Tensor.reluMask<float32>(x);
+        Tensor<float32> want #= Tensor.mul<float32>(g, mask);
+        HostPassTest.close("relu back", got, want, 0.0);
+    }
+
+    @Test
+    public void theRowNormRunsOnePassEachWay() {
+        int64[] s = [9L, 37L];
+        Tensor<float32> xv #= HostPassTest.fill(s, 17L);
+        // a zero row takes the epsilon floor rather than dividing by zero
+        int64 j = 0L;
+        while (j < 37L) { xv.flatSet(4L * 37L + j, 0.0f); j = j + 1L; }
+        Tensor<float32> seed #= HostPassTest.fill(s, 19L);
+        GradTape<float32> t = heap GradTape<float32>();
+        GradTensor x = t.leaf(xv, true);
+        int64 p0 = Ops.hostPasses();
+        GradTensor y = t.rowNorm(x);
+        Tensor<float32> sd #= seed.copy();
+        t.backwardFrom(y, #sd);
+        Assert.equals(p0 + 2L, Ops.hostPasses());
+        Tensor<float32> yv = t.valueOf(y);
+        Tensor<float32> gx = t.gradOf(x);
+        int64 r = 0L;
+        while (r < 9L) {
+            float64 sq = 0.0;
+            float64 dot = 0.0;
+            int64 c = 0L;
+            while (c < 37L) {
+                float64 v = (float64) xv.flatGet(r * 37L + c);
+                sq = sq + v * v;
+                c = c + 1L;
+            }
+            float64 nrm = Math.sqrt(sq);
+            if (nrm < 0.00000001) { nrm = 0.00000001; }
+            c = 0L;
+            while (c < 37L) {
+                float64 yw = (float64) xv.flatGet(r * 37L + c) / nrm;
+                dot = dot + (float64) seed.flatGet(r * 37L + c) * yw;
+                float64 d = (float64) yv.flatGet(r * 37L + c) - yw;
+                if (d < 0.0) { d = 0.0 - d; }
+                Assert.isTrue(d < 1.0e-6);
+                c = c + 1L;
+            }
+            c = 0L;
+            while (c < 37L) {
+                float64 yw = (float64) yv.flatGet(r * 37L + c);
+                float64 gw = ((float64) seed.flatGet(r * 37L + c) - yw * dot) / nrm;
+                float64 d = (float64) gx.flatGet(r * 37L + c) - gw;
+                if (d < 0.0) { d = 0.0 - d; }
+                if (gw < 0.0) { gw = 0.0 - gw; }
+                if (d > 1.0e-5 * (gw + 1.0)) {
+                    System.stdout.println("  rowNorm back [" + r + "," + c + "]: got " + gx.flatGet(r * 37L + c));
+                    Assert.isTrue(false);
+                }
+                c = c + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+}

@@ -1,0 +1,140 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.Parameter;
+import dev.cajeta.ml.optim.AdamW;
+
+/**
+ * spela-kernels 10.2.2: with the host product fixed, AdamW's host update was 70% of the cpu
+ * SPELA step (measured 2026-11-15), every element read and written through an N-d index. A
+ * contiguous parameter, gradient and moment set now update in one flat pass over the host
+ * arrays, with the same arithmetic per element; anything strided keeps the indexed walk.
+ */
+public class AdamWHostTest {
+    public AdamWHostTest() { return; }
+
+    static #Tensor<float32> patterned(int64 rows, int64 cols, int64 seed, float32 scale) {
+        int64[] shape = [rows, cols];
+        Tensor<float32> t #= Tensor.full<float32>(shape, 0.0f);
+        int64 i = 0;
+        while (i < t.size()) {
+            t.flatSet(i, (float32) ((((i + seed) * 7919L) % 251L) - 125L) * scale);
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    /** One AdamW step on host arrays, the formula AdamW states, for the reference. */
+    static void refStep(float32[] p, float32[] m, float32[] v, Tensor<float32> g, int64 t, float32 lr, float32 wd) {
+        float32 c1 = 1.0f - AdamWHostTest.pow(0.9f, t);
+        float32 c2 = 1.0f - AdamWHostTest.pow(0.999f, t);
+        int64 i = 0;
+        while (i < (int64) p.count()) {
+            float32 gv = g.flatGet(i);
+            float32 mv = 0.9f * m[i] + 0.1f * gv;
+            float32 vv = 0.999f * v[i] + 0.001f * gv * gv;
+            m[i] = mv;
+            v[i] = vv;
+            float32 mhat = mv / c1;
+            float32 vhat = vv / c2;
+            float32 pv = p[i];
+            p[i] = pv - lr * (mhat / (Math.sqrt(vhat) + 1e-8f) + wd * pv);
+            i = i + 1;
+        }
+    }
+
+    static float32 pow(float32 b, int64 t) {
+        float32 r = 1.0f;
+        int64 i = 0;
+        while (i < t) { r = r * b; i = i + 1; }
+        return r;
+    }
+
+    static void same(String what, Tensor<float32> got, float32[] want) {
+        Assert.equals((int64) want.count(), got.size());
+        int64 i = 0;
+        while (i < got.size()) {
+            float64 d = (float64) got.flatGet(i) - (float64) want[i];
+            if (d < 0.0) { d = 0.0 - d; }
+            if (d > 1.0e-6) {
+                System.stdout.println("  " + what + " [" + i + "]: got " + got.flatGet(i) + " want " + want[i]);
+                Assert.isTrue(false);
+            }
+            i = i + 1;
+        }
+    }
+
+    static #float32[] valuesOf(Tensor<float32> t) {
+        float32[] a = heap float32[t.size()];
+        int64 i = 0;
+        while (i < t.size()) { a[i] = t.flatGet(i); i = i + 1; }
+        return #a;
+    }
+
+    @Test
+    public void aContiguousHostUpdateIsOneFlatPass() {
+        PairNet net = heap PairNet(37L, 29L);
+        float32[] pw #= AdamWHostTest.valuesOf(net.w.get());
+        float32[] pb #= AdamWHostTest.valuesOf(net.b.get());
+        float32[] mw = heap float32[pw.count()];
+        float32[] vw = heap float32[pw.count()];
+        float32[] mb = heap float32[pb.count()];
+        float32[] vb = heap float32[pb.count()];
+        AdamW opt = heap AdamW(net.parameters(), 0.01f, 0.05f);
+        int64 t = 1L;
+        while (t <= 3L) {
+            Tensor<float32>[] gs = heap Tensor<float32>[2];
+            gs[0] #= AdamWHostTest.patterned(37L, 29L, 3L * t, 0.01f);
+            gs[1] #= AdamWHostTest.patterned(1L, 29L, 5L * t, 0.02f);
+            int64 before = AdamW.flatUpdates();
+            opt.step(gs);
+            Assert.equals(before + 2L, AdamW.flatUpdates());
+            AdamWHostTest.refStep(pw, mw, vw, gs[0], t, 0.01f, 0.05f);
+            AdamWHostTest.refStep(pb, mb, vb, gs[1], t, 0.01f, 0.05f);
+            AdamWHostTest.same("w step " + t, net.w.get(), pw);
+            AdamWHostTest.same("b step " + t, net.b.get(), pb);
+            t = t + 1L;
+        }
+    }
+
+    @Test
+    public void aStridedGradientKeepsTheIndexedWalk() {
+        PairNet net = heap PairNet(29L, 37L);
+        float32[] pw #= AdamWHostTest.valuesOf(net.w.get());
+        float32[] mw = heap float32[pw.count()];
+        float32[] vw = heap float32[pw.count()];
+        AdamW opt = heap AdamW(net.parameters(), 0.01f, 0.0f);
+        Tensor<float32> src #= AdamWHostTest.patterned(37L, 29L, 7L, 0.01f);
+        Tensor<float32>[] gs = heap Tensor<float32>[2];
+        gs[0] #= src.transpose();
+        gs[1] #= AdamWHostTest.patterned(1L, 37L, 1L, 0.02f);
+        Assert.isFalse(gs[0].isContiguous());
+        int64 before = AdamW.flatUpdates();
+        opt.step(gs);
+        // the bias is contiguous and the transposed weight gradient is not
+        Assert.equals(before + 1L, AdamW.flatUpdates());
+        Tensor<float32> dense #= AdamWHostTest.patterned(29L, 37L, 0L, 0.0f);
+        int64 r = 0L;
+        while (r < 29L) {
+            int64 c = 0L;
+            while (c < 37L) { dense.flatSet(r * 37L + c, src.flatGet(c * 29L + r)); c = c + 1L; }
+            r = r + 1L;
+        }
+        AdamWHostTest.refStep(pw, mw, vw, dense, 1L, 0.01f, 0.0f);
+        AdamWHostTest.same("strided w", net.w.get(), pw);
+    }
+}
+
+/** A weight and a bias row, the two shapes a Linear's AdamW updates. */
+class PairNet extends Module {
+    Parameter w;
+    Parameter b;
+
+    public PairNet(int64 rows, int64 cols) {
+        this.w = heap Parameter(AdamWHostTest.patterned(rows, cols, 11L, 0.004f));
+        this.b = heap Parameter(AdamWHostTest.patterned(1L, cols, 13L, 0.004f));
+    }
+}

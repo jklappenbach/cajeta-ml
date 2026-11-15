@@ -44,6 +44,11 @@ import dev.cajeta.ml.kernels.nn.Pool;
  * the kernel methods are package-private on purpose.
  */
 public final class Ops {
+    static int64 passes = 0L;
+
+    /** Flat passes over contiguous host arrays (spela-kernels 10.2.3), for the tests that pin them. */
+    public static int64 hostPasses() { return Ops.passes; }
+
 
     /** True when a CPU kernel exists for `op` (v3: all ops). */
     public static boolean hasCpu(int32 op) {
@@ -228,10 +233,39 @@ public final class Ops {
                 return #wout;
             }
         }
+        if (HostGemm.runs<E>(x, w) && !b.isOnGpu() && b.isContiguous() && b.size() == w.shapeAt(1)) {
+            // the host product, then its bias and activation in one pass (spela-kernels 10.2.3)
+            Tensor<E> hy #= HostGemm.nn<E>(x, w);
+            Ops.biasActHost<E>(hy, b, act);
+            return #hy;
+        }
         Tensor<E> mm #= Ops.run2<E>(Op.MATMUL, x, w);
         Tensor<E> y #= Ops.run2<E>(Op.ADD, mm, b);
         if (act == 1) { return Ops.run1<E>(Op.RELU, y, 0, (E) 0); }
         return #y;
+    }
+
+    /** y += b by column, then ReLU when act is 1, over a contiguous host `y` (m x n). */
+    static void biasActHost<E extends Floating>(Tensor<E> y, Tensor<E> b, int32 act) {
+        Ops.passes = Ops.passes + 1L;
+        E[] ya = y.hostBuffer();
+        E[] ba = b.hostBuffer();
+        int64 yo = y.hostBase();
+        int64 bo = b.hostBase();
+        int64 n = y.shapeAt(1);
+        int64 rows = y.shapeAt(0);
+        int64 r = 0L;
+        while (r < rows) {
+            int64 o = yo + r * n;
+            int64 j = 0L;
+            while (j < n) {
+                E v = ya[o + j] + ba[bo + j];
+                if (act == 1 && !(v > (E) 0)) { v = (E) 0; }
+                ya[o + j] = v;
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
     }
 
     /**
@@ -323,6 +357,8 @@ public final class Ops {
                 return #out;
             }
         }
+        // on the host `a` is read in place, where a transposed copy was made (spela-kernels 10.2.1)
+        if (HostGemm.runs<E>(a, b)) { return HostGemm.tn<E>(a, b); }
         Tensor<E> at #= Ops.run1<E>(Op.TRANSPOSE, a, 0, (E) 0);
         Tensor<E> r #= Ops.run2<E>(Op.MATMUL, at, b);
         return #r;
@@ -566,7 +602,10 @@ public final class Ops {
 
     /** `g` summed down to `like`'s shape (the broadcast VJP), on its device. */
     public static #Tensor<E> sumTo<E extends Floating>(Tensor<E> g, Tensor<E> like) {
-        if (!g.isOnGpu()) { return Tensor.sumTo<E>(g, like); }
+        if (!g.isOnGpu()) {
+            if (Ops.columnSumRuns<E>(g, like)) { return Ops.columnSumHost<E>(g, like); }
+            return Tensor.sumTo<E>(g, like);
+        }
         Ops.requireSame<E>("sumTo", g, like);
         Ops.requireF32<E>("sumTo");
         int32 gd = g.ndim();
@@ -611,6 +650,38 @@ public final class Ops {
         return #cur;
     }
 
+    /** Whether sumTo(g, like) is a column sum: `g` contiguous (m x n), `like` (n) or (1 x n). */
+    static boolean columnSumRuns<E extends Floating>(Tensor<E> g, Tensor<E> like) {
+        if (g.ndim() != 2 || !g.isContiguous()) { return false; }
+        int64 n = g.shapeAt(1);
+        if (like.ndim() == 1) { return like.shapeAt(0) == n; }
+        return like.ndim() == 2 && like.shapeAt(0) == 1L && like.shapeAt(1) == n && g.shapeAt(0) != 1L;
+    }
+
+    /** The column sums of a contiguous host `g`, shaped like `like`, in one pass (spela-kernels 10.2.3). */
+    static #Tensor<E> columnSumHost<E extends Floating>(Tensor<E> g, Tensor<E> like) {
+        Ops.passes = Ops.passes + 1L;
+        int64[] shp #= Ops.shapeOf<E>(like);
+        Tensor<E> out #= Tensor.zeros<E>(shp);
+        E[] oa = out.hostBuffer();
+        int64 oo = out.hostBase();
+        E[] ga = g.hostBuffer();
+        int64 go = g.hostBase();
+        int64 rows = g.shapeAt(0);
+        int64 n = g.shapeAt(1);
+        int64 r = 0L;
+        while (r < rows) {
+            int64 o = go + r * n;
+            int64 j = 0L;
+            while (j < n) {
+                oa[oo + j] = oa[oo + j] + ga[o + j];
+                j = j + 1L;
+            }
+            r = r + 1L;
+        }
+        return #out;
+    }
+
     /** The activation VJP g * kind'(x), `y` the forward output; kinds as `Act`'s. */
     public static #Tensor<E> actBack<E extends Floating>(int32 op, Tensor<E> g, Tensor<E> x, Tensor<E> y) {
         if (g.isOnGpu()) {
@@ -624,6 +695,24 @@ public final class Ops {
             return #out;
         }
         if (op == Op.RELU) {
+            if (g.isContiguous() && x.isContiguous() && g.size() == x.size()) {
+                // g where x > 0, else 0, in one pass (spela-kernels 10.2.3)
+                Ops.passes = Ops.passes + 1L;
+                Tensor<E> out #= Ops.zerosLike<E>(g);
+                E[] oa = out.hostBuffer();
+                int64 oo = out.hostBase();
+                E[] ga = g.hostBuffer();
+                int64 go = g.hostBase();
+                E[] xa = x.hostBuffer();
+                int64 xo = x.hostBase();
+                int64 cnt = g.size();
+                int64 e = 0L;
+                while (e < cnt) {
+                    if (xa[xo + e] > (E) 0) { oa[oo + e] = ga[go + e]; }
+                    e = e + 1L;
+                }
+                return #out;
+            }
             Tensor<E> m #= Tensor.reluMask<E>(x);
             return Tensor.mul<E>(g, m);
         }
@@ -886,7 +975,11 @@ public final class Ops {
         if (op == Op.SUB)    { return Tensor.sub<E>(a, b); }
         if (op == Op.MUL)    { return Tensor.mul<E>(a, b); }
         if (op == Op.DIV)    { return Ops.divK<E>(a, b); }
-        if (op == Op.MATMUL) { return Tensor.matmul<E>(a, b); }
+        if (op == Op.MATMUL) {
+            // contiguous host operands take the blocked product over the raw arrays (spela-kernels 10.2.1)
+            if (HostGemm.runs<E>(a, b)) { return HostGemm.nn<E>(a, b); }
+            return Tensor.matmul<E>(a, b);
+        }
         if (op == Op.MATMULB) { return StructKernels.matmulBatched3<E>(a, b); }
         throw heap MlException("ml.grad: unknown binary op " + op);
     }
@@ -1552,6 +1645,37 @@ public final class Ops {
      *  `F.normalize(x, p=2, dim=-1)`), with an epsilon floor so an
      *  all-zero row maps to zeros rather than NaN. */
     static #Tensor<E> rowNormK<E extends Floating>(Tensor<E> a) {
+        if (a.isContiguous()) {
+            // one read for the norm and one write per element, over the host arrays (spela-kernels 10.2.3)
+            Ops.passes = Ops.passes + 1L;
+            Tensor<E> o #= Ops.zerosLike<E>(a);
+            E[] oa = o.hostBuffer();
+            int64 oo = o.hostBase();
+            E[] aa = a.hostBuffer();
+            int64 ao = a.hostBase();
+            int64 n = a.shapeAt(a.ndim() - 1);
+            int64 rows = Ops.countOf<E>(a) / n;
+            int64 r = 0L;
+            while (r < rows) {
+                int64 base = r * n;
+                float64 sq = 0.0;
+                int64 j = 0L;
+                while (j < n) {
+                    float64 v = (float64) aa[ao + base + j];
+                    sq = sq + v * v;
+                    j = j + 1L;
+                }
+                float64 nrm = Math.sqrt(sq);
+                if (nrm < 0.00000001) { nrm = 0.00000001; }
+                j = 0L;
+                while (j < n) {
+                    oa[oo + base + j] = (E) ((float64) aa[ao + base + j] / nrm);
+                    j = j + 1L;
+                }
+                r = r + 1L;
+            }
+            return #o;
+        }
         Tensor<E> out #= a.copy();
         int64 cols = out.shapeAt(out.ndim() - 1);
         int64 rows = Ops.countOf<E>(out) / cols;
@@ -1590,6 +1714,45 @@ public final class Ops {
             Norm.l2rowsBack<E>(dv.deviceView("rowNormBack"), x.deviceView("rowNormBack"), y.deviceView("rowNormBack"), g.deviceView("rowNormBack"),
                 x.size() / cols, cols, 0.00000001f);
             return #dv;
+        }
+        if (x.isContiguous() && y.isContiguous() && g.isContiguous()) {
+            // the same sums and writes over the host arrays (spela-kernels 10.2.3)
+            Ops.passes = Ops.passes + 1L;
+            Tensor<E> o #= Ops.zerosLike<E>(x);
+            E[] oa = o.hostBuffer();
+            int64 oo = o.hostBase();
+            E[] xa = x.hostBuffer();
+            int64 xo = x.hostBase();
+            E[] ya = y.hostBuffer();
+            int64 yo = y.hostBase();
+            E[] ga = g.hostBuffer();
+            int64 go = g.hostBase();
+            int64 n = x.shapeAt(x.ndim() - 1);
+            int64 rows = Ops.countOf<E>(x) / n;
+            int64 r = 0L;
+            while (r < rows) {
+                int64 base = r * n;
+                float64 sq = 0.0;
+                float64 dot = 0.0;
+                int64 j = 0L;
+                while (j < n) {
+                    float64 xv = (float64) xa[xo + base + j];
+                    sq = sq + xv * xv;
+                    dot = dot + (float64) ga[go + base + j] * (float64) ya[yo + base + j];
+                    j = j + 1L;
+                }
+                float64 nrm = Math.sqrt(sq);
+                if (nrm < 0.00000001) { nrm = 0.00000001; }
+                j = 0L;
+                while (j < n) {
+                    float64 gv = (float64) ga[go + base + j];
+                    float64 yv = (float64) ya[yo + base + j];
+                    oa[oo + base + j] = (E) ((gv - yv * dot) / nrm);
+                    j = j + 1L;
+                }
+                r = r + 1L;
+            }
+            return #o;
         }
         Tensor<E> out #= x.copy();
         int64 cols = x.shapeAt(x.ndim() - 1);

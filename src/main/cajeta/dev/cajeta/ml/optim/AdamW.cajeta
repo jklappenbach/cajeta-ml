@@ -24,6 +24,11 @@ public final class AdamW implements Optimizer {
     boolean[] active;          // trainable at the LAST step
     boolean hasState;
 
+    static int64 flat = 0L;
+
+    /** Host updates that ran as one flat pass over the arrays, for the tests that pin the route. */
+    public static int64 flatUpdates() { return AdamW.flat; }
+
     /** @EntryPoint */
     public AdamW(#Parameter[] params, float32 lr, float32 weightDecay) {
         this.params #= params;
@@ -179,6 +184,34 @@ public final class AdamW implements Optimizer {
                           float32 lr, float32 wd, float32 c1, float32 c2) {
         if (p.isOnGpu()) {
             Optim.adamStep<float32>(p.deviceView("adamw"), m.deviceView("adamw"), v.deviceView("adamw"), g.deviceView("adamw"), p.size(), lr, c1, c2, wd);
+            return;
+        }
+        if (p.isContiguous() && g.isContiguous() && m.isContiguous() && v.isContiguous()) {
+            // one pass over the host arrays, the same arithmetic per element as the walk below,
+            // which read and wrote every element through an N-d index (spela-kernels 10.2.2)
+            AdamW.flat = AdamW.flat + 1L;
+            float32[] pa = p.hostBuffer();
+            float32[] ga = g.hostBuffer();
+            float32[] ma = m.hostBuffer();
+            float32[] va = v.hostBuffer();
+            int64 po = p.hostBase();
+            int64 go = g.hostBase();
+            int64 mo = m.hostBase();
+            int64 vo = v.hostBase();
+            int64 count = p.size();
+            int64 e = 0L;
+            while (e < count) {
+                float32 gv = ga[go + e];
+                float32 mv = 0.9f * ma[mo + e] + 0.1f * gv;
+                float32 vv = 0.999f * va[vo + e] + 0.001f * gv * gv;
+                ma[mo + e] = mv;
+                va[vo + e] = vv;
+                float32 mhat = mv / c1;
+                float32 vhat = vv / c2;
+                float32 pv = pa[po + e];
+                pa[po + e] = pv - lr * (mhat / (Math.sqrt(vhat) + 1e-8f) + wd * pv);
+                e = e + 1L;
+            }
             return;
         }
         int64[] shape #= Tensor.shapeOf<float32>(p);

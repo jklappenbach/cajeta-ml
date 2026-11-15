@@ -1,0 +1,184 @@
+package dev.cajeta.ml.grad;
+
+import cajeta.concurrent.Carriers;
+import cajeta.math.Tensor;
+
+/**
+ * The host matrix product (spela-kernels 10.2.1). The stdlib's Tensor.matmul reads every
+ * element through its strides, one at a time, and on the cpu SPELA step it was 84% of the
+ * time (2026-11-15). This one walks the host arrays directly, holding four rows by sixteen
+ * columns of the result in vector registers across all of K: one vector load of `b` serves
+ * four rows, and a bounds check covers sixteen lanes, where a checked scalar loop would not
+ * vectorize at all. The row blocks are split
+ * across the carriers when the product is large enough to pay for a fiber.
+ *
+ * `a` is read through two strides, so a^T . b reads `a` in place: a weight gradient X^T . G
+ * makes no transposed copy of X.
+ */
+public final class HostGemm {
+    /** Multiply-adds below which the product stays on the calling fiber. */
+    static final int64 SPLIT_WORK = 1048576L;
+    /** Lanes in the vector each row's sums are held in. */
+    static final int64 LANES = 16L;
+    static final int32 MAX_PARTS = 16;
+
+    static int64 count = 0L;
+    static int32 parts = 0;
+    static boolean transposedA = false;
+
+    /** How many products ran here, for the tests that pin the route. */
+    public static int64 products() { return HostGemm.count; }
+
+    /** The parts the last product was split into: 1 when it ran on the caller. */
+    public static int32 lastParts() { return HostGemm.parts; }
+
+    /** Whether the last product read its left operand transposed, in place. */
+    public static boolean lastReadATransposed() { return HostGemm.transposedA; }
+
+    /** Whether `a` and `b` are host-resident, 2-D and contiguous, the tensors this product reads. */
+    public static boolean runs<E>(Tensor<E> a, Tensor<E> b) {
+        if (a.isOnGpu() || b.isOnGpu()) { return false; }
+        if (a.ndim() != 2 || b.ndim() != 2) { return false; }
+        return a.isContiguous() && b.isContiguous();
+    }
+
+    /** `a` (m x k) . `b` (k x n). */
+    public static #Tensor<E> nn<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        return HostGemm.product<E>(a, k, 1L, b, m, n, k, false);
+    }
+
+    /** `a`^T . `b` for `a` (k x m) and `b` (k x n), reading `a` as stored. */
+    public static #Tensor<E> tn<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        int64 k = a.shapeAt(0);
+        int64 m = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        return HostGemm.product<E>(a, 1L, m, b, m, n, k, true);
+    }
+
+    /** C = A . B with A(i,p) at a[i * sai + p * sap] and B row-major (k x n). */
+    static #Tensor<E> product<E extends Floating>(Tensor<E> a, int64 sai, int64 sap, Tensor<E> b,
+                                                  int64 m, int64 n, int64 k, boolean ta) {
+        int64[] shp = [m, n];
+        Tensor<E> out #= Tensor.zeros<E>(shp);
+        E[] c = out.hostBuffer();
+        int64 c0 = out.hostBase();
+        E[] av = a.hostBuffer();
+        int64 a0 = a.hostBase();
+        E[] bv = b.hostBuffer();
+        int64 b0 = b.hostBase();
+        int64 blocks = (m + 3L) / 4L;
+        int64 want = (int64) Carriers.count();
+        if (want > (int64) HostGemm.MAX_PARTS) { want = (int64) HostGemm.MAX_PARTS; }
+        if (want > blocks) { want = blocks; }
+        if (m * n * k < HostGemm.SPLIT_WORK || want < 2L) { want = 1L; }
+        HostGemm.count = HostGemm.count + 1L;
+        HostGemm.parts = (int32) want;
+        HostGemm.transposedA = ta;
+        if (want == 1L) {
+            HostGemm.rows<E>(c, c0, av, a0, sai, sap, bv, b0, 0L, m, n, k);
+            return #out;
+        }
+        int64 per = (blocks + want - 1L) / want;
+        scope {
+            int64 r0 = 0L;
+            while (r0 < m) {
+                int64 r1 = r0 + per * 4L;
+                if (r1 > m) { r1 = m; }
+                spawn rows<E>(c, c0, av, a0, sai, sap, bv, b0, r0, r1, n, k);
+                r0 = r1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * Rows [i0, i1) of C, which starts zeroed. Four rows by sixteen columns are summed in
+     * registers over all of K, one vector load of `b` and four reads of `a` a step, and stored
+     * once; columns past the last sixteen and rows past the last four are summed one by one.
+     */
+    static void rows<E extends Floating>(E[] c, int64 c0, E[] a, int64 a0, int64 sai, int64 sap,
+                                         E[] b, int64 b0, int64 i0, int64 i1, int64 n, int64 k) {
+        int64 nv = n - n % HostGemm.LANES;
+        int64 i = i0;
+        while (i + 4L <= i1) {
+            int64 ai = a0 + i * sai;
+            int64 o0 = c0 + i * n;
+            int64 j = 0L;
+            while (j < nv) {
+                // C starts zeroed, so its own lanes seed the sums
+                Vector<E,16> s0 = c.vload<16>(o0 + j);
+                Vector<E,16> s1 = s0;
+                Vector<E,16> s2 = s0;
+                Vector<E,16> s3 = s0;
+                int64 ap = ai;
+                int64 bp = b0 + j;
+                int64 p = 0L;
+                while (p < k) {
+                    Vector<E,16> y = b.vload<16>(bp);
+                    s0 = s0 + y * a[ap];
+                    s1 = s1 + y * a[ap + sai];
+                    s2 = s2 + y * a[ap + 2L * sai];
+                    s3 = s3 + y * a[ap + 3L * sai];
+                    ap = ap + sap;
+                    bp = bp + n;
+                    p = p + 1L;
+                }
+                c.vstore(o0 + j, s0);
+                c.vstore(o0 + n + j, s1);
+                c.vstore(o0 + 2L * n + j, s2);
+                c.vstore(o0 + 3L * n + j, s3);
+                j = j + HostGemm.LANES;
+            }
+            int64 r = 0L;
+            while (r < 4L) {
+                HostGemm.tail<E>(c, o0 + r * n, a, ai + r * sai, sap, b, b0, nv, n, k);
+                r = r + 1L;
+            }
+            i = i + 4L;
+        }
+        while (i < i1) {
+            int64 ai = a0 + i * sai;
+            int64 o0 = c0 + i * n;
+            int64 j = 0L;
+            while (j < nv) {
+                Vector<E,16> s0 = c.vload<16>(o0 + j);
+                int64 ap = ai;
+                int64 bp = b0 + j;
+                int64 p = 0L;
+                while (p < k) {
+                    s0 = s0 + b.vload<16>(bp) * a[ap];
+                    ap = ap + sap;
+                    bp = bp + n;
+                    p = p + 1L;
+                }
+                c.vstore(o0 + j, s0);
+                j = j + HostGemm.LANES;
+            }
+            HostGemm.tail<E>(c, o0, a, ai, sap, b, b0, nv, n, k);
+            i = i + 1L;
+        }
+    }
+
+    /** Columns [j0, n) of one row of C: row `o` of C, the row of A from `ai` by `sap`. */
+    static void tail<E extends Floating>(E[] c, int64 o, E[] a, int64 ai, int64 sap,
+                                         E[] b, int64 b0, int64 j0, int64 n, int64 k) {
+        int64 j = j0;
+        while (j < n) {
+            E acc = (E) 0;
+            int64 ap = ai;
+            int64 bp = b0 + j;
+            int64 p = 0L;
+            while (p < k) {
+                acc = acc + a[ap] * b[bp];
+                ap = ap + sap;
+                bp = bp + n;
+                p = p + 1L;
+            }
+            c[o + j] = acc;
+            j = j + 1L;
+        }
+    }
+}
