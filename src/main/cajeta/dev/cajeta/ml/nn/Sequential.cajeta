@@ -62,7 +62,9 @@ public class Sequential extends Module {
             boolean fused = false;
             if (i + 1 < count) {
                 if (m instanceof Linear lin) {
-                    if (this.layers.get(i + 1) instanceof ReLU r) {
+                    // bound first: `instanceof` of a call result reads false (cajeta v0.53.7)
+                    Module nx = this.layers.get(i + 1);
+                    if (nx instanceof ReLU r) {
                         cur = lin.forwardAct(tape, cur, 1);
                         fused = true;
                     }

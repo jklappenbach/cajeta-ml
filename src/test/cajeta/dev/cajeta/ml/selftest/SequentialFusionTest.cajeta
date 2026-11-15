@@ -1,0 +1,59 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+
+/**
+ * A Sequential's Linear followed by a ReLU runs as one fused linear node (cajeta-ml-gpu
+ * 28.2.5). The check that found the pair asked `instanceof` of a call result, which cajeta
+ * answers false (found 2026-11-15, spela-kernels 7), so the pair always ran as two nodes.
+ */
+public class SequentialFusionTest {
+    public SequentialFusionTest() { return; }
+
+    @Test
+    public void aLinearThenReluIsOneFusedNode() {
+        int64[] xs = [5L, 7L];
+        Tensor<float32> xv #= Tensor.full<float32>(xs, 0.0f);
+        int64 i = 0L;
+        while (i < xv.size()) { xv.flatSet(i, (float32) ((i * 37L) % 11L - 5L) * 0.1f); i = i + 1L; }
+        Sequential s = heap Sequential();
+        Module l = heap Linear(7L, 3L, 9L);
+        s.add(#l);
+        Module r = heap ReLU();
+        s.add(#r);
+        GradTape<float32> t = heap GradTape<float32>();
+        s.bindParameters(t);
+        GradTensor x = t.leaf(xv, false);
+        int32 before = t.count();
+        GradTensor y = s.forward(t, x);
+        System.stdout.println("  Linear+ReLU nodes: " + (t.count() - before));
+        Assert.equals(before + 1, t.count());
+
+        // the same values as the two nodes, run apart
+        Tensor<float32> got #= t.valueOf(y).copy();
+        s.unbindParameters();
+        GradTape<float32> u = heap GradTape<float32>();
+        s.bindParameters(u);
+        GradTensor ux = u.leaf(xv, false);
+        GradTensor lin = s.at(0).forward(u, ux);
+        GradTensor ur = u.relu(lin);
+        Tensor<float32> want = u.valueOf(ur);
+        Assert.equals(want.size(), got.size());
+        int64 k = 0L;
+        while (k < want.size()) {
+            float64 d = (float64) got.flatGet(k) - (float64) want.flatGet(k);
+            if (d < 0.0) { d = 0.0 - d; }
+            Assert.isTrue(d < 1.0e-6);
+            k = k + 1L;
+        }
+        s.unbindParameters();
+    }
+}
