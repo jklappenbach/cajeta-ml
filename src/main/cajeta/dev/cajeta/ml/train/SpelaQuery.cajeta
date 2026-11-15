@@ -1,0 +1,26 @@
+package dev.cajeta.ml.train;
+
+import cajeta.lang.String;
+import cajeta.xpu.Regime;
+import cajeta.xpu.RouteQuery;
+
+/**
+ * A SPELA route query (spela-kernels 7, spec §2.5): the static facts a row's shape half reads.
+ * A step query carries the layer's format and type name; a head query carries the loss kind as
+ * its format, the class count and the rank of the layer's output. Nothing here can change
+ * after a layer is sized, so the audit's answer does not depend on when it ran.
+ */
+public final class SpelaQuery extends RouteQuery {
+    /** The layer type the audit names: a class name, or Linear+ReLU. */
+    public String layerType;
+    public int64 classes;
+    public int32 rank;
+
+    public SpelaQuery(Regime g, int32 ty, String layerType, int64 classes, int32 rank) {
+        this.regime = g;
+        this.ty = ty;
+        this.layerType #= layerType;
+        this.classes = classes;
+        this.rank = rank;
+    }
+}

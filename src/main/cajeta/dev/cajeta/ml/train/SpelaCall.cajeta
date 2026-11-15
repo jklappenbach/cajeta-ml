@@ -1,0 +1,76 @@
+package dev.cajeta.ml.train;
+
+import cajeta.math.Tensor;
+import cajeta.xpu.RouteCall;
+import dev.cajeta.ml.grad.GradTape;
+import dev.cajeta.ml.grad.GradTensor;
+import dev.cajeta.ml.nn.Parameter;
+
+/**
+ * A SPELA route call (spela-kernels 7): a query plus the state a row's ready half reads (where
+ * the layer lives, whether the fused head may serve, whether the layer is anchored) and the
+ * operands its dispatch reaches. The trainer keeps one per layer and route, refilling the
+ * operands each batch; they are borrows of the step's own values.
+ */
+public final class SpelaCall extends RouteCall {
+    public boolean onDevice;
+    public boolean fusedHead;
+    public boolean anchored;
+    // operands, filled by the trainer before a dispatch; borrows for the batch
+    SpelaTrainer trainer;
+    int32 layer;
+    Tensor<float32> h;
+    Tensor<float32> labels;
+    Tensor<float32> mask;
+    float32 lr;
+    GradTape<float32> tape;
+    GradTensor out;
+    Parameter[] params;
+    // a step dispatch's result: the layer's detached output
+    Tensor<float32> next;
+
+    public SpelaCall(#SpelaQuery q, boolean onDevice, boolean fusedHead) {
+        this.query #= q;
+        this.onDevice = onDevice;
+        this.fusedHead = fusedHead;
+        this.anchored = false;
+        this.trainer = null;
+        this.layer = 0;
+        this.h = null;
+        this.labels = null;
+        this.mask = null;
+        this.lr = 0.0f;
+        this.tape = null;
+        this.params = null;
+        this.next = null;
+    }
+
+    /** The step's operands, kept as borrows for the batch (spela-kernels 7). */
+    void bindStep(^SpelaTrainer tr, int32 layer, ^Tensor<float32> h, ^Tensor<float32> labels,
+                  ^Tensor<float32> mask, float32 lr) {
+        this.trainer = tr;
+        this.layer = layer;
+        this.h = h;
+        this.labels = labels;
+        this.mask = mask;
+        this.lr = lr;
+    }
+
+    /** The head's operands: the layer's tape, its output node and its parameters, borrowed. */
+    void bindHead(^SpelaTrainer tr, int32 layer, ^GradTape<float32> tape, GradTensor out,
+                  ^Parameter[] params, ^Tensor<float32> labels, ^Tensor<float32> mask) {
+        this.trainer = tr;
+        this.layer = layer;
+        this.tape = tape;
+        this.out = out;
+        this.params = params;
+        this.labels = labels;
+        this.mask = mask;
+    }
+
+    /** A step dispatch's output, handed to the caller. */
+    #Tensor<float32> takeNext() {
+        Tensor<float32> t #= this.next;
+        return #t;
+    }
+}

@@ -1,0 +1,276 @@
+package dev.cajeta.ml.train;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+import cajeta.reflect.Class;
+import cajeta.xpu.Capability;
+import cajeta.xpu.Device;
+import cajeta.xpu.Regime;
+import cajeta.xpu.Route;
+import cajeta.xpu.RouteAudit;
+import cajeta.xpu.RouteCall;
+import cajeta.xpu.RouteQuery;
+import cajeta.xpu.RouteRefusal;
+import cajeta.xpu.RouteTable;
+import dev.cajeta.ml.kernels.nn.SpelaHead;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+
+/**
+ * SPELA's declared routes (spela-kernels 7, spec §2.5). Each layer's step is a TrainStep row
+ * and each loss head a TrainLoss row: the kernel step for Linear and for Linear+ReLU, the
+ * tape-composed step below them for any module, the few- and many-class fused heads per loss
+ * kind, split by the class count, and the composed loss below them. The trainer picks a step
+ * row and a head row per layer when it sizes the layer, and the audit names every layer type
+ * no kernel row serves.
+ */
+public final class SpelaRoutes {
+    /** Step formats: the layer's kind. */
+    public static final int32 LINEAR = 1;
+    public static final int32 LINEAR_RELU = 2;
+    public static final int32 MODULE = 3;
+    /** Head formats: the loss kind, SpelaConfig.lossType offset past the step formats. */
+    public static final int32 HEAD_COSINE = 10;
+    public static final int32 HEAD_COSFACE = 11;
+    public static final int32 HEAD_OTHER = 12;
+
+    static RouteTable all = null;
+    static RouteTable kernels = null;
+
+    /** Every SPELA row. */
+    public static RouteTable table() {
+        if (SpelaRoutes.all == null) {
+            RouteTable t = heap RouteTable();
+            SpelaRoutes.registerKernels(t);
+            t.register(heap StepRow("spela-tape-step", SpelaRoutes.LINEAR, 0, false, ""));
+            t.register(heap StepRow("spela-tape-step", SpelaRoutes.LINEAR_RELU, 0, false, ""));
+            t.register(heap StepRow("spela-tape-step", SpelaRoutes.MODULE, 0, false, ""));
+            t.register(heap HeadRow("spela-composed-loss", SpelaRoutes.HEAD_COSINE, 0, 0));
+            t.register(heap HeadRow("spela-composed-loss", SpelaRoutes.HEAD_COSFACE, 0, 0));
+            t.register(heap HeadRow("spela-composed-loss", SpelaRoutes.HEAD_OTHER, 0, 0));
+            SpelaRoutes.all #= t;
+        }
+        return SpelaRoutes.all;
+    }
+
+    /** The kernel rows alone: what a refusal reports when a layer or head is off them. */
+    public static RouteTable kernelTable() {
+        if (SpelaRoutes.kernels == null) {
+            RouteTable t = heap RouteTable();
+            SpelaRoutes.registerKernels(t);
+            SpelaRoutes.kernels #= t;
+        }
+        return SpelaRoutes.kernels;
+    }
+
+    static void registerKernels(RouteTable t) {
+        t.register(heap StepRow("spela-linear-step", SpelaRoutes.LINEAR, 10, true, "linear_float32"));
+        t.register(heap StepRow("spela-linear-relu-step", SpelaRoutes.LINEAR_RELU, 10, true, "linear_float32"));
+        // a shape both head rows refuse names the many-class row: it ranks first
+        t.register(heap HeadRow("spela-head-few-cosface", SpelaRoutes.HEAD_COSFACE, 10, 1));
+        t.register(heap HeadRow("spela-head-many-cosface", SpelaRoutes.HEAD_COSFACE, 11, 2));
+        t.register(heap HeadRow("spela-head-few-cosine", SpelaRoutes.HEAD_COSINE, 10, 1));
+        t.register(heap HeadRow("spela-head-many-cosine", SpelaRoutes.HEAD_COSINE, 11, 2));
+    }
+
+    /** `m`'s step format: a bare Linear, a Sequential of exactly Linear then ReLU, or any module. */
+    public static int32 stepFormatOf(Module m) {
+        if (m instanceof Linear) { return SpelaRoutes.LINEAR; }
+        if (m instanceof Sequential s) {
+            if (s.count() == 2) {
+                Module first = s.at(0);
+                Module second = s.at(1);
+                boolean lin = first instanceof Linear;
+                boolean relu = second instanceof ReLU;
+                if (lin && relu) { return SpelaRoutes.LINEAR_RELU; }
+            }
+        }
+        return SpelaRoutes.MODULE;
+    }
+
+    /** The name the audit gives `m`'s type: Linear+ReLU, or its class's simple name. */
+    public static #String layerTypeOf(Module m) {
+        if (SpelaRoutes.stepFormatOf(m) == SpelaRoutes.LINEAR_RELU) { return "Linear+ReLU"; }
+        String full #= Class.of(m).getName();
+        int32 start = 0;
+        int32 i = 0;
+        while (i < full.byteLength()) {
+            if (full.byteAt(i) == (int8) 46) { start = i + 1; }
+            i = i + 1;
+        }
+        return full.substring(start, full.byteLength());
+    }
+
+    public static #SpelaQuery stepQuery(Module m) {
+        String ty #= SpelaRoutes.layerTypeOf(m);
+        return heap SpelaQuery(Regime.TrainStep, SpelaRoutes.stepFormatOf(m), #ty, 0L, 0);
+    }
+
+    /** A head query: `lossType` as SpelaConfig names it, the class count, the output's rank. */
+    public static #SpelaQuery headQuery(int32 lossType, int64 classes, int32 rank) {
+        int32 f = SpelaRoutes.HEAD_OTHER;
+        if (lossType == SpelaConfig.COSFACE) { f = SpelaRoutes.HEAD_COSFACE; }
+        if (lossType == SpelaConfig.COSINE) { f = SpelaRoutes.HEAD_COSINE; }
+        return heap SpelaQuery(Regime.TrainLoss, f, "", classes, rank);
+    }
+
+    /**
+     * The layer types in `layers` whose step no kernel row serves, each named once in first-seen
+     * order: the static half only, so it answers with nothing bound and on any machine.
+     */
+    public static #ArrayList<String> kernelGaps(ArrayList<Module> layers) {
+        int32 n = layers.count();
+        RouteQuery[] qs = heap RouteQuery[n];
+        int32 i = 0;
+        while (i < n) {
+            qs[i] #= SpelaRoutes.stepQuery(layers.get(i));
+            i = i + 1;
+        }
+        RouteTable t = SpelaRoutes.kernelTable();
+        RouteAudit a #= t.audit(qs);
+        ArrayList<String> gaps #= heap ArrayList<String>();
+        i = 0;
+        while (i < n) {
+            if (a.unserved(i)) {
+                if (qs[i] instanceof SpelaQuery sq) {
+                    boolean seen = false;
+                    int32 k = 0;
+                    while (k < gaps.count()) {
+                        if (gaps.get(k).equals(sq.layerType)) { seen = true; }
+                        k = k + 1;
+                    }
+                    if (!seen) {
+                        String nm #= sq.layerType.clone();
+                        gaps.add(#nm);
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return #gaps;
+    }
+
+    /** Why no kernel row takes `c`, or null when one does. */
+    public static #RouteRefusal whyNoKernel(SpelaCall c) {
+        return SpelaRoutes.kernelTable().whyNotPicked(c);
+    }
+}
+
+/**
+ * A layer's step. A kernel row serves a Linear or Linear+ReLU layer whose parameters live on
+ * the device, where the step's products and update run as the layer-product families and the
+ * multi-slot optimizer; the tape row serves any layer, composing the step from tape ops.
+ */
+final class StepRow implements Route {
+    String nm;
+    int32 fmt;
+    int32 pri;
+    boolean kernel;
+    String needsKernel;
+
+    public StepRow(String nm, int32 fmt, int32 pri, boolean kernel, String needsKernel) {
+        this.nm #= nm;
+        this.fmt = fmt;
+        this.pri = pri;
+        this.kernel = kernel;
+        this.needsKernel #= needsKernel;
+    }
+
+    public String name() { return this.nm; }
+    public Regime regime() { return Regime.TrainStep; }
+    public int32 format() { return this.fmt; }
+    public int32 priority() { return this.pri; }
+    public Capability[] needs() { return null; }
+
+    public String shapeRefusal(RouteQuery q) {
+        if (q instanceof SpelaQuery) { return null; }
+        return "not a SPELA query";
+    }
+
+    public String readyRefusal(RouteCall c) {
+        if (!this.kernel) { return null; }
+        if (c instanceof SpelaCall s) {
+            if (!s.onDevice) { return "the layer is not on the device"; }
+            if (!Device.kernelAvailable(this.needsKernel)) { return "the linear kernel is not built"; }
+            return null;
+        }
+        return "not a SPELA call";
+    }
+
+    public void dispatch(RouteCall c) {
+        if (c instanceof SpelaCall s) { s.trainer.stepBody(s); }
+    }
+}
+
+/**
+ * A loss head. The fused rows (kind 1 few-class, 2 many-class) compute the loss and the
+ * output's gradient in their kernels; the composed row (kind 0) builds the loss on the tape.
+ * The class count splits few from many at SpelaHead.FEW.
+ */
+final class HeadRow implements Route {
+    String nm;
+    int32 fmt;
+    int32 pri;
+    int32 kind;
+
+    public HeadRow(String nm, int32 fmt, int32 pri, int32 kind) {
+        this.nm #= nm;
+        this.fmt = fmt;
+        this.pri = pri;
+        this.kind = kind;
+    }
+
+    public String name() { return this.nm; }
+    public Regime regime() { return Regime.TrainLoss; }
+    public int32 format() { return this.fmt; }
+    public int32 priority() { return this.pri; }
+    public Capability[] needs() { return null; }
+
+    public boolean fused() { return this.kind != 0; }
+
+    public String shapeRefusal(RouteQuery q) {
+        if (q instanceof SpelaQuery s) {
+            if (this.kind == 0) { return null; }
+            if (s.rank != 2) { return "the output is not rank 2"; }
+            boolean many = SpelaHead.manyClasses(s.classes);
+            if (this.kind == 1 && many) { return "more classes than the few-class head holds"; }
+            if (this.kind == 2 && !many) { return "few enough classes for the few-class head"; }
+            return null;
+        }
+        return "not a SPELA query";
+    }
+
+    public String readyRefusal(RouteCall c) {
+        if (this.kind == 0) { return null; }
+        if (c instanceof SpelaCall s) {
+            if (!s.fusedHead) { return "the fused head is off"; }
+            if (!s.onDevice) { return "the output is not on the device"; }
+            if (s.anchored) { return "the layer is anchored"; }
+            if (this.kind == 1) {
+                if (!Device.kernelAvailable("headRows_float32") || !Device.kernelAvailable("headGrad_float32")) {
+                    return "the few-class head kernels are not built";
+                }
+                return null;
+            }
+            if (this.fmt == SpelaRoutes.HEAD_COSINE) {
+                if (!Device.kernelAvailable("headCosine_float32")) { return "the many-class cosine kernel is not built"; }
+                return null;
+            }
+            if (!Device.kernelAvailable("headPack_float32") || !Device.kernelAvailable("headNorm_float32")
+                || !Device.kernelAvailable("headStats_float32") || !Device.kernelAvailable("headBlockGrad_float32")
+                || !Device.kernelAvailable("headFinish_float32")) {
+                return "the many-class head kernels are not built";
+            }
+            return null;
+        }
+        return "not a SPELA call";
+    }
+
+    public void dispatch(RouteCall c) {
+        if (c instanceof SpelaCall s) {
+            if (this.kind == 0) { s.trainer.composedLoss(s); } else { s.trainer.fusedLoss(s); }
+        }
+    }
+}

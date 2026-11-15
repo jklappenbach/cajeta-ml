@@ -1,0 +1,195 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import cajeta.xpu.Regime;
+import cajeta.xpu.Route;
+import cajeta.xpu.RouteClause;
+import cajeta.xpu.RouteRefusal;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.nn.Conv2d;
+import dev.cajeta.ml.nn.Flatten;
+import dev.cajeta.ml.nn.Linear;
+import dev.cajeta.ml.nn.Module;
+import dev.cajeta.ml.nn.ReLU;
+import dev.cajeta.ml.nn.Sequential;
+import dev.cajeta.ml.train.SpelaCall;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaQuery;
+import dev.cajeta.ml.train.SpelaRoutes;
+import dev.cajeta.ml.train.SpelaTrainer;
+
+/**
+ * spela-kernels 7, spec §2.5: each layer's step and each loss head is a declared RouteTable
+ * row in the training regimes. A Linear and a Linear+ReLU layer on the device bind their kernel
+ * rows, any other module binds the tape row, the audit names every layer type no kernel row
+ * serves, the class count picks the few- or many-class head by its shape gate, and a refusal
+ * names the row and the clause.
+ */
+public class SpelaRouteTest {
+    public SpelaRouteTest() { return; }
+
+    static #Module linearRelu(int64 a, int64 b, uint64 seed) {
+        Sequential s = heap Sequential();
+        Module l = heap Linear(a, b, seed);
+        s.add(#l);
+        Module r = heap ReLU();
+        s.add(#r);
+        return #s;
+    }
+
+    /** The row the full table picks for `m`'s step, on the device or not, as its name. */
+    static #String stepRow(Module m, boolean onDevice) {
+        SpelaQuery q #= SpelaRoutes.stepQuery(m);
+        SpelaCall c = heap SpelaCall(#q, onDevice, true);
+        Route r = SpelaRoutes.table().pick(c);
+        Assert.isTrue(r != null);
+        return r.name().clone();
+    }
+
+    static #String headRow(int32 lossType, int64 classes, int32 rank) {
+        SpelaQuery q #= SpelaRoutes.headQuery(lossType, classes, rank);
+        SpelaCall c = heap SpelaCall(#q, true, true);
+        Route r = SpelaRoutes.table().pick(c);
+        Assert.isTrue(r != null);
+        return r.name().clone();
+    }
+
+    /** Every layer of `tr` bound a step row and a head row. */
+    static void bound(SpelaTrainer tr, int32 layers) {
+        int32 i = 0;
+        while (i < layers) {
+            Assert.isTrue(tr.stepRouteAt(i) != null);
+            Assert.isTrue(tr.headRouteAt(i) != null);
+            i = i + 1;
+        }
+    }
+
+    @Test
+    public void linearLayersBindTheirKernelRowsAndOtherModulesTheTape() {
+        Module lin = heap Linear(8L, 4L, 1L);
+        Module lr #= SpelaRouteTest.linearRelu(8L, 4L, 2L);
+        Module conv = heap Conv2d(1, 2, 3, 1, 1, 3L);
+        Route r0 = SpelaRoutes.table().pick(heap SpelaCall(SpelaRoutes.stepQuery(lin), true, true));
+        Assert.isTrue(r0 != null);
+        Assert.equals(Regime.TrainStep, r0.regime());
+        String a #= SpelaRouteTest.stepRow(lin, true);
+        Assert.equals("spela-linear-step", a);
+        String b #= SpelaRouteTest.stepRow(lr, true);
+        Assert.equals("spela-linear-relu-step", b);
+        String c #= SpelaRouteTest.stepRow(conv, true);
+        Assert.equals("spela-tape-step", c);
+        // on the host the kernel rows are not ready, and the tape row serves
+        String h #= SpelaRouteTest.stepRow(lin, false);
+        Assert.equals("spela-tape-step", h);
+
+        // the audit names every layer type no kernel row serves, once each
+        ArrayList<Module> layers #= heap ArrayList<Module>();
+        Module s0 #= SpelaRouteTest.linearRelu(8L, 4L, 4L);
+        layers.add(#s0);
+        Module s1 = heap Conv2d(1, 2, 3, 1, 1, 5L);
+        layers.add(#s1);
+        Module s2 = heap Flatten();
+        layers.add(#s2);
+        Module s3 = heap Conv2d(2, 2, 3, 1, 1, 6L);
+        layers.add(#s3);
+        Module s4 = heap Linear(4L, 2L, 7L);
+        layers.add(#s4);
+        ArrayList<String> gaps #= SpelaRoutes.kernelGaps(layers);
+        Assert.equals(2L, (int64) gaps.count());
+        Assert.equals("Conv2d", gaps.get(0));
+        Assert.equals("Flatten", gaps.get(1));
+    }
+
+    @Test
+    public void theTrainerPicksEachLayersRowsAtSizing() {
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 3L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        ArrayList<Module> ls #= heap ArrayList<Module>();
+        Module a #= SpelaRouteTest.linearRelu(64L, 24L, 41L);
+        ls.add(#a);
+        Module b = heap Linear(24L, 12L, 42L);
+        ls.add(#b);
+        SpelaConfig cfg = heap SpelaConfig(4);
+        SpelaTrainer host = heap SpelaTrainer(#ls, #cfg);
+        Assert.isTrue(host.stepRouteAt(0) == null);
+        host.trainBatch(x, y);
+        SpelaRouteTest.bound(host, 2);
+        Assert.equals("spela-tape-step", host.stepRouteAt(0).name());
+        Assert.equals("spela-tape-step", host.stepRouteAt(1).name());
+        Assert.equals("spela-composed-loss", host.headRouteAt(0).name());
+
+        ArrayList<Module> dl #= heap ArrayList<Module>();
+        Module c #= SpelaRouteTest.linearRelu(64L, 24L, 41L);
+        dl.add(#c);
+        Module d = heap Linear(24L, 12L, 42L);
+        dl.add(#d);
+        SpelaConfig dcfg = heap SpelaConfig(4);
+        SpelaTrainer dev = heap SpelaTrainer(#dl, #dcfg);
+        int32 i = 0;
+        while (i < dev.layerCount()) { dev.layerAt(i).toDevice(); i = i + 1; }
+        dev.trainBatch(x, y);
+        SpelaRouteTest.bound(dev, 2);
+        System.stdout.println("  device rows: " + dev.stepRouteAt(0).name() + ", " + dev.stepRouteAt(1).name()
+            + "; heads " + dev.headRouteAt(0).name());
+        Assert.equals("spela-linear-relu-step", dev.stepRouteAt(0).name());
+        Assert.equals("spela-linear-step", dev.stepRouteAt(1).name());
+        Assert.equals("spela-head-few-cosface", dev.headRouteAt(0).name());
+        // the fused head turned off is a ready-half change: the next batch picks again
+        dev.setFusedHead(false);
+        dev.trainBatch(x, y);
+        Assert.equals("spela-composed-loss", dev.headRouteAt(1).name());
+    }
+
+    @Test
+    public void theClassCountPicksTheHeadRowByItsShapeGate() {
+        String few #= SpelaRouteTest.headRow(SpelaConfig.COSFACE, 10L, 2);
+        Assert.equals("spela-head-few-cosface", few);
+        String edge #= SpelaRouteTest.headRow(SpelaConfig.COSFACE, 64L, 2);
+        Assert.equals("spela-head-few-cosface", edge);
+        String many #= SpelaRouteTest.headRow(SpelaConfig.COSFACE, 65L, 2);
+        Assert.equals("spela-head-many-cosface", many);
+        String cos #= SpelaRouteTest.headRow(SpelaConfig.COSINE, 40960L, 2);
+        Assert.equals("spela-head-many-cosine", cos);
+        // an output the fused heads do not read takes the composed loss
+        String flat #= SpelaRouteTest.headRow(SpelaConfig.COSFACE, 10L, 4);
+        Assert.equals("spela-composed-loss", flat);
+        Route h0 = SpelaRoutes.table().admissible(SpelaRoutes.headQuery(SpelaConfig.COSFACE, 10L, 2));
+        Assert.isTrue(h0 != null);
+        Assert.equals(Regime.TrainLoss, h0.regime());
+    }
+
+    @Test
+    public void aRefusalNamesTheRowAndItsClause() {
+        // the kernel rows alone: what kept a layer or head off them
+        Module lin = heap Linear(8L, 4L, 1L);
+        RouteRefusal host #= SpelaRoutes.whyNoKernel(heap SpelaCall(SpelaRoutes.stepQuery(lin), false, true));
+        Assert.isTrue(host.row != null);
+        String ht #= host.text();
+        System.stdout.println("  " + ht);
+        Assert.equals("spela-linear-step", host.row.name());
+        Assert.equals(RouteClause.Ready, host.clause);
+        Assert.equals("the layer is not on the device", host.detail);
+
+        Module conv = heap Conv2d(1, 2, 3, 1, 1, 3L);
+        RouteRefusal fmt #= SpelaRoutes.whyNoKernel(heap SpelaCall(SpelaRoutes.stepQuery(conv), true, true));
+        Assert.equals(RouteClause.Format, fmt.clause);
+
+        // ten classes pass the few-class row's shape gate and stop at its ready half
+        RouteRefusal off #= SpelaRoutes.whyNoKernel(heap SpelaCall(SpelaRoutes.headQuery(SpelaConfig.COSFACE, 10L, 2), true, false));
+        Assert.isTrue(off.row != null);
+        String ot #= off.text();
+        System.stdout.println("  " + ot);
+        Assert.equals("spela-head-few-cosface", off.row.name());
+        Assert.equals(RouteClause.Ready, off.clause);
+        Assert.equals("the fused head is off", off.detail);
+
+        RouteRefusal rank #= SpelaRoutes.whyNoKernel(heap SpelaCall(SpelaRoutes.headQuery(SpelaConfig.COSFACE, 300L, 4), true, true));
+        Assert.isTrue(rank.row != null);
+        Assert.equals("spela-head-many-cosface", rank.row.name());
+        Assert.equals(RouteClause.Shape, rank.clause);
+        Assert.equals("the output is not rank 2", rank.detail);
+    }
+}

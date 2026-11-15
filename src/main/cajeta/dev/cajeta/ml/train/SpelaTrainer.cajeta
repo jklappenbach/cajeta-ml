@@ -7,6 +7,7 @@ import cajeta.math.Tensor;
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
+import cajeta.xpu.Route;
 import dev.cajeta.ml.MlException;
 import dev.cajeta.ml.data.Batches;
 import dev.cajeta.ml.grad.GradTape;
@@ -84,6 +85,14 @@ public class SpelaTrainer {
     Tensor<float32> anchorScale;               // (1,) holding anchorLambda
     Tensor<float32> lossRow;                   // (layers,) this step's local losses, read back once
     boolean[] stepped;                         // did layer i take a step this batch?
+    // declared routes (spela-kernels 7): per layer, the step and head rows picked at sizing,
+    // the calls their halves read, and the ready state each pick saw
+    Route[] stepRoutes;
+    Route[] headRoutes;
+    SpelaCall[] stepCalls;
+    SpelaCall[] headCalls;
+    int32[] stepKeys;
+    int32[] headKeys;
 
     /** Takes OWNERSHIP of the layer list and the config. A plain formal
      *  stored into a plain field is a borrow the constructor's own drop
@@ -124,6 +133,12 @@ public class SpelaTrainer {
         this.lossTables = heap ArrayList<Tensor<float32>>();
         this.hasMarginTable = false;
         this.stepped = heap boolean[this.layers.count()];
+        this.stepRoutes = heap Route[this.layers.count()];
+        this.headRoutes = heap Route[this.layers.count()];
+        this.stepCalls = heap SpelaCall[this.layers.count()];
+        this.headCalls = heap SpelaCall[this.layers.count()];
+        this.stepKeys = heap int32[this.layers.count()];
+        this.headKeys = heap int32[this.layers.count()];
         int64[] lsh = heap int64[1];
         // one slot a layer, then the gated batch's accepted count
         lsh[0] = (int64) this.layers.count() + 1;
@@ -232,6 +247,59 @@ public class SpelaTrainer {
     }
 
     /** Has `layer` seen an activation and fixed its class-vector dim? */
+    /** The step row layer `layer` bound at sizing (spela-kernels 7), or null before its first batch. */
+    public Route stepRouteAt(int32 layer) { return this.stepRoutes[layer]; }
+
+    /** The loss-head row layer `layer` bound at sizing, or null before its first batch. */
+    public Route headRouteAt(int32 layer) { return this.headRoutes[layer]; }
+
+    /** The ready state a pick reads, as a key: a change picks again. */
+    int32 readyKey(boolean dev, boolean anchored) {
+        int32 k = 0;
+        if (dev) { k = k + 1; }
+        if (this.fusedHead) { k = k + 2; }
+        if (anchored) { k = k + 4; }
+        return k;
+    }
+
+    /** Layer `i`'s step call, its row picked when the layer is first sized or its ready state moved. */
+    SpelaCall stepCallOf(int32 i, Module layer, boolean dev, boolean anchored) {
+        if (this.stepCalls[i] == null) {
+            SpelaQuery q #= SpelaRoutes.stepQuery(layer);
+            this.stepCalls[i] #= heap SpelaCall(#q, dev, this.fusedHead);
+            this.stepKeys[i] = 0 - 1;
+        }
+        SpelaCall c = this.stepCalls[i];
+        c.onDevice = dev;
+        c.fusedHead = this.fusedHead;
+        c.anchored = anchored;
+        int32 key = this.readyKey(dev, anchored);
+        if (this.stepKeys[i] != key) {
+            this.stepRoutes[i] #= SpelaRoutes.table().pick(c);
+            this.stepKeys[i] = key;
+        }
+        return c;
+    }
+
+    /** Layer `i`'s head call for an output of rank `rank`, picked as its step call is. */
+    SpelaCall headCallOf(int32 i, int32 rank, boolean dev, boolean anchored) {
+        if (this.headCalls[i] == null) {
+            SpelaQuery q #= SpelaRoutes.headQuery(this.cfg.lossType, (int64) this.cfg.numClasses, rank);
+            this.headCalls[i] #= heap SpelaCall(#q, dev, this.fusedHead);
+            this.headKeys[i] = 0 - 1;
+        }
+        SpelaCall c = this.headCalls[i];
+        c.onDevice = dev;
+        c.fusedHead = this.fusedHead;
+        c.anchored = anchored;
+        int32 key = this.readyKey(dev, anchored);
+        if (this.headKeys[i] != key) {
+            this.headRoutes[i] #= SpelaRoutes.table().pick(c);
+            this.headKeys[i] = key;
+        }
+        return c;
+    }
+
     public boolean isSized(int32 layer) {
         return this.sized[layer];
     }
@@ -323,8 +391,26 @@ public class SpelaTrainer {
         return total / (float64) lcount;
     }
 
-    /** Layer `i`'s forward on its own tape, its local step when due, and the detached handoff. */
+    /**
+     * Layer `i`'s step through the row it bound (spela-kernels 7): the kernel step for a Linear
+     * or Linear+ReLU on the device, the tape-composed step otherwise.
+     */
     #Tensor<float32> layerStep(int32 i, Tensor<float32> h, Tensor<float32> labels, float32 lr, Tensor<float32> mask) {
+        Module layer = this.layers.get(i);
+        boolean anchored = this.hasAnchors && this.cfg.anchorLambda > 0.0;
+        SpelaCall c = this.stepCallOf(i, layer, this.onDevice(), anchored);
+        c.bindStep(this, i, h, labels, mask, lr);
+        this.stepRoutes[i].dispatch(c);
+        return c.takeNext();
+    }
+
+    /** A step row's body: layer `i`'s forward on its own tape, its local step when due, and the detached handoff. */
+    void stepBody(SpelaCall sc) {
+        int32 i = sc.layer;
+        Tensor<float32> h = sc.h;
+        Tensor<float32> labels = sc.labels;
+        Tensor<float32> mask = sc.mask;
+        float32 lr = sc.lr;
         Module layer = this.layers.get(i);
         GradTape<float32> tape = heap GradTape<float32>();
         layer.bindParameters(tape);
@@ -358,23 +444,10 @@ public class SpelaTrainer {
                 layerLr = lr * this.cfg.lrMultipliers[i];
             }
             opt.setLr(layerLr);
-            boolean anchored = this.hasAnchors && this.cfg.anchorLambda > 0.0;
-            if (!anchored && this.headRuns(tape.valueOf(flatOut))) {
-                // The fused head writes this layer's loss slot and the output's gradient, which
-                // seeds the layer's backward (spela-kernels 4).
-                Tensor<float32> dh #= this.headLoss(i, tape.valueOf(flatOut), labels, mask);
-                tape.backwardFrom(flatOut, #dh);
-            } else {
-                if (mask != null) {
-                    throw heap MlException("SpelaTrainer: a gated batch needs the fused head at layer " + i);
-                }
-                GradTensor loss = this.localLoss(tape, i, flatOut, labels);
-                if (anchored) {
-                    loss = this.withAnchor(tape, i, ps, loss);
-                }
-                this.noteLoss(i, tape.valueOf(loss));
-                tape.backward(loss);
-            }
+            // the loss head is the row this layer bound (spela-kernels 7): fused or composed
+            SpelaCall hc = this.headCallOf(i, tape.valueOf(flatOut).ndim(), tape.valueOf(flatOut).isOnGpu(), sc.anchored);
+            hc.bindHead(this, i, tape, flatOut, ps, labels, mask);
+            this.headRoutes[i].dispatch(hc);
             // Borrowed from the tape, which outlives `gs` in this frame: the optimizer reads
             // the cotangents in place instead of copying each one (spela-kernels 4.3.1).
             Tensor<float32>[] gs #= Nets.gradsBorrowed(tape, ps);
@@ -421,7 +494,29 @@ public class SpelaTrainer {
         }
         Tensor<float32> next #= Ops.copyOf<float32>(tape.valueOf(flatOut));
         layer.unbindParameters();
-        return #next;
+        sc.next #= next;
+    }
+
+    /**
+     * A fused head row's dispatch: the head writes the layer's loss slot and the output's
+     * gradient, which seeds the layer's backward (spela-kernels 4).
+     */
+    void fusedLoss(SpelaCall c) {
+        Tensor<float32> dh #= this.headLoss(c.layer, c.tape.valueOf(c.out), c.labels, c.mask);
+        c.tape.backwardFrom(c.out, #dh);
+    }
+
+    /** The composed row's dispatch: the local loss on the tape, anchored when the layer is, and its backward. */
+    void composedLoss(SpelaCall c) {
+        if (c.mask != null) {
+            throw heap MlException("SpelaTrainer: a gated batch needs the fused head at layer " + c.layer);
+        }
+        GradTensor loss = this.localLoss(c.tape, c.layer, c.out, c.labels);
+        if (c.anchored) {
+            loss = this.withAnchor(c.tape, c.layer, c.params, loss);
+        }
+        this.noteLoss(c.layer, c.tape.valueOf(loss));
+        c.tape.backward(loss);
     }
 
     /** Keep layer `i`'s loss in the step's loss row, on the row's device. */
@@ -732,22 +827,6 @@ public class SpelaTrainer {
      * tape-composed loss, the head's oracle.
      */
     public void setFusedHead(boolean on) { this.fusedHead = on; }
-
-    /**
-     * Whether the fused head serves this layer's output: on the device, rank 2, and the kernels
-     * of the route the class count binds (SpelaHead.manyClasses) built.
-     */
-    boolean headRuns(Tensor<float32> hv) {
-        if (!this.fusedHead || !hv.isOnGpu() || hv.ndim() != 2) { return false; }
-        if (this.cfg.lossType != SpelaConfig.COSFACE && this.cfg.lossType != SpelaConfig.COSINE) { return false; }
-        if (!SpelaHead.manyClasses((int64) this.cfg.numClasses)) {
-            return Device.kernelAvailable("headRows_float32") && Device.kernelAvailable("headGrad_float32");
-        }
-        if (this.cfg.lossType == SpelaConfig.COSINE) { return Device.kernelAvailable("headCosine_float32"); }
-        return Device.kernelAvailable("headPack_float32") && Device.kernelAvailable("headNorm_float32")
-            && Device.kernelAvailable("headStats_float32") && Device.kernelAvailable("headBlockGrad_float32")
-            && Device.kernelAvailable("headFinish_float32");
-    }
 
     /** The fused head over layer `i`'s output: its loss into the step's loss row, the output's gradient returned. */
     #Tensor<float32> headLoss(int32 i, Tensor<float32> hv, Tensor<float32> labels, Tensor<float32> mask) {
