@@ -63,7 +63,16 @@ public class SpelaTrainer {
     int64 totalSteps;
     // streaming state
     ArrayList<Tensor<float32>> bufX;
-    ArrayList<float64> bufY;
+    ArrayList<float64> bufY;                   // a label, or -1 for an example the device gate decides
+    int64 arrived;                             // examples buffered, for onlineFlushEvery
+    // the device gate (spela-kernels 8): the last gated flush's mask, and its bookkeeping
+    Tensor<float32> lastMask;
+    boolean gated;
+    int64 gateLabeled;
+    int64 gateUnlabeled;
+    KernelBuffer<float32> liveBuf;
+    ArrayList<float32[]> stepStates;
+    int64 lastAccepted;
     int64 observed;
     int64 skipped;
     // per-layer anchors (L2-SP snapshots), one flat tensor per parameter
@@ -103,14 +112,24 @@ public class SpelaTrainer {
         this.bufY = heap ArrayList<float64>();
         this.observed = 0;
         this.skipped = 0;
+        this.arrived = 0;
+        this.gated = false;
+        this.gateLabeled = 0;
+        this.gateUnlabeled = 0;
+        this.stepStates = heap ArrayList<float32[]>();
+        this.lastAccepted = 0;
+        this.liveBuf = null;
         this.anchors = heap ArrayList<Tensor<float32>>();
         this.hasAnchors = false;
         this.lossTables = heap ArrayList<Tensor<float32>>();
         this.hasMarginTable = false;
         this.stepped = heap boolean[this.layers.count()];
         int64[] lsh = heap int64[1];
-        lsh[0] = (int64) this.layers.count();
+        // one slot a layer, then the gated batch's accepted count
+        lsh[0] = (int64) this.layers.count() + 1;
         this.lossRow #= Tensor.zeros<float32>(lsh);
+        int64[] mone = [1L];
+        this.lastMask #= Tensor.zeros<float32>(mone);
         int64[] ash = heap int64[1];
         ash[0] = 1;
         this.anchorScale #= Tensor.full<float32>(ash, (float32) this.cfg.anchorLambda);
@@ -136,6 +155,8 @@ public class SpelaTrainer {
             this.headVecs.add(#headPlaceholder);
             Tensor<float32> packPlaceholder #= Tensor.zeros<float32>(one);
             this.headPacked.add(#packPlaceholder);
+            float32[] noState = heap float32[0];
+            this.stepStates.add(#noState);
             this.headPlaced[i] = false;
             this.sized[i] = false;
             this.stepped[i] = false;
@@ -256,6 +277,11 @@ public class SpelaTrainer {
      * handing its output on detached. Returns the mean local loss.
      */
     public float64 trainBatch(Tensor<float32> x, Tensor<float32> y) {
+        return this.trainMasked(x, y, null);
+    }
+
+    /** trainBatch with a device row `mask` (null for every row): the gated online batch. */
+    float64 trainMasked(Tensor<float32> x, Tensor<float32> y, Tensor<float32> mask) {
         int32 lcount = this.layers.count();
         float32 lr = this.currentLr();
         boolean dev = this.onDevice();
@@ -281,20 +307,24 @@ public class SpelaTrainer {
         Tensor<float32> labels = y;
         if (moveY) { labels = ys; }
         SpelaTrainer.placeLike(this.lossRow, xin);
-        Tensor<float32> h #= this.layerStep(0, xin, labels, lr);
+        this.gated = mask != null;
+        Tensor<float32> h #= this.layerStep(0, xin, labels, lr, mask);
         int32 i = 1;
         while (i < lcount) {
-            h #= this.layerStep(i, h, labels, lr);
+            h #= this.layerStep(i, h, labels, lr, mask);
             i = i + 1;
         }
         float64 total = this.readLosses();
         if (dev) { st.setDeferred(false); }
-        this.stepCount = this.stepCount + 1;
+        boolean declined = this.gated && this.lastAccepted == 0L;
+        this.gated = false;
+        // a gated batch with no accepted row made no update, so the schedule does not move either
+        if (!declined) { this.stepCount = this.stepCount + 1; }
         return total / (float64) lcount;
     }
 
     /** Layer `i`'s forward on its own tape, its local step when due, and the detached handoff. */
-    #Tensor<float32> layerStep(int32 i, Tensor<float32> h, Tensor<float32> labels, float32 lr) {
+    #Tensor<float32> layerStep(int32 i, Tensor<float32> h, Tensor<float32> labels, float32 lr, Tensor<float32> mask) {
         Module layer = this.layers.get(i);
         GradTape<float32> tape = heap GradTape<float32>();
         layer.bindParameters(tape);
@@ -332,9 +362,12 @@ public class SpelaTrainer {
             if (!anchored && this.headRuns(tape.valueOf(flatOut))) {
                 // The fused head writes this layer's loss slot and the output's gradient, which
                 // seeds the layer's backward (spela-kernels 4).
-                Tensor<float32> dh #= this.headLoss(i, tape.valueOf(flatOut), labels);
+                Tensor<float32> dh #= this.headLoss(i, tape.valueOf(flatOut), labels, mask);
                 tape.backwardFrom(flatOut, #dh);
             } else {
+                if (mask != null) {
+                    throw heap MlException("SpelaTrainer: a gated batch needs the fused head at layer " + i);
+                }
                 GradTensor loss = this.localLoss(tape, i, flatOut, labels);
                 if (anchored) {
                     loss = this.withAnchor(tape, i, ps, loss);
@@ -345,7 +378,25 @@ public class SpelaTrainer {
             // Borrowed from the tape, which outlives `gs` in this frame: the optimizer reads
             // the cotangents in place instead of copying each one (spela-kernels 4.3.1).
             Tensor<float32>[] gs #= Nets.gradsBorrowed(tape, ps);
-            if (this.cfg.gradClipNorm > 0.0f && gs.count() > 0 && gs[0].isOnGpu()) {
+            if (mask != null) {
+                // A gated batch's update is scaled by the device's verdict: 0, no update at all,
+                // when no row was accepted (spela-kernels 8, Julian 2026-11-15). The host half
+                // of the step state is kept so readLosses can take a declined step back.
+                KernelBuffer<float32> accepted #= this.lossRow.deviceView("spela.gate").slice((uint64) this.layers.count(), 1);
+                if (this.cfg.gradClipNorm > 0.0f) {
+                    KernelBuffer<float32> clip #= BackpropTrainer.clipScaleQueued(gs, this.cfg.gradClipNorm);
+                    Optim.formLiveScale(this.liveBuf, clip, accepted);
+                } else {
+                    Optim.formLiveScale(this.liveBuf, null, accepted);
+                }
+                if (opt instanceof AdamW aw) {
+                    float32[] st0 #= aw.stepState();
+                    this.stepStates.set(i, #st0);
+                    aw.stepScaled(gs, this.liveBuf);
+                } else if (opt instanceof SGD sg) {
+                    sg.stepScaled(gs, this.liveBuf);
+                }
+            } else if (this.cfg.gradClipNorm > 0.0f && gs.count() > 0 && gs[0].isOnGpu()) {
                 // The clip's scale stays on the device and the optimizer reads it with the
                 // gradients, one launch a layer (spela-kernels 3).
                 KernelBuffer<float32> scale #= BackpropTrainer.clipScaleQueued(gs, this.cfg.gradClipNorm);
@@ -392,18 +443,38 @@ public class SpelaTrainer {
         if (row.isOnGpu()) {
             row.cpu();
         }
+        boolean declined = false;
+        if (this.gated) {
+            // the same read carries the gate's verdict: the accepted count after the layers' losses
+            this.lastAccepted = (int64) row.flatGet((int64) this.layers.count());
+            int64 unlabeledAccepted = this.lastAccepted - this.gateLabeled;
+            this.observed = this.observed + unlabeledAccepted;
+            this.skipped = this.skipped + (this.gateUnlabeled - unlabeledAccepted);
+            declined = this.lastAccepted == 0L;
+        }
         float64 total = 0.0;
         int32 i = 0;
         while (i < this.layers.count()) {
             if (this.stepped[i]) {
-                float64 v = (float64) row.flatGet((int64) i);
-                this.lastLossPerLayer.set(i, v);
-                total = total + v;
+                if (declined) {
+                    // the device made no update, so the optimizer's host state goes back too
+                    Optimizer opt = this.optimizers.get(i);
+                    if (opt instanceof AdamW aw) { aw.restoreStepState(this.stepStates.get(i)); }
+                } else {
+                    float64 v = (float64) row.flatGet((int64) i);
+                    this.lastLossPerLayer.set(i, v);
+                    total = total + v;
+                }
                 this.stepped[i] = false;
             }
             i = i + 1;
         }
         return total;
+    }
+
+    static KernelBuffer<float32> viewOrNull(Tensor<float32> t) {
+        if (t == null) { return null; }
+        return t.deviceView("spela.mask");
     }
 
     /** Does the stack live on the device? The first layer with parameters decides. */
@@ -563,6 +634,72 @@ public class SpelaTrainer {
             + this.cfg.lossType);
     }
 
+    /** Layer `i`'s class vectors on the device, copied (and packed for the many-class head) on first use. */
+    Tensor<float32> placedVecs(int32 i) {
+        if (!this.headPlaced[i]) {
+            Tensor<float32> dv #= this.classVectors.get(i).copy();
+            dv.gpu();
+            int64 nc = dv.shapeAt(0);
+            int64 nd = dv.shapeAt(1);
+            if (SpelaHead.manyClasses(nc)) {
+                int64[] psh = [nc * nd];
+                Tensor<float32> pk #= Ewise.deviceOf<float32>(psh);
+                SpelaHead.pack<float32>(pk.deviceView("spela.head"), dv.deviceView("spela.head"), nc, nd);
+                this.headPacked.set(i, #pk);
+            }
+            this.headVecs.set(i, #dv);
+            this.headPlaced[i] = true;
+        }
+        return this.headVecs.get(i);
+    }
+
+    /**
+     * Whether self-distillation gates on the device (spela-kernels 8): the stack on the device,
+     * every layer's loss the fused head and its optimizer AdamW or SGD on one slot launch, and
+     * the gate built. Otherwise observeUnlabeled keeps the host gate, one readback an example.
+     */
+    boolean deviceGating() {
+        if (!this.cfg.selfDistill || !this.fusedHead || !this.onDevice()) { return false; }
+        if (this.cfg.lossType != SpelaConfig.COSFACE && this.cfg.lossType != SpelaConfig.COSINE) { return false; }
+        if (this.hasAnchors && this.cfg.anchorLambda > 0.0) { return false; }
+        if (!Device.kernelAvailable("headGate_float32") || !Device.kernelAvailable("liveScale")) { return false; }
+        int32 i = 0;
+        while (i < this.layers.count()) {
+            Optimizer opt = this.optimizers.get(i);
+            boolean slotted = false;
+            if (opt instanceof AdamW aw) { slotted = true; }
+            if (opt instanceof SGD sg) { slotted = true; }
+            if (!slotted) { return false; }
+            Parameter[] ps #= this.layers.get(i).parameters();
+            if ((int32) ps.count() > Optim.SLOTS) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /** The forward through layers 0..target on the device, the last activation left there. */
+    #Tensor<float32> deviceSweep(Tensor<float32> x, int32 target) {
+        Tensor<float32> h #= Ops.copyOf<float32>(x);
+        int32 i = 0;
+        while (i <= target) {
+            Tensor<float32> raw #= this.predictLayer(this.layers.get(i), h);
+            h #= SpelaTrainer.flatten2d(raw);
+            this.sizeEmbeddings(i, h);
+            i = i + 1;
+        }
+        return #h;
+    }
+
+    /** The last gated flush's row mask (1 accepted, 0 not), read back: a diagnostic, it syncs. */
+    public #float32[] lastGateMask() {
+        Tensor<float32> m #= Ops.copyOf<float32>(this.lastMask);
+        if (m.isOnGpu()) { m.cpu(); }
+        float32[] out = heap float32[m.size()];
+        int64 i = 0L;
+        while (i < m.size()) { out[(int32) i] = m.flatGet(i); i = i + 1L; }
+        return #out;
+    }
+
     /** The tune store this trainer's layer products use: SpelaConfig.tuneDir, else CAJETA_ML_TUNE_DIR, else "" (none). */
     public String tuneDir() { return this.tuneStore; }
 
@@ -613,22 +750,8 @@ public class SpelaTrainer {
     }
 
     /** The fused head over layer `i`'s output: its loss into the step's loss row, the output's gradient returned. */
-    #Tensor<float32> headLoss(int32 i, Tensor<float32> hv, Tensor<float32> labels) {
-        if (!this.headPlaced[i]) {
-            Tensor<float32> dv #= this.classVectors.get(i).copy();
-            dv.gpu();
-            int64 nc = dv.shapeAt(0);
-            int64 nd = dv.shapeAt(1);
-            if (SpelaHead.manyClasses(nc)) {
-                int64[] psh = [nc * nd];
-                Tensor<float32> pk #= Ewise.deviceOf<float32>(psh);
-                SpelaHead.pack<float32>(pk.deviceView("spela.head"), dv.deviceView("spela.head"), nc, nd);
-                this.headPacked.set(i, #pk);
-            }
-            this.headVecs.set(i, #dv);
-            this.headPlaced[i] = true;
-        }
-        Tensor<float32> vecs = this.headVecs.get(i);
+    #Tensor<float32> headLoss(int32 i, Tensor<float32> hv, Tensor<float32> labels, Tensor<float32> mask) {
+        Tensor<float32> vecs = this.placedVecs(i);
         Tensor<float32> packed = this.headPacked.get(i);
         if (!SpelaHead.manyClasses((int64) this.cfg.numClasses)) { packed = vecs; }
         int64 rows = hv.shapeAt(0);
@@ -645,7 +768,7 @@ public class SpelaTrainer {
         }
         KernelBuffer<float32> slot #= this.lossRow.deviceView("spela.loss").slice((uint64) i, 1);
         SpelaHead.loss<float32>(slot, dh.deviceView("spela.head"), hv.deviceView("spela.head"), vecs.deviceView("spela.head"),
-            packed.deviceView("spela.head"), labels.deviceView("spela.head"), null, rows, d, (int64) this.cfg.numClasses, mode, uscale, margin, 0.00000001f);
+            packed.deviceView("spela.head"), labels.deviceView("spela.head"), SpelaTrainer.viewOrNull(mask), rows, d, (int64) this.cfg.numClasses, mode, uscale, margin, 0.00000001f);
         this.stepped[i] = true;
         return #dh;
     }
@@ -690,10 +813,12 @@ public class SpelaTrainer {
         Tensor<float32> row #= SpelaTrainer.flatten2d(x);
         this.bufX.add(#row);
         this.bufY.add(label);
-        this.observed = this.observed + 1;
+        // a label below 0 is the device gate's to decide, and counts when the gate does
+        if (label >= 0.0) { this.observed = this.observed + 1; }
+        this.arrived = this.arrived + 1;
         boolean full = this.bufX.count() >= this.cfg.onlineBufferSize;
         boolean due = this.cfg.onlineFlushEvery > 0
-                   && this.observed % (int64) this.cfg.onlineFlushEvery == 0;
+                   && this.arrived % (int64) this.cfg.onlineFlushEvery == 0;
         if (full || due) {
             this.flush();
             return true;
@@ -716,6 +841,13 @@ public class SpelaTrainer {
             this.skipped = this.skipped + 1;
             return false;
         }
+        if (this.deviceGating()) {
+            // On the device the example is buffered as it is and the gate runs over the whole
+            // batch at flush: no readback here (spela-kernels 8). It counts as observed or
+            // skipped once the flush's loss read brings the verdict back.
+            this.observe(x, -1.0);
+            return true;
+        }
         float64 conf = this.confidenceOf(x);
         if (conf < this.cfg.confidenceThreshold) {
             this.skipped = this.skipped + 1;
@@ -734,29 +866,70 @@ public class SpelaTrainer {
             return false;
         }
         int64 cols = this.bufX.get(0).shapeAt(1);
-        int64[] xs = heap int64[2];
-        xs[0] = (int64) n;
-        xs[1] = cols;
-        Tensor<float32> bx #= Tensor.zeros<float32>(xs);
-        int64[] ys = heap int64[1];
-        ys[0] = (int64) n;
-        Tensor<float32> by #= Tensor.zeros<float32>(ys);
+        int64 nn = (int64) n;
+        // The rows and their labels are staged as one host block, so a flush to the device is
+        // one upload (spela-kernels 8.2.2); the device splits it into the batch and its labels.
+        float32[] block = heap float32[nn * cols + nn];
+        int64 unlabeled = 0;
         int32 r = 0;
         while (r < n) {
             Tensor<float32> row = this.bufX.get(r);
             int64 j = 0;
             while (j < cols) {
-                bx.flatSet((int64) r * cols + j, row.flatGet(j));
+                block[(int32) ((int64) r * cols + j)] = row.flatGet(j);
                 j = j + 1;
             }
-            by.flatSet(r, (float32) this.bufY.get(r));
+            float64 lab = this.bufY.get(r);
+            block[(int32) (nn * cols + (int64) r)] = (float32) lab;
+            if (lab < 0.0) { unlabeled = unlabeled + 1; }
             r = r + 1;
         }
         // ArrayList has no clear(); replacing the lists drops the old
         // rows with them, which is what we want after copying them out.
         this.bufX #= heap ArrayList<Tensor<float32>>();
         this.bufY #= heap ArrayList<float64>();
-        this.trainBatch(bx, by);
+        int64[] bsh = [nn * cols + nn];
+        Tensor<float32> all #= Tensor.of<float32>(block, bsh);
+        int64[] xs = [nn, cols];
+        int64[] ys = [nn];
+        if (!this.onDevice()) {
+            Tensor<float32> bx #= Tensor.zeros<float32>(xs);
+            Tensor<float32> by #= Tensor.zeros<float32>(ys);
+            int64 q = 0L;
+            while (q < nn * cols) { bx.flatSet(q, block[(int32) q]); q = q + 1L; }
+            q = 0L;
+            while (q < nn) { by.flatSet(q, block[(int32) (nn * cols + q)]); q = q + 1L; }
+            this.trainBatch(bx, by);
+            return true;
+        }
+        all.gpu();
+        Tensor<float32> bx #= Ewise.deviceOf<float32>(xs);
+        Tensor<float32> by #= Ewise.deviceOf<float32>(ys);
+        KernelBuffer<float32> av #= all.deviceView("spela.flush").slice((uint64) 0, (uint64) (nn * cols));
+        KernelBuffer<float32> yv #= all.deviceView("spela.flush").slice((uint64) (nn * cols), (uint64) nn);
+        Copy.into<float32>(bx.deviceView("spela.flush"), av, nn * cols);
+        Copy.into<float32>(by.deviceView("spela.flush"), yv, nn);
+        if (unlabeled == 0L || !this.deviceGating()) {
+            this.trainBatch(bx, by);
+            return true;
+        }
+        // The gate: the batch through the stack as it stands, then each row's top cosine at
+        // the last layer against the threshold, all on the device (spela-kernels 8.2.1).
+        int32 last = this.layers.count() - 1;
+        Tensor<float32> hl #= this.deviceSweep(bx, last);
+        Tensor<float32> vecs = this.placedVecs(last);
+        Tensor<float32> gl #= Ewise.deviceOf<float32>(ys);
+        Tensor<float32> gm #= Ewise.deviceOf<float32>(ys);
+        SpelaTrainer.placeLike(this.lossRow, bx);
+        KernelBuffer<float32> acc #= this.lossRow.deviceView("spela.gate").slice((uint64) this.layers.count(), 1);
+        SpelaHead.gate<float32>(gl.deviceView("spela.gate"), gm.deviceView("spela.gate"), acc, hl.deviceView("spela.gate"),
+            vecs.deviceView("spela.gate"), by.deviceView("spela.gate"), nn, hl.shapeAt(1), vecs.shapeAt(0),
+            (float32) this.cfg.confidenceThreshold, 0.00000001f);
+        if (this.liveBuf == null) { this.liveBuf = heap KernelBuffer<float32>(1); }
+        this.gateLabeled = nn - unlabeled;
+        this.gateUnlabeled = unlabeled;
+        this.trainMasked(bx, gl, gm);
+        this.lastMask #= gm;
         return true;
     }
 

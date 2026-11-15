@@ -299,4 +299,71 @@ public class OptimTest {
         OptimTest.slotsCase(false, false);
         OptimTest.slotsCase(false, true);
     }
+
+    /**
+     * spela-kernels 8 (Julian 2026-11-15: a flush with no accepted row makes no update): a
+     * zero device scale leaves every slot's weights and moments as they were, for Adam and
+     * for SGD with momentum; liveScale is 0 with no accepted row, else the clip's scale or 1.
+     */
+    @Test
+    public void aZeroScaleLeavesTheSlotsUntouched() {
+        if (!OptimTest.usable("adamSlots_float32") || !OptimTest.usable("sgdSlots_float32") || !OptimTest.usable("liveScale")) { return; }
+        int64 n = 300L;
+        float32[] hp #= OptimTest.pattern(n, 3L, 0.01f);
+        float32[] hm #= OptimTest.pattern(n, 5L, 0.001f);
+        float32[] hv #= OptimTest.pattern(n, 7L, 0.0001f);
+        int64 j = 0L;
+        while (j < n) { if (hv[(int32) j] < 0.0f) { hv[(int32) j] = 0.0f - hv[(int32) j]; } j = j + 1L; }
+        float32[] hg #= OptimTest.pattern(n, 11L, 0.02f);
+        KernelBuffer<float32> p #= OptimTest.filled(hp);
+        KernelBuffer<float32> m #= OptimTest.filled(hm);
+        KernelBuffer<float32> v #= OptimTest.filled(hv);
+        KernelBuffer<float32> g #= OptimTest.filled(hg);
+        KernelBuffer<float32> p0 #= OptimTest.filled(hp);
+        KernelBuffer<float32> m0 #= OptimTest.filled(hm);
+        KernelBuffer<float32> v0 #= OptimTest.filled(hv);
+        float32[] none = [0.0f];
+        float32[] three = [3.0f];
+        float32[] half = [0.5f];
+        KernelBuffer<float32> accNone #= OptimTest.filled(none);
+        KernelBuffer<float32> accSome #= OptimTest.filled(three);
+        KernelBuffer<float32> clip #= OptimTest.filled(half);
+        KernelBuffer<float32> sc = heap KernelBuffer<float32>(1);
+        int64[] mk #= ValueCheck.mark();
+        Optim.formLiveScale(sc, null, accNone);
+        float32[] got = heap float32[1];
+        sc.download(got);
+        Assert.isTrue(got[0] == 0.0f);
+        KernelBuffer<float32>[] ps = [p];
+        KernelBuffer<float32>[] ms = [m];
+        KernelBuffer<float32>[] vs = [v];
+        KernelBuffer<float32>[] gs = [g];
+        int64[] ns = [n];
+        float32[] c1 = [0.1f];
+        float32[] c2 = [0.001f];
+        Optim.adamStepSlots<float32>(ps, ms, vs, gs, ns, 1, c1, c2, 0.01f, 0.0001f, sc);
+        OptimTest.sameBits("adam weight under a zero scale", p, p0, n);
+        OptimTest.sameBits("adam m under a zero scale", m, m0, n);
+        OptimTest.sameBits("adam v under a zero scale", v, v0, n);
+        KernelBuffer<float32>[] svs = [m];
+        Optim.sgdStepSlots<float32>(ps, svs, gs, ns, 1, 0.01f, 0.9f, sc);
+        OptimTest.sameBits("sgd weight under a zero scale", p, p0, n);
+        OptimTest.sameBits("sgd velocity under a zero scale", m, m0, n);
+        Optim.formLiveScale(sc, clip, accSome);
+        sc.download(got);
+        Assert.isTrue(got[0] == 0.5f);
+        Optim.formLiveScale(sc, null, accSome);
+        sc.download(got);
+        Assert.isTrue(got[0] == 1.0f);
+        Optim.formLiveScale(sc, clip, accNone);
+        sc.download(got);
+        Assert.isTrue(got[0] == 0.0f);
+        // a live scale steps the weights
+        Optim.formLiveScale(sc, null, accSome);
+        Optim.adamStepSlots<float32>(ps, ms, vs, gs, ns, 1, c1, c2, 0.01f, 0.0001f, sc);
+        float32[] after = heap float32[n];
+        p.download(after);
+        Assert.isTrue(after[0] != hp[0]);
+        ValueCheck.credit(mk);
+    }
 }

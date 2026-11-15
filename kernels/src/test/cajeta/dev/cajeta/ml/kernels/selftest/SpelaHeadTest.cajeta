@@ -204,4 +204,146 @@ public class SpelaHeadTest {
         Assert.isTrue(SpelaHead.logitFloats() <= 37L * 128L);
         SpelaHead.setBlockClasses(1024L);
     }
+
+    /**
+     * spela-kernels 8.2.1: the device's confidence gate. Each row's top cosine to the class
+     * vectors and its argmax, as the trainer's host gate computes them in float64; a row with
+     * a given label (>= 0) keeps it and is accepted, any other takes the argmax and is accepted
+     * when its top cosine clears the threshold; the accepted count lands in its slot.
+     */
+    @Test
+    public void theGateMatchesTheHostCosineAndThreshold() {
+        if (!SpelaHeadTest.usable("headGate_float32")) { return; }
+        int64 rows = 37L; int64 d = 70L; int64 c = 5L;
+        float32[] h = heap float32[rows * d];
+        float32[] v = heap float32[c * d];
+        float32[] given = heap float32[rows];
+        int64 i = 0L;
+        while (i < rows * d) { h[(int32) i] = SpelaHeadTest.pattern(i + 3L, 0.01f); i = i + 1L; }
+        i = 0L;
+        while (i < c * d) { v[(int32) i] = SpelaHeadTest.pattern(i + 17L, 0.01f); i = i + 1L; }
+        i = 0L;
+        while (i < rows) {
+            given[(int32) i] = -1.0f;
+            if (i % 5L == 2L) { given[(int32) i] = (float32) (i % c); }
+            i = i + 1L;
+        }
+        // the host's top cosines, to put the threshold between two of them
+        float64[] best = heap float64[rows];
+        int64[] arg = heap int64[rows];
+        int64 r = 0L;
+        while (r < rows) {
+            float64 ss = 0.0;
+            int64 j = 0L;
+            while (j < d) { ss = ss + (float64) h[(int32) (r * d + j)] * (float64) h[(int32) (r * d + j)]; j = j + 1L; }
+            float64 hn = Math.sqrt(ss);
+            if (hn < 0.00000001) { hn = 0.00000001; }
+            best[(int32) r] = -2.0;
+            int64 k = 0L;
+            while (k < c) {
+                float64 dt = 0.0;
+                j = 0L;
+                while (j < d) { dt = dt + (float64) h[(int32) (r * d + j)] * (float64) v[(int32) (k * d + j)]; j = j + 1L; }
+                if (dt / hn > best[(int32) r]) { best[(int32) r] = dt / hn; arg[(int32) r] = k; }
+                k = k + 1L;
+            }
+            r = r + 1L;
+        }
+        float64 thr = (best[0] + best[1]) * 0.5;
+        KernelBuffer<float32> hb = heap KernelBuffer<float32>((uint64) (rows * d));
+        KernelBuffer<float32> vb = heap KernelBuffer<float32>((uint64) (c * d));
+        KernelBuffer<float32> gb = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> lb = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> mb = heap KernelBuffer<float32>((uint64) rows);
+        KernelBuffer<float32> acc = heap KernelBuffer<float32>(1);
+        hb.upload(h);
+        vb.upload(v);
+        gb.upload(given);
+        int64[] mk #= ValueCheck.mark();
+        SpelaHead.gate<float32>(lb, mb, acc, hb, vb, gb, rows, d, c, (float32) thr, 0.00000001f);
+        float32[] gl = heap float32[rows];
+        float32[] gm = heap float32[rows];
+        float32[] ga = heap float32[1];
+        lb.download(gl);
+        mb.download(gm);
+        acc.download(ga);
+        float64 accepted = 0.0;
+        r = 0L;
+        while (r < rows) {
+            float32 wantLabel = (float32) arg[(int32) r];
+            float32 wantMask = 0.0f;
+            if (best[(int32) r] >= thr) { wantMask = 1.0f; }
+            if (given[(int32) r] >= 0.0f) {
+                wantLabel = given[(int32) r];
+                wantMask = 1.0f;
+            }
+            if (gl[(int32) r] != wantLabel || gm[(int32) r] != wantMask) {
+                System.stdout.println("  gate row " + r + ": label " + gl[(int32) r] + " want " + wantLabel + ", mask " + gm[(int32) r]
+                    + " want " + wantMask + " (top cosine " + best[(int32) r] + ", threshold " + thr + ")");
+                Assert.isTrue(false);
+            }
+            accepted = accepted + (float64) wantMask;
+            r = r + 1L;
+        }
+        Assert.isTrue((float64) ga[0] == accepted);
+        Assert.isTrue(accepted > 0.0 && accepted < (float64) rows);
+        ValueCheck.credit(mk);
+    }
+
+    /** spela-kernels 8: a head whose every row is masked out has loss 0 and gradient 0, not 0 / 0. */
+    @Test
+    public void anAllMaskedHeadIsZeroNotNaN() {
+        if (!SpelaHeadTest.usable("headRows_float32") || !SpelaHeadTest.usable("headCosine_float32")) { return; }
+        int64 rows = 9L; int64 d = 16L;
+        int64[] counts = [5L, 300L];
+        int32 ci = 0;
+        while (ci < 2) {
+            int64 c = counts[ci];
+            int32 mode = 0;
+            while (mode < 2) {
+                float32[] h = heap float32[rows * d];
+                float32[] v = heap float32[c * d];
+                float32[] lab = heap float32[rows];
+                float32[] msk = heap float32[rows];
+                int64 i = 0L;
+                while (i < rows * d) { h[(int32) i] = SpelaHeadTest.pattern(i, 0.01f); i = i + 1L; }
+                i = 0L;
+                while (i < c * d) { v[(int32) i] = SpelaHeadTest.pattern(i + 9L, 0.01f); i = i + 1L; }
+                i = 0L;
+                while (i < rows) { lab[(int32) i] = (float32) (i % c); i = i + 1L; }
+                KernelBuffer<float32> hb = heap KernelBuffer<float32>((uint64) (rows * d));
+                KernelBuffer<float32> vb = heap KernelBuffer<float32>((uint64) (c * d));
+                KernelBuffer<float32> lb = heap KernelBuffer<float32>((uint64) rows);
+                KernelBuffer<float32> mb = heap KernelBuffer<float32>((uint64) rows);
+                KernelBuffer<float32> dh = heap KernelBuffer<float32>((uint64) (rows * d));
+                KernelBuffer<float32> loss = heap KernelBuffer<float32>(1);
+                int64 pf = SpelaHead.packFloats(c, d);
+                if (pf == 0L) { pf = 1L; }
+                KernelBuffer<float32> pk = heap KernelBuffer<float32>((uint64) pf);
+                hb.upload(h);
+                vb.upload(v);
+                lb.upload(lab);
+                mb.upload(msk);
+                SpelaHead.pack<float32>(pk, vb, c, d);
+                float32 us = 30.0f;
+                if (mode == 1) { us = 1.0f; }
+                SpelaHead.loss<float32>(loss, dh, hb, vb, pk, lb, mb, rows, d, c, mode, us, 0.0f, 0.00000001f);
+                float32[] gl = heap float32[1];
+                float32[] gd = heap float32[rows * d];
+                loss.download(gl);
+                dh.download(gd);
+                Assert.isTrue(gl[0] == 0.0f);
+                i = 0L;
+                while (i < rows * d) {
+                    if (gd[(int32) i] != 0.0f) {
+                        System.stdout.println("  all-masked dh [" + i + "] = " + gd[(int32) i] + " at " + c + " classes, mode " + mode);
+                        Assert.isTrue(false);
+                    }
+                    i = i + 1L;
+                }
+                mode = mode + 1;
+            }
+            ci = ci + 1;
+        }
+    }
 }

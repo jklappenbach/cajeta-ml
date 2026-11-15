@@ -79,6 +79,27 @@ public final class Optim {
         clipScale.launch(s, grid: [1], block: [64])(scale, parts, (uint32) count, maxNorm);
     }
 
+    /** scale[0] = 0 when accepted[0] is 0 (no update), else clip[0] where `hasClip`, else 1. */
+    @Kernel
+    public static void liveScale(KernelBuffer<float32> scale, KernelBuffer<float32> clip, KernelBuffer<float32> accepted, uint32 hasClip) {
+        if (KernelThread.globalIdX() == 0) {
+            float32 r = 1.0f;
+            if (hasClip != 0) { r = clip[0]; }
+            if (!(accepted[0] > 0.0f)) { r = 0.0f; }
+            scale[0] = r;
+        }
+    }
+
+    /** liveScale into `scale`: `clip` (null for none) gated by the batch's accepted count; queued on the current stream. */
+    public static void formLiveScale(KernelBuffer<float32> scale, KernelBuffer<float32> clip, KernelBuffer<float32> accepted) {
+        KernelStream s #= KernelStream.current();
+        if (clip != null) {
+            liveScale.launch(s, grid: [1], block: [64])(scale, clip, accepted, (uint32) 1);
+        } else {
+            liveScale.launch(s, grid: [1], block: [64])(scale, accepted, accepted, (uint32) 0);
+        }
+    }
+
     /** `x` (n) scaled in place by the device scalar `scale`; queued on the current stream. */
     public static void scaleByDevice<E>(KernelBuffer<E> x, KernelBuffer<float32> scale, int64 n) {
         uint32 un = (uint32) n;
@@ -131,6 +152,8 @@ public final class Optim {
         uint32 i = KernelThread.globalIdX();
         float32 sc = 1.0f;
         if (useScale != 0) { sc = scale[0]; }
+        // a zero scale is no update at all: an online batch with no accepted row (spela-kernels 8)
+        if (useScale != 0 && sc == 0.0f) { return; }
         uint32 e1 = n0 + n1;
         uint32 e2 = e1 + n2;
         uint32 e3 = e2 + n3;
@@ -150,6 +173,8 @@ public final class Optim {
         uint32 i = KernelThread.globalIdX();
         float32 sc = 1.0f;
         if (useScale != 0) { sc = scale[0]; }
+        // a zero scale is no update at all: an online batch with no accepted row (spela-kernels 8)
+        if (useScale != 0 && sc == 0.0f) { return; }
         uint32 e1 = n0 + n1;
         uint32 e2 = e1 + n2;
         uint32 e3 = e2 + n3;

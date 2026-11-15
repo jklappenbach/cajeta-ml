@@ -1,0 +1,190 @@
+package dev.cajeta.ml.selftest;
+
+import cajeta.lang.System;
+import cajeta.math.Tensor;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.data.Digits;
+import dev.cajeta.ml.train.SpelaConfig;
+import dev.cajeta.ml.train.SpelaTrainer;
+
+/**
+ * spela-kernels 8, spec §2.6: the online surface on the device. Self-distillation buffers each
+ * unlabeled example with no readback and gates the batch on the device at flush, accepting
+ * exactly what the host gate accepts; a flush stages its rows in one upload; a flush whose
+ * every row is rejected makes no update (Julian 2026-11-15); a frozen backbone launches no
+ * head or update for its layers.
+ */
+public class SpelaOnlineDeviceTest {
+    public SpelaOnlineDeviceTest() { return; }
+
+    static #Tensor<float32> rowOf(Tensor<float32> x, int64 r) {
+        int64 cols = x.shapeAt(1);
+        float32[] a = heap float32[cols];
+        int64 j = 0L;
+        while (j < cols) { a[(int32) j] = x.flatGet(r * cols + j); j = j + 1L; }
+        int64[] sh = [1L, cols];
+        Tensor<float32> t #= Tensor.of<float32>(a, sh);
+        return #t;
+    }
+
+    static #SpelaTrainer online(float64 threshold, int32 buffer) {
+        SpelaConfig cfg = heap SpelaConfig(4);
+        cfg.lr = 0.01f;
+        cfg.seed = 97L;
+        cfg.selfDistill = true;
+        cfg.confidenceThreshold = threshold;
+        cfg.onlineBufferSize = buffer;
+        SpelaTrainer tr = heap SpelaTrainer(#SpelaDeviceTest.mlp(101L), #cfg);
+        tr.planSteps(20L);
+        SpelaDeviceTest.toDevice(tr);
+        return #tr;
+    }
+
+    @Test
+    public void aGatedStreamHasNoReadbackPerExampleAndAcceptsWhatTheHostGateWould() {
+        Tensor<float32> x #= Digits.images(4, 4, 0.3f, 103L);
+        int64 n = x.shapeAt(0);
+        // the host gate's confidences at the starting weights, from a twin trainer
+        SpelaTrainer probe #= SpelaOnlineDeviceTest.online(0.0, 64);
+        if (!SpelaDeviceTest.onGpu(probe)) { return; }
+        float64[] conf = heap float64[n];
+        float64[] sorted = heap float64[n];
+        int64 r = 0L;
+        while (r < n) {
+            Tensor<float32> row #= SpelaOnlineDeviceTest.rowOf(x, r);
+            conf[(int32) r] = probe.confidenceOf(row);
+            sorted[(int32) r] = conf[(int32) r];
+            r = r + 1L;
+        }
+        int32 a = 0;
+        while (a < (int32) n) {
+            int32 b = a + 1;
+            while (b < (int32) n) {
+                if (sorted[b] < sorted[a]) { float64 t = sorted[a]; sorted[a] = sorted[b]; sorted[b] = t; }
+                b = b + 1;
+            }
+            a = a + 1;
+        }
+        float64 thr = (sorted[(int32) (n / 2L) - 1] + sorted[(int32) (n / 2L)]) * 0.5;
+        SpelaTrainer tr #= SpelaOnlineDeviceTest.online(thr, (int32) n);
+        // the first n - 1 examples buffer with no device work at all
+        int64 s0 = Device.streamSyncCount();
+        int64 t0 = Device.transferCount();
+        r = 0L;
+        while (r < n - 1L) {
+            Tensor<float32> row #= SpelaOnlineDeviceTest.rowOf(x, r);
+            Assert.isTrue(tr.observeUnlabeled(row));
+            r = r + 1L;
+        }
+        Assert.equals(s0, Device.streamSyncCount());
+        Assert.equals(t0, Device.transferCount());
+        Tensor<float32> lastRow #= SpelaOnlineDeviceTest.rowOf(x, n - 1L);
+        Assert.isTrue(tr.observeUnlabeled(lastRow));
+        float32[] mask #= tr.lastGateMask();
+        Assert.equals(n, mask.count());
+        int64 accepts = 0L;
+        r = 0L;
+        while (r < n) {
+            float32 want = 0.0f;
+            if (conf[(int32) r] >= thr) { want = 1.0f; accepts = accepts + 1L; }
+            if (mask[(int32) r] != want) {
+                System.stdout.println("  gate row " + r + ": device " + mask[(int32) r] + ", host confidence " + conf[(int32) r]
+                    + " against " + thr);
+                Assert.isTrue(false);
+            }
+            r = r + 1L;
+        }
+        System.stdout.println("  gated flush: " + accepts + " of " + n + " accepted at threshold " + thr);
+        Assert.equals(accepts, tr.observedCount());
+        Assert.equals(n - accepts, tr.skippedCount());
+        Assert.equals(0, tr.bufferedCount());
+    }
+
+    @Test
+    public void aFlushOfOneHundredRowsIsOneUpload() {
+        Tensor<float32> x #= Digits.images(25, 4, 0.1f, 107L);
+        Tensor<float32> y #= Digits.labels(25, 4);
+        SpelaTrainer tr #= SpelaOnlineDeviceTest.online(0.0, 100);
+        if (!SpelaDeviceTest.onGpu(tr)) { return; }
+        int32 pass = 0;
+        int64 delta = 0L;
+        while (pass < 2) {
+            int64 r = 0L;
+            int64 t0 = 0L;
+            while (r < 100L) {
+                Tensor<float32> row #= SpelaOnlineDeviceTest.rowOf(x, r);
+                if (r == 99L) { t0 = Device.transferCount(); }
+                tr.observe(row, (float64) y.flatGet(r));
+                r = r + 1L;
+            }
+            delta = Device.transferCount() - t0;
+            pass = pass + 1;
+        }
+        // the second flush, past first-use placement: the block's upload and the loss read
+        System.stdout.println("  flush of 100 rows: " + delta + " transfers");
+        Assert.equals(2L, delta);
+    }
+
+    @Test
+    public void aFlushWithEveryRowRejectedMakesNoUpdate() {
+        Tensor<float32> x #= Digits.images(4, 4, 0.2f, 109L);
+        Tensor<float32> y #= Digits.labels(4, 4);
+        int64 n = x.shapeAt(0);
+        // a threshold no cosine reaches
+        SpelaTrainer gated #= SpelaOnlineDeviceTest.online(2.0, (int32) n);
+        SpelaTrainer plain #= SpelaOnlineDeviceTest.online(2.0, (int32) n);
+        if (!SpelaDeviceTest.onGpu(gated)) { return; }
+        int64 r = 0L;
+        while (r < n) {
+            Tensor<float32> row #= SpelaOnlineDeviceTest.rowOf(x, r);
+            gated.observeUnlabeled(row);
+            r = r + 1L;
+        }
+        Assert.equals(n, gated.skippedCount());
+        Assert.equals(0L, gated.observedCount());
+        // then the same labeled batch on both: a declined flush left nothing behind
+        gated.trainBatch(x, y);
+        plain.trainBatch(x, y);
+        gated.trainBatch(x, y);
+        plain.trainBatch(x, y);
+        SpelaDeviceTest.sameWeights(plain, gated, 0.0);
+    }
+
+    @Test
+    public void aFrozenBackboneLaunchesNoHeadOrUpdateForItsLayers() {
+        Tensor<float32> x #= Digits.images(8, 4, 0.1f, 113L);
+        Tensor<float32> y #= Digits.labels(8, 4);
+        SpelaTrainer tr #= SpelaOnlineDeviceTest.online(0.0, 64);
+        if (!SpelaDeviceTest.onGpu(tr)) { return; }
+        Tensor<float32> xd #= x.copy();
+        xd.gpu();
+        Tensor<float32> yd #= y.copy();
+        yd.gpu();
+        tr.trainBatch(xd, yd);
+        int64 h0 = Device.kernelLaunchCount("headRows_float32");
+        int64 a0 = Device.kernelLaunchCount("adamSlots_float32");
+        int64 q0 = KernelStream.deferStat(KernelStream.DEFER_QUEUED);
+        tr.trainBatch(xd, yd);
+        int64 heads = Device.kernelLaunchCount("headRows_float32") - h0;
+        int64 updates = Device.kernelLaunchCount("adamSlots_float32") - a0;
+        int64 all = KernelStream.deferStat(KernelStream.DEFER_QUEUED) - q0;
+        tr.freezeBackbone();
+        tr.trainBatch(xd, yd);
+        int64 h1 = Device.kernelLaunchCount("headRows_float32");
+        int64 a1 = Device.kernelLaunchCount("adamSlots_float32");
+        int64 q1 = KernelStream.deferStat(KernelStream.DEFER_QUEUED);
+        tr.trainBatch(xd, yd);
+        int64 fheads = Device.kernelLaunchCount("headRows_float32") - h1;
+        int64 fupdates = Device.kernelLaunchCount("adamSlots_float32") - a1;
+        int64 fall = KernelStream.deferStat(KernelStream.DEFER_QUEUED) - q1;
+        System.stdout.println("  two layers: heads " + heads + ", updates " + updates + ", launches " + all
+            + "; backbone frozen: heads " + fheads + ", updates " + fupdates + ", launches " + fall);
+        Assert.equals(2L, heads);
+        Assert.equals(2L, updates);
+        Assert.equals(1L, fheads);
+        Assert.equals(1L, fupdates);
+        if (Device.activeBackend().equals("cuda")) { Assert.isTrue(fall < all); }
+    }
+}

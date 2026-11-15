@@ -88,6 +88,45 @@ public final class AdamW implements Optimizer {
         }
     }
 
+    /**
+     * The host half of this optimizer's step state: each parameter's bias-correction powers and
+     * whether it was active, so a step the device declined (a zero scale, spela-kernels 8) can
+     * be taken back with restoreStepState. Empty before the first step.
+     */
+    public #float32[] stepState() {
+        if (!this.hasState) { return heap float32[0]; }
+        int32 n = (int32) this.params.count();
+        float32[] s = heap float32[3 * n];
+        int32 i = 0;
+        while (i < n) {
+            s[i] = this.beta1Power[i];
+            s[n + i] = this.beta2Power[i];
+            s[2 * n + i] = 0.0f;
+            if (this.active[i]) { s[2 * n + i] = 1.0f; }
+            i = i + 1;
+        }
+        return #s;
+    }
+
+    /** Put back what stepState read; from an empty state, the state of a first step. */
+    public void restoreStepState(float32[] s) {
+        if (!this.hasState) { return; }
+        int32 n = (int32) this.params.count();
+        int32 i = 0;
+        while (i < n) {
+            if (s.count() == 0) {
+                this.beta1Power[i] = 1.0f;
+                this.beta2Power[i] = 1.0f;
+                this.active[i] = true;
+            } else {
+                this.beta1Power[i] = s[i];
+                this.beta2Power[i] = s[n + i];
+                this.active[i] = s[2 * n + i] != 0.0f;
+            }
+            i = i + 1;
+        }
+    }
+
     /** Parameter i's bookkeeping for this step: false when frozen; true after advancing its powers. */
     boolean advance(int32 i) {
         if (!this.params[i].isTrainable()) {

@@ -66,7 +66,11 @@ public final class SpelaHead {
             float32 iv = 1.0f / den;
             uint32 y = (uint32) ((float32) labels[row]);
             float32 w = invRows;
-            if (useMask != 0) { w = (float32) mask[row] / count[0]; }
+            if (useMask != 0) {
+                // no row left (an online batch whose every row was rejected): weight 0, not 0 / 0
+                w = 0.0f;
+                if (count[0] > 0.0f) { w = (float32) mask[row] / count[0]; }
+            }
             float32 loss = 0.0f;
             float32 qq = 0.0f;
             if (mode == 0) {
@@ -315,7 +319,11 @@ public final class SpelaHead {
             float32 iv = inv[row];
             uint32 y = (uint32) ((float32) labels[row]);
             float32 w = invRows;
-            if (useMask != 0) { w = (float32) mask[row] / count[0]; }
+            if (useMask != 0) {
+                // no row left (an online batch whose every row was rejected): weight 0, not 0 / 0
+                w = 0.0f;
+                if (count[0] > 0.0f) { w = (float32) mask[row] / count[0]; }
+            }
             float32 lse = mx[row] + Math.log(se[row]);
             float32 qq = 0.0f;
             uint32 j = wl;
@@ -392,7 +400,11 @@ public final class SpelaHead {
             if (den < eps) { den = eps; }
             float32 iv = 1.0f / den;
             float32 w = invRows;
-            if (useMask != 0) { w = (float32) mask[row] / count[0]; }
+            if (useMask != 0) {
+                // no row left (an online batch whose every row was rejected): weight 0, not 0 / 0
+                w = 0.0f;
+                if (count[0] > 0.0f) { w = (float32) mask[row] / count[0]; }
+            }
             float32 cden = nrm * vn;
             if (cden < eps) { cden = eps; }
             float32 gy = (0.0f - w) / vn;
@@ -407,6 +419,81 @@ public final class SpelaHead {
             }
             rep = rep + 1;
         }
+    }
+
+    /**
+     * The online confidence gate (spela-kernels 8), a wave a row: `h` (rows x d) is the last
+     * layer's output for the batch and `v` its class vectors. A row whose `given` label is 0 or
+     * more keeps it and is accepted; any other takes its nearest class (the first of equal top
+     * cosines) and is accepted when that cosine, h . v / max(|h|, eps), is at least `threshold`.
+     * `labels` and `mask` (1 accepted, 0 not) are written for the step.
+     */
+    @Kernel
+    public static void headGate<E>(KernelBuffer<E> labels, KernelBuffer<E> mask, KernelBuffer<E> h, KernelBuffer<E> v,
+                                   KernelBuffer<E> given, uint32 rows, uint32 d, uint32 c, float32 threshold, float32 eps) {
+        uint32 lane = KernelThread.x();
+        uint32 width = Wave.width();
+        uint32 wl = Wave.laneId();
+        uint32 waves = 256 / width;
+        uint32 first = Workgroup.x() * 8;
+        uint32 last = first + 8;
+        if (last > rows) { last = rows; }
+        uint32 reps = (8 + waves - 1) / waves;
+        uint32 rep = 0;
+        while (rep < reps) {
+            uint32 row = first + lane / width + rep * waves;
+            boolean live = row < last;
+            if (!live) { row = rows - 1; }
+            uint32 hb = row * d;
+            float32 ss = 0.0f;
+            uint32 j = wl;
+            while (j < d) {
+                float32 x = (float32) h[hb + j];
+                ss = ss + x * x;
+                j = j + width;
+            }
+            float32 den = Math.sqrt(Wave.reduceSumF32(ss));
+            if (den < eps) { den = eps; }
+            float32 best = -3.4028235e38f;
+            uint32 arg = 0;
+            uint32 cc = 0;
+            while (cc < c) {
+                float32 pd = 0.0f;
+                j = wl;
+                while (j < d) {
+                    pd = pd + (float32) h[hb + j] * (float32) v[cc * d + j];
+                    j = j + width;
+                }
+                float32 cs = Wave.reduceSumF32(pd) / den;
+                if (cs > best) {
+                    best = cs;
+                    arg = cc;
+                }
+                cc = cc + 1;
+            }
+            float32 g = (float32) given[row];
+            float32 lab = (float32) arg;
+            float32 keep = 0.0f;
+            if (best >= threshold) { keep = 1.0f; }
+            if (g >= 0.0f) {
+                lab = g;
+                keep = 1.0f;
+            }
+            if (live && wl == 0) {
+                labels[row] = (E) lab;
+                mask[row] = (E) keep;
+            }
+            rep = rep + 1;
+        }
+    }
+
+    /** headGate over `rows` rows, and the accepted count into `accepted[0]`; queued on the current stream. */
+    public static void gate<E>(KernelBuffer<E> labels, KernelBuffer<E> mask, KernelBuffer<float32> accepted, KernelBuffer<E> h,
+                               KernelBuffer<E> v, KernelBuffer<E> given, int64 rows, int64 d, int64 c, float32 threshold, float32 eps) {
+        uint32 ur = (uint32) rows;
+        KernelStream s #= KernelStream.current();
+        headGate.launch(s, grid: [(ur + 7) / 8], block: [256])(labels, mask, h, v, given, ur, (uint32) d, (uint32) c, threshold, eps);
+        Reduce.segments<E>(accepted, mask, rows, 1L, Reduce.SUM);
     }
 
     /** At or below this many classes the head is one fused pair of launches; past it, column blocks. */
