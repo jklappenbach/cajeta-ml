@@ -1,5 +1,6 @@
 package dev.cajeta.ml.selftest;
 
+import cajeta.concurrent.Carriers;
 import cajeta.lang.System;
 import cajeta.math.Tensor;
 import dev.cajeta.unit.Assert;
@@ -98,6 +99,36 @@ public class AdamWHostTest {
             AdamWHostTest.same("b step " + t, net.b.get(), pb);
             t = t + 1L;
         }
+    }
+
+    @Test
+    public void aLargeFlatPassSplitsAcrossTheCarriers() {
+        // SPELA's first weight: 784 x 512, past a part's worth of elements on every carrier
+        PairNet net = heap PairNet(784L, 512L);
+        float32[] pw #= AdamWHostTest.valuesOf(net.w.get());
+        float32[] mw = heap float32[pw.count()];
+        float32[] vw = heap float32[pw.count()];
+        AdamW opt = heap AdamW(net.parameters(), 0.01f, 0.05f);
+        Tensor<float32>[] gs = heap Tensor<float32>[2];
+        gs[0] #= AdamWHostTest.patterned(784L, 512L, 3L, 0.01f);
+        gs[1] #= AdamWHostTest.patterned(1L, 512L, 5L, 0.02f);
+        opt.step(gs);
+        int32 want = Carriers.count();
+        if (want > 16) { want = 16; }
+        if (want > 6) { want = 6; }
+        // the bias row ran last, on the caller; the weight split, so ask before the bias does
+        AdamWHostTest.refStep(pw, mw, vw, gs[0], 1L, 0.01f, 0.05f);
+        AdamWHostTest.same("split w", net.w.get(), pw);
+        System.stdout.println("  784x512 AdamW on carriers " + Carriers.count() + ", bias parts " + AdamW.lastParts());
+        Assert.equals(1, AdamW.lastParts());
+        PairNet big = heap PairNet(784L, 512L);
+        AdamW solo = heap AdamW(big.parameters(), 0.01f, 0.05f);
+        Tensor<float32>[] one = heap Tensor<float32>[2];
+        one[0] #= AdamWHostTest.patterned(784L, 512L, 3L, 0.01f);
+        one[1] #= AdamWHostTest.patterned(1L, 512L, 5L, 0.02f);
+        big.b.setTrainable(false);
+        solo.step(one);
+        Assert.equals(want, AdamW.lastParts());
     }
 
     @Test

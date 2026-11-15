@@ -1,5 +1,6 @@
 package dev.cajeta.ml.optim;
 
+import cajeta.concurrent.Carriers;
 import cajeta.math.Tensor;
 import cajeta.xpu.KernelBuffer;
 import dev.cajeta.ml.nn.Parameter;
@@ -25,6 +26,12 @@ public final class AdamW implements Optimizer {
     boolean hasState;
 
     static int64 flat = 0L;
+    static int32 parts = 0;
+    /** Elements a part of the flat pass takes at least, so a fiber pays for itself. */
+    static final int64 PART_ELEMS = 65536L;
+
+    /** The parts the last flat pass was split into across the carriers: 1 on the caller. */
+    public static int32 lastParts() { return AdamW.parts; }
 
     /** Host updates that ran as one flat pass over the arrays, for the tests that pin the route. */
     public static int64 flatUpdates() { return AdamW.flat; }
@@ -179,6 +186,24 @@ public final class AdamW implements Optimizer {
         this.hasState = true;
     }
 
+    /** Elements [e0, e1) of one flat AdamW update, the arithmetic the indexed walk below uses. */
+    static void range(float32[] pa, int64 po, float32[] ga, int64 go, float32[] ma, int64 mo,
+                      float32[] va, int64 vo, int64 e0, int64 e1, float32 lr, float32 wd, float32 c1, float32 c2) {
+        int64 e = e0;
+        while (e < e1) {
+            float32 gv = ga[go + e];
+            float32 mv = 0.9f * ma[mo + e] + 0.1f * gv;
+            float32 vv = 0.999f * va[vo + e] + 0.001f * gv * gv;
+            ma[mo + e] = mv;
+            va[vo + e] = vv;
+            float32 mhat = mv / c1;
+            float32 vhat = vv / c2;
+            float32 pv = pa[po + e];
+            pa[po + e] = pv - lr * (mhat / (Math.sqrt(vhat) + 1e-8f) + wd * pv);
+            e = e + 1L;
+        }
+    }
+
     static void updateOne(Tensor<float32> p, Tensor<float32> g,
                           Tensor<float32> m, Tensor<float32> v,
                           float32 lr, float32 wd, float32 c1, float32 c2) {
@@ -199,18 +224,26 @@ public final class AdamW implements Optimizer {
             int64 mo = m.hostBase();
             int64 vo = v.hostBase();
             int64 count = p.size();
-            int64 e = 0L;
-            while (e < count) {
-                float32 gv = ga[go + e];
-                float32 mv = 0.9f * ma[mo + e] + 0.1f * gv;
-                float32 vv = 0.999f * va[vo + e] + 0.001f * gv * gv;
-                ma[mo + e] = mv;
-                va[vo + e] = vv;
-                float32 mhat = mv / c1;
-                float32 vhat = vv / c2;
-                float32 pv = pa[po + e];
-                pa[po + e] = pv - lr * (mhat / (Math.sqrt(vhat) + 1e-8f) + wd * pv);
-                e = e + 1L;
+            // ranges of the pass split across the carriers, which sat spinning beside it
+            // (Proton's read on proton, 2026-11-15: 0.18 ms at 1 carrier, 0.30 at 16)
+            int64 want = (int64) Carriers.count();
+            if (want > 16L) { want = 16L; }
+            if (want > count / AdamW.PART_ELEMS) { want = count / AdamW.PART_ELEMS; }
+            if (want < 2L) {
+                AdamW.parts = 1;
+                AdamW.range(pa, po, ga, go, ma, mo, va, vo, 0L, count, lr, wd, c1, c2);
+                return;
+            }
+            AdamW.parts = (int32) want;
+            int64 per = (count + want - 1L) / want;
+            scope {
+                int64 e0 = 0L;
+                while (e0 < count) {
+                    int64 e1 = e0 + per;
+                    if (e1 > count) { e1 = count; }
+                    spawn range(pa, po, ga, go, ma, mo, va, vo, e0, e1, lr, wd, c1, c2);
+                    e0 = e1;
+                }
             }
             return;
         }
