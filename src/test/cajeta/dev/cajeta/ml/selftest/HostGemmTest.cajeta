@@ -102,6 +102,22 @@ public class HostGemmTest {
     }
 
     @Test
+    public void aNarrowProductRunsItsTransposeOnTheWideTile() {
+        // SPELA's ten-class products: n under the vector width would run all in the scalar tail
+        HostGemmTest.nnCase(64L, 10L, 512L);
+        Assert.isTrue(HostGemm.lastNarrow());
+        HostGemmTest.tnCase(512L, 10L, 64L);
+        Assert.isTrue(HostGemm.lastNarrow());
+        HostGemmTest.nnCase(67L, 3L, 29L);
+        Assert.isTrue(HostGemm.lastNarrow());
+        // too few rows to fill a vector the other way either: the scalar tail serves
+        HostGemmTest.nnCase(5L, 7L, 3L);
+        Assert.isFalse(HostGemm.lastNarrow());
+        HostGemmTest.nnCase(64L, 512L, 784L);
+        Assert.isFalse(HostGemm.lastNarrow());
+    }
+
+    @Test
     public void aLargeProductSplitsAcrossTheCarriers() {
         Tensor<float32> a #= HostGemmTest.fill(64L, 784L, 3L);
         Tensor<float32> b #= HostGemmTest.fill(784L, 512L, 11L);

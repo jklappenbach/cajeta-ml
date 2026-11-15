@@ -32,6 +32,11 @@ public final class HostGemm {
     /** The parts the last product was split into: 1 when it ran on the caller. */
     public static int32 lastParts() { return HostGemm.parts; }
 
+    static boolean narrow = false;
+
+    /** Whether the last product was narrow (n under the vector width) and ran as its transpose. */
+    public static boolean lastNarrow() { return HostGemm.narrow; }
+
     /** Whether the last product read its left operand transposed, in place. */
     public static boolean lastReadATransposed() { return HostGemm.transposedA; }
 
@@ -77,6 +82,12 @@ public final class HostGemm {
         HostGemm.count = HostGemm.count + 1L;
         HostGemm.parts = (int32) want;
         HostGemm.transposedA = ta;
+        HostGemm.narrow = n < HostGemm.LANES && m >= HostGemm.LANES;
+        if (HostGemm.narrow) {
+            HostGemm.parts = 1;
+            HostGemm.narrowInto<E>(c, c0, av, a0, sai, sap, bv, b0, m, n, k, ta);
+            return #out;
+        }
         if (want == 1L) {
             HostGemm.rows<E>(c, c0, av, a0, sai, sap, bv, b0, 0L, m, n, k);
             return #out;
@@ -92,6 +103,49 @@ public final class HostGemm {
             }
         }
         return #out;
+    }
+
+    /**
+     * A narrow product (n under the vector width, m at or past it) as its transpose,
+     * C^T = B^T . A^T: the wide tile then runs along m, where C's own n columns would leave
+     * every element to the scalar tail. A^T is `a` as stored when it is read transposed (a
+     * weight gradient), else one copy of `a`.
+     */
+    static void narrowInto<E extends Floating>(E[] c, int64 c0, E[] a, int64 a0, int64 sai, int64 sap,
+                                               E[] b, int64 b0, int64 m, int64 n, int64 k, boolean ta) {
+        // B'(p, i) = A(i, p), row-major k x m: `a` itself when read transposed, else a copy
+        if (!ta) {
+            E[] copy = heap E[k * m];
+            int64 i = 0L;
+            while (i < m) {
+                int64 p = 0L;
+                while (p < k) {
+                    copy[p * m + i] = a[a0 + i * sai + p * sap];
+                    p = p + 1L;
+                }
+                i = i + 1L;
+            }
+            E[] ct = heap E[n * m];
+            HostGemm.rows<E>(ct, 0L, b, b0, 1L, n, copy, 0L, 0L, n, m, k);
+            HostGemm.untranspose<E>(c, c0, ct, m, n);
+            return;
+        }
+        E[] ct2 = heap E[n * m];
+        HostGemm.rows<E>(ct2, 0L, b, b0, 1L, n, a, a0, 0L, n, m, k);
+        HostGemm.untranspose<E>(c, c0, ct2, m, n);
+    }
+
+    /** C (m x n) from its transpose `ct` (n x m). */
+    static void untranspose<E extends Floating>(E[] c, int64 c0, E[] ct, int64 m, int64 n) {
+        int64 i = 0L;
+        while (i < m) {
+            int64 j = 0L;
+            while (j < n) {
+                c[c0 + i * n + j] = ct[j * m + i];
+                j = j + 1L;
+            }
+            i = i + 1L;
+        }
     }
 
     /**
