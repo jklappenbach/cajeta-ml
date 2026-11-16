@@ -1,6 +1,7 @@
 package dev.cajeta.ml.kernels.nn;
 
 import cajeta.xpu.Barrier;
+import cajeta.xpu.Device;
 import cajeta.xpu.GroupOp;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
@@ -477,17 +478,27 @@ public final class Conv {
         }
     }
 
-    /** dw = the conv2d weight VJP of `g` against `x`: a 3x3 kernel by {@link #convBackWeight3x3}, queued; any other by
-     *  batch slices across lanes, synced, since it drops device temporaries (cajeta-ml-gpu 28.2.6). */
+    static String weightRoute = "";
+
+    /** The route the last {@link #backwardWeight} took: "3x3" or "split". */
+    public static String lastWeightRoute() { return Conv.weightRoute; }
+
+    /** dw = the conv2d weight VJP of `g` against `x`: a 3x3 kernel by {@link #convBackWeight3x3}, queued, where that
+     *  kernel is usable; any other, and a 3x3 where it is not, by batch slices across lanes, synced, since it drops
+     *  device temporaries (cajeta-ml-gpu 28.2.6, spela-kernels 9.1.2). */
     public static void backwardWeight<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
                                          int64 n, int64 c, int64 h, int64 wd, int64 oc, int64 kh, int64 kw,
                                          int64 oh, int64 ow, int32 stride, int32 pad) {
-        if (kh == 3L && kw == 3L) {
+        // the 3x3 kernel where it can run; elsewhere the split route serves a 3x3 too (on vulkan
+        // the 3x3 kernel needs 147456 bytes of shared memory a block, spela-kernels 9.1.2)
+        if (kh == 3L && kw == 3L && Device.kernelUsable("convBackWeight3x3_float32")) {
+            Conv.weightRoute = "3x3";
             KernelStream s3 #= KernelStream.current();
             convBackWeight3x3.launch(s3, grid: [(uint32) (((oc + 3L) / 4L) * c)], block: [256])(dw, g, x, (uint32) n, (uint32) c,
                 (uint32) h, (uint32) wd, (uint32) oc, (uint32) oh, (uint32) ow, stride, pad);
             return;
         }
+        Conv.weightRoute = "split";
         uint32 total = (uint32) (oc * c * kh * kw);
         uint32 splits = (uint32) n;
         if (splits > 32) { splits = 32; }

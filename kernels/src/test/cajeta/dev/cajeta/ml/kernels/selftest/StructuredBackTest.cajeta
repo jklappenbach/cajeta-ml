@@ -4,6 +4,7 @@ import cajeta.lang.Math;
 import cajeta.lang.System;
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelCap;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.nn.BatchNorm;
 import dev.cajeta.ml.kernels.nn.Conv;
@@ -143,12 +144,27 @@ public class StructuredBackTest {
 
     @Test
     public void conv2dBackwardsMatchTheHost() {
+        // the 3x3 weight kernel is not required: where it cannot run, a 3x3 weight VJP takes
+        // the split route (spela-kernels 9.1.2: on vulkan it needs 147456 bytes of shared memory)
         if (!StructuredBackTest.usable("convBackIn_float32") || !StructuredBackTest.usable("convBackWeightSplit_float32")
-                || !StructuredBackTest.usable("convBackWeightSum_float32")
-                || !StructuredBackTest.usable("convBackWeight3x3_float32")) { return; }
+                || !StructuredBackTest.usable("convBackWeightSum_float32")) { return; }
         StructuredBackTest.convBackCase(1, 1);
         StructuredBackTest.convBackCase(2, 0);
         StructuredBackTest.convBackCaseAt(2L, 3L, 5L, 6L, 4L, 2L, 1, 0, 60.0 * 1.0e-7);
+    }
+
+    /** spela-kernels 9.1.2: a 3x3 weight VJP where the 3x3 kernel is held falls back to the split route, against
+     *  the host. On vulkan the 3x3 kernel does not lower (147456 bytes of shared memory a block, 65536 allowed), and
+     *  the 3x3 route launched it anyway. */
+    @Test
+    public void aThreeByThreeWeightGradientFallsBackWhereItsKernelIsHeld() {
+        if (!StructuredBackTest.usable("convBackIn_float32") || !StructuredBackTest.usable("convBackWeightSplit_float32")
+                || !StructuredBackTest.usable("convBackWeightSum_float32")) { return; }
+        KernelCap.setOverride("convBackWeight3x3_float32", false);
+        StructuredBackTest.convBackCaseAt(2L, 3L, 5L, 6L, 4L, 3L, 1, 1, 60.0 * 1.0e-7);
+        String route = Conv.lastWeightRoute();
+        KernelCap.clearOverrides();
+        Assert.equals("split", route);
     }
 
     /** cajeta-ml-gpu 28.2.6: the 3x3 weight VJP over a long batch x plane (8 x 14 x 14 positions), stride 1 and 2,
