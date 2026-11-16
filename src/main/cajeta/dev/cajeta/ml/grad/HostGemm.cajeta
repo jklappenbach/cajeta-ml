@@ -14,6 +14,12 @@ import cajeta.math.Tensor;
  *
  * `a` is read through two strides, so a^T . b reads `a` in place: a weight gradient X^T . G
  * makes no transposed copy of X.
+ *
+ * The sums are fused multiply-adds (Math.fma, host-simd), one rounding a step where a
+ * separate multiply and add cost two instructions and capped the tile at half the core's
+ * rate. Where the build's vector registers are 512 bits (Cajeta.hostVectorBits()), sixteen
+ * lanes are one register, and the tile widens to 4 rows by 32 columns, eight accumulators,
+ * enough to cover the multiply-add's latency on two pipes.
  */
 public final class HostGemm {
     /** Multiply-adds below which the product stays on the calling fiber. */
@@ -33,6 +39,19 @@ public final class HostGemm {
     public static int32 lastParts() { return HostGemm.parts; }
 
     static boolean narrow = false;
+    static int32 wideMode = 0;
+    static boolean wide = false;
+
+    /**
+     * The wide tile, eight accumulators of 4 rows by 32 columns: 0 leaves it to the build
+     * (on where Cajeta.hostVectorBits() is 512 or more, so sixteen lanes are one register and
+     * four accumulators would not cover the fused multiply-add's latency on two pipes), 1 forces
+     * it on and 2 off. For the tests, which check it on any machine.
+     */
+    public static void setWideTile(int32 mode) { HostGemm.wideMode = mode; }
+
+    /** Whether the last product ran the wide tile. */
+    public static boolean lastWideTile() { return HostGemm.wide; }
 
     /** Whether the last product was narrow (n under the vector width) and ran as its transpose. */
     public static boolean lastNarrow() { return HostGemm.narrow; }
@@ -82,6 +101,7 @@ public final class HostGemm {
         HostGemm.count = HostGemm.count + 1L;
         HostGemm.parts = (int32) want;
         HostGemm.transposedA = ta;
+        HostGemm.wide = HostGemm.wideMode == 1 || (HostGemm.wideMode == 0 && Cajeta.hostVectorBits() >= 512);
         HostGemm.narrow = n < HostGemm.LANES && m >= HostGemm.LANES;
         if (HostGemm.narrow) {
             HostGemm.parts = 1;
@@ -161,6 +181,12 @@ public final class HostGemm {
             int64 ai = a0 + i * sai;
             int64 o0 = c0 + i * n;
             int64 j = 0L;
+            if (HostGemm.wide) {
+                while (j + 2L * HostGemm.LANES <= n) {
+                    HostGemm.wideBlock<E>(c, o0, a, ai, sai, sap, b, b0 + j, j, n, k);
+                    j = j + 2L * HostGemm.LANES;
+                }
+            }
             while (j < nv) {
                 // C starts zeroed, so its own lanes seed the sums
                 Vector<E,16> s0 = c.vload<16>(o0 + j);
@@ -172,10 +198,18 @@ public final class HostGemm {
                 int64 p = 0L;
                 while (p < k) {
                     Vector<E,16> y = b.vload<16>(bp);
-                    s0 = s0 + y * a[ap];
-                    s1 = s1 + y * a[ap + sai];
-                    s2 = s2 + y * a[ap + 2L * sai];
-                    s3 = s3 + y * a[ap + 3L * sai];
+                    E e0 = a[ap];
+                    E e1 = a[ap + sai];
+                    E e2 = a[ap + 2L * sai];
+                    E e3 = a[ap + 3L * sai];
+                    Vector<E,16> x0 = heap Vector<E,16>(e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0);
+                    Vector<E,16> x1 = heap Vector<E,16>(e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1);
+                    Vector<E,16> x2 = heap Vector<E,16>(e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2);
+                    Vector<E,16> x3 = heap Vector<E,16>(e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3);
+                    s0 = Math.fma(y, x0, s0);
+                    s1 = Math.fma(y, x1, s1);
+                    s2 = Math.fma(y, x2, s2);
+                    s3 = Math.fma(y, x3, s3);
                     ap = ap + sap;
                     bp = bp + n;
                     p = p + 1L;
@@ -203,7 +237,9 @@ public final class HostGemm {
                 int64 bp = b0 + j;
                 int64 p = 0L;
                 while (p < k) {
-                    s0 = s0 + b.vload<16>(bp) * a[ap];
+                    E e0 = a[ap];
+                    Vector<E,16> x0 = heap Vector<E,16>(e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0);
+                    s0 = Math.fma(b.vload<16>(bp), x0, s0);
                     ap = ap + sap;
                     bp = bp + n;
                     p = p + 1L;
@@ -216,6 +252,60 @@ public final class HostGemm {
         }
     }
 
+    /**
+     * Four rows by 32 columns of C at column `j`, from `b` at `bp`: eight accumulators summed
+     * over all of K with fused multiply-adds, two vector loads of `b` and four broadcasts of
+     * `a` a step, stored once. A broadcast is a Vector built from one value in every lane,
+     * which LLVM folds to one instruction; it is written in place, because a template method
+     * returning Vector<E,16> does not compile (cajeta v0.53.9).
+     */
+    static void wideBlock<E extends Floating>(E[] c, int64 o0, E[] a, int64 ai, int64 sai, int64 sap,
+                                              E[] b, int64 bp0, int64 j, int64 n, int64 k) {
+        Vector<E,16> s00 = c.vload<16>(o0 + j);
+        Vector<E,16> s01 = s00;
+        Vector<E,16> s10 = s00;
+        Vector<E,16> s11 = s00;
+        Vector<E,16> s20 = s00;
+        Vector<E,16> s21 = s00;
+        Vector<E,16> s30 = s00;
+        Vector<E,16> s31 = s00;
+        int64 ap = ai;
+        int64 bp = bp0;
+        int64 p = 0L;
+        while (p < k) {
+            Vector<E,16> y0 = b.vload<16>(bp);
+            Vector<E,16> y1 = b.vload<16>(bp + HostGemm.LANES);
+            E e0 = a[ap];
+            E e1 = a[ap + sai];
+            E e2 = a[ap + 2L * sai];
+            E e3 = a[ap + 3L * sai];
+            Vector<E,16> x0 = heap Vector<E,16>(e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0, e0);
+            Vector<E,16> x1 = heap Vector<E,16>(e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1, e1);
+            Vector<E,16> x2 = heap Vector<E,16>(e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2, e2);
+            Vector<E,16> x3 = heap Vector<E,16>(e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3, e3);
+            s00 = Math.fma(y0, x0, s00);
+            s01 = Math.fma(y1, x0, s01);
+            s10 = Math.fma(y0, x1, s10);
+            s11 = Math.fma(y1, x1, s11);
+            s20 = Math.fma(y0, x2, s20);
+            s21 = Math.fma(y1, x2, s21);
+            s30 = Math.fma(y0, x3, s30);
+            s31 = Math.fma(y1, x3, s31);
+            ap = ap + sap;
+            bp = bp + n;
+            p = p + 1L;
+        }
+        int64 h = HostGemm.LANES;
+        c.vstore(o0 + j, s00);
+        c.vstore(o0 + j + h, s01);
+        c.vstore(o0 + n + j, s10);
+        c.vstore(o0 + n + j + h, s11);
+        c.vstore(o0 + 2L * n + j, s20);
+        c.vstore(o0 + 2L * n + j + h, s21);
+        c.vstore(o0 + 3L * n + j, s30);
+        c.vstore(o0 + 3L * n + j + h, s31);
+    }
+
     /** Columns [j0, n) of one row of C: row `o` of C, the row of A from `ai` by `sap`. */
     static void tail<E extends Floating>(E[] c, int64 o, E[] a, int64 ai, int64 sap,
                                          E[] b, int64 b0, int64 j0, int64 n, int64 k) {
@@ -226,7 +316,7 @@ public final class HostGemm {
             int64 bp = b0 + j;
             int64 p = 0L;
             while (p < k) {
-                acc = acc + a[ap] * b[bp];
+                acc = Math.fma(a[ap], b[bp], acc);
                 ap = ap + sap;
                 bp = bp + n;
                 p = p + 1L;

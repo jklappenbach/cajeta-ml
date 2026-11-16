@@ -118,6 +118,25 @@ public class HostGemmTest {
     }
 
     @Test
+    public void theWideTileMatchesTheHostOnEveryShape() {
+        // host-simd 5: eight accumulators (4 rows by 32 columns) where the build's vector
+        // registers are 512 bits. Forced on here, so a 256-bit box checks it too.
+        HostGemm.setWideTile(1);
+        HostGemmTest.nnCase(64L, 512L, 784L);
+        Assert.isTrue(HostGemm.lastWideTile());
+        HostGemmTest.nnCase(67L, 301L, 33L);
+        HostGemmTest.nnCase(5L, 47L, 3L);
+        HostGemmTest.tnCase(784L, 512L, 64L);
+        HostGemmTest.tnCase(65L, 259L, 17L);
+        HostGemmTest.nnCase(64L, 10L, 512L);
+        HostGemm.setWideTile(0);
+        // left to the build, the wide tile runs where the registers are 512 bits wide
+        HostGemmTest.nnCase(64L, 512L, 784L);
+        System.stdout.println("  hostVectorBits " + Cajeta.hostVectorBits() + ", wide tile " + HostGemm.lastWideTile());
+        Assert.equals(Cajeta.hostVectorBits() >= 512, HostGemm.lastWideTile());
+    }
+
+    @Test
     public void aLargeProductSplitsAcrossTheCarriers() {
         Tensor<float32> a #= HostGemmTest.fill(64L, 784L, 3L);
         Tensor<float32> b #= HostGemmTest.fill(784L, 512L, 11L);
