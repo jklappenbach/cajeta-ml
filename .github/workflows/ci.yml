@@ -83,8 +83,9 @@ env:
   # template bound resolved in its own file, the lld lookup beside the
   # compiler, the SPIR-V phi split that lets gemm128 build for vulkan, and
   # the training regimes (Regime.TrainStep, Regime.TrainLoss) that SPELA's
-  # declared routes name.
-  CAJETA_VERSION: v0.53.7
+  # declared routes name. v0.53.9 adds host Math.fma and the host Vector forms,
+  # and Cajeta.hostVectorBits(), which HostGemm's register tile uses.
+  CAJETA_VERSION: v0.53.9
 
 jobs:
   build-test:
