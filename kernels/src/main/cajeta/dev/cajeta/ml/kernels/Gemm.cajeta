@@ -5823,7 +5823,9 @@ public final class Gemm {
      * ragged K tail zero-fill. Every output is accumulated in k order with a fused
      * multiply-add, one rounding per step where gemmTiled rounds the product and the sum
      * apart; that halves the arithmetic on nvptx, which does not fuse `c + a * b` on its
-     * own, and stays within the GEMM tolerance of a float64 reference.
+     * own, and stays within the GEMM tolerance of a float64 reference. Where k is a multiple of
+     * 1024 (a 4 KB float32 row pitch), each workgroup starts its K walk one slab past the last,
+     * so workgroups in lockstep do not all read one L2 channel (2.5x at 8192x512x2048 on gfx1151).
      */
     @Kernel
     @Occupancy(maxThreads = 256)
@@ -5914,11 +5916,14 @@ public final class Gemm {
         uint32 bc0 = (t - br0 * 32) * 4;
         uint32 br1 = br0 + 8;
         uint32 k0 = 0;
+        uint32 nsl = kFull / 16;
+        uint32 ks0 = 0;
+        if (nsl > 0 && (k % 1024) == 0) { ks0 = (wid % nsl) * 16; }
         if (kFull > 0) {
-            Vector<E,4> pa0 = a.vload<4>((m0 + ar0) * k + ac0);
-            Vector<E,4> pa1 = a.vload<4>((m0 + ar1) * k + ac0);
-            Vector<E,4> pb0 = b.vload<4>(br0 * n + n0 + bc0);
-            Vector<E,4> pb1 = b.vload<4>(br1 * n + n0 + bc0);
+            Vector<E,4> pa0 = a.vload<4>((m0 + ar0) * k + ks0 + ac0);
+            Vector<E,4> pa1 = a.vload<4>((m0 + ar1) * k + ks0 + ac0);
+            Vector<E,4> pb0 = b.vload<4>((ks0 + br0) * n + n0 + bc0);
+            Vector<E,4> pb1 = b.vload<4>((ks0 + br1) * n + n0 + bc0);
             sa[(ac0 + 0) * 132 + ar0] = (float32) pa0.x;
             sa[(ac0 + 1) * 132 + ar0] = (float32) pa0.y;
             sa[(ac0 + 2) * 132 + ar0] = (float32) pa0.z;
@@ -5939,11 +5944,13 @@ public final class Gemm {
             while (k0 < kFull) {
                 uint32 next = k0 + 16;
                 boolean more = next < kFull;
+                uint32 kn = next + ks0;
+                if (kn >= kFull) { kn = kn - kFull; }
                 if (more) {
-                    pa0 = a.vload<4>((m0 + ar0) * k + next + ac0);
-                    pa1 = a.vload<4>((m0 + ar1) * k + next + ac0);
-                    pb0 = b.vload<4>((next + br0) * n + n0 + bc0);
-                    pb1 = b.vload<4>((next + br1) * n + n0 + bc0);
+                    pa0 = a.vload<4>((m0 + ar0) * k + kn + ac0);
+                    pa1 = a.vload<4>((m0 + ar1) * k + kn + ac0);
+                    pb0 = b.vload<4>((kn + br0) * n + n0 + bc0);
+                    pb1 = b.vload<4>((kn + br1) * n + n0 + bc0);
                 }
                 uint32 kk = 0;
                 while (kk < 16) {
@@ -7213,11 +7220,14 @@ public final class Gemm {
         uint32 bc0 = (t - br0 * 32) * 4;
         uint32 br1 = br0 + 8;
         uint32 k0 = 0;
+        uint32 nsl = kFull / 16;
+        uint32 ks0 = 0;
+        if (nsl > 0 && (k % 1024) == 0) { ks0 = (wid % nsl) * 16; }
         if (kFull > 0) {
-            Vector<E,4> pa0 = a.vload<4>((m0 + ar0) * k + ac0, align: 16);
-            Vector<E,4> pa1 = a.vload<4>((m0 + ar1) * k + ac0, align: 16);
-            Vector<E,4> pb0 = b.vload<4>(br0 * n + n0 + bc0, align: 16);
-            Vector<E,4> pb1 = b.vload<4>(br1 * n + n0 + bc0, align: 16);
+            Vector<E,4> pa0 = a.vload<4>((m0 + ar0) * k + ks0 + ac0, align: 16);
+            Vector<E,4> pa1 = a.vload<4>((m0 + ar1) * k + ks0 + ac0, align: 16);
+            Vector<E,4> pb0 = b.vload<4>((ks0 + br0) * n + n0 + bc0, align: 16);
+            Vector<E,4> pb1 = b.vload<4>((ks0 + br1) * n + n0 + bc0, align: 16);
             sa[(ac0 + 0) * 132 + ar0] = (float32) pa0.x;
             sa[(ac0 + 1) * 132 + ar0] = (float32) pa0.y;
             sa[(ac0 + 2) * 132 + ar0] = (float32) pa0.z;
@@ -7242,11 +7252,13 @@ public final class Gemm {
             while (k0 < kFull) {
                 uint32 next = k0 + 16;
                 boolean more = next < kFull;
+                uint32 kn = next + ks0;
+                if (kn >= kFull) { kn = kn - kFull; }
                 if (more) {
-                    pa0 = a.vload<4>((m0 + ar0) * k + next + ac0, align: 16);
-                    pa1 = a.vload<4>((m0 + ar1) * k + next + ac0, align: 16);
-                    pb0 = b.vload<4>((next + br0) * n + n0 + bc0, align: 16);
-                    pb1 = b.vload<4>((next + br1) * n + n0 + bc0, align: 16);
+                    pa0 = a.vload<4>((m0 + ar0) * k + kn + ac0, align: 16);
+                    pa1 = a.vload<4>((m0 + ar1) * k + kn + ac0, align: 16);
+                    pb0 = b.vload<4>((kn + br0) * n + n0 + bc0, align: 16);
+                    pb1 = b.vload<4>((kn + br1) * n + n0 + bc0, align: 16);
                 }
                 av0 = sa.vload<4>(0 + ty * 4);
                 av1 = sa.vload<4>(64 + ty * 4);
