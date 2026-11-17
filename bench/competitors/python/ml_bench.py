@@ -245,7 +245,7 @@ _TF32_OFF = False
 
 def torch_threads_note():
     import torch
-    return f"torch intra-op threads {torch.get_num_threads()}" + ("; TF32 off" if _TF32_OFF else "")
+    return f"torch intra-op threads {torch.get_num_threads()}" + ("; TF32 and reduced-precision reductions off" if _TF32_OFF else "")
 
 
 def torch_variant(name, variant):
@@ -277,6 +277,8 @@ def torch_variant(name, variant):
         global _TF32_OFF
         torch.backends.cudnn.allow_tf32 = False
         torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
         _TF32_OFF = True
     meta.update(torch_meta(device))
     meta["backend"] = torch_accel()[0] if device else "cpu"
