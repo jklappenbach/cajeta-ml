@@ -85,7 +85,9 @@ env:
   # the training regimes (Regime.TrainStep, Regime.TrainLoss) that SPELA's
   # declared routes name. v0.53.9 adds host Math.fma and the host Vector forms,
   # and Cajeta.hostVectorBits(), which HostGemm's register tile uses.
-  CAJETA_VERSION: v0.53.9
+  # v0.53.10 adds k.waveWidth(), which the wave-generic GEMM, flash and conv
+  # kernels size their launches with, and MFMA on CDNA3 (datacenter-gpus 3).
+  CAJETA_VERSION: v0.53.10
 
 jobs:
   build-test:

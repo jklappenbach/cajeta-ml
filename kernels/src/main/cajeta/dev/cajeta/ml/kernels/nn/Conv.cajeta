@@ -323,8 +323,10 @@ public final class Conv {
     }
 
     /** dw for a 3x3 kernel: a workgroup per four output channels and one input channel, lanes striding the n*oh*ow
-     *  positions so loads coalesce and each input tap serves four outputs; the 36 sums reduced in a fixed order. */
-    @Kernel @Wave(width = 32)
+     *  positions so loads coalesce and each input tap serves four outputs; the 36 sums reduced in a fixed order.
+     *  It runs at the target's own width (datacenter-gpus 3.2.1), so a sum is deterministic on each backend and
+     *  may round differently between backends of different widths. */
+    @Kernel
     public static void convBackWeight3x3<E>(KernelBuffer<E> dw, KernelBuffer<E> g, KernelBuffer<E> x,
                                             uint32 n, uint32 c, uint32 h, uint32 wd, uint32 oc,
                                             uint32 oh, uint32 ow, int32 stride, int32 pad) {
