@@ -299,20 +299,23 @@ public class GemmTileTest {
         GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 7L, 1000L, 2049L);
     }
 
-    /** cajeta-ml-gpu 23.2.10: at a k of a multiple of 1024 each workgroup starts its K walk at its own slab, over interior
-     *  and edge tiles and more workgroups than slabs, and both wide tiles still match the host. */
+    /** cajeta-ml-gpu 23.2.10: at a k of a multiple of 1024 each workgroup of the rolled tile starts its K walk at its own
+     *  slab, over interior and edge tiles and more workgroups than slabs, and still matches the host. */
     @Test
-    public void f32WideTilesWithARotatedKWalkMatchTheHost() {
-        if (GemmTileTest.usable("gemmTiled128_float32")) {
-            GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 384L, 256L, 1024L);
-            GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 300L, 200L, 2048L);
-            GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 1152L, 1024L, 1024L);
-        }
-        if (GemmTileTest.usable("gemmTiled128Unrolled_float32")) {
-            GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 384L, 256L, 1024L);
-            GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 300L, 200L, 2048L);
-            GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 1152L, 1024L, 1024L);
-        }
+    public void f32RolledTileWithARotatedKWalkMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmTiled128_float32")) { return; }
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 384L, 256L, 1024L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 300L, 200L, 2048L);
+        GemmTileTest.plainCase<float32>("gemmTiled128_float32", 1280, 1152L, 1024L, 1024L);
+    }
+
+    /** The unrolled tile's rotated K walk, where this backend builds it, on the same shapes. */
+    @Test
+    public void f32UnrolledTileWithARotatedKWalkMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmTiled128Unrolled_float32")) { return; }
+        GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 384L, 256L, 1024L);
+        GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 300L, 200L, 2048L);
+        GemmTileTest.plainCase<float32>("gemmTiled128Unrolled_float32", 1281, 1152L, 1024L, 1024L);
     }
 
     /** The unrolled f32 wide tile, where this backend builds it, on the same shapes. */
