@@ -173,6 +173,142 @@ public class GemmFamilyTest {
         Assert.isTrue(member.equals("gemm128Bf16") || member.equals("gemm256Bf16") || member.equals("gemmWide_bfloat16"));
     }
 
+    /** Run member `how` (0 the 128x128, 1 the 256x128, 2 the 16-bit family with `store`) with a 16-bit output
+     *  and assert it equals that member's float32 output rounded, every element; returns the family's member. */
+    static #String out16Case(boolean bf16, int32 how, int64 m, int64 n, int64 k, String store) {
+        float32[] fa #= GemmFamilyTest.fill(m * k, 0L);
+        float32[] fb #= GemmFamilyTest.fill(k * n, 17L);
+        int64 mn = m * n;
+        KernelBuffer<float32> c32 = heap KernelBuffer<float32>((uint64) mn);
+        float32[] want = heap float32[mn];
+        int64[] mk #= ValueCheck.mark();
+        String member #= "".clone();
+        int64 bad = 0L;
+        int64 i = 0L;
+        if (bf16) {
+            bfloat16[] ha = heap bfloat16[m * k];
+            bfloat16[] hb = heap bfloat16[k * n];
+            while (i < m * k) { ha[(int32) i] = (bfloat16) fa[(int32) i]; i = i + 1L; }
+            i = 0L;
+            while (i < k * n) { hb[(int32) i] = (bfloat16) fb[(int32) i]; i = i + 1L; }
+            KernelBuffer<bfloat16> a = heap KernelBuffer<bfloat16>((uint64) (m * k));
+            KernelBuffer<bfloat16> b = heap KernelBuffer<bfloat16>((uint64) (k * n));
+            KernelBuffer<bfloat16> c = heap KernelBuffer<bfloat16>((uint64) mn);
+            a.upload(ha);
+            b.upload(hb);
+            int32 w = how;
+            if (how == 2) {
+                member #= Gemm.runTunedBf16Out16(c, a, b, m, n, k, store);
+                w = member.equals("gemm256Bf16Out16") ? 1 : 0;
+                if (member.startsWith("gemmWide")) { w = 3; }
+            } else if (how == 1) { Gemm.run256Bf16Out16(c, a, b, m, n, k); }
+            else { Gemm.run128Bf16Out16(c, a, b, m, n, k); }
+            if (w == 1) { Gemm.run256Bf16(c32, a, b, m, n, k); }
+            else if (w == 3) { Gemm.wide<bfloat16>(c32, a, b, m, n, k); }
+            else { Gemm.runBf16(c32, a, b, m, n, k); }
+            bfloat16[] got = heap bfloat16[mn];
+            c.download(got);
+            c32.download(want);
+            i = 0L;
+            while (i < mn) { if (got[(int32) i] != (bfloat16) want[(int32) i]) { bad = bad + 1L; } i = i + 1L; }
+        } else {
+            float16[] ha = heap float16[m * k];
+            float16[] hb = heap float16[k * n];
+            while (i < m * k) { ha[(int32) i] = (float16) fa[(int32) i]; i = i + 1L; }
+            i = 0L;
+            while (i < k * n) { hb[(int32) i] = (float16) fb[(int32) i]; i = i + 1L; }
+            KernelBuffer<float16> a = heap KernelBuffer<float16>((uint64) (m * k));
+            KernelBuffer<float16> b = heap KernelBuffer<float16>((uint64) (k * n));
+            KernelBuffer<float16> c = heap KernelBuffer<float16>((uint64) mn);
+            a.upload(ha);
+            b.upload(hb);
+            int32 w = how;
+            if (how == 2) {
+                member #= Gemm.runTunedOut16(c, a, b, m, n, k, store);
+                w = member.equals("gemm256Out16_float16") ? 1 : 0;
+                if (member.startsWith("gemmWide")) { w = 3; }
+            } else if (how == 1) { Gemm.run256Out16<float16>(c, a, b, m, n, k); }
+            else { Gemm.run128Out16<float16>(c, a, b, m, n, k); }
+            if (w == 1) { Gemm.run256<float16>(c32, a, b, m, n, k); }
+            else if (w == 3) { Gemm.wide<float16>(c32, a, b, m, n, k); }
+            else { Gemm.run128<float16>(c32, a, b, m, n, k); }
+            float16[] got = heap float16[mn];
+            c.download(got);
+            c32.download(want);
+            i = 0L;
+            while (i < mn) { if (got[(int32) i] != (float16) want[(int32) i]) { bad = bad + 1L; } i = i + 1L; }
+        }
+        if (bad > 0L) { System.stdout.println("out16 bf16=" + bf16 + " how " + how + " " + m + "x" + n + "x" + k + ": " + bad + " differ"); }
+        Assert.equals(0L, bad);
+        ValueCheck.credit(mk);
+        return #member;
+    }
+
+    /** cajeta-ml-gpu 23.2.16: both members with a float16 output equal their float32 output rounded, full and edge tiles. */
+    @Test
+    public void sixteenBitOutputMembersEqualTheF32ResultRoundedAtF16() {
+        String none #= "".clone();
+        int32 w = 0;
+        while (w < 2) {
+            String kn = w == 0 ? "gemm128Out16_float16" : "gemm256Out16_float16";
+            if (GemmTileTest.usable(kn)) {
+                GemmFamilyTest.out16Case(false, w, 512L, 256L, 256L, none);
+                GemmFamilyTest.out16Case(false, w, 256L, 128L, 32L, none);
+                GemmFamilyTest.out16Case(false, w, 300L, 200L, 130L, none);
+                GemmFamilyTest.out16Case(false, w, 33L, 17L, 9L, none);
+                GemmFamilyTest.out16Case(false, w, 1L, 130L, 77L, none);
+            }
+            w = w + 1;
+        }
+    }
+
+    /** cajeta-ml-gpu 23.2.16: the bfloat16 form. */
+    @Test
+    public void sixteenBitOutputMembersEqualTheF32ResultRoundedAtBf16() {
+        String none #= "".clone();
+        int32 w = 0;
+        while (w < 2) {
+            String kn = w == 0 ? "gemm128Bf16Out16" : "gemm256Bf16Out16";
+            if (GemmTileTest.usable(kn)) {
+                GemmFamilyTest.out16Case(true, w, 512L, 256L, 256L, none);
+                GemmFamilyTest.out16Case(true, w, 300L, 200L, 130L, none);
+                GemmFamilyTest.out16Case(true, w, 33L, 17L, 9L, none);
+            }
+            w = w + 1;
+        }
+    }
+
+    /** cajeta-ml-gpu 23.2.16: the 16-bit-output family times its members once and remembers the winner. */
+    @Test
+    public void sixteenBitOutputFamilyTimesItsMembersOnceAndRemembersTheWinner() {
+        if (!GemmTileTest.usable("gemm256Out16_float16") || !GemmTileTest.usable("gemm128Out16_float16")) { return; }
+        String store #= GemmFamilyTest.freshStore();
+        TuneMode.setUntimed(false);
+        String first #= GemmFamilyTest.out16Case(false, 2, 512L, 512L, 256L, store);
+        Assert.isTrue(first.equals("gemm128Out16_float16") || first.equals("gemm256Out16_float16"));
+        String again #= GemmFamilyTest.out16Case(false, 2, 512L, 512L, 256L, store);
+        Assert.isFalse(Gemm.lastLargeTimed());
+        Assert.equals(first, again);
+    }
+
+    /** cajeta-ml-gpu 23.2.16: the f16 16-bit-output family serves every backend, vulkan through the wide tile. */
+    @Test
+    public void f16SixteenBitOutputFamilyServesEveryBackend() {
+        String store #= GemmFamilyTest.freshStore();
+        TuneMode.setUntimed(false);
+        String member #= GemmFamilyTest.out16Case(false, 2, 300L, 260L, 72L, store);
+        Assert.isTrue(member.equals("gemm128Out16_float16") || member.equals("gemm256Out16_float16") || member.startsWith("gemmWide"));
+    }
+
+    /** cajeta-ml-gpu 23.2.16: the bf16 16-bit-output family serves every backend, vulkan through the wide tile. */
+    @Test
+    public void bf16SixteenBitOutputFamilyServesEveryBackend() {
+        String store #= GemmFamilyTest.freshStore();
+        TuneMode.setUntimed(false);
+        String member #= GemmFamilyTest.out16Case(true, 2, 300L, 260L, 72L, store);
+        Assert.isTrue(member.equals("gemm128Bf16Out16") || member.equals("gemm256Bf16Out16") || member.startsWith("gemmWide"));
+    }
+
     @Test
     public void untimedTakesTheFirstMember() {
         if (!GemmTileTest.usable("gemm128_float16")) { return; }

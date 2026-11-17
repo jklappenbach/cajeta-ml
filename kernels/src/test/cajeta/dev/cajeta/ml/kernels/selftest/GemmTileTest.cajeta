@@ -345,6 +345,24 @@ public class GemmTileTest {
         GemmTileTest.wideCase<bfloat16>("gemmWideUnrolled_bfloat16", 2, 7L, 1000L, 2049L);
     }
 
+    /** The f16 wide tiles, which serve the f16 16-bit-output entry where its family has no member (cajeta-ml-gpu 23.2.16). */
+    @Test
+    public void f16RolledWideTileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmWide_float16")) { return; }
+        GemmTileTest.wideCase<float16>("gemmWide_float16", 1, 128L, 128L, 16L);
+        GemmTileTest.wideCase<float16>("gemmWide_float16", 1, 257L, 33L, 129L);
+        GemmTileTest.wideCase<float16>("gemmWide_float16", 1, 7L, 1000L, 2049L);
+    }
+
+    /** The unrolled f16 wide tile. */
+    @Test
+    public void f16UnrolledWideTileMatchesTheHost() {
+        if (!GemmTileTest.usable("gemmWideUnrolled_float16")) { return; }
+        GemmTileTest.wideCase<float16>("gemmWideUnrolled_float16", 2, 128L, 128L, 16L);
+        GemmTileTest.wideCase<float16>("gemmWideUnrolled_float16", 2, 257L, 33L, 129L);
+        GemmTileTest.wideCase<float16>("gemmWideUnrolled_float16", 2, 7L, 1000L, 2049L);
+    }
+
     /** With no tune store the rolled wide tiles run on every backend (cajeta-ml-gpu 23.2.13):
      *  the unrolled bodies run only where a store timed them faster. On gfx1151 they ran 5x
      *  slower while they spilled and 5 to 28% slower once they did not; on sm_89 the rolled
