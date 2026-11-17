@@ -225,13 +225,10 @@ public class GemmFamilyTest {
             int32 w = how;
             if (how == 2) {
                 member #= Gemm.runTunedOut16(c, a, b, m, n, k, store);
-                w = member.equals("gemm256Out16_float16") ? 1 : 0;
-                if (member.startsWith("gemmWide")) { w = 3; }
+                w = member.equals("gemm256Out16_float16") || member.equals("gemm256_float16") ? 1 : 0;
             } else if (how == 1) { Gemm.run256Out16<float16>(c, a, b, m, n, k); }
             else { Gemm.run128Out16<float16>(c, a, b, m, n, k); }
-            if (w == 1) { Gemm.run256<float16>(c32, a, b, m, n, k); }
-            else if (w == 3) { Gemm.wide<float16>(c32, a, b, m, n, k); }
-            else { Gemm.run128<float16>(c32, a, b, m, n, k); }
+            if (w == 1) { Gemm.run256<float16>(c32, a, b, m, n, k); } else { Gemm.run128<float16>(c32, a, b, m, n, k); }
             float16[] got = heap float16[mn];
             c.download(got);
             c32.download(want);
@@ -291,13 +288,14 @@ public class GemmFamilyTest {
         Assert.equals(first, again);
     }
 
-    /** cajeta-ml-gpu 23.2.16: the f16 16-bit-output family serves every backend, vulkan through the wide tile. */
+    /** cajeta-ml-gpu 23.2.16: the f16 16-bit-output family serves every backend, vulkan through the f32 family. */
     @Test
     public void f16SixteenBitOutputFamilyServesEveryBackend() {
         String store #= GemmFamilyTest.freshStore();
         TuneMode.setUntimed(false);
         String member #= GemmFamilyTest.out16Case(false, 2, 300L, 260L, 72L, store);
-        Assert.isTrue(member.equals("gemm128Out16_float16") || member.equals("gemm256Out16_float16") || member.startsWith("gemmWide"));
+        Assert.isTrue(member.equals("gemm128Out16_float16") || member.equals("gemm256Out16_float16")
+            || member.equals("gemm128_float16") || member.equals("gemm256_float16"));
     }
 
     /** cajeta-ml-gpu 23.2.16: the bf16 16-bit-output family serves every backend, vulkan through the wide tile. */

@@ -8778,6 +8778,17 @@ public final class Gemm {
         gemm256Bf16Out16.launch(s, grid: [tiles], block: [512])(c, a, b, um, un, (uint32) k);
     }
 
+    static KernelBuffer<float32> out16Wide;
+
+    /** A float32 scratch of at least `n` elements for the 16-bit-output fallback, kept between calls. */
+    static KernelBuffer<float32> out16Scratch(int64 n) {
+        if (Gemm.out16Wide == null || Gemm.out16Wide.length() < (uint64) n) {
+            KernelStream.current().sync();
+            Gemm.out16Wide = heap KernelBuffer<float32>((uint64) n);
+        }
+        return Gemm.out16Wide;
+    }
+
     static TileFamily<LargeShape> largeF16Out16Fam;
     static TileFamily<LargeShape> largeBf16Out16Fam;
 
@@ -8799,17 +8810,14 @@ public final class Gemm {
         return Gemm.largeF16Out16Fam;
     }
 
-    /** runTuned with a float16 output; where neither member has device code (vulkan) the wide tile's float32 result is converted. */
+    /** runTuned with a float16 output; where neither member has device code (vulkan) runTuned's float32 result is converted. */
     public static #String runTunedOut16(KernelBuffer<float16> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
                                         int64 m, int64 n, int64 k, String tuneDir) {
         TileFamily<LargeShape> f = Gemm.largeFamilyOut16(false);
         if (!f.serves(m, n, k)) {
-            Gemm.largeTimed = false;
-            KernelBuffer<float32> wide = heap KernelBuffer<float32>((uint64) (m * n));
-            Gemm.wide<float16>(wide, a, b, m, n, k);
+            KernelBuffer<float32> wide = Gemm.out16Scratch(m * n);
+            String w #= Gemm.runTuned(wide, a, b, m, n, k, tuneDir);
             Convert.into<float32, float16>(c, wide, m * n);
-            KernelStream.current().sync();
-            String w #= Gemm.wideMember();
             return #w;
         }
         ShapeFilter flt #= f.filterFor(m, n, k);
@@ -8820,17 +8828,14 @@ public final class Gemm {
         return f.lastKernel();
     }
 
-    /** runTunedBf16 with a bfloat16 output; where neither member has device code (vulkan) the wide tile's float32 result is converted. */
+    /** runTunedBf16 with a bfloat16 output; where neither member has device code (vulkan) runTunedBf16's float32 result is converted. */
     public static #String runTunedBf16Out16(KernelBuffer<bfloat16> c, KernelBuffer<bfloat16> a, KernelBuffer<bfloat16> b,
                                             int64 m, int64 n, int64 k, String tuneDir) {
         TileFamily<LargeShape> f = Gemm.largeFamilyOut16(true);
         if (!f.serves(m, n, k)) {
-            Gemm.largeTimed = false;
-            KernelBuffer<float32> wide = heap KernelBuffer<float32>((uint64) (m * n));
-            Gemm.wide<bfloat16>(wide, a, b, m, n, k);
+            KernelBuffer<float32> wide = Gemm.out16Scratch(m * n);
+            String w #= Gemm.runTunedBf16(wide, a, b, m, n, k, tuneDir);
             Convert.into<float32, bfloat16>(c, wide, m * n);
-            KernelStream.current().sync();
-            String w #= Gemm.wideMember();
             return #w;
         }
         ShapeFilter flt #= f.filterFor(m, n, k);
