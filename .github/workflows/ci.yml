@@ -87,7 +87,9 @@ env:
   # and Cajeta.hostVectorBits(), which HostGemm's register tile uses.
   # v0.53.10 adds k.waveWidth(), which the wave-generic GEMM, flash and conv
   # kernels size their launches with, and MFMA on CDNA3 (datacenter-gpus 3).
-  CAJETA_VERSION: v0.53.10
+  # v0.54.0 adds CooperativeMatrix.storeAs<U>, which the 16-bit-output GEMMs
+  # store their interior tiles with (coop-converting-store).
+  CAJETA_VERSION: v0.54.0
 
 jobs:
   build-test:

@@ -5826,14 +5826,14 @@ public final class Gemm {
         boolean interior = m0 + 128 <= m && n0 + 128 <= n && (n % 8) == 0;
         if (interior) {
             if (computer) {
-                { uint32 oa00 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0; uint32 qa00 = 0; while (qa00 < a00.elements()) { c[oa00 + a00.row(qa00) * n + a00.col(qa00)] = (E) a00.get(qa00); qa00 = qa00 + 1; } }
-                { uint32 oa01 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16; uint32 qa01 = 0; while (qa01 < a01.elements()) { c[oa01 + a01.row(qa01) * n + a01.col(qa01)] = (E) a01.get(qa01); qa01 = qa01 + 1; } }
-                { uint32 oa02 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32; uint32 qa02 = 0; while (qa02 < a02.elements()) { c[oa02 + a02.row(qa02) * n + a02.col(qa02)] = (E) a02.get(qa02); qa02 = qa02 + 1; } }
-                { uint32 oa03 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48; uint32 qa03 = 0; while (qa03 < a03.elements()) { c[oa03 + a03.row(qa03) * n + a03.col(qa03)] = (E) a03.get(qa03); qa03 = qa03 + 1; } }
-                { uint32 oa10 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0; uint32 qa10 = 0; while (qa10 < a10.elements()) { c[oa10 + a10.row(qa10) * n + a10.col(qa10)] = (E) a10.get(qa10); qa10 = qa10 + 1; } }
-                { uint32 oa11 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16; uint32 qa11 = 0; while (qa11 < a11.elements()) { c[oa11 + a11.row(qa11) * n + a11.col(qa11)] = (E) a11.get(qa11); qa11 = qa11 + 1; } }
-                { uint32 oa12 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32; uint32 qa12 = 0; while (qa12 < a12.elements()) { c[oa12 + a12.row(qa12) * n + a12.col(qa12)] = (E) a12.get(qa12); qa12 = qa12 + 1; } }
-                { uint32 oa13 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48; uint32 qa13 = 0; while (qa13 < a13.elements()) { c[oa13 + a13.row(qa13) * n + a13.col(qa13)] = (E) a13.get(qa13); qa13 = qa13 + 1; } }
+                a00.storeAs<E>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0, 0, n);
+                a01.storeAs<E>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16, 0, n);
+                a02.storeAs<E>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32, 0, n);
+                a03.storeAs<E>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48, 0, n);
+                a10.storeAs<E>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0, 0, n);
+                a11.storeAs<E>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16, 0, n);
+                a12.storeAs<E>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32, 0, n);
+                a13.storeAs<E>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48, 0, n);
             }
         } else {
             if (computer) { a00.store(sc, wave * 256, 0, 16); }
@@ -6108,14 +6108,14 @@ public final class Gemm {
         boolean interior = m0 + 128 <= m && n0 + 128 <= n && (n % 8) == 0;
         if (interior) {
             if (computer) {
-                { uint32 oa00 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0; uint32 qa00 = 0; while (qa00 < a00.elements()) { c[oa00 + a00.row(qa00) * n + a00.col(qa00)] = (bfloat16) a00.get(qa00); qa00 = qa00 + 1; } }
-                { uint32 oa01 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16; uint32 qa01 = 0; while (qa01 < a01.elements()) { c[oa01 + a01.row(qa01) * n + a01.col(qa01)] = (bfloat16) a01.get(qa01); qa01 = qa01 + 1; } }
-                { uint32 oa02 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32; uint32 qa02 = 0; while (qa02 < a02.elements()) { c[oa02 + a02.row(qa02) * n + a02.col(qa02)] = (bfloat16) a02.get(qa02); qa02 = qa02 + 1; } }
-                { uint32 oa03 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48; uint32 qa03 = 0; while (qa03 < a03.elements()) { c[oa03 + a03.row(qa03) * n + a03.col(qa03)] = (bfloat16) a03.get(qa03); qa03 = qa03 + 1; } }
-                { uint32 oa10 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0; uint32 qa10 = 0; while (qa10 < a10.elements()) { c[oa10 + a10.row(qa10) * n + a10.col(qa10)] = (bfloat16) a10.get(qa10); qa10 = qa10 + 1; } }
-                { uint32 oa11 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16; uint32 qa11 = 0; while (qa11 < a11.elements()) { c[oa11 + a11.row(qa11) * n + a11.col(qa11)] = (bfloat16) a11.get(qa11); qa11 = qa11 + 1; } }
-                { uint32 oa12 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32; uint32 qa12 = 0; while (qa12 < a12.elements()) { c[oa12 + a12.row(qa12) * n + a12.col(qa12)] = (bfloat16) a12.get(qa12); qa12 = qa12 + 1; } }
-                { uint32 oa13 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48; uint32 qa13 = 0; while (qa13 < a13.elements()) { c[oa13 + a13.row(qa13) * n + a13.col(qa13)] = (bfloat16) a13.get(qa13); qa13 = qa13 + 1; } }
+                a00.storeAs<bfloat16>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0, 0, n);
+                a01.storeAs<bfloat16>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16, 0, n);
+                a02.storeAs<bfloat16>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32, 0, n);
+                a03.storeAs<bfloat16>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48, 0, n);
+                a10.storeAs<bfloat16>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0, 0, n);
+                a11.storeAs<bfloat16>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16, 0, n);
+                a12.storeAs<bfloat16>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32, 0, n);
+                a13.storeAs<bfloat16>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48, 0, n);
             }
         } else {
             if (computer) { a00.store(sc, wave * 256, 0, 16); }
@@ -6663,14 +6663,14 @@ public final class Gemm {
         boolean interior = m0 + 256 <= m && n0 + 128 <= n && (n % 8) == 0;
         if (interior) {
             if (computer) {
-                { uint32 oa00 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0; uint32 qa00 = 0; while (qa00 < a00.elements()) { c[oa00 + a00.row(qa00) * n + a00.col(qa00)] = (E) a00.get(qa00); qa00 = qa00 + 1; } }
-                { uint32 oa01 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16; uint32 qa01 = 0; while (qa01 < a01.elements()) { c[oa01 + a01.row(qa01) * n + a01.col(qa01)] = (E) a01.get(qa01); qa01 = qa01 + 1; } }
-                { uint32 oa02 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32; uint32 qa02 = 0; while (qa02 < a02.elements()) { c[oa02 + a02.row(qa02) * n + a02.col(qa02)] = (E) a02.get(qa02); qa02 = qa02 + 1; } }
-                { uint32 oa03 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48; uint32 qa03 = 0; while (qa03 < a03.elements()) { c[oa03 + a03.row(qa03) * n + a03.col(qa03)] = (E) a03.get(qa03); qa03 = qa03 + 1; } }
-                { uint32 oa10 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0; uint32 qa10 = 0; while (qa10 < a10.elements()) { c[oa10 + a10.row(qa10) * n + a10.col(qa10)] = (E) a10.get(qa10); qa10 = qa10 + 1; } }
-                { uint32 oa11 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16; uint32 qa11 = 0; while (qa11 < a11.elements()) { c[oa11 + a11.row(qa11) * n + a11.col(qa11)] = (E) a11.get(qa11); qa11 = qa11 + 1; } }
-                { uint32 oa12 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32; uint32 qa12 = 0; while (qa12 < a12.elements()) { c[oa12 + a12.row(qa12) * n + a12.col(qa12)] = (E) a12.get(qa12); qa12 = qa12 + 1; } }
-                { uint32 oa13 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48; uint32 qa13 = 0; while (qa13 < a13.elements()) { c[oa13 + a13.row(qa13) * n + a13.col(qa13)] = (E) a13.get(qa13); qa13 = qa13 + 1; } }
+                a00.storeAs<E>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0, 0, n);
+                a01.storeAs<E>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16, 0, n);
+                a02.storeAs<E>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32, 0, n);
+                a03.storeAs<E>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48, 0, n);
+                a10.storeAs<E>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0, 0, n);
+                a11.storeAs<E>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16, 0, n);
+                a12.storeAs<E>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32, 0, n);
+                a13.storeAs<E>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48, 0, n);
             }
         } else {
             if (wave / 2 == 0) { a00.store(sc, (wave % 2) * 256, 0, 16); }
@@ -8010,14 +8010,14 @@ public final class Gemm {
         boolean interior = m0 + 256 <= m && n0 + 128 <= n && (n % 8) == 0;
         if (interior) {
             if (computer) {
-                { uint32 oa00 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0; uint32 qa00 = 0; while (qa00 < a00.elements()) { c[oa00 + a00.row(qa00) * n + a00.col(qa00)] = (bfloat16) a00.get(qa00); qa00 = qa00 + 1; } }
-                { uint32 oa01 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16; uint32 qa01 = 0; while (qa01 < a01.elements()) { c[oa01 + a01.row(qa01) * n + a01.col(qa01)] = (bfloat16) a01.get(qa01); qa01 = qa01 + 1; } }
-                { uint32 oa02 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32; uint32 qa02 = 0; while (qa02 < a02.elements()) { c[oa02 + a02.row(qa02) * n + a02.col(qa02)] = (bfloat16) a02.get(qa02); qa02 = qa02 + 1; } }
-                { uint32 oa03 = (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48; uint32 qa03 = 0; while (qa03 < a03.elements()) { c[oa03 + a03.row(qa03) * n + a03.col(qa03)] = (bfloat16) a03.get(qa03); qa03 = qa03 + 1; } }
-                { uint32 oa10 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0; uint32 qa10 = 0; while (qa10 < a10.elements()) { c[oa10 + a10.row(qa10) * n + a10.col(qa10)] = (bfloat16) a10.get(qa10); qa10 = qa10 + 1; } }
-                { uint32 oa11 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16; uint32 qa11 = 0; while (qa11 < a11.elements()) { c[oa11 + a11.row(qa11) * n + a11.col(qa11)] = (bfloat16) a11.get(qa11); qa11 = qa11 + 1; } }
-                { uint32 oa12 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32; uint32 qa12 = 0; while (qa12 < a12.elements()) { c[oa12 + a12.row(qa12) * n + a12.col(qa12)] = (bfloat16) a12.get(qa12); qa12 = qa12 + 1; } }
-                { uint32 oa13 = (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48; uint32 qa13 = 0; while (qa13 < a13.elements()) { c[oa13 + a13.row(qa13) * n + a13.col(qa13)] = (bfloat16) a13.get(qa13); qa13 = qa13 + 1; } }
+                a00.storeAs<bfloat16>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 0, 0, n);
+                a01.storeAs<bfloat16>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 16, 0, n);
+                a02.storeAs<bfloat16>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 32, 0, n);
+                a03.storeAs<bfloat16>(c, (m0 + wm * 32 + 0) * n + n0 + wn * 64 + 48, 0, n);
+                a10.storeAs<bfloat16>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 0, 0, n);
+                a11.storeAs<bfloat16>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 16, 0, n);
+                a12.storeAs<bfloat16>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 32, 0, n);
+                a13.storeAs<bfloat16>(c, (m0 + wm * 32 + 16) * n + n0 + wn * 64 + 48, 0, n);
             }
         } else {
             if (wave / 2 == 0) { a00.store(sc, (wave % 2) * 256, 0, 16); }
