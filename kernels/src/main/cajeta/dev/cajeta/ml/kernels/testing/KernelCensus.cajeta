@@ -62,25 +62,37 @@ public final class KernelCensus {
         return chain.contains("|" + name + "|");
     }
 
-    /** The kernel a compiler variant was emitted from (`name$vN`, a Vulkan virtual-subgroup
-     *  fallback, or `name$sw`, a software-BVH ray query), else "". */
+    /** The kernel a compiler variant was emitted from, else "". A variant name is the
+     *  kernel's name and one or more suffixes the compiler adds: `$vN`, a Vulkan
+     *  virtual-subgroup fallback; `$sw`, a software-BVH ray query; `$pt`, Vulkan's
+     *  portable-tile build for a device without cooperative matrices; `$d2`, Vulkan's
+     *  mixed-float dot build. They stack (`name$pt$v8`). */
     public static #String variantBase(String name) {
         int64 at = name.indexOf("$");
         if (at < 1L) { return ""; }
         int32 end = (int32) name.count();
-        String suffix #= name.substring((int32) at + 1, end);
-        boolean variant = suffix.equals("sw");
-        if (!variant && suffix.count() > 1L && suffix.byteAt(0) == (int8) 118) {
-            variant = true;
-            int32 i = 1;
-            while (i < (int32) suffix.count()) {
-                int8 c = suffix.byteAt(i);
-                if (c < (int8) 48 || c > (int8) 57) { variant = false; }
-                i = i + 1;
-            }
+        int32 from = (int32) at + 1;
+        while (from <= end) {
+            int64 next = name.indexOfFrom("$", (int64) from);
+            int32 stop = next < 0L ? end : (int32) next;
+            String suffix #= name.substring(from, stop);
+            if (!KernelCensus.variantSuffix(suffix)) { return ""; }
+            if (next < 0L) { break; }
+            from = stop + 1;
         }
-        if (!variant) { return ""; }
         return name.substring(0, (int32) at);
+    }
+
+    static boolean variantSuffix(String suffix) {
+        if (suffix.equals("sw") || suffix.equals("pt") || suffix.equals("d2")) { return true; }
+        if (suffix.count() < 2L || suffix.byteAt(0) != (int8) 118) { return false; }
+        int32 i = 1;
+        while (i < (int32) suffix.count()) {
+            int8 c = suffix.byteAt(i);
+            if (c < (int8) 48 || c > (int8) 57) { return false; }
+            i = i + 1;
+        }
+        return true;
     }
 
     /** Runs the census; 0 when every registered kernel is accounted for. */

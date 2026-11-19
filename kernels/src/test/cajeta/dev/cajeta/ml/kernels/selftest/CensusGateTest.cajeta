@@ -63,4 +63,22 @@ public class CensusGateTest {
         String lead #= KernelCensus.variantBase("$v16");
         Assert.isTrue(lead.count() == 0L);
     }
+
+    // cajeta v0.54.0's Vulkan variants: `$pt`, the portable-tile build for a device
+    // without cooperative matrices, which may itself carry a virtual-subgroup `$vN`,
+    // and `$d2`, the mixed-float dot build. A suffix the census does not know still
+    // reads as an unowned kernel.
+    @Test
+    public void theVulkanRungVariantsNameTheKernelTheyWereEmittedFrom() {
+        String pt #= KernelCensus.variantBase("gemm16_float16$pt");
+        Assert.isTrue(pt.equals("gemm16_float16"));
+        String d2 #= KernelCensus.variantBase("colsF16$d2");
+        Assert.isTrue(d2.equals("colsF16"));
+        String ptv #= KernelCensus.variantBase("gemm16_float16$pt$v8");
+        Assert.isTrue(ptv.equals("gemm16_float16"));
+        String unknown #= KernelCensus.variantBase("gemm16_float16$pt$zz");
+        Assert.isTrue(unknown.count() == 0L);
+        String empty #= KernelCensus.variantBase("gemm16_float16$pt$");
+        Assert.isTrue(empty.count() == 0L);
+    }
 }
