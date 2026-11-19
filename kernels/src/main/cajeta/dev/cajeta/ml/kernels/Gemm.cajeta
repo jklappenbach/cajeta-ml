@@ -19,6 +19,7 @@ import cajeta.xpu.ShapeFilter;
 import cajeta.xpu.XpuLaunchException;
 import cajeta.xpu.ShapeProbe;
 import dev.cajeta.ml.kernels.nn.Act;
+import dev.cajeta.ml.kernels.tune.TileChoiceListener;
 import dev.cajeta.ml.kernels.tune.TileFamily;
 import dev.cajeta.ml.kernels.tune.TileShape;
 
@@ -5635,10 +5636,15 @@ public final class Gemm {
     public static #String runTuned(KernelBuffer<float32> c, KernelBuffer<float16> a, KernelBuffer<float16> b,
                                    int64 m, int64 n, int64 k, String tuneDir) {
         TileFamily<LargeShape> f = Gemm.largeFamily(false);
-        ShapeFilter flt #= f.filterFor(m, n, k);
-        LargeProbeF16 probe = heap LargeProbeF16(a, b, flt, f, m, n, k);
-        int32 idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
-        Gemm.largeTimed = probe.timed > 0;
+        int32 idx = f.remembered(m, n, k);
+        boolean timed = false;
+        if (idx < 0) {
+            ShapeFilter flt #= f.filterFor(m, n, k);
+            LargeProbeF16 probe = heap LargeProbeF16(a, b, flt, f, m, n, k);
+            idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
+            timed = probe.timed > 0;
+        }
+        Gemm.largeTimed = timed;
         if (idx == 1) { Gemm.run256<float16>(c, a, b, m, n, k); } else { Gemm.run128<float16>(c, a, b, m, n, k); }
         return f.lastKernel();
     }
@@ -5653,10 +5659,15 @@ public final class Gemm {
             String w #= Gemm.wideMember();
             return #w;
         }
-        ShapeFilter flt #= f.filterFor(m, n, k);
-        LargeProbeBf16 probe = heap LargeProbeBf16(a, b, flt, f, m, n, k);
-        int32 idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
-        Gemm.largeTimed = probe.timed > 0;
+        int32 idx = f.remembered(m, n, k);
+        boolean timed = false;
+        if (idx < 0) {
+            ShapeFilter flt #= f.filterFor(m, n, k);
+            LargeProbeBf16 probe = heap LargeProbeBf16(a, b, flt, f, m, n, k);
+            idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
+            timed = probe.timed > 0;
+        }
+        Gemm.largeTimed = timed;
         if (idx == 1) { Gemm.run256Bf16(c, a, b, m, n, k); } else { Gemm.runBf16(c, a, b, m, n, k); }
         return f.lastKernel();
     }
@@ -8974,6 +8985,15 @@ public final class Gemm {
     static TileFamily<LargeShape> largeBf16Out16Fam;
 
     /** The 16-bit-output large family at f16 (`bf16` false) or bf16, members in the f32 family's order. */
+    /** Tell `l` each choice the four large-GEMM families settle (the float32- and 16-bit-output
+     *  families at f16 and bf16); null stops telling. The families borrow it. */
+    public static void onLargeChoice(^TileChoiceListener l) {
+        Gemm.largeFamily(false).onChoice(l);
+        Gemm.largeFamily(true).onChoice(l);
+        Gemm.largeFamilyOut16(false).onChoice(l);
+        Gemm.largeFamilyOut16(true).onChoice(l);
+    }
+
     static TileFamily<LargeShape> largeFamilyOut16(boolean bf16) {
         if (bf16) {
             if (Gemm.largeBf16Out16Fam == null) {
@@ -9001,10 +9021,15 @@ public final class Gemm {
             Convert.into<float32, float16>(c, wide, m * n);
             return #w;
         }
-        ShapeFilter flt #= f.filterFor(m, n, k);
-        LargeProbeOut16 probe = heap LargeProbeOut16(a, b, null, null, flt, f, m, n, k);
-        int32 idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
-        Gemm.largeTimed = probe.timed > 0;
+        int32 idx = f.remembered(m, n, k);
+        boolean timed = false;
+        if (idx < 0) {
+            ShapeFilter flt #= f.filterFor(m, n, k);
+            LargeProbeOut16 probe = heap LargeProbeOut16(a, b, null, null, flt, f, m, n, k);
+            idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
+            timed = probe.timed > 0;
+        }
+        Gemm.largeTimed = timed;
         if (idx == 1) { Gemm.run256Out16<float16>(c, a, b, m, n, k); } else { Gemm.run128Out16<float16>(c, a, b, m, n, k); }
         return f.lastKernel();
     }
@@ -9019,10 +9044,15 @@ public final class Gemm {
             Convert.into<float32, bfloat16>(c, wide, m * n);
             return #w;
         }
-        ShapeFilter flt #= f.filterFor(m, n, k);
-        LargeProbeOut16 probe = heap LargeProbeOut16(null, null, a, b, flt, f, m, n, k);
-        int32 idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
-        Gemm.largeTimed = probe.timed > 0;
+        int32 idx = f.remembered(m, n, k);
+        boolean timed = false;
+        if (idx < 0) {
+            ShapeFilter flt #= f.filterFor(m, n, k);
+            LargeProbeOut16 probe = heap LargeProbeOut16(null, null, a, b, flt, f, m, n, k);
+            idx = f.chooseWith(tuneDir, flt, probe, m, n, k);
+            timed = probe.timed > 0;
+        }
+        Gemm.largeTimed = timed;
         if (idx == 1) { Gemm.run256Bf16Out16(c, a, b, m, n, k); } else { Gemm.run128Bf16Out16(c, a, b, m, n, k); }
         return f.lastKernel();
     }

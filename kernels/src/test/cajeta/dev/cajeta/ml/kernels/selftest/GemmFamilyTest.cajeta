@@ -288,6 +288,40 @@ public class GemmFamilyTest {
         Assert.equals(first, again);
     }
 
+    /** coop-converting-store 6: a large-GEMM family settles its choice once per problem. The
+     *  second call at the same shape runs the remembered member without building a filter,
+     *  a probe or a store lookup, so no second choice is told to the listener, through each of
+     *  the four tuned entries. Each entry has its own shape, so no earlier test settled it. */
+    @Test
+    public void aLargeFamilyChoosesOncePerProblem() {
+        String store #= GemmFamilyTest.freshStore();
+        TuneMode.setUntimed(false);
+        ChoiceRecorder rec #= heap ChoiceRecorder();
+        Gemm.onLargeChoice(rec);
+        int32 i = 0;
+        while (i < 4) {
+            int64 m = 384L + 64L * (int64) i;
+            String first #= "".clone();
+            int32 before = rec.calls;
+            if (i == 0) { first #= GemmFamilyTest.f16Case(1, m, 256L, 128L, store); }
+            if (i == 1) { first #= GemmFamilyTest.bf16Case(1, m, 256L, 128L, store); }
+            if (i == 2) { first #= GemmFamilyTest.out16Case(false, 2, m, 256L, 128L, store); }
+            if (i == 3) { first #= GemmFamilyTest.out16Case(true, 2, m, 256L, 128L, store); }
+            int32 settled = rec.calls;
+            String again #= "".clone();
+            if (i == 0) { again #= GemmFamilyTest.f16Case(1, m, 256L, 128L, store); }
+            if (i == 1) { again #= GemmFamilyTest.bf16Case(1, m, 256L, 128L, store); }
+            if (i == 2) { again #= GemmFamilyTest.out16Case(false, 2, m, 256L, 128L, store); }
+            if (i == 3) { again #= GemmFamilyTest.out16Case(true, 2, m, 256L, 128L, store); }
+            Assert.isTrue(settled - before <= 1);
+            Assert.equals(settled, rec.calls);
+            Assert.equals(first, again);
+            Assert.isFalse(Gemm.lastLargeTimed());
+            i = i + 1;
+        }
+        Gemm.onLargeChoice(null);
+    }
+
     /** cajeta-ml-gpu 23.2.16: the f16 16-bit-output family serves every backend, vulkan through the f32 family. */
     @Test
     public void f16SixteenBitOutputFamilyServesEveryBackend() {
