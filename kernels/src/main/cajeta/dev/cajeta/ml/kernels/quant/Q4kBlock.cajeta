@@ -1,0 +1,81 @@
+package dev.cajeta.ml.kernels.quant;
+
+import cajeta.lang.Cajeta;
+
+/**
+ * The Q4_K block as pieces a GEMM or mat-vec driver calls (kernel-drivers spec §2): 256 values in
+ * 144 bytes, { f16 d; f16 dmin; u8 scales[12]; u8 qs[128] }, eight sub-blocks of 32 values with a
+ * 6-bit scale and min each. A value is `d * scale * q - dmin * min`. The header is taken as its four
+ * little-endian words `h0 .. h3`, so one 16-byte load serves every field. Device and host call the
+ * same methods.
+ */
+public final class Q4kBlock {
+    public Q4kBlock() { return; }
+
+    /** Bytes of one block. */
+    @Device
+    public static uint32 blockBytes() { return 144; }
+
+    /** Offset of the quant bytes in a block. */
+    @Device
+    public static uint32 quantOffset() { return 16; }
+
+    /** Sub-blocks in a block, each with its own scale and min. */
+    @Device
+    public static uint32 subBlocks() { return 8; }
+
+    /** IEEE half bits (low 16 of `h`) as float32, exactly. */
+    @Device
+    public static float32 halfBits(int32 h) {
+        int32 sign = (h >> 15) & 1;
+        int32 exp = (h >> 10) & 31;
+        int32 mant = h & 1023;
+        int32 bits = 0;
+        if (exp == 0) {
+            if (mant == 0) { bits = sign << 31; }
+            else {
+                int32 e = 0;
+                int32 mm = mant;
+                while ((mm & 1024) == 0) { mm = mm << 1; e = e + 1; }
+                bits = (sign << 31) | ((113 - e) << 23) | ((mm & 1023) << 13);
+            }
+        } else if (exp == 31) {
+            bits = (sign << 31) | 2139095040 | (mant << 13);
+        } else {
+            bits = (sign << 31) | ((exp + 112) << 23) | (mant << 13);
+        }
+        return Cajeta.bitsToF32(bits);
+    }
+
+    /** The block's scale step `d`. */
+    @Device
+    public static float32 d(int32 h0) { return Q4kBlock.halfBits(h0 & 65535); }
+
+    /** The block's min step `dmin`. */
+    @Device
+    public static float32 dmin(int32 h0) { return Q4kBlock.halfBits((h0 >> 16) & 65535); }
+
+    /** Sub-block `j`'s 6-bit scale, `j` in 0..7. */
+    @Device
+    public static int32 scale(int32 h1, int32 h3, uint32 j) {
+        int32 s = (int32) (8 * (j & 3));
+        if (j < 4) { return (h1 >> s) & 63; }
+        return ((h3 >> s) & 15) | ((((h1 >> s) & 255) >> 2) & 48);
+    }
+
+    /** Sub-block `j`'s 6-bit min, `j` in 0..7. */
+    @Device
+    public static int32 min(int32 h2, int32 h3, uint32 j) {
+        int32 s = (int32) (8 * (j & 3));
+        if (j < 4) { return (h2 >> s) & 63; }
+        return (((h3 >> s) & 255) >> 4) | ((((h2 >> s) & 255) >> 2) & 48);
+    }
+
+    /** The four low-nibble values of a quant word: values `k .. k+3` of a 64-value run's first half. */
+    @Device
+    public static int32 low(int32 quants) { return quants & 252645135; }
+
+    /** The four high-nibble values of a quant word: values `k+32 .. k+35` of the run. */
+    @Device
+    public static int32 high(int32 quants) { return (quants >> 4) & 252645135; }
+}

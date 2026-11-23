@@ -1,0 +1,122 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 2.1.1: the Q4_K pieces against a byte-by-byte reading of the block, on the host and in a kernel. */
+public class Q4kBlockTest {
+    public Q4kBlockTest() { return; }
+
+    static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
+
+    /** The block's 20 reference words, read a byte at a time as the GGUF layout states it. */
+    static void reference(int8[] raw, int64 ro, int32[] want, int64 o) {
+        want[o] = Cajeta.f32ToBits(Q4kBlock.halfBits(Q4kBlockTest.u8(raw, ro) | (Q4kBlockTest.u8(raw, ro + 1L) << 8)));
+        want[o + 1L] = Cajeta.f32ToBits(Q4kBlock.halfBits(Q4kBlockTest.u8(raw, ro + 2L) | (Q4kBlockTest.u8(raw, ro + 3L) << 8)));
+        int64 j = 0L;
+        while (j < 8L) {
+            int32 sc = 0;
+            int32 mn = 0;
+            if (j < 4L) {
+                sc = Q4kBlockTest.u8(raw, ro + 4L + j) & 63;
+                mn = Q4kBlockTest.u8(raw, ro + 8L + j) & 63;
+            } else {
+                int32 dj = Q4kBlockTest.u8(raw, ro + 4L + (j - 4L));
+                int32 mj = Q4kBlockTest.u8(raw, ro + 8L + (j - 4L));
+                int32 kj = Q4kBlockTest.u8(raw, ro + 12L + (j - 4L));
+                sc = (kj & 15) | ((dj >> 2) & 48);
+                mn = (kj >> 4) | ((mj >> 2) & 48);
+            }
+            want[o + 2L + j] = sc;
+            want[o + 10L + j] = mn;
+            j = j + 1L;
+        }
+        int32 lo = 0;
+        int32 hi = 0;
+        int64 b = 0L;
+        while (b < 4L) {
+            int32 q = Q4kBlockTest.u8(raw, ro + 16L + b);
+            lo = lo | ((q & 15) << (int32) (8L * b));
+            hi = hi | ((q >> 4) << (int32) (8L * b));
+            b = b + 1L;
+        }
+        want[o + 18L] = lo;
+        want[o + 19L] = hi;
+    }
+
+    static #int8[] blocks(int64 n) {
+        int8[] raw #= heap int8[n * 144L];
+        int64 seed = 12345L;
+        int64 i = 0L;
+        while (i < n * 144L) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            raw[i] = (int8) ((seed >> 16) % 256L);
+            i = i + 1L;
+        }
+        return #raw;
+    }
+
+    @Test
+    public void halfBitsCoversZeroSubnormalNormalAndInfinity() {
+        Assert.isTrue(Q4kBlock.halfBits(0) == 0.0f);
+        Assert.isTrue(Q4kBlock.halfBits(15360) == 1.0f);
+        Assert.isTrue(Q4kBlock.halfBits(49152) == 0.0f - 2.0f);
+        Assert.isTrue(Q4kBlock.halfBits(1) == 5.9604645e-8f);
+        Assert.isTrue(Cajeta.f32ToBits(Q4kBlock.halfBits(31744)) == 2139095040);
+    }
+
+    @Test
+    public void thePiecesReadTheHeaderAndNibblesOnTheHost() {
+        int64 n = 96L;
+        int8[] raw #= Q4kBlockTest.blocks(n);
+        int32[] want #= heap int32[20L];
+        int64 b = 0L;
+        while (b < n) {
+            int64 ro = b * 144L;
+            Q4kBlockTest.reference(raw, ro, want, 0L);
+            int32 h0 = Q4kBlockTest.u8(raw, ro) | (Q4kBlockTest.u8(raw, ro + 1L) << 8) | (Q4kBlockTest.u8(raw, ro + 2L) << 16) | (Q4kBlockTest.u8(raw, ro + 3L) << 24);
+            int32 h1 = Q4kBlockTest.u8(raw, ro + 4L) | (Q4kBlockTest.u8(raw, ro + 5L) << 8) | (Q4kBlockTest.u8(raw, ro + 6L) << 16) | (Q4kBlockTest.u8(raw, ro + 7L) << 24);
+            int32 h2 = Q4kBlockTest.u8(raw, ro + 8L) | (Q4kBlockTest.u8(raw, ro + 9L) << 8) | (Q4kBlockTest.u8(raw, ro + 10L) << 16) | (Q4kBlockTest.u8(raw, ro + 11L) << 24);
+            int32 h3 = Q4kBlockTest.u8(raw, ro + 12L) | (Q4kBlockTest.u8(raw, ro + 13L) << 8) | (Q4kBlockTest.u8(raw, ro + 14L) << 16) | (Q4kBlockTest.u8(raw, ro + 15L) << 24);
+            Assert.isTrue(Cajeta.f32ToBits(Q4kBlock.d(h0)) == want[0L]);
+            Assert.isTrue(Cajeta.f32ToBits(Q4kBlock.dmin(h0)) == want[1L]);
+            uint32 j = 0;
+            while (j < 8) {
+                Assert.isTrue(Q4kBlock.scale(h1, h3, j) == want[2L + (int64) j]);
+                Assert.isTrue(Q4kBlock.min(h2, h3, j) == want[10L + (int64) j]);
+                j = j + 1;
+            }
+            b = b + 1L;
+        }
+    }
+
+    @Test
+    public void thePiecesReadTheSameInAKernel() {
+        String name = "PieceProbe_dev_cajeta_ml_kernels_quant_Q4kBlock_header";
+        if (!Device.kernelAvailable(name)) {
+            DeviceSkip.noKernel(name, "kernel-drivers 2.1.1");
+            return;
+        }
+        int64 n = 96L;
+        int8[] raw #= Q4kBlockTest.blocks(n);
+        KernelBuffer<int8> packed = heap KernelBuffer<int8>((uint64) (n * 144L));
+        KernelBuffer<int32> out = heap KernelBuffer<int32>((uint64) (n * 20L));
+        packed.upload(raw);
+        int64[] m #= ValueCheck.mark();
+        PieceProbe<Q4kBlock> probe = heap PieceProbe<Q4kBlock>();
+        probe.run(out, packed, n);
+        int32[] got #= heap int32[n * 20L];
+        out.download(got);
+        int32[] want #= heap int32[n * 20L];
+        int64 b = 0L;
+        while (b < n) { Q4kBlockTest.reference(raw, b * 144L, want, b * 20L); b = b + 1L; }
+        int64 i = 0L;
+        while (i < n * 20L) { Assert.isTrue(got[i] == want[i]); i = i + 1L; }
+        ValueCheck.credit(m);
+    }
+}

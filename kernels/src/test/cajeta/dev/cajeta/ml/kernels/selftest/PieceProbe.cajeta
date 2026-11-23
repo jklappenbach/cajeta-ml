@@ -1,0 +1,42 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+
+/** Runs a block piece class on the device: work-item `i` decodes block `i`'s header and first quant word into 20 int32. */
+public final class PieceProbe<P> {
+    public PieceProbe() { return; }
+
+    @Kernel
+    public static void header(KernelBuffer<int32> out, KernelBuffer<int8> packed, uint32 blocks) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < blocks) {
+            int64 at = (int64) (i * P.blockBytes());
+            Vector<int32,4> h = packed.vload<16>(at).asWords();
+            Vector<int32,4> q = packed.vload<16>(at + (int64) P.quantOffset()).asWords();
+            int32 h0 = h[0];
+            int32 h1 = h[1];
+            int32 h2 = h[2];
+            int32 h3 = h[3];
+            int64 o = (int64) (i * 20);
+            out[o] = Cajeta.f32ToBits(P.d(h0));
+            out[o + 1L] = Cajeta.f32ToBits(P.dmin(h0));
+            uint32 j = 0;
+            while (j < 8) {
+                out[o + 2L + (int64) j] = P.scale(h1, h3, j);
+                out[o + 10L + (int64) j] = P.min(h2, h3, j);
+                j = j + 1;
+            }
+            out[o + 18L] = P.low(q[0]);
+            out[o + 19L] = P.high(q[0]);
+        }
+    }
+
+    public void run(KernelBuffer<int32> out, KernelBuffer<int8> packed, int64 blocks) {
+        KernelStream s #= KernelStream.current();
+        header.launch(s, grid: [(uint32) ((blocks + 63L) / 64L)], block: [64])(out, packed, (uint32) blocks);
+        s.sync();
+    }
+}
