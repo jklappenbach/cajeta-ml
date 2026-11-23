@@ -1,0 +1,77 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import dev.cajeta.ml.kernels.quant.Q8kAct;
+
+/**
+ * `y[t][r] = sum over k of W[r][k] * x[t][k]` for a block-quantized weight `W` and q8_K
+ * activations, written from the block pieces alone, one work-item an output element
+ * (kernel-drivers spec §2). It is the operation's definition: the device drivers move the data
+ * differently and are held to it.
+ *
+ * The block piece contract, the `@Device static` methods of the type parameter `P`:
+ * `blockBytes()`, `subBlocks()`, `subValues()` (sub-blocks times values is 256, a q8_K block);
+ * `headOffset()` and, on the 16 header bytes there as little-endian words `h0 .. h3`, `d(h0)`,
+ * `dmin(h0)`, `scale(h1, h3, j)` and `min(h2, h3, j)`; `quantByte(k)` and `quant(byte, k)` for
+ * value `k`; and `add(acc, d, dmin, xs, isum, msum)`, the block's float step.
+ *
+ * The combine is over a span: one sub-block's values against the activations at the same
+ * indices, summed in int32. The cpu driver maps it to dot instructions on 32-byte vectors and the
+ * GPU driver to a 16x16 tile multiply.
+ */
+public final class BlockGemmRef<P> {
+    public BlockGemmRef() { return; }
+
+    @Kernel
+    public static void ref(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+                            uint32 rows, uint32 tokens, uint32 blocksPerRow, int64 yStride, uint32 accum) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < rows * tokens) {
+            uint32 t = i / rows;
+            uint32 r = i - t * rows;
+            float32 acc = 0.0f;
+            uint32 b = 0;
+            while (b < blocksPerRow) {
+                int64 at = ((int64) r * (int64) blocksPerRow + (int64) b) * (int64) P.blockBytes();
+                int64 xa = ((int64) t * (int64) blocksPerRow + (int64) b) * (int64) Q8kAct.blockBytes();
+                Vector<int32,4> h = w.vload<16>(at + (int64) P.headOffset()).asWords();
+                int32 h0 = h[0];
+                int32 h1 = h[1];
+                int32 h2 = h[2];
+                int32 h3 = h[3];
+                int32 isum = 0;
+                int32 msum = 0;
+                uint32 j = 0;
+                while (j < P.subBlocks()) {
+                    int32 dot = 0;
+                    uint32 l = 0;
+                    while (l < P.subValues()) {
+                        uint32 k = j * P.subValues() + l;
+                        int32 q = P.quant((int32) w[at + (int64) P.quantByte(k)] & 255, k);
+                        dot = dot + q * Q8kAct.value(xp, xa, k);
+                        l = l + 1;
+                    }
+                    isum = isum + P.scale(h1, h3, j) * dot;
+                    msum = msum + P.min(h2, h3, j) * Q8kAct.subSum(xp, xa, j);
+                    j = j + 1;
+                }
+                acc = P.add(acc, P.d(h0), P.dmin(h0), Q8kAct.scale(xp, xa), isum, msum);
+                b = b + 1;
+            }
+            int64 yi = (int64) t * yStride + (int64) r;
+            if (accum != 0) { y[yi] = y[yi] + acc; } else { y[yi] = acc; }
+        }
+    }
+
+    /** `y[t * yStride + r]` set (or added to, `accum`) for `rows` weight rows of `blocksPerRow` blocks and `tokens` packed activation rows; queued on the current stream. */
+    public void run(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+                    int64 rows, int64 tokens, int64 blocksPerRow, int64 yStride, boolean accum) {
+        uint32 n = (uint32) (rows * tokens);
+        KernelStream s #= KernelStream.current();
+        ref.launch(s, grid: [(n + 63) / 64], block: [64])(y, w, xp, (uint32) rows, (uint32) tokens,
+            (uint32) blocksPerRow, yStride, accum ? 1 : 0);
+    }
+}

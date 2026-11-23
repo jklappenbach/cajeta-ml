@@ -1,13 +1,14 @@
 package dev.cajeta.ml.kernels.quant;
 
 import cajeta.lang.Cajeta;
+import cajeta.xpu.Vector;
 
 /**
  * The Q4_K block as pieces a GEMM or mat-vec driver calls (kernel-drivers spec §2): 256 values in
  * 144 bytes, { f16 d; f16 dmin; u8 scales[12]; u8 qs[128] }, eight sub-blocks of 32 values with a
- * 6-bit scale and min each. A value is `d * scale * q - dmin * min`. The header is taken as its four
- * little-endian words `h0 .. h3`, so one 16-byte load serves every field. Device and host call the
- * same methods.
+ * 6-bit scale and min each. A value is `d * scale * q - dmin * min`. It meets the block piece
+ * contract stated on {@link dev.cajeta.ml.kernels.gemm.BlockGemmRef}. Device and host call the same
+ * methods.
  */
 public final class Q4kBlock {
     public Q4kBlock() { return; }
@@ -23,6 +24,51 @@ public final class Q4kBlock {
     /** Sub-blocks in a block, each with its own scale and min. */
     @Device
     public static uint32 subBlocks() { return 8; }
+
+    /** Values in a sub-block. */
+    @Device
+    public static uint32 subValues() { return 32; }
+
+    /** Offset in a block of the 16 header bytes the header pieces take as words `h0 .. h3`. */
+    @Device
+    public static uint32 headOffset() { return 0; }
+
+    /** Offset in a block of the byte that holds value `k`, `k` in 0..255. */
+    @Device
+    public static uint32 quantByte(uint32 k) { return 16 + 32 * (k >> 6) + (k & 31); }
+
+    /** Value `k`'s quant, 0..15, out of the byte {@link #quantByte} names. */
+    @Device
+    public static int32 quant(int32 b, uint32 k) { return (b >> (int32) (4 * ((k >> 5) & 1))) & 15; }
+
+    /** {@link #low} for four quant words. */
+    @Device
+    public static Vector<int32,4> lowWords(Vector<int32,4> quants) { return quants & 252645135; }
+
+    /** {@link #high} for four quant words. */
+    @Device
+    public static Vector<int32,4> highWords(Vector<int32,4> quants) { return (quants >> 4) & 252645135; }
+
+    /** The low-nibble quants of 32 quant bytes: for file bytes `32 g + i`, values `64 g + i`. */
+    @Device
+    public static Vector<uint8,32> lowBytes(Vector<uint8,32> q) { return q & 15; }
+
+    /** The high-nibble quants of 32 quant bytes: for file bytes `32 g + i`, values `64 g + 32 + i`. */
+    @Device
+    public static Vector<uint8,32> highBytes(Vector<uint8,32> q) { return (q >> 4) & 15; }
+
+    /** {@link #add} for eight rows at once, one row a lane. */
+    @Device
+    public static Vector<float32,8> add8(Vector<float32,8> acc, Vector<float32,8> d, Vector<float32,8> dmin,
+            float32 xs, Vector<int32,8> isum, Vector<int32,8> msum) {
+        return acc + d * xs * isum.toF32() - dmin * xs * msum.toF32();
+    }
+
+    /** `acc` plus one block's part of a dot: `d * xs * isum - dmin * xs * msum`, with `isum` the sum of scale times sub-block dot and `msum` the sum of min times sub-block activation sum. */
+    @Device
+    public static float32 add(float32 acc, float32 d, float32 dmin, float32 xs, int32 isum, int32 msum) {
+        return acc + d * xs * (float32) isum - dmin * xs * (float32) msum;
+    }
 
     /** IEEE half bits (low 16 of `h`) as float32, exactly. */
     @Device

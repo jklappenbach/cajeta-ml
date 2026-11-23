@@ -1,0 +1,115 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRows8;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 3.1: the cpu row driver over the Q4_K pieces against the GEMM written from the pieces alone. */
+public class BlockGemmRows8Test {
+    public BlockGemmRows8Test() { return; }
+
+    @Test
+    public void thePackPutsEveryFieldWhereTheDriverReadsIt() {
+        int64 rows = 11L;
+        int64 bpr = 2L;
+        int8[] file #= BlockGemmRefTest.weight(rows * bpr);
+        BlockGemmRows8<Q4kBlock> drv = heap BlockGemmRows8<Q4kBlock>();
+        Assert.isTrue(drv.packedBytes(rows, bpr) == 2L * bpr * 1216L);
+        int8[] out #= heap int8[drv.packedBytes(rows, bpr)];
+        drv.pack(file, 0L, rows, bpr, out, 0L);
+        int64 r = 0L;
+        while (r < 16L) {
+            int64 b = 0L;
+            while (b < bpr) {
+                int64 wo = ((r / 8L) * bpr + b) * 1216L;
+                int64 lane = r % 8L;
+                int64 ro = (r * bpr + b) * 144L;
+                if (r < rows) {
+                    int32 h0 = BlockGemmRefTest.word(file, ro);
+                    int32 h1 = BlockGemmRefTest.word(file, ro + 4L);
+                    int32 h2 = BlockGemmRefTest.word(file, ro + 8L);
+                    int32 h3 = BlockGemmRefTest.word(file, ro + 12L);
+                    Assert.isTrue(BlockGemmRefTest.word(out, wo + 4L * lane) == Cajeta.f32ToBits(Q4kBlock.d(h0)));
+                    Assert.isTrue(BlockGemmRefTest.word(out, wo + 32L + 4L * lane) == Cajeta.f32ToBits(Q4kBlock.dmin(h0)));
+                    uint32 j = 0;
+                    while (j < 8) {
+                        Assert.isTrue((int32) out[wo + 64L + 8L * (int64) j + lane] == Q4kBlock.scale(h1, h3, j));
+                        Assert.isTrue((int32) out[wo + 128L + 8L * (int64) j + lane] == Q4kBlock.min(h2, h3, j));
+                        j = j + 1;
+                    }
+                    int64 k = 0L;
+                    while (k < 128L) {
+                        Assert.isTrue(out[wo + 192L + 32L * (k / 4L) + 4L * lane + (k % 4L)] == file[ro + 16L + k]);
+                        k = k + 1L;
+                    }
+                } else {
+                    int64 k = 0L;
+                    while (k < 128L) {
+                        Assert.isTrue(out[wo + 192L + 32L * (k / 4L) + 4L * lane + (k % 4L)] == (int8) 0);
+                        k = k + 1L;
+                    }
+                }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    @Test
+    public void theRowDriverEqualsTheGemmFromPiecesBitForBit() {
+        String name = "BlockGemmRows8_dev_cajeta_ml_kernels_quant_Q4kBlock_rows8";
+        String ref = "BlockGemmRef_dev_cajeta_ml_kernels_quant_Q4kBlock_ref";
+        if (!Device.kernelAvailable(name) || !Device.kernelAvailable(ref)) {
+            DeviceSkip.cannot("the 8-row driver is the cpu's (kernel-drivers 3.2)");
+            return;
+        }
+        int64 rows = 21L;
+        int64 tokens = 39L;
+        int64 bpr = 3L;
+        int8[] file #= BlockGemmRefTest.weight(rows * bpr);
+        int8[] hx #= BlockGemmRefTest.acts(tokens * bpr);
+        BlockGemmRows8<Q4kBlock> drv = heap BlockGemmRows8<Q4kBlock>();
+        int8[] packed #= heap int8[drv.packedBytes(rows, bpr)];
+        drv.pack(file, 0L, rows, bpr, packed, 0L);
+        KernelBuffer<int8> wf = heap KernelBuffer<int8>((uint64) (rows * bpr * 144L));
+        KernelBuffer<int8> wp = heap KernelBuffer<int8>((uint64) drv.packedBytes(rows, bpr));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * bpr * 320L));
+        KernelBuffer<float32> ya = heap KernelBuffer<float32>((uint64) (tokens * rows));
+        KernelBuffer<float32> yb = heap KernelBuffer<float32>((uint64) (tokens * rows));
+        wf.upload(file);
+        wp.upload(packed);
+        xp.upload(hx);
+        float32[] seedY #= heap float32[tokens * rows];
+        int64 i = 0L;
+        while (i < tokens * rows) { seedY[i] = 0.25f * (float32) (i % 7L); i = i + 1L; }
+        float32[] ga #= heap float32[tokens * rows];
+        float32[] gb #= heap float32[tokens * rows];
+        BlockGemmRef<Q4kBlock> g = heap BlockGemmRef<Q4kBlock>();
+        int64[] m #= ValueCheck.mark();
+        int32 pass = 0;
+        while (pass < 2) {
+            ya.upload(seedY);
+            yb.upload(seedY);
+            g.run(ya, wf, xp, rows, tokens, bpr, rows, pass == 1);
+            drv.run(yb, wp, xp, rows, bpr, tokens, bpr * 320L, rows, pass == 1, 2L, 32L);
+            KernelStream st #= KernelStream.current();
+            st.sync();
+            ya.download(ga);
+            yb.download(gb);
+            i = 0L;
+            while (i < tokens * rows) {
+                Assert.isTrue(Cajeta.f32ToBits(ga[i]) == Cajeta.f32ToBits(gb[i]));
+                i = i + 1L;
+            }
+            pass = pass + 1;
+        }
+        ValueCheck.credit(m);
+    }
+}

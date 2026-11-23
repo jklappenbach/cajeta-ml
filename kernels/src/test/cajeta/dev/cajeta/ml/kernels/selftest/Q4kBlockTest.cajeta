@@ -96,6 +96,26 @@ public class Q4kBlockTest {
     }
 
     @Test
+    public void quantReadsEveryValueOfABlock() {
+        int64 n = 8L;
+        int8[] raw #= Q4kBlockTest.blocks(n);
+        int64 b = 0L;
+        while (b < n) {
+            int64 ro = b * 144L;
+            uint32 k = 0;
+            while (k < 256) {
+                int64 g = (int64) (k / 64);
+                int64 l = (int64) (k % 32);
+                int32 q = Q4kBlockTest.u8(raw, ro + 16L + 32L * g + l);
+                int32 want = ((k / 32) % 2 == 0) ? (q & 15) : (q >> 4);
+                Assert.isTrue(Q4kBlock.quant(Q4kBlockTest.u8(raw, ro + (int64) Q4kBlock.quantByte(k)), k) == want);
+                k = k + 1;
+            }
+            b = b + 1L;
+        }
+    }
+
+    @Test
     public void thePiecesReadTheSameInAKernel() {
         String name = "PieceProbe_dev_cajeta_ml_kernels_quant_Q4kBlock_header";
         if (!Device.kernelAvailable(name)) {

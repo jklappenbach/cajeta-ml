@@ -1,0 +1,40 @@
+package dev.cajeta.ml.kernels.quant;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.Vector;
+
+/**
+ * The q8_K activation block as pieces (kernel-drivers spec §2): 256 values in 320 bytes, the int8
+ * quants, eight int32 sums of 32 quants at byte 256 and the float32 scale at byte 288, as
+ * {@link dev.cajeta.ml.kernels.gemm.PackQ8K} writes it. A value is `scale * q`.
+ */
+public final class Q8kAct {
+    public Q8kAct() { return; }
+
+    /** Bytes of one block. */
+    @Device
+    public static uint32 blockBytes() { return 320; }
+
+    /** Values in a block. */
+    @Device
+    public static uint32 values() { return 256; }
+
+    /** Quant `k` of the block at `at`, `k` in 0..255. */
+    @Device
+    public static int32 value(KernelBuffer<int8> xp, int64 at, uint32 k) { return (int32) xp[at + (int64) k]; }
+
+    /** The sum of quants `32 j .. 32 j + 31` of the block at `at`, `j` in 0..7. */
+    @Device
+    public static int32 subSum(KernelBuffer<int8> xp, int64 at, uint32 j) {
+        Vector<int32,1> s = xp.vload<4>(at + 256L + (int64) (4 * j)).asWords();
+        return s[0];
+    }
+
+    /** The scale of the block at `at`. */
+    @Device
+    public static float32 scale(KernelBuffer<int8> xp, int64 at) {
+        Vector<int32,1> s = xp.vload<4>(at + 288L).asWords();
+        return Cajeta.bitsToF32(s[0]);
+    }
+}

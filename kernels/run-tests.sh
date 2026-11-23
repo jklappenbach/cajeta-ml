@@ -72,6 +72,16 @@ fi
 [[ -f "$unit_cja" ]] || { echo "could not resolve a dev.cajeta.unit archive" >&2; exit 1; }
 echo ">> cajeta-unit: $unit_cja"
 
+# kernel-drivers 2.1.2: a block piece moves no data, so quant/ names no tile, barrier, shared
+# memory or work-item index.
+if bad=$(grep -nE '\b(Shared|Barrier|KernelThread|Workgroup|CooperativeMatrix|TileOps|WaveVector)\b|\bshared[[:space:]]' \
+        "$here"/src/main/cajeta/dev/cajeta/ml/kernels/quant/*.cajeta); then
+    echo "a block piece names a data-movement construct (kernel-drivers 2.1.2):" >&2
+    echo "$bad" >&2
+    exit 1
+fi
+echo ">> pieces: quant/ names no tile, barrier, shared memory or work-item index"
+
 echo ">> building the kernels library .cja"
 "$CAJETA" --emit=cja -o "$out/kernels.cja" --classpath="$unit_cja" \
     dev.cajeta.ml.kernels.Kernels.version "$here/src/main/cajeta" "$out" >/dev/null

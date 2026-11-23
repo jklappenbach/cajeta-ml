@@ -1,0 +1,161 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 2.1.1, 2.2.2: the GEMM written from the Q4_K pieces against a decode-then-multiply on the host. */
+public class BlockGemmRefTest {
+    public BlockGemmRefTest() { return; }
+
+    static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
+
+    /** `n` bytes of Q4_K blocks with small finite d and dmin. */
+    static #int8[] weight(int64 blocks) {
+        int8[] raw #= heap int8[blocks * 144L];
+        int64 seed = 777L;
+        int64 i = 0L;
+        while (i < blocks * 144L) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            raw[i] = (int8) ((seed >> 16) % 256L);
+            i = i + 1L;
+        }
+        int64 b = 0L;
+        while (b < blocks) {
+            raw[b * 144L + 1L] = (int8) (44 + (int32) (b % 4L));
+            raw[b * 144L + 3L] = (int8) (40 + (int32) (b % 3L));
+            b = b + 1L;
+        }
+        return #raw;
+    }
+
+    /** `blocks` q8_K blocks: quants, the eight sums and a scale. */
+    static #int8[] acts(int64 blocks) {
+        int8[] xp #= heap int8[blocks * 320L];
+        int64 seed = 4242L;
+        int64 b = 0L;
+        while (b < blocks) {
+            int64 o = b * 320L;
+            int64 j = 0L;
+            while (j < 8L) {
+                int32 s = 0;
+                int64 l = 0L;
+                while (l < 32L) {
+                    seed = (seed * 1103515245L + 12345L) % 2147483648L;
+                    int32 q = (int32) ((seed >> 16) % 255L) - 127;
+                    xp[o + j * 32L + l] = (int8) q;
+                    s = s + q;
+                    l = l + 1L;
+                }
+                BlockGemmRefTest.putI32(xp, o + 256L + 4L * j, s);
+                j = j + 1L;
+            }
+            BlockGemmRefTest.putI32(xp, o + 288L, Cajeta.f32ToBits(0.003f + 0.001f * (float32) (b % 5L)));
+            b = b + 1L;
+        }
+        return #xp;
+    }
+
+    static void putI32(int8[] out, int64 o, int32 v) {
+        out[o] = (int8) (v & 255);
+        out[o + 1L] = (int8) ((v >> 8) & 255);
+        out[o + 2L] = (int8) ((v >> 16) & 255);
+        out[o + 3L] = (int8) ((v >> 24) & 255);
+    }
+
+    static int32 word(int8[] raw, int64 at) {
+        return BlockGemmRefTest.u8(raw, at) | (BlockGemmRefTest.u8(raw, at + 1L) << 8)
+            | (BlockGemmRefTest.u8(raw, at + 2L) << 16) | (BlockGemmRefTest.u8(raw, at + 3L) << 24);
+    }
+
+    /** Element `k` of weight block `ro` as the format defines it, `d * scale * q - dmin * min`, in float64. */
+    static float64 element(int8[] raw, int64 ro, int64 k) {
+        float64 d = (float64) Q4kBlock.halfBits(BlockGemmRefTest.u8(raw, ro) | (BlockGemmRefTest.u8(raw, ro + 1L) << 8));
+        float64 dmin = (float64) Q4kBlock.halfBits(BlockGemmRefTest.u8(raw, ro + 2L) | (BlockGemmRefTest.u8(raw, ro + 3L) << 8));
+        int64 j = k / 32L;
+        int32 sc = 0;
+        int32 mn = 0;
+        if (j < 4L) {
+            sc = BlockGemmRefTest.u8(raw, ro + 4L + j) & 63;
+            mn = BlockGemmRefTest.u8(raw, ro + 8L + j) & 63;
+        } else {
+            int32 dj = BlockGemmRefTest.u8(raw, ro + 4L + (j - 4L));
+            int32 mj = BlockGemmRefTest.u8(raw, ro + 8L + (j - 4L));
+            int32 kj = BlockGemmRefTest.u8(raw, ro + 12L + (j - 4L));
+            sc = (kj & 15) | ((dj >> 2) & 48);
+            mn = (kj >> 4) | ((mj >> 2) & 48);
+        }
+        int32 qb = BlockGemmRefTest.u8(raw, ro + 16L + 32L * (k / 64L) + (k % 32L));
+        int32 q = (j % 2L == 0L) ? (qb & 15) : (qb >> 4);
+        return d * (float64) sc * (float64) q - dmin * (float64) mn;
+    }
+
+    @Test
+    public void theGemmFromPiecesEqualsDecodeThenMultiply() {
+        String name = "BlockGemmRef_dev_cajeta_ml_kernels_quant_Q4kBlock_ref";
+        if (!Device.kernelAvailable(name)) {
+            DeviceSkip.noKernel(name, "kernel-drivers 2.1.1");
+            return;
+        }
+        int64 rows = 13L;
+        int64 tokens = 5L;
+        int64 bpr = 3L;
+        int64 yStride = 16L;
+        int8[] hw #= BlockGemmRefTest.weight(rows * bpr);
+        int8[] hx #= BlockGemmRefTest.acts(tokens * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (rows * bpr * 144L));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * bpr * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (tokens * yStride));
+        w.upload(hw);
+        xp.upload(hx);
+        float32[] seedY #= heap float32[tokens * yStride];
+        int64 i = 0L;
+        while (i < tokens * yStride) { seedY[i] = 0.5f; i = i + 1L; }
+        int64[] m #= ValueCheck.mark();
+        BlockGemmRef<Q4kBlock> g = heap BlockGemmRef<Q4kBlock>();
+        float32[] got #= heap float32[tokens * yStride];
+        int32 pass = 0;
+        while (pass < 2) {
+            y.upload(seedY);
+            g.run(y, w, xp, rows, tokens, bpr, yStride, pass == 1);
+            KernelStream st #= KernelStream.current();
+            st.sync();
+            y.download(got);
+            int64 t = 0L;
+            while (t < tokens) {
+                int64 r = 0L;
+                while (r < rows) {
+                    float64 want = pass == 1 ? 0.5 : 0.0;
+                    float64 mag = 1.0;
+                    int64 b = 0L;
+                    while (b < bpr) {
+                        float64 xs = (float64) Cajeta.bitsToF32(BlockGemmRefTest.word(hx, (t * bpr + b) * 320L + 288L));
+                        int64 k = 0L;
+                        while (k < 256L) {
+                            float64 term = BlockGemmRefTest.element(hw, (r * bpr + b) * 144L, k) * xs * (float64) hx[(t * bpr + b) * 320L + k];
+                            want = want + term;
+                            mag = mag + (term < 0.0 ? 0.0 - term : term);
+                            k = k + 1L;
+                        }
+                        b = b + 1L;
+                    }
+                    float64 diff = (float64) got[t * yStride + r] - want;
+                    if (diff < 0.0) { diff = 0.0 - diff; }
+                    Assert.isTrue(diff <= 1.0e-5 * mag);
+                    r = r + 1L;
+                }
+                int64 pad = rows;
+                while (pad < yStride) { Assert.isTrue(got[t * yStride + pad] == 0.5f); pad = pad + 1L; }
+                t = t + 1L;
+            }
+            pass = pass + 1;
+        }
+        ValueCheck.credit(m);
+    }
+}

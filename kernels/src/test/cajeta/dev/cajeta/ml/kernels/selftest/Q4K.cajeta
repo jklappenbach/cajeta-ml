@@ -16,7 +16,7 @@ public final class Q4K {
         if (exp == 0) {
             if (mant == 0) { bits = sign << 31; }
             else {
-                int32 e = -1;
+                int32 e = 0;
                 int32 mm = mant;
                 while ((mm & 1024) == 0) { mm = mm << 1; e = e + 1; }
                 bits = (sign << 31) | ((113 - e) << 23) | ((mm & 1023) << 13);
