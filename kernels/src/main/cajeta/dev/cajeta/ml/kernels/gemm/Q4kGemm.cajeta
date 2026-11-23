@@ -1,0 +1,78 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.lang.String;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import cajeta.xpu.ShapeFilter;
+import dev.cajeta.ml.kernels.tune.TileFamily;
+
+/**
+ * The Q4_K weight times q8_K activations GEMM by name (kernel-drivers spec §3.5):
+ * `y[token * outDim + row] = sum over k of W[row][k] * x[token][k]`. The caller loads the weight
+ * once and runs; the device's driver packs it, cuts the work and launches. On the cpu that is
+ * {@link BlockGemmRows8}; on a GPU a member of the {@link BlockGemmTile} family, picked by the
+ * shape choice for the problem.
+ */
+public final class Q4kGemm {
+    static final String ROWS8 = "BlockGemmRows8_dev_cajeta_ml_kernels_quant_Q4kBlock_rows8";
+
+    BlockGemmRows8<Q4kBlock> rows;
+    TileFamily<BlockTileMember> tiles;
+    KernelBuffer<float32> part;
+
+    public Q4kGemm() {
+        this.rows #= heap BlockGemmRows8<Q4kBlock>();
+        this.tiles #= heap TileFamily<BlockTileMember>("q4kBlockTile");
+        this.tiles.add(#heap BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128>());
+        this.tiles.add(#heap BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128>());
+        this.part #= heap KernelBuffer<float32>((uint64) 16L);
+    }
+
+    /** True where the row driver runs, which is the cpu. */
+    boolean byRows() { return Device.kernelAvailable(Q4kGemm.ROWS8); }
+
+    /** The weight on the device in this device's packing, from `rows` rows of `cols / 256` file-layout blocks at `file[off ..)`. */
+    public #KernelBuffer<int8> load(int8[] file, int64 off, int64 rows, int64 cols) {
+        int64 bpr = cols / 256L;
+        if (this.byRows()) {
+            int64 n = this.rows.packedBytes(rows, bpr);
+            int8[] packed #= heap int8[n];
+            this.rows.pack(file, off, rows, bpr, packed, 0L);
+            KernelBuffer<int8> w #= heap KernelBuffer<int8>((uint64) n);
+            w.upload(packed);
+            return #w;
+        }
+        int64 n = rows * bpr * 144L;
+        int8[] raw #= heap int8[n];
+        int64 i = 0L;
+        while (i < n) { raw[i] = file[off + i]; i = i + 1L; }
+        KernelBuffer<int8> w #= heap KernelBuffer<int8>((uint64) n);
+        w.upload(raw);
+        return #w;
+    }
+
+    /** The kernel that serves `tokens` by `outDim` by `cols` here. */
+    public #String kernelFor(int64 tokens, int64 outDim, int64 cols) {
+        if (this.byRows()) { return "" + Q4kGemm.ROWS8; }
+        ShapeFilter f #= this.tiles.filterFor(tokens, outDim, cols);
+        int32 idx = this.tiles.chooseUntimed("", f, tokens, outDim, cols);
+        if (idx < 0) { idx = 0; }
+        return this.tiles.shapes().get(idx).kernel();
+    }
+
+    /** `y` set (or added to) for `tokens` q8_K rows in `xp` and a weight from {@link #load}; queued on `s`. */
+    public void run(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+            int64 tokens, int64 outDim, int64 cols, boolean accum) {
+        int64 bpr = cols / 256L;
+        if (this.byRows()) {
+            this.rows.runOn(s, y, w, xp, outDim, bpr, tokens, bpr * 320L, outDim, accum, 64L, 32L);
+            return;
+        }
+        ShapeFilter f #= this.tiles.filterFor(tokens, outDim, cols);
+        int32 idx = this.tiles.chooseUntimed("", f, tokens, outDim, cols);
+        if (idx < 0) { idx = 0; }
+        this.tiles.shapes().get(idx).runOn(s, y, w, xp, tokens, outDim, cols, this.part, 1L, accum ? 1 : 0);
+    }
+}

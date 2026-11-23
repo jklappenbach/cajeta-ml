@@ -10,6 +10,7 @@ import cajeta.xpu.Shared;
 import cajeta.xpu.TileOps;
 import cajeta.xpu.Vector;
 import cajeta.xpu.WaveVector;
+import cajeta.lang.String;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 
 /**
@@ -27,13 +28,20 @@ import dev.cajeta.ml.kernels.quant.Q4kBlock;
 @Requires(TM == TN && TM % WM == 0 && TN % WN == 0 && WM % 16 == 0 && WN % 16 == 0
     && (TM / WM) * (TN / WN) * 16 == TN && KS == 128 && (WN / 16) % 2 == 0)
 @Unfused
-public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS> {
+public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS>
+        implements BlockTileMember {
 
     public BlockGemmTile() { return; }
+
+    /** The registered kernel of the Q4_K instantiation of this shape. */
+    public #String kernel() {
+        return "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q4kBlock_" + TM + "_" + TN + "_" + WM + "_" + WN + "_" + KS + "_blockTile";
+    }
 
     /** Tokens and rows of one output tile. */
     public int32 tileM() { return (int32) TM; }
     public int32 tileN() { return (int32) TN; }
+    public int32 threads() { return (int32) (2 * TN); }
 
     /** True when `rows` tokens by `outDim` weight rows of `cols` values tile exactly. */
     public boolean fits(int64 rows, int64 outDim, int64 cols) {

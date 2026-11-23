@@ -1,0 +1,13 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.tune.TileShape;
+
+/** One listed shape of the GPU tile driver, as the tuner's family holds it. */
+public interface BlockTileMember extends TileShape {
+    /** One launch over the whole problem on `s`; see {@link BlockGemmTile#runOn}. */
+    void runOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> packed,
+            KernelBuffer<int8> xp, int64 rows, int64 outDim, int64 cols,
+            KernelBuffer<float32> part, int64 splits, uint32 accum);
+}
