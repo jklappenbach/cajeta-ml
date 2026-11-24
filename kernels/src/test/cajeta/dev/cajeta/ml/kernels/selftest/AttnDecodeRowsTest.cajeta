@@ -1,0 +1,123 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.attn.AttnDecodeRows;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 9.3: the cpu decode-attention driver's partials, combined, against softmax attention in float64. */
+public class AttnDecodeRowsTest {
+    public AttnDecodeRowsTest() { return; }
+
+    static float32 rnd(int64 i) {
+        int64 x = (i * 2654435761L + 12345L) % 2147483648L;
+        return (float32) ((x >> 8) % 2001L - 1000L) * 0.001f;
+    }
+
+    @Test
+    public void thePartialsCombineToSoftmaxAttention() {
+        String name = "AttnDecodeRows_128_decode";
+        if (!Device.kernelAvailable(name)) {
+            DeviceSkip.cannot("the row decode-attention driver is the cpu's (kernel-drivers 9.3)");
+            return;
+        }
+        int32 nKv = 2;
+        int32 group = 3;
+        int32 count = 150;
+        int32 splits = 4;
+        int64 hd = 128L;
+        int64 rows = 192L;
+        int64 kvDim = (int64) nKv * hd;
+        int64 nH = (int64) (nKv * group);
+        float16[] kh #= heap float16[rows * kvDim];
+        float16[] vh #= heap float16[rows * kvDim];
+        int64 i = 0L;
+        while (i < rows * kvDim) { kh[i] = (float16) AttnDecodeRowsTest.rnd(i); vh[i] = (float16) AttnDecodeRowsTest.rnd(i + 999L); i = i + 1L; }
+        float32[] qh #= heap float32[nH * hd];
+        i = 0L;
+        while (i < nH * hd) { qh[i] = AttnDecodeRowsTest.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        int32[] tab #= heap int32[3L];
+        tab[0] = 2;
+        tab[1] = 0;
+        tab[2] = 1;
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) (nH * hd));
+        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) 3L);
+        k.upload(kh);
+        v.upload(vh);
+        q.upload(qh);
+        pt.upload(tab);
+        int64 pn = nH * (int64) splits * (hd + 2L);
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) pn);
+        float32 scale = 0.0883883f;
+        int64[] m #= ValueCheck.mark();
+        AttnDecodeRows<128> drv = heap AttnDecodeRows<128>();
+        KernelStream s #= KernelStream.current();
+        drv.runOn(s, part, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
+        s.sync();
+        float32[] got #= heap float32[pn];
+        part.download(got);
+        int64 h = 0L;
+        while (h < nH) {
+            int64 kvh = h / (int64) group;
+            float64 big = -1.0e300;
+            int64 t = 0L;
+            while (t < (int64) count) {
+                int64 ro = ((int64) tab[t / 64L] * 64L + t % 64L) * kvDim + kvh * hd;
+                float64 sc = 0.0;
+                int64 d = 0L;
+                while (d < hd) { sc = sc + (float64) qh[h * hd + d] * (float64) (float32) kh[ro + d]; d = d + 1L; }
+                sc = sc * (float64) scale;
+                if (sc > big) { big = sc; }
+                t = t + 1L;
+            }
+            float64[] want #= heap float64[hd];
+            float64 den = 0.0;
+            t = 0L;
+            while (t < (int64) count) {
+                int64 ro = ((int64) tab[t / 64L] * 64L + t % 64L) * kvDim + kvh * hd;
+                float64 sc = 0.0;
+                int64 d = 0L;
+                while (d < hd) { sc = sc + (float64) qh[h * hd + d] * (float64) (float32) kh[ro + d]; d = d + 1L; }
+                float64 w = Math.exp(sc * (float64) scale - big);
+                den = den + w;
+                d = 0L;
+                while (d < hd) { want[d] = want[d] + w * (float64) (float32) vh[ro + d]; d = d + 1L; }
+                t = t + 1L;
+            }
+            float64 gm = -1.0e300;
+            int64 sp = 0L;
+            while (sp < (int64) splits) {
+                int64 pb = (h * (int64) splits + sp) * (hd + 2L);
+                if (got[pb + hd + 1L] > 0.0f && (float64) got[pb + hd] > gm) { gm = (float64) got[pb + hd]; }
+                sp = sp + 1L;
+            }
+            int64 d = 0L;
+            while (d < hd) {
+                float64 num = 0.0;
+                float64 l = 0.0;
+                sp = 0L;
+                while (sp < (int64) splits) {
+                    int64 pb = (h * (int64) splits + sp) * (hd + 2L);
+                    if (got[pb + hd + 1L] > 0.0f) {
+                        float64 c = Math.exp((float64) got[pb + hd] - gm);
+                        num = num + c * (float64) got[pb + d];
+                        l = l + c * (float64) got[pb + hd + 1L];
+                    }
+                    sp = sp + 1L;
+                }
+                float64 diff = num / l - want[d] / den;
+                if (diff < 0.0) { diff = 0.0 - diff; }
+                Assert.isTrue(diff <= 0.0001);
+                d = d + 1L;
+            }
+            h = h + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+}

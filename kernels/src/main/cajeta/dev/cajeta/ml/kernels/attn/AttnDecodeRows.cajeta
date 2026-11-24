@@ -1,0 +1,105 @@
+package dev.cajeta.ml.kernels.attn;
+
+import cajeta.lang.String;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Unroll;
+import cajeta.xpu.Vector;
+
+/**
+ * The cpu driver of decode attention (kernel-drivers 9.3): one work item a (kv head, split) runs
+ * the online softmax over its positions for each of the kv head's `group` query heads, one exp a
+ * key, and writes a partial per head (the unscaled accumulator, then m and l) at
+ * `(head * splits + split) * (HD + 2)` for a reduce to combine. Keys and values are float16 rows
+ * of `nKv * HD`, paged ({@link PagedRows}); a query head is `HD` float32. The score sums 16-wide
+ * products chunk by chunk and then pairwise, and the accumulator is one `HD`-wide vector.
+ */
+@Instantiate({AttnDecodeRows<128>})
+@Requires(HD % 16 == 0)
+public final class AttnDecodeRows<uint32 HD> {
+    public AttnDecodeRows() { return; }
+
+    /** This instantiation's registered kernel. */
+    public #String kernel() { return "" + decode.registeredName(); }
+
+    /** The sixteen lanes of `d` summed pairwise. */
+    @Device
+    static float32 tree(Vector<float32,16> d) {
+        return (((d[0] + d[1]) + (d[2] + d[3])) + ((d[4] + d[5]) + (d[6] + d[7])))
+            + (((d[8] + d[9]) + (d[10] + d[11])) + ((d[12] + d[13]) + (d[14] + d[15])));
+    }
+
+    /** Query head `qo` against key row `ko`, scaled. */
+    @Device
+    static float32 score(KernelBuffer<float32> q, int64 qo, KernelBuffer<float16> k, int64 ko, float32 scale) {
+        Vector<float32,16> d = q.vload<16>(qo) * k.vload<16>(ko).toF32();
+        for (int64 c = Unroll.from(1L); c < (int64) HD / 16L; c = c + 1L) {
+            d = d + q.vload<16>(qo + 16L * c) * k.vload<16>(ko + 16L * c).toF32();
+        }
+        return AttnDecodeRows.tree(d) * scale;
+    }
+
+    /** One query head's online softmax over positions `from + t0 .. from + t1`, kv column `kOff0`, its partial at `part[pBase ..)`. */
+    @Device
+    static void head(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, int64 qo, int64 kOff0, int64 kvDim,
+            int64 from, int64 t0, int64 t1, int64 pBase, float32 scale) {
+        Vector<float32,HD> acc = q.vload<HD>(qo) * 0.0f;
+        float32 m = 0.0f - 3.0e38f;
+        float32 l = 0.0f;
+        int64 t = t0;
+        while (t < t1) {
+            int64 ko = (int64) PagedRows.row(pgTab, pgBase, (uint32) (from + t)) * kvDim + kOff0;
+            float32 sc = AttnDecodeRows.score(q, qo, kPool, ko, scale);
+            if (sc > m) {
+                float32 c = Math.exp(m - sc);
+                acc = acc * c;
+                l = l * c;
+                m = sc;
+            }
+            float32 p = Math.exp(sc - m);
+            l = l + p;
+            acc = acc + vPool.vload<HD>(ko).toF32() * p;
+            t = t + 1L;
+        }
+        part.vstore(pBase, acc);
+        part[pBase + (int64) HD] = m;
+        part[pBase + (int64) HD + 1L] = l;
+    }
+
+    @Kernel(targets = {"cpu"}) @FastMath
+    @Occupancy(maxThreads = 256)
+    public static void decode(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 nKv, uint32 group, uint32 count,
+            uint32 from, uint32 splits, float32 scale) {
+        uint32 gi = KernelThread.globalIdX();
+        if (gi < nKv * splits) {
+            uint32 kvh = gi / splits;
+            uint32 sp = gi % splits;
+            uint32 chunk = (count + splits - 1) / splits;
+            uint32 t0 = sp * chunk;
+            uint32 t1 = t0 + chunk;
+            if (t1 > count) { t1 = count; }
+            if (t0 > count) { t0 = count; }
+            int64 kvDim = (int64) (nKv * HD);
+            int64 kOff0 = (int64) (kvh * HD);
+            uint32 h = 0;
+            while (h < group) {
+                uint32 hh = kvh * group + h;
+                AttnDecodeRows.head(part, q, kPool, vPool, pgTab, pgBase, (int64) (hh * HD), kOff0, kvDim, (int64) from,
+                    (int64) t0, (int64) t1, (int64) ((hh * splits + sp) * (HD + 2)), scale);
+                h = h + 1;
+            }
+        }
+    }
+
+    /** Partials for `nKv * group` query heads over `count` positions from `from`, `splits` splits a kv head, into `part`. Queued on `s`. */
+    public void runOn(KernelStream s, KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 pgBase, int32 nKv, int32 group, int32 count,
+            int32 from, int32 splits, float32 scale) {
+        decode.launch(s, grid: [(uint32) (nKv * splits)], block: [1])
+            (part, q, kPool, vPool, pgTab, (uint32) pgBase, (uint32) nKv, (uint32) group, (uint32) count, (uint32) from,
+             (uint32) splits, scale);
+    }
+}

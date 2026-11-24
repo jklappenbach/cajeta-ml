@@ -1,0 +1,14 @@
+package dev.cajeta.ml.kernels.attn;
+
+import cajeta.xpu.KernelBuffer;
+
+/** A KV plane paged in blocks of 64 rows: position `t` is row `t % 64` of block `tab[base + t / 64]`. */
+public final class PagedRows {
+    public PagedRows() { return; }
+
+    /** The plane row that holds position `t`. */
+    @Device
+    public static uint32 row(KernelBuffer<int32> tab, uint32 base, uint32 t) {
+        return ((uint32) tab[(int64) (base + (t >> 6))] << 6) + (t & 63);
+    }
+}
