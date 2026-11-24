@@ -1,0 +1,125 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
+import dev.cajeta.ml.kernels.gemm.BlockGemvWave;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 9.1.4: the GPU decode driver's members against the GEMM from pieces for one token. */
+public class BlockGemvWaveTest {
+    public BlockGemvWaveTest() { return; }
+
+    static void close(float32[] want, float32[] got, int64 n) {
+        int64 i = 0L;
+        while (i < n) {
+            float32 d = want[i] - got[i];
+            if (d < 0.0f) { d = 0.0f - d; }
+            float32 mag = want[i] < 0.0f ? 0.0f - want[i] : want[i];
+            Assert.isTrue(d <= 0.0001f * (1.0f + mag));
+            i = i + 1L;
+        }
+    }
+
+    static #float32[] reference(int8[] file, int8[] hx, int64 rows, int64 bpr, int64 blockBytes, boolean six) {
+        KernelBuffer<int8> wf = heap KernelBuffer<int8>((uint64) (rows * bpr * blockBytes));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) rows);
+        wf.upload(file);
+        xp.upload(hx);
+        if (six) {
+            BlockGemmRef<Q6kBlock> g = heap BlockGemmRef<Q6kBlock>();
+            g.run(y, wf, xp, rows, 1L, bpr, rows, false);
+        } else {
+            BlockGemmRef<Q4kBlock> g = heap BlockGemmRef<Q4kBlock>();
+            g.run(y, wf, xp, rows, 1L, bpr, rows, false);
+        }
+        KernelStream st #= KernelStream.current();
+        st.sync();
+        float32[] out #= heap float32[rows];
+        y.download(out);
+        return #out;
+    }
+
+    @Test
+    public void everyQ4kMemberEqualsTheGemmFromPieces() {
+        String ref = "BlockGemmRef_dev_cajeta_ml_kernels_quant_Q4kBlock_ref";
+        String k4 = "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q4kBlock_4_0_wave";
+        if (!Device.kernelUsable(k4) || !Device.kernelAvailable(ref)) {
+            DeviceSkip.noKernel(k4, "the wave decode driver is the GPU's (kernel-drivers 9.1.4)");
+            return;
+        }
+        int64 rows = 37L;
+        int64 bpr = 9L;
+        int8[] file #= BlockGemmRefTest.weight(rows * bpr);
+        int8[] hx #= BlockGemmRefTest.acts(bpr);
+        float32[] want #= BlockGemvWaveTest.reference(file, hx, rows, bpr, 144L, false);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (rows * bpr * 144L));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(file);
+        xp.upload(hx);
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        KernelStream st #= KernelStream.current();
+        float32[] got #= heap float32[rows];
+        int64[] m #= ValueCheck.mark();
+        BlockGemvWave<Q4kBlock, 4, 0> a = heap BlockGemvWave<Q4kBlock, 4, 0>();
+        a.runOn(st, y, w, xp, rows, bpr * 256L, 0L, false, 1L, wv);
+        st.sync();
+        y.download(got);
+        BlockGemvWaveTest.close(want, got, rows);
+        BlockGemvWave<Q4kBlock, 4, 1> b = heap BlockGemvWave<Q4kBlock, 4, 1>();
+        b.runOn(st, y, w, xp, rows, bpr * 256L, 0L, false, 1L, wv);
+        st.sync();
+        y.download(got);
+        BlockGemvWaveTest.close(want, got, rows);
+        BlockGemvWave<Q4kBlock, 2, 1> c = heap BlockGemvWave<Q4kBlock, 2, 1>();
+        c.runOn(st, y, w, xp, rows, bpr * 256L, 0L, false, 1L, wv);
+        st.sync();
+        y.download(got);
+        BlockGemvWaveTest.close(want, got, rows);
+        BlockGemvWave<Q4kBlock, 1, 1> d = heap BlockGemvWave<Q4kBlock, 1, 1>();
+        d.runOn(st, y, w, xp, rows, bpr * 256L, 0L, false, 1L, wv);
+        st.sync();
+        y.download(got);
+        BlockGemvWaveTest.close(want, got, rows);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void aSixteenValueFormatEqualsTheGemmFromPieces() {
+        String ref = "BlockGemmRef_dev_cajeta_ml_kernels_quant_Q6kBlock_ref";
+        String k = "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q6kBlock_4_1_wave";
+        if (!Device.kernelUsable(k) || !Device.kernelAvailable(ref)) {
+            DeviceSkip.noKernel(k, "the wave decode driver is the GPU's (kernel-drivers 9.1.4)");
+            return;
+        }
+        int64 rows = 37L;
+        int64 bpr = 9L;
+        int8[] file #= Q6kBlockTest.weight(rows * bpr);
+        int8[] hx #= BlockGemmRefTest.acts(bpr);
+        float32[] want #= BlockGemvWaveTest.reference(file, hx, rows, bpr, 210L, true);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (rows * bpr * 210L));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(file);
+        xp.upload(hx);
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        KernelStream st #= KernelStream.current();
+        float32[] got #= heap float32[rows];
+        int64[] m #= ValueCheck.mark();
+        BlockGemvWave<Q6kBlock, 4, 1> a = heap BlockGemvWave<Q6kBlock, 4, 1>();
+        a.runOn(st, y, w, xp, rows, bpr * 256L, 0L, false, 1L, wv);
+        st.sync();
+        y.download(got);
+        BlockGemvWaveTest.close(want, got, rows);
+        ValueCheck.credit(m);
+    }
+}
