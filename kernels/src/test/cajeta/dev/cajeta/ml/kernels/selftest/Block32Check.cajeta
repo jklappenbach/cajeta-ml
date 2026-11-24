@@ -63,6 +63,10 @@ public final class Block32Check<P> {
     public float64 element(int8[] raw, int64 ro, int64 k) {
         float64 d = (float64) Q4kBlock.halfBits(Block32Check.u8(raw, ro) | (Block32Check.u8(raw, ro + 1L) << 8));
         if (P.blockBytes() == 34) { return d * (float64) raw[ro + 2L + k]; }
+        if (P.blockBytes() == 18) {
+            int32 b4 = Block32Check.u8(raw, ro + 2L + k % 16L);
+            return d * (float64) ((k < 16L ? b4 & 15 : b4 >> 4) - 8);
+        }
         int32 qh = BlockGemmRefTest.word(raw, ro + 2L);
         int32 b = Block32Check.u8(raw, ro + 6L + k % 16L);
         int32 q = (k < 16L ? b & 15 : b >> 4) | (((qh >> (int32) k) & 1) << 4);

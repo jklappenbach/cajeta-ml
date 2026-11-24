@@ -8,6 +8,7 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.gemm.Block32GemmRows8;
 import dev.cajeta.ml.kernels.gemm.PackQ8K;
+import dev.cajeta.ml.kernels.quant.Q40Block;
 import dev.cajeta.ml.kernels.quant.Q50Block;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
@@ -63,6 +64,7 @@ public class Block32GemmTest {
         heap Block32Check<Q80Block>().refMatchesDefinition(5L, 3L, 11L, 0L);
         heap Block32Check<Q80Block>().refMatchesDefinition(5L, 3L, 11L, 4L);
         heap Block32Check<Q50Block>().refMatchesDefinition(5L, 3L, 11L, 0L);
+        heap Block32Check<Q40Block>().refMatchesDefinition(5L, 3L, 11L, 0L);
         ValueCheck.credit(m);
     }
 
@@ -73,6 +75,7 @@ public class Block32GemmTest {
         heap Block32Check<Q80Block>().driverEqualsRef(21L, 39L, 19L, 0L);
         heap Block32Check<Q80Block>().driverEqualsRef(21L, 39L, 19L, 4L);
         heap Block32Check<Q50Block>().driverEqualsRef(21L, 39L, 19L, 0L);
+        heap Block32Check<Q40Block>().driverEqualsRef(21L, 39L, 19L, 0L);
         ValueCheck.credit(m);
     }
 
@@ -82,6 +85,7 @@ public class Block32GemmTest {
         int64[] m #= ValueCheck.mark();
         heap Block32Check<Q80Block>().driverEqualsRef(21L, 1L, 37L, 4L);
         heap Block32Check<Q50Block>().driverEqualsRef(21L, 1L, 37L, 0L);
+        heap Block32Check<Q40Block>().driverEqualsRef(21L, 1L, 37L, 0L);
         ValueCheck.credit(m);
     }
 
@@ -91,6 +95,7 @@ public class Block32GemmTest {
         int64[] m #= ValueCheck.mark();
         heap Block32Check<Q80Block>().threeEqualRef(13L, 4L);
         heap Block32Check<Q50Block>().threeEqualRef(13L, 0L);
+        heap Block32Check<Q40Block>().threeEqualRef(13L, 0L);
         ValueCheck.credit(m);
     }
 
@@ -166,6 +171,8 @@ public class Block32GemmTest {
         heap Block32Check<Q50Block>().waveMatchesDefinition(23L, 75L, wv);
         heap Block32Check<Q80Block>().waveMatchesDefinition(9L, 13L, wv);
         heap Block32Check<Q50Block>().waveMatchesDefinition(9L, 13L, wv);
+        heap Block32Check<Q40Block>().waveMatchesDefinition(23L, 75L, wv);
+        heap Block32Check<Q40Block>().waveMatchesDefinition(9L, 13L, wv);
         ValueCheck.credit(m);
     }
 
@@ -176,6 +183,7 @@ public class Block32GemmTest {
         int64[] m #= ValueCheck.mark();
         heap Block32Check<Q80Block>().tileMatchesDefinition(128L, 128L, 512L);
         heap Block32Check<Q50Block>().tileMatchesDefinition(128L, 128L, 512L);
+        heap Block32Check<Q40Block>().tileMatchesDefinition(128L, 128L, 512L);
         ValueCheck.credit(m);
     }
 }

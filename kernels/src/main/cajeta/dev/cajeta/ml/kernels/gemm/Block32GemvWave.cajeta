@@ -9,6 +9,7 @@ import cajeta.xpu.KernelThread;
 import cajeta.xpu.Unroll;
 import cajeta.xpu.Vector;
 import cajeta.xpu.Wave;
+import dev.cajeta.ml.kernels.quant.Q40Block;
 import dev.cajeta.ml.kernels.quant.Q50Block;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 import dev.cajeta.ml.kernels.quant.Q8kAct;
@@ -20,7 +21,8 @@ import dev.cajeta.ml.kernels.quant.Q8kAct;
  * word, then each block's side plane and the file's quant bytes, the size of the file's row.
  */
 @Instantiate(value = {Block32GemvWave<Q80Block, 1>, Block32GemvWave<Q80Block, 2>, Block32GemvWave<Q80Block, 4>,
-    Block32GemvWave<Q50Block, 1>, Block32GemvWave<Q50Block, 2>, Block32GemvWave<Q50Block, 4>})
+    Block32GemvWave<Q50Block, 1>, Block32GemvWave<Q50Block, 2>, Block32GemvWave<Q50Block, 4>,
+    Block32GemvWave<Q40Block, 1>, Block32GemvWave<Q40Block, 2>, Block32GemvWave<Q40Block, 4>}, max = 16)
 @Requires(R == 1 || R == 2 || R == 4)
 public final class Block32GemvWave<P, uint32 R> {
     public Block32GemvWave() { return; }

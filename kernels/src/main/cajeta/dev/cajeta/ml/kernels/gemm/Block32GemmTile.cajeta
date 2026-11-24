@@ -11,6 +11,7 @@ import cajeta.xpu.Shared;
 import cajeta.xpu.Unroll;
 import cajeta.xpu.Vector;
 import cajeta.xpu.WaveVector;
+import dev.cajeta.ml.kernels.quant.Q40Block;
 import dev.cajeta.ml.kernels.quant.Q50Block;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 
@@ -22,7 +23,8 @@ import dev.cajeta.ml.kernels.quant.Q80Block;
  * `Q8Tile` is this kernel with the Q8_0 copy written in.
  */
 @Instantiate(value = {Block32GemmTile<Q80Block, 64, 64, 32, 32, 128>, Block32GemmTile<Q80Block, 128, 128, 32, 64, 128>,
-    Block32GemmTile<Q50Block, 64, 64, 32, 32, 128>, Block32GemmTile<Q50Block, 128, 128, 32, 64, 128>})
+    Block32GemmTile<Q50Block, 64, 64, 32, 32, 128>, Block32GemmTile<Q50Block, 128, 128, 32, 64, 128>,
+    Block32GemmTile<Q40Block, 64, 64, 32, 32, 128>, Block32GemmTile<Q40Block, 128, 128, 32, 64, 128>})
 @Requires(TM == TN && TM % WM == 0 && TN % WN == 0 && WM % 16 == 0 && WN % 16 == 0
     && (TM / WM) * (TN / WN) * 16 == TN && KS == 128)
 @Unfused
