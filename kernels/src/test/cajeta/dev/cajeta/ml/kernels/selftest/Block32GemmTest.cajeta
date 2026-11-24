@@ -1,8 +1,13 @@
 package dev.cajeta.ml.kernels.selftest;
 
+import cajeta.lang.Cajeta;
+import cajeta.lang.Math;
 import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.gemm.Block32GemmRows8;
+import dev.cajeta.ml.kernels.gemm.PackQ8K;
 import dev.cajeta.ml.kernels.quant.Q50Block;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
@@ -86,6 +91,67 @@ public class Block32GemmTest {
         int64[] m #= ValueCheck.mark();
         heap Block32Check<Q80Block>().threeEqualRef(13L, 4L);
         heap Block32Check<Q50Block>().threeEqualRef(13L, 0L);
+        ValueCheck.credit(m);
+    }
+
+    /** Row `r`'s values `n` long, zero past `n`, packed at a scale per 32 values as the definition says. */
+    static void hostPack32(float32[] x, int64 r, int64 n, int8[] out) {
+        int64 nbRow = (n + 255L) / 256L;
+        int64 e = 0L;
+        while (e < nbRow * 256L) {
+            int64 ob = (r * nbRow + e / 256L) * 320L;
+            int64 j = (e % 256L) / 32L;
+            float32 amax = 0.0f;
+            int64 i = 0L;
+            while (i < 32L) {
+                float32 av = e + i < n ? x[r * n + e + i] : 0.0f;
+                if (av < 0.0f) { av = 0.0f - av; }
+                if (av > amax) { amax = av; }
+                i = i + 1L;
+            }
+            float32 inv = amax > 0.0f ? 127.0f / amax : 0.0f;
+            int32 sm = 0;
+            i = 0L;
+            while (i < 32L) {
+                float32 fv = e + i < n ? x[r * n + e + i] * inv : 0.0f;
+                int32 q = (int32) Math.round(fv);
+                out[ob + 32L * j + i] = (int8) q;
+                sm = sm + q;
+                i = i + 1L;
+            }
+            BlockGemmRefTest.putI32(out, ob + 256L + 4L * j, sm);
+            BlockGemmRefTest.putI32(out, ob + 288L + 4L * j, Cajeta.f32ToBits(amax / 127.0f));
+            e = e + 32L;
+        }
+    }
+
+    @Test
+    public void thePer32PackEqualsTheDefinitionByteForByte() {
+        if (!Block32GemmTest.has("pack32", "the per-32 pack is the cpu route's (kernel-drivers 8.3.1.2)")) { return; }
+        int64 rows = 3L;
+        int64 n = 600L;
+        int64 bytes = rows * 3L * 320L;
+        float32[] x #= heap float32[rows * n];
+        int64 i = 0L;
+        while (i < rows * n) {
+            x[i] = (float32) ((((i * 7919L) % 251L) - 125L)) * 0.037f;
+            if (i >= 64L && i < 96L) { x[i] = 0.0f; }
+            i = i + 1L;
+        }
+        KernelBuffer<float32> dx = heap KernelBuffer<float32>((uint64) (rows * n));
+        KernelBuffer<int8> dp = heap KernelBuffer<int8>((uint64) bytes);
+        dx.upload(x);
+        int64[] m #= ValueCheck.mark();
+        KernelStream st #= KernelStream.current();
+        PackQ8K.rows32(st, dp, dx, rows, n);
+        st.sync();
+        int8[] got #= heap int8[bytes];
+        int8[] want #= heap int8[bytes];
+        dp.download(got);
+        int64 r = 0L;
+        while (r < rows) { Block32GemmTest.hostPack32(x, r, n, want); r = r + 1L; }
+        i = 0L;
+        while (i < bytes) { Assert.isTrue(got[i] == want[i]); i = i + 1L; }
         ValueCheck.credit(m);
     }
 }

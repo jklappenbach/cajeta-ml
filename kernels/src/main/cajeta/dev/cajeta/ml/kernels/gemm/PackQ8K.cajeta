@@ -57,6 +57,64 @@ public final class PackQ8K {
         }
     }
 
+    /** Block `gi % nbRow` of row `gi / nbRow` (`n` values a row, zero past them) with a scale per 32 values: llm's `q8kPack32Kernel`. */
+    @Kernel(targets = {"cpu"})
+    @Occupancy(maxThreads = 64)
+    public static void pack32(KernelBuffer<int8> out, KernelBuffer<float32> x, uint32 blocks, uint32 nbRow, int64 n) {
+        uint32 gi = KernelThread.globalIdX();
+        if (gi < blocks) {
+            int64 e0 = (int64) (gi % nbRow) * 256L;
+            int64 cnt = n - e0;
+            if (cnt > 256L) { cnt = 256L; }
+            if (cnt < 0L) { cnt = 0L; }
+            int64 ob = (int64) gi * 320L;
+            int64 xb = (int64) (gi / nbRow) * n + e0;
+            int64 j = 0L;
+            while (j < 8L) {
+                float32 amax = 0.0f;
+                int64 i = 0L;
+                while (i < 32L) {
+                    float32 av = 0.0f;
+                    if (j * 32L + i < cnt) { av = x[xb + j * 32L + i]; }
+                    if (av < 0.0f) { av = 0.0f - av; }
+                    if (av > amax) { amax = av; }
+                    i = i + 1L;
+                }
+                float32 inv = 0.0f;
+                if (amax > 0.0f) { inv = 127.0f / amax; }
+                int32 sm = 0;
+                i = 0L;
+                while (i < 32L) {
+                    float32 fv = 0.0f;
+                    if (j * 32L + i < cnt) { fv = x[xb + j * 32L + i] * inv; }
+                    int32 q = (int32) Math.round(fv);
+                    out[ob + j * 32L + i] = (int8) q;
+                    sm = sm + q;
+                    i = i + 1L;
+                }
+                PackQ8K.word(out, ob + 256L + j * 4L, sm);
+                PackQ8K.word(out, ob + 288L + j * 4L, Cajeta.f32ToBits(amax / 127.0f));
+                j = j + 1L;
+            }
+        }
+    }
+
+    @Device
+    static void word(KernelBuffer<int8> out, int64 at, int32 v) {
+        out[at] = (int8) (v & 255);
+        out[at + 1L] = (int8) ((v >> 8) & 255);
+        out[at + 2L] = (int8) ((v >> 16) & 255);
+        out[at + 3L] = (int8) ((v >> 24) & 255);
+    }
+
+    /** `out` = `rows` rows of `n` floats packed at a scale per 32 values, `ceil(n / 256)` blocks of 320 bytes a row; queued on `s`. */
+    public static void rows32(KernelStream s, KernelBuffer<int8> out, KernelBuffer<float32> x, int64 rows, int64 n) {
+        uint32 nbRow = (uint32) ((n + 255L) / 256L);
+        uint32 blocks = (uint32) rows * nbRow;
+        uint32 blk = blocks < 64 ? blocks : 64;
+        pack32.launch(s, grid: [(blocks + blk - 1) / blk], block: [blk])(out, x, blocks, nbRow, n);
+    }
+
     /** `out` = the q8_K pack of `rows` rows of `cols` floats (cols a multiple of 256), 320 bytes a block; queued on the current stream. */
     public static void rows(KernelBuffer<int8> out, KernelBuffer<float32> x, int64 rows, int64 cols) {
         uint32 nbRow = (uint32) (cols / 256L);
