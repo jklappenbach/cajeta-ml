@@ -30,12 +30,11 @@ public final class AttnDecodeWave<uint32 HEADS, uint32 DPL, uint32 N, uint32 KPT
     /** Query heads a wave. */
     public int32 headsPerWave() { return (int32) HEADS; }
 
-    @Kernel @FastMath @Wave(width = 32)
-    public static void decode(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+    /** Wave `wv` of one decode row: query heads at `q[qOff ..)`, partials at `part[pOff ..)`, positions `from ..` of `count` through the table at `pgBase`. */
+    @Device
+    static void row(KernelBuffer<float32> part, uint32 pOff, KernelBuffer<float32> q, uint32 qOff, KernelBuffer<float16> kPool,
             KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 nKv, uint32 group, uint32 count,
-            uint32 from, uint32 splits, float32 scale) {
-        uint32 lane = KernelThread.x();
-        uint32 wv = Workgroup.x();
+            uint32 from, uint32 splits, float32 scale, uint32 wv, uint32 lane) {
         uint32 hd = 32 * DPL;
         uint32 nH = nKv * group;
         if (wv < (nH / HEADS) * splits) {
@@ -49,9 +48,9 @@ public final class AttnDecodeWave<uint32 HEADS, uint32 DPL, uint32 N, uint32 KPT
             if (t1 > count) { t1 = count; }
             uint32 kvDim = nKv * hd;
             uint32 kBase = kvh * hd + lane * DPL;
-            Vector<float32,N> qv = q.vload<N>(0L) * 0.0f;
+            Vector<float32,N> qv = q.vload<N>((int64) qOff) * 0.0f;
             for (int64 h = Unroll.from(0L); h < (int64) HEADS; h = h + 1L) {
-                Vector<float32,DPL> qh = q.vload<DPL>((int64) ((h0 + (uint32) h) * hd + lane * DPL));
+                Vector<float32,DPL> qh = q.vload<DPL>((int64) (qOff + (h0 + (uint32) h) * hd + lane * DPL));
                 for (int64 i = Unroll.from(0L); i < (int64) DPL; i = i + 1L) { qv[h * (int64) DPL + i] = qh[i]; }
             }
             Vector<float32,N> acc = qv * 0.0f;
@@ -143,7 +142,7 @@ public final class AttnDecodeWave<uint32 HEADS, uint32 DPL, uint32 N, uint32 KPT
                 }
             }
             for (int64 h = Unroll.from(0L); h < (int64) HEADS; h = h + 1L) {
-                uint32 pb = ((h0 + (uint32) h) * splits + sp) * (hd + 2);
+                uint32 pb = pOff + ((h0 + (uint32) h) * splits + sp) * (hd + 2);
                 for (int64 i = Unroll.from(0L); i < (int64) DPL; i = i + 1L) {
                     part[(int64) (pb + lane * DPL) + i] = acc[h * (int64) DPL + i];
                 }
@@ -155,6 +154,28 @@ public final class AttnDecodeWave<uint32 HEADS, uint32 DPL, uint32 N, uint32 KPT
         }
     }
 
+    @Kernel(targets = {"gpu"}) @FastMath @Wave(width = 32)
+    public static void decode(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 pgBase, uint32 nKv, uint32 group, uint32 count,
+            uint32 from, uint32 splits, float32 scale) {
+        AttnDecodeWave.row(part, 0, q, 0, kPool, vPool, pgTab, pgBase, nKv, group, count, from, splits, scale,
+            Workgroup.x(), KernelThread.x());
+    }
+
+    /** {@link #decode} for every row of a decode batch in one launch: workgroup `r * (nKv * group / HEADS) * maxSplits + w`, row r's table base, last position, length and splits at `rowTab[4 r ..)`. */
+    @Kernel(targets = {"gpu"}) @FastMath @Wave(width = 32)
+    public static void decodeBatch(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 nKv, uint32 group, KernelBuffer<int32> rowTab,
+            uint32 maxSplits, uint32 qStride, uint32 partStride, float32 scale) {
+        uint32 per = (nKv * group / HEADS) * maxSplits;
+        uint32 r = Workgroup.x() / per;
+        uint32 wv = Workgroup.x() % per;
+        uint32 count = (uint32) rowTab[(int64) (r * 4 + 2)];
+        uint32 from = (uint32) rowTab[(int64) (r * 4 + 1)] + 1 - count;
+        AttnDecodeWave.row(part, r * partStride, q, r * qStride, kPool, vPool, pgTab, (uint32) rowTab[(int64) (r * 4)], nKv, group,
+            count, from, (uint32) rowTab[(int64) (r * 4 + 3)], scale, wv, KernelThread.x());
+    }
+
     /** Partials for `nKv * group` query heads over `count` positions from `from`, `splits` splits a head group, into `part`. Queued on `s`. */
     public void runOn(KernelStream s, KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
             KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 pgBase, int32 nKv, int32 group, int32 count,
@@ -163,5 +184,15 @@ public final class AttnDecodeWave<uint32 HEADS, uint32 DPL, uint32 N, uint32 KPT
         decode.launch(s, grid: [(uint32) waves], block: [32])
             (part, q, kPool, vPool, pgTab, (uint32) pgBase, (uint32) nKv, (uint32) group, (uint32) count, (uint32) from,
              (uint32) splits, scale);
+    }
+
+    /** {@link #decodeBatch} for `n` rows: row r's query heads at `r * qStride`, partials at `r * partStride`. Queued on `s`. */
+    public void runBatchOn(KernelStream s, KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 nKv, int32 group, KernelBuffer<int32> rowTab, int32 n,
+            int32 maxSplits, int32 qStride, int32 partStride, float32 scale) {
+        int32 waves = n * (nKv * group / (int32) HEADS) * maxSplits;
+        decodeBatch.launch(s, grid: [(uint32) waves], block: [32])
+            (part, q, kPool, vPool, pgTab, (uint32) nKv, (uint32) group, rowTab, (uint32) maxSplits, (uint32) qStride,
+             (uint32) partStride, scale);
     }
 }

@@ -94,6 +94,41 @@ public final class AttnDecodeRows<uint32 HD> {
         }
     }
 
+    /** {@link #decode} for every row of a decode batch in one launch: work item `r * nKv * maxSplits + w`, row r's table base, last position, length and splits at `rowTab[4 r ..)`, its query heads at `r * qStride` and partials at `r * partStride`. */
+    @Kernel(targets = {"cpu"}) @FastMath
+    @Occupancy(maxThreads = 256)
+    public static void decodeBatch(KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, uint32 nKv, uint32 group, KernelBuffer<int32> rowTab,
+            uint32 maxSplits, uint32 qStride, uint32 partStride, float32 scale, uint32 n) {
+        uint32 gi = KernelThread.globalIdX();
+        uint32 r = gi / (nKv * maxSplits);
+        uint32 wv = gi % (nKv * maxSplits);
+        if (r < n) {
+            uint32 pgBase = (uint32) rowTab[(int64) (r * 4)];
+            uint32 count = (uint32) rowTab[(int64) (r * 4 + 2)];
+            uint32 from = (uint32) rowTab[(int64) (r * 4 + 1)] + 1 - count;
+            uint32 splits = (uint32) rowTab[(int64) (r * 4 + 3)];
+            if (wv < nKv * splits) {
+                uint32 kvh = wv / splits;
+                uint32 sp = wv % splits;
+                uint32 chunk = (count + splits - 1) / splits;
+                uint32 t0 = sp * chunk;
+                uint32 t1 = t0 + chunk;
+                if (t1 > count) { t1 = count; }
+                if (t0 > count) { t0 = count; }
+                int64 kvDim = (int64) (nKv * HD);
+                int64 kOff0 = (int64) (kvh * HD);
+                uint32 h = 0;
+                while (h < group) {
+                    uint32 hh = kvh * group + h;
+                    AttnDecodeRows.head(part, q, kPool, vPool, pgTab, pgBase, (int64) (r * qStride + hh * HD), kOff0, kvDim,
+                        (int64) from, (int64) t0, (int64) t1, (int64) (r * partStride + (hh * splits + sp) * (HD + 2)), scale);
+                    h = h + 1;
+                }
+            }
+        }
+    }
+
     /** Partials for `nKv * group` query heads over `count` positions from `from`, `splits` splits a kv head, into `part`. Queued on `s`. */
     public void runOn(KernelStream s, KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
             KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 pgBase, int32 nKv, int32 group, int32 count,
@@ -101,5 +136,14 @@ public final class AttnDecodeRows<uint32 HD> {
         decode.launch(s, grid: [(uint32) (nKv * splits)], block: [1])
             (part, q, kPool, vPool, pgTab, (uint32) pgBase, (uint32) nKv, (uint32) group, (uint32) count, (uint32) from,
              (uint32) splits, scale);
+    }
+
+    /** {@link #decodeBatch} for `n` rows. Queued on `s`. */
+    public void runBatchOn(KernelStream s, KernelBuffer<float32> part, KernelBuffer<float32> q, KernelBuffer<float16> kPool,
+            KernelBuffer<float16> vPool, KernelBuffer<int32> pgTab, int32 nKv, int32 group, KernelBuffer<int32> rowTab, int32 n,
+            int32 maxSplits, int32 qStride, int32 partStride, float32 scale) {
+        decodeBatch.launch(s, grid: [(uint32) (n * nKv * maxSplits)], block: [1])
+            (part, q, kPool, vPool, pgTab, (uint32) nKv, (uint32) group, rowTab, (uint32) maxSplits, (uint32) qStride,
+             (uint32) partStride, scale, (uint32) n);
     }
 }
