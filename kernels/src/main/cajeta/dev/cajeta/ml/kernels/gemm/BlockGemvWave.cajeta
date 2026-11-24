@@ -13,6 +13,7 @@ import dev.cajeta.ml.kernels.quant.Q3kBlock;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 import dev.cajeta.ml.kernels.quant.Q5kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
+import dev.cajeta.ml.kernels.quant.Q8kAct;
 
 /**
  * The GPU driver of the block-quantized decode mat-vec (kernel-drivers spec §6.1):
@@ -52,10 +53,11 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
     @Device
     static int32 sumHi(Vector<int32,8> v) { return v[4] + v[5] + v[6] + v[7]; }
 
-    /** `acc` plus one block's part for lane run `g`: header `ha`/`hb`, run bytes `raw`, plane `plane`, the run's activation streams `a0`/`a1` with their byte sums `o0`/`o1` as dot lanes. */
+    /** `acc` plus one block's part for lane run `g`: header `ha`/`hb`, run bytes `raw`, plane `plane`, the run's activation streams `a0`/`a1` with their byte sums `o0`/`o1` as dot lanes (16-value formats; 32-value ones read the block's stored sums at `xp[xb ..)`). */
     @Device
     static float32 part(float32 acc, Vector<int32,4> ha, Vector<int32,4> hb, Vector<uint8,32> raw, Vector<uint8,32> plane,
-            int32 g, Vector<int8,32> a0, Vector<int8,32> a1, Vector<int32,8> o0, Vector<int32,8> o1, float32 xs) {
+            int32 g, Vector<int8,32> a0, Vector<int8,32> a1, Vector<int32,8> o0, Vector<int32,8> o1, float32 xs,
+            KernelBuffer<int8> xp, int64 xb) {
         Vector<int32,8> zv = o0 ^ o0;
         Vector<uint8,32> lo = P.lowBytes<32>(raw, plane, g);
         Vector<uint8,32> hi = P.highBytes<32>(raw, plane, g);
@@ -74,7 +76,7 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
         int32 msum = 0;
         if (P.subValues() == 32) {
             isum = BlockGemvWave.sum8(dl) * P.scaleOf(ha, hb, ls) + BlockGemvWave.sum8(dh) * P.scaleOf(ha, hb, hs);
-            msum = BlockGemvWave.sum8(o0) * P.minOf(ha, hb, ls) + BlockGemvWave.sum8(o1) * P.minOf(ha, hb, hs);
+            msum = Q8kAct.subSum(xp, xb, ls) * P.minOf(ha, hb, ls) + Q8kAct.subSum(xp, xb, hs) * P.minOf(ha, hb, hs);
         } else {
             isum = BlockGemvWave.sumLo(dl) * P.scaleOf(ha, hb, 2 * ls) + BlockGemvWave.sumHi(dl) * P.scaleOf(ha, hb, 2 * ls + 1)
                 + BlockGemvWave.sumLo(dh) * P.scaleOf(ha, hb, 2 * hs) + BlockGemvWave.sumHi(dh) * P.scaleOf(ha, hb, 2 * hs + 1);
@@ -283,15 +285,15 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                 Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
                 Vector<int32,8> o0 = zv;
                 Vector<int32,8> o1 = zv;
-                if (P.offset() == 0) {
+                if (P.offset() == 0 && P.subValues() == 16) {
                     o0 = ones.dotAccum(a0, zv);
                     o1 = ones.dotAccum(a1, zv);
                 }
-                acc0 = BlockGemvWave.part(acc0, ha0, hb0, q0, p0, g, a0, a1, o0, o1, xs);
-                if (R > 1) { acc1 = BlockGemvWave.part(acc1, ha1, hb1, q1, p1, g, a0, a1, o0, o1, xs); }
+                acc0 = BlockGemvWave.part(acc0, ha0, hb0, q0, p0, g, a0, a1, o0, o1, xs, xp, (int64) b * 320L);
+                if (R > 1) { acc1 = BlockGemvWave.part(acc1, ha1, hb1, q1, p1, g, a0, a1, o0, o1, xs, xp, (int64) b * 320L); }
                 if (R > 2) {
-                    acc2 = BlockGemvWave.part(acc2, ha2, hb2, q2, p2, g, a0, a1, o0, o1, xs);
-                    acc3 = BlockGemvWave.part(acc3, ha3, hb3, q3, p3, g, a0, a1, o0, o1, xs);
+                    acc2 = BlockGemvWave.part(acc2, ha2, hb2, q2, p2, g, a0, a1, o0, o1, xs, xp, (int64) b * 320L);
+                    acc3 = BlockGemvWave.part(acc3, ha3, hb3, q3, p3, g, a0, a1, o0, o1, xs, xp, (int64) b * 320L);
                 }
                 b = bn;
             }
