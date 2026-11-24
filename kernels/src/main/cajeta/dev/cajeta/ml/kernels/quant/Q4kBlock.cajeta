@@ -29,9 +29,29 @@ public final class Q4kBlock {
     @Device
     public static uint32 subValues() { return 32; }
 
-    /** Offset in a block of the 16 header bytes the header pieces take as words `h0 .. h3`. */
+    /** Offset in a block of the first 16 header bytes, which the header pieces take as `ha`. */
     @Device
     public static uint32 headOffset() { return 0; }
+
+    /** Offset of the second 16 header bytes, taken as `hb`; equal to {@link #headOffset} when one load holds the header. */
+    @Device
+    public static uint32 head2Offset() { return 0; }
+
+    /** The block's scale step `d` from its header. */
+    @Device
+    public static float32 dOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.d(ha[0]); }
+
+    /** The block's min step `dmin` from its header. */
+    @Device
+    public static float32 dminOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.dmin(ha[0]); }
+
+    /** Sub-block `j`'s scale from the header. */
+    @Device
+    public static int32 scaleOf(Vector<int32,4> ha, Vector<int32,4> hb, uint32 j) { return Q4kBlock.scale(ha[1], ha[3], j); }
+
+    /** Sub-block `j`'s min from the header. */
+    @Device
+    public static int32 minOf(Vector<int32,4> ha, Vector<int32,4> hb, uint32 j) { return Q4kBlock.min(ha[2], ha[3], j); }
 
     /** Offset in a block of the byte that holds value `k`, `k` in 0..255. */
     @Device
@@ -93,11 +113,11 @@ public final class Q4kBlock {
         return Cajeta.bitsToF32(bits);
     }
 
-    /** The block's scale step `d`. */
+    /** `d` from header word 0. */
     @Device
     public static float32 d(int32 h0) { return Q4kBlock.halfBits(h0 & 65535); }
 
-    /** The block's min step `dmin`. */
+    /** `dmin` from header word 0. */
     @Device
     public static float32 dmin(int32 h0) { return Q4kBlock.halfBits((h0 >> 16) & 65535); }
 

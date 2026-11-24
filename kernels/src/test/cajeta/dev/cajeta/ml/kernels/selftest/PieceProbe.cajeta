@@ -14,19 +14,16 @@ public final class PieceProbe<P> {
         uint32 i = KernelThread.globalIdX();
         if (i < blocks) {
             int64 at = (int64) (i * P.blockBytes());
-            Vector<int32,4> h = packed.vload<16>(at).asWords();
+            Vector<int32,4> h = packed.vload<16>(at + (int64) P.headOffset()).asWords();
             Vector<int32,4> q = packed.vload<16>(at + (int64) P.quantOffset()).asWords();
-            int32 h0 = h[0];
-            int32 h1 = h[1];
-            int32 h2 = h[2];
-            int32 h3 = h[3];
+            Vector<int32,4> hb = packed.vload<16>(at + (int64) P.head2Offset()).asWords();
             int64 o = (int64) (i * 20);
-            out[o] = Cajeta.f32ToBits(P.d(h0));
-            out[o + 1L] = Cajeta.f32ToBits(P.dmin(h0));
+            out[o] = Cajeta.f32ToBits(P.dOf(h, hb));
+            out[o + 1L] = Cajeta.f32ToBits(P.dminOf(h, hb));
             uint32 j = 0;
             while (j < 8) {
-                out[o + 2L + (int64) j] = P.scale(h1, h3, j);
-                out[o + 10L + (int64) j] = P.min(h2, h3, j);
+                out[o + 2L + (int64) j] = P.scaleOf(h, hb, j);
+                out[o + 10L + (int64) j] = P.minOf(h, hb, j);
                 j = j + 1;
             }
             out[o + 18L] = P.low(q[0]);

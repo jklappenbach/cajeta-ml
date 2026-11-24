@@ -52,6 +52,7 @@ public final class BlockGemmRows8<P> {
         }
         int64 bb = (int64) P.blockBytes();
         int64 ho = (int64) P.headOffset();
+        int64 h2o = (int64) P.head2Offset();
         int64 qo = (int64) P.quantOffset();
         int64 r = 0L;
         while (r < rows) {
@@ -60,16 +61,16 @@ public final class BlockGemmRows8<P> {
             while (b < bpr) {
                 int64 ro = srcOff + (r * bpr + b) * bb;
                 int64 wo = outOff + ((r / 8L) * bpr + b) * 1216L;
-                int32 h0 = BlockGemmRows8.word(packed, ro + ho);
-                int32 h1 = BlockGemmRows8.word(packed, ro + ho + 4L);
-                int32 h2 = BlockGemmRows8.word(packed, ro + ho + 8L);
-                int32 h3 = BlockGemmRows8.word(packed, ro + ho + 12L);
-                BlockGemmRows8.putI32(out, wo + lane * 4L, Cajeta.f32ToBits(P.d(h0)));
-                BlockGemmRows8.putI32(out, wo + 32L + lane * 4L, Cajeta.f32ToBits(P.dmin(h0)));
+                Vector<int32,4> ha = heap Vector<int32,4>(BlockGemmRows8.word(packed, ro + ho), BlockGemmRows8.word(packed, ro + ho + 4L),
+                    BlockGemmRows8.word(packed, ro + ho + 8L), BlockGemmRows8.word(packed, ro + ho + 12L));
+                Vector<int32,4> hb = heap Vector<int32,4>(BlockGemmRows8.word(packed, ro + h2o), BlockGemmRows8.word(packed, ro + h2o + 4L),
+                    BlockGemmRows8.word(packed, ro + h2o + 8L), BlockGemmRows8.word(packed, ro + h2o + 12L));
+                BlockGemmRows8.putI32(out, wo + lane * 4L, Cajeta.f32ToBits(P.dOf(ha, hb)));
+                BlockGemmRows8.putI32(out, wo + 32L + lane * 4L, Cajeta.f32ToBits(P.dminOf(ha, hb)));
                 uint32 j = 0;
                 while (j < 8) {
-                    out[wo + 64L + 8L * (int64) j + lane] = (int8) P.scale(h1, h3, j);
-                    out[wo + 128L + 8L * (int64) j + lane] = (int8) P.min(h2, h3, j);
+                    out[wo + 64L + 8L * (int64) j + lane] = (int8) P.scaleOf(ha, hb, j);
+                    out[wo + 128L + 8L * (int64) j + lane] = (int8) P.minOf(ha, hb, j);
                     j = j + 1;
                 }
                 int64 k = 0L;

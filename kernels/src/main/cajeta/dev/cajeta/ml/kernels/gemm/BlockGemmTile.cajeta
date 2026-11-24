@@ -134,6 +134,8 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
             Vector<int32,1> px = xp.vload<4>(sXb + 288L).asWords();
             if (sH == 0) {
                 pq0 = packed.vload<16>(sRo + (int64) P.headOffset()).asWords();
+                pq1 = pq0;
+                if (P.head2Offset() != P.headOffset()) { pq1 = packed.vload<16>(sRo + (int64) P.head2Offset()).asWords(); }
             } else {
                 pq0 = xp.vload<16>(sXb + 256L).asWords();
                 pq1 = xp.vload<16>(sXb + 272L).asWords();
@@ -160,31 +162,28 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                 }
                 if (H == 0) {
                     if (sH == 0) {
-                        Vector<int32,4> hw = pq0;
-                        int32 h0 = hw[0];
-                        int32 h1 = hw[1];
-                        int32 h2 = hw[2];
-                        int32 h3 = hw[3];
-                        float32 dv = P.d(h0);
-                        float32 dmv = P.dmin(h0);
+                        Vector<int32,4> ha = pq0;
+                        Vector<int32,4> hb = pq1;
+                        float32 dv = P.dOf(ha, hb);
+                        float32 dmv = P.dminOf(ha, hb);
                         uint32 cb = sCol * 8;
                         dAll[sCol] = dv;
-                        scAll[cb] = P.scale(h1, h3, 0);
-                        scAll[cb + 1] = P.scale(h1, h3, 1);
-                        scAll[cb + 2] = P.scale(h1, h3, 2);
-                        scAll[cb + 3] = P.scale(h1, h3, 3);
-                        scAll[cb + 4] = P.scale(h1, h3, 4);
-                        scAll[cb + 5] = P.scale(h1, h3, 5);
-                        scAll[cb + 6] = P.scale(h1, h3, 6);
-                        scAll[cb + 7] = P.scale(h1, h3, 7);
-                        cgAll[cb] = 0.0f - dmv * (float32) P.min(h2, h3, 0);
-                        cgAll[cb + 1] = 0.0f - dmv * (float32) P.min(h2, h3, 1);
-                        cgAll[cb + 2] = 0.0f - dmv * (float32) P.min(h2, h3, 2);
-                        cgAll[cb + 3] = 0.0f - dmv * (float32) P.min(h2, h3, 3);
-                        cgAll[cb + 4] = 0.0f - dmv * (float32) P.min(h2, h3, 4);
-                        cgAll[cb + 5] = 0.0f - dmv * (float32) P.min(h2, h3, 5);
-                        cgAll[cb + 6] = 0.0f - dmv * (float32) P.min(h2, h3, 6);
-                        cgAll[cb + 7] = 0.0f - dmv * (float32) P.min(h2, h3, 7);
+                        scAll[cb] = P.scaleOf(ha, hb, 0);
+                        scAll[cb + 1] = P.scaleOf(ha, hb, 1);
+                        scAll[cb + 2] = P.scaleOf(ha, hb, 2);
+                        scAll[cb + 3] = P.scaleOf(ha, hb, 3);
+                        scAll[cb + 4] = P.scaleOf(ha, hb, 4);
+                        scAll[cb + 5] = P.scaleOf(ha, hb, 5);
+                        scAll[cb + 6] = P.scaleOf(ha, hb, 6);
+                        scAll[cb + 7] = P.scaleOf(ha, hb, 7);
+                        cgAll[cb] = 0.0f - dmv * (float32) P.minOf(ha, hb, 0);
+                        cgAll[cb + 1] = 0.0f - dmv * (float32) P.minOf(ha, hb, 1);
+                        cgAll[cb + 2] = 0.0f - dmv * (float32) P.minOf(ha, hb, 2);
+                        cgAll[cb + 3] = 0.0f - dmv * (float32) P.minOf(ha, hb, 3);
+                        cgAll[cb + 4] = 0.0f - dmv * (float32) P.minOf(ha, hb, 4);
+                        cgAll[cb + 5] = 0.0f - dmv * (float32) P.minOf(ha, hb, 5);
+                        cgAll[cb + 6] = 0.0f - dmv * (float32) P.minOf(ha, hb, 6);
+                        cgAll[cb + 7] = 0.0f - dmv * (float32) P.minOf(ha, hb, 7);
                     } else {
                         Vector<int32,4> q0 = pq0;
                         Vector<int32,4> q1 = pq1;
@@ -219,6 +218,10 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                     if (nH == 0) {
                         if (sH == 0) {
                             pq0 = packed.vload<16>(sRo + nb * (int64) P.blockBytes() + (int64) P.headOffset()).asWords();
+                            pq1 = pq0;
+                            if (P.head2Offset() != P.headOffset()) {
+                                pq1 = packed.vload<16>(sRo + nb * (int64) P.blockBytes() + (int64) P.head2Offset()).asWords();
+                            }
                         } else {
                             int64 xb = sXb + nb * 320L;
                             pq0 = xp.vload<16>(xb + 256L).asWords();

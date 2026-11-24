@@ -14,8 +14,10 @@ import dev.cajeta.ml.kernels.quant.Q8kAct;
  *
  * The block piece contract, the `@Device static` methods of the type parameter `P`:
  * `blockBytes()`, `subBlocks()`, `subValues()` (sub-blocks times values is 256, a q8_K block);
- * `headOffset()` and, on the 16 header bytes there as little-endian words `h0 .. h3`, `d(h0)`,
- * `dmin(h0)`, `scale(h1, h3, j)` and `min(h2, h3, j)`; `quantByte(k)` and `quant(byte, k)` for
+ * `headOffset()` and `head2Offset()` and, on the two 16-byte header loads there as word vectors
+ * `ha` and `hb`, `dOf(ha, hb)`, `dminOf(ha, hb)`, `scaleOf(ha, hb, j)` and `minOf(ha, hb, j)`
+ * (a format whose header fits one load answers the same offset twice and ignores `hb`);
+ * `quantByte(k)` and `quant(byte, k)` for
  * value `k`; and `add(acc, d, dmin, xs, isum, msum)`, the block's float step.
  *
  * The combine is over a span: one sub-block's values against the activations at the same
@@ -37,11 +39,8 @@ public final class BlockGemmRef<P> {
             while (b < blocksPerRow) {
                 int64 at = ((int64) r * (int64) blocksPerRow + (int64) b) * (int64) P.blockBytes();
                 int64 xa = ((int64) t * (int64) blocksPerRow + (int64) b) * (int64) Q8kAct.blockBytes();
-                Vector<int32,4> h = w.vload<16>(at + (int64) P.headOffset()).asWords();
-                int32 h0 = h[0];
-                int32 h1 = h[1];
-                int32 h2 = h[2];
-                int32 h3 = h[3];
+                Vector<int32,4> ha = w.vload<16>(at + (int64) P.headOffset()).asWords();
+                Vector<int32,4> hb = w.vload<16>(at + (int64) P.head2Offset()).asWords();
                 int32 isum = 0;
                 int32 msum = 0;
                 uint32 j = 0;
@@ -54,11 +53,11 @@ public final class BlockGemmRef<P> {
                         dot = dot + q * Q8kAct.value(xp, xa, k);
                         l = l + 1;
                     }
-                    isum = isum + P.scale(h1, h3, j) * dot;
-                    msum = msum + P.min(h2, h3, j) * Q8kAct.subSum(xp, xa, j);
+                    isum = isum + P.scaleOf(ha, hb, j) * dot;
+                    msum = msum + P.minOf(ha, hb, j) * Q8kAct.subSum(xp, xa, j);
                     j = j + 1;
                 }
-                acc = P.add(acc, P.d(h0), P.dmin(h0), Q8kAct.scale(xp, xa), isum, msum);
+                acc = P.add(acc, P.dOf(ha, hb), P.dminOf(ha, hb), Q8kAct.scale(xp, xa), isum, msum);
                 b = b + 1;
             }
             int64 yi = (int64) t * yStride + (int64) r;
