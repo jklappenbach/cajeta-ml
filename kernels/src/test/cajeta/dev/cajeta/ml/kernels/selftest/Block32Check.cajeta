@@ -7,6 +7,7 @@ import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.gemm.Block32GemmRef;
 import dev.cajeta.ml.kernels.gemm.Block32GemmRows8;
 import dev.cajeta.ml.kernels.gemm.Block32GemvWave;
+import dev.cajeta.ml.kernels.gemm.Block32GemmTile;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 
 /** The checks of {@link Block32GemmTest} over one 32-value piece `P` (Q8_0 or Q5_0). */
@@ -293,5 +294,72 @@ public final class Block32Check<P> {
             Block32Check.near(want2, got, rows);
             m = m + 1;
         }
+    }
+
+    /** Both tile members against the definition for `tokens` tokens (a multiple of 128), set, added, and in two K splits summed on the host. */
+    public void tileMatchesDefinition(int64 tokens, int64 outDim, int64 cols) {
+        int64 nb = cols / 32L;
+        int64 spans = cols / 256L;
+        int8[] file #= this.weight(outDim * nb);
+        int8[] hx #= this.acts(tokens * spans);
+        Block32GemvWave<P, 1> lay = heap Block32GemvWave<P, 1>();
+        Block32GemmTile<P, 64, 64, 32, 32, 128> t64 = heap Block32GemmTile<P, 64, 64, 32, 32, 128>();
+        Block32GemmTile<P, 128, 128, 32, 64, 128> t128 = heap Block32GemmTile<P, 128, 128, 32, 64, 128>();
+        int64 wb = outDim * lay.rowBytes(nb) + t64.tailBytes();
+        int8[] pk #= heap int8[wb];
+        lay.pack(file, 0L, outDim, nb, pk, 0L);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) wb);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * spans * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) (2L * tokens * outDim));
+        w.upload(pk);
+        xp.upload(hx);
+        float64[] want #= heap float64[tokens * outDim];
+        int64 t = 0L;
+        while (t < tokens) {
+            int8[] one #= Block32Check.slice(hx, t * spans * 320L, spans * 320L);
+            float64[] col #= this.definition(file, one, outDim, nb);
+            int64 r = 0L;
+            while (r < outDim) { want[t * outDim + r] = col[r]; r = r + 1L; }
+            t = t + 1L;
+        }
+        float32[] got #= heap float32[tokens * outDim];
+        float32[] seed #= heap float32[tokens * outDim];
+        float64[] want2 #= heap float64[tokens * outDim];
+        float32[] pp #= heap float32[2L * tokens * outDim];
+        int64 i = 0L;
+        while (i < tokens * outDim) { seed[i] = 0.5f * (float32) (i % 3L); want2[i] = want[i] + (float64) seed[i]; i = i + 1L; }
+        KernelStream st #= KernelStream.current();
+        int32 m = 0;
+        while (m < 2) {
+            if (m == 0) { t64.runOn(st, y, w, xp, tokens, outDim, cols, part, 1L, 0); } else { t128.runOn(st, y, w, xp, tokens, outDim, cols, part, 1L, 0); }
+            st.sync();
+            y.download(got);
+            Block32Check.near(want, got, tokens * outDim);
+            y.upload(seed);
+            if (m == 0) { t64.runOn(st, y, w, xp, tokens, outDim, cols, part, 1L, 1); } else { t128.runOn(st, y, w, xp, tokens, outDim, cols, part, 1L, 1); }
+            st.sync();
+            y.download(got);
+            Block32Check.near(want2, got, tokens * outDim);
+            m = m + 1;
+        }
+        t64.runOn(st, y, w, xp, tokens, outDim, cols, part, 2L, 0);
+        st.sync();
+        part.download(pp);
+        int64 tm = tokens / 64L;
+        int64 tn = outDim / 64L;
+        int64 tl = 0L;
+        while (tl < tm * tn) {
+            int64 tt = tl / tn;
+            int64 ti = tl % tn;
+            int64 a = 0L;
+            while (a < 64L * 64L) {
+                int64 o = (tt * 64L + a / 64L) * outDim + ti * 64L + a % 64L;
+                got[o] = pp[(tl * 2L) * 4096L + a] + pp[(tl * 2L + 1L) * 4096L + a];
+                a = a + 1L;
+            }
+            tl = tl + 1L;
+        }
+        Block32Check.near(want, got, tokens * outDim);
     }
 }

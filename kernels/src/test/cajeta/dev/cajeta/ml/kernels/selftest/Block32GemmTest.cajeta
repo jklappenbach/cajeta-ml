@@ -168,4 +168,14 @@ public class Block32GemmTest {
         heap Block32Check<Q50Block>().waveMatchesDefinition(9L, 13L, wv);
         ValueCheck.credit(m);
     }
+
+    @Test
+    public void bothGpuTilesComputeTheFormatsProduct() {
+        String k = "Block32GemmTile_dev_cajeta_ml_kernels_quant_Q80Block_64_64_32_32_128_tile";
+        if (!Device.kernelUsable(k)) { DeviceSkip.noKernel(k, "the tensor-core tile is the GPU's (kernel-drivers 8.3.1.4)"); return; }
+        int64[] m #= ValueCheck.mark();
+        heap Block32Check<Q80Block>().tileMatchesDefinition(128L, 128L, 512L);
+        heap Block32Check<Q50Block>().tileMatchesDefinition(128L, 128L, 512L);
+        ValueCheck.credit(m);
+    }
 }
