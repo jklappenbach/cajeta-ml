@@ -6,6 +6,7 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.attn.AttnDecodeRows;
+import dev.cajeta.ml.kernels.attn.AttnDecodeWave;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
 
@@ -18,50 +19,11 @@ public class AttnDecodeRowsTest {
         return (float32) ((x >> 8) % 2001L - 1000L) * 0.001f;
     }
 
-    @Test
-    public void thePartialsCombineToSoftmaxAttention() {
-        String name = "AttnDecodeRows_128_decode";
-        if (!Device.kernelAvailable(name)) {
-            DeviceSkip.cannot("the row decode-attention driver is the cpu's (kernel-drivers 9.3)");
-            return;
-        }
-        int32 nKv = 2;
-        int32 group = 3;
-        int32 count = 150;
-        int32 splits = 4;
-        int64 hd = 128L;
-        int64 rows = 192L;
+    /** The partials in `got`, combined per head, against softmax attention over the same data in float64. */
+    static void verify(float32[] got, float32[] qh, float16[] kh, float16[] vh, int32[] tab, int32 nKv, int32 group,
+            int32 count, int32 splits, int64 hd, float32 scale) {
         int64 kvDim = (int64) nKv * hd;
         int64 nH = (int64) (nKv * group);
-        float16[] kh #= heap float16[rows * kvDim];
-        float16[] vh #= heap float16[rows * kvDim];
-        int64 i = 0L;
-        while (i < rows * kvDim) { kh[i] = (float16) AttnDecodeRowsTest.rnd(i); vh[i] = (float16) AttnDecodeRowsTest.rnd(i + 999L); i = i + 1L; }
-        float32[] qh #= heap float32[nH * hd];
-        i = 0L;
-        while (i < nH * hd) { qh[i] = AttnDecodeRowsTest.rnd(i + 31L) * 3.0f; i = i + 1L; }
-        int32[] tab #= heap int32[3L];
-        tab[0] = 2;
-        tab[1] = 0;
-        tab[2] = 1;
-        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (rows * kvDim));
-        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (rows * kvDim));
-        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) (nH * hd));
-        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) 3L);
-        k.upload(kh);
-        v.upload(vh);
-        q.upload(qh);
-        pt.upload(tab);
-        int64 pn = nH * (int64) splits * (hd + 2L);
-        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) pn);
-        float32 scale = 0.0883883f;
-        int64[] m #= ValueCheck.mark();
-        AttnDecodeRows<128> drv = heap AttnDecodeRows<128>();
-        KernelStream s #= KernelStream.current();
-        drv.runOn(s, part, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
-        s.sync();
-        float32[] got #= heap float32[pn];
-        part.download(got);
         int64 h = 0L;
         while (h < nH) {
             int64 kvh = h / (int64) group;
@@ -118,6 +80,79 @@ public class AttnDecodeRowsTest {
             }
             h = h + 1L;
         }
+    }
+
+    /** Partials for 2 kv heads of `group` query heads over 150 positions in 4 splits from `kernel`'s driver. */
+    static void runAndVerify(int32 group, int64 hd, boolean wave) {
+        int32 nKv = 2;
+        int32 count = 150;
+        int32 splits = 4;
+        int64 rows = 192L;
+        int64 kvDim = (int64) nKv * hd;
+        int64 nH = (int64) (nKv * group);
+        float16[] kh #= heap float16[rows * kvDim];
+        float16[] vh #= heap float16[rows * kvDim];
+        int64 i = 0L;
+        while (i < rows * kvDim) { kh[i] = (float16) AttnDecodeRowsTest.rnd(i); vh[i] = (float16) AttnDecodeRowsTest.rnd(i + 999L); i = i + 1L; }
+        float32[] qh #= heap float32[nH * hd];
+        i = 0L;
+        while (i < nH * hd) { qh[i] = AttnDecodeRowsTest.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        int32[] tab #= heap int32[3L];
+        tab[0] = 2;
+        tab[1] = 0;
+        tab[2] = 1;
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (rows * kvDim));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) (nH * hd));
+        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) 3L);
+        k.upload(kh);
+        v.upload(vh);
+        q.upload(qh);
+        pt.upload(tab);
+        int64 pn = nH * (int64) splits * (hd + 2L);
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) pn);
+        float32 scale = 0.0883883f;
+        KernelStream s #= KernelStream.current();
+        if (!wave) {
+            AttnDecodeRows<128> drv = heap AttnDecodeRows<128>();
+            drv.runOn(s, part, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
+        } else if (hd == 128L) {
+            AttnDecodeWave<4, 4, 16, 4, 16> drv = heap AttnDecodeWave<4, 4, 16, 4, 16>();
+            drv.runOn(s, part, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
+        } else {
+            AttnDecodeWave<2, 8, 16, 1, 8> drv = heap AttnDecodeWave<2, 8, 16, 1, 8>();
+            drv.runOn(s, part, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
+        }
+        s.sync();
+        float32[] got #= heap float32[pn];
+        part.download(got);
+        AttnDecodeRowsTest.verify(got, qh, kh, vh, tab, nKv, group, count, splits, hd, scale);
+    }
+
+    @Test
+    public void thePartialsCombineToSoftmaxAttention() {
+        String name = "AttnDecodeRows_128_decode";
+        if (!Device.kernelAvailable(name)) {
+            DeviceSkip.cannot("the row decode-attention driver is the cpu's (kernel-drivers 9.3)");
+            return;
+        }
+        int64[] m #= ValueCheck.mark();
+        AttnDecodeRowsTest.runAndVerify(3, 128L, false);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void theWaveDriversPartialsCombineToSoftmaxAttention() {
+        String a = "AttnDecodeWave_4_4_16_4_16_decode";
+        String b = "AttnDecodeWave_2_8_16_1_8_decode";
+        if (!Device.kernelUsable(a) || !Device.kernelUsable(b)) {
+            DeviceSkip.noKernel(a, "the wave decode-attention driver is the GPU's (kernel-drivers 9.3.3)");
+            return;
+        }
+        int64[] m #= ValueCheck.mark();
+        AttnDecodeRowsTest.runAndVerify(8, 128L, true);
+        AttnDecodeRowsTest.runAndVerify(4, 128L, true);
+        AttnDecodeRowsTest.runAndVerify(2, 256L, true);
         ValueCheck.credit(m);
     }
 }
