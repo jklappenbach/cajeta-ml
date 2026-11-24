@@ -108,7 +108,7 @@ public class Q4kBlockTest {
                 int64 l = (int64) (k % 32);
                 int32 q = Q4kBlockTest.u8(raw, ro + 16L + 32L * g + l);
                 int32 want = ((k / 32) % 2 == 0) ? (q & 15) : (q >> 4);
-                Assert.isTrue(Q4kBlock.quant(Q4kBlockTest.u8(raw, ro + (int64) Q4kBlock.quantByte(k)), k) == want);
+                Assert.isTrue(Q4kBlock.quant(Q4kBlockTest.u8(raw, ro + (int64) Q4kBlock.quantByte(k)), 0, k) == want);
                 k = k + 1;
             }
             b = b + 1L;

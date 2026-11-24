@@ -17,7 +17,7 @@ import dev.cajeta.ml.kernels.quant.Q8kAct;
  * `headOffset()` and `head2Offset()` and, on the two 16-byte header loads there as word vectors
  * `ha` and `hb`, `dOf(ha, hb)`, `dminOf(ha, hb)`, `scaleOf(ha, hb, j)` and `minOf(ha, hb, j)`
  * (a format whose header fits one load answers the same offset twice and ignores `hb`);
- * `quantByte(k)` and `quant(byte, k)` for
+ * `quantByte(k)`, `planeOffset()`, `planeBytes()` and `quant(byte, planeByte, k)` for
  * value `k`; and `add(acc, d, dmin, xs, isum, msum)`, the block's float step.
  *
  * The combine is over a span: one sub-block's values against the activations at the same
@@ -49,7 +49,8 @@ public final class BlockGemmRef<P> {
                     uint32 l = 0;
                     while (l < P.subValues()) {
                         uint32 k = j * P.subValues() + l;
-                        int32 q = P.quant((int32) w[at + (int64) P.quantByte(k)] & 255, k);
+                        int32 q = P.quant((int32) w[at + (int64) P.quantByte(k)] & 255,
+                            (int32) w[at + (int64) (P.planeOffset() + (k & 31))] & 255, k);
                         dot = dot + q * Q8kAct.value(xp, xa, k);
                         l = l + 1;
                     }

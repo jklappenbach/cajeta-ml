@@ -57,25 +57,33 @@ public final class Q4kBlock {
     @Device
     public static uint32 quantByte(uint32 k) { return 16 + 32 * (k >> 6) + (k & 31); }
 
-    /** Value `k`'s quant, 0..15, out of the byte {@link #quantByte} names. */
+    /** Bytes of a side plane the quants need besides their own bytes; Q4_K has none. */
     @Device
-    public static int32 quant(int32 b, uint32 k) { return (b >> (int32) (4 * ((k >> 5) & 1))) & 15; }
+    public static uint32 planeBytes() { return 0; }
 
-    /** {@link #low} for four quant words. */
+    /** Offset in a block of the side plane. */
     @Device
-    public static Vector<int32,4> lowWords(Vector<int32,4> quants) { return quants & 252645135; }
+    public static uint32 planeOffset() { return 0; }
 
-    /** {@link #high} for four quant words. */
+    /** Value `k`'s quant, 0..15, out of the byte {@link #quantByte} names and the plane byte `k & 31` (unused here). */
     @Device
-    public static Vector<int32,4> highWords(Vector<int32,4> quants) { return (quants >> 4) & 252645135; }
+    public static int32 quant(int32 b, int32 plane, uint32 k) { return (b >> (int32) (4 * ((k >> 5) & 1))) & 15; }
 
-    /** The low-nibble quants of 32 quant bytes: for file bytes `32 g + i`, values `64 g + i`. */
+    /** {@link #low} for four quant words of the pair `g` (sub-blocks `2 g` and `2 g + 1`); `plane` is the side plane's words at the same values. */
     @Device
-    public static Vector<uint8,32> lowBytes(Vector<uint8,32> q) { return q & 15; }
+    public static Vector<int32,4> lowWords(Vector<int32,4> quants, Vector<int32,4> plane, int32 g) { return quants & 252645135; }
 
-    /** The high-nibble quants of 32 quant bytes: for file bytes `32 g + i`, values `64 g + 32 + i`. */
+    /** {@link #high} for four quant words of the pair `g`. */
     @Device
-    public static Vector<uint8,32> highBytes(Vector<uint8,32> q) { return (q >> 4) & 15; }
+    public static Vector<int32,4> highWords(Vector<int32,4> quants, Vector<int32,4> plane, int32 g) { return (quants >> 4) & 252645135; }
+
+    /** The low-nibble quants of 32 quant bytes of the pair `g`: for file bytes `32 g + i`, values `64 g + i`. */
+    @Device
+    public static Vector<uint8,32> lowBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) { return q & 15; }
+
+    /** The high-nibble quants of 32 quant bytes of the pair `g`: for file bytes `32 g + i`, values `64 g + 32 + i`. */
+    @Device
+    public static Vector<uint8,32> highBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) { return (q >> 4) & 15; }
 
     /** {@link #add} for eight rows at once, one row a lane. */
     @Device

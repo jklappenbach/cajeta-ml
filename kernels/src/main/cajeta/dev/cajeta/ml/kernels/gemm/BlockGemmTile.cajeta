@@ -12,6 +12,7 @@ import cajeta.xpu.Vector;
 import cajeta.xpu.WaveVector;
 import cajeta.lang.String;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
 
 /**
  * The GPU driver of the block-quantized GEMM (kernel-drivers spec §3.1): {@link BlockGemmRef}'s
@@ -24,7 +25,8 @@ import dev.cajeta.ml.kernels.quant.Q4kBlock;
  * words into values (`lowWords`, `highWords`); it has eight sub-blocks of 32 values with the
  * quants a nibble each. cajeta-llm's `QkTile` is this kernel with the Q4_K decode written in.
  */
-@Instantiate({BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128>})
+@Instantiate({BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128>,
+    BlockGemmTile<Q5kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q5kBlock, 128, 128, 32, 64, 128>})
 @Requires(TM == TN && TM % WM == 0 && TN % WN == 0 && WM % 16 == 0 && WN % 16 == 0
     && (TM / WM) * (TN / WN) * 16 == TN && KS == 128 && (WN / 16) % 2 == 0)
 @Unfused
@@ -155,10 +157,18 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                     int64 dst = (int64) (sCol * 144 + 64 * sH);
                     Vector<int32,4> w0 = pb0;
                     Vector<int32,4> w1 = pb1;
-                    bT.vstore(dst, P.lowWords(w0).asBytes());
-                    bT.vstore(dst + 16L, P.lowWords(w1).asBytes());
-                    bT.vstore(dst + 32L, P.highWords(w0).asBytes());
-                    bT.vstore(dst + 48L, P.highWords(w1).asBytes());
+                    int32 pair = (int32) (2 * H + sH);
+                    Vector<int32,4> ph0 = w0;
+                    Vector<int32,4> ph1 = w1;
+                    if (P.planeBytes() != 0) {
+                        int64 cb = sRo + (int64) (hh >> 1) * (int64) P.blockBytes() + (int64) P.planeOffset();
+                        ph0 = packed.vload<16>(cb).asWords();
+                        ph1 = packed.vload<16>(cb + 16L).asWords();
+                    }
+                    bT.vstore(dst, P.lowWords(w0, ph0, pair).asBytes());
+                    bT.vstore(dst + 16L, P.lowWords(w1, ph1, pair).asBytes());
+                    bT.vstore(dst + 32L, P.highWords(w0, ph0, pair).asBytes());
+                    bT.vstore(dst + 48L, P.highWords(w1, ph1, pair).asBytes());
                 }
                 if (H == 0) {
                     if (sH == 0) {

@@ -1,0 +1,98 @@
+package dev.cajeta.ml.kernels.quant;
+
+import cajeta.xpu.Vector;
+
+/**
+ * The Q5_K block as pieces (kernel-drivers spec §2.4): 256 values in 176 bytes,
+ * { f16 d; f16 dmin; u8 scales[12]; u8 qh[32]; u8 qs[128] }. The header is Q4_K's; a quant is its
+ * nibble of `qs` plus a fifth bit, bit `j` of `qh[l]` for value `l` of sub-block `j`. A value is
+ * `d * scale * q - dmin * min`. It meets the block piece contract stated on
+ * {@link dev.cajeta.ml.kernels.gemm.BlockGemmRef}.
+ */
+public final class Q5kBlock {
+    public Q5kBlock() { return; }
+
+    @Device
+    public static uint32 blockBytes() { return 176; }
+
+    @Device
+    public static uint32 quantOffset() { return 48; }
+
+    @Device
+    public static uint32 subBlocks() { return 8; }
+
+    @Device
+    public static uint32 subValues() { return 32; }
+
+    @Device
+    public static uint32 headOffset() { return 0; }
+
+    @Device
+    public static uint32 head2Offset() { return 0; }
+
+    /** The 32 bytes of fifth bits. */
+    @Device
+    public static uint32 planeBytes() { return 32; }
+
+    @Device
+    public static uint32 planeOffset() { return 16; }
+
+    @Device
+    public static float32 dOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.d(ha[0]); }
+
+    @Device
+    public static float32 dminOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.dmin(ha[0]); }
+
+    @Device
+    public static int32 scaleOf(Vector<int32,4> ha, Vector<int32,4> hb, uint32 j) { return Q4kBlock.scale(ha[1], ha[3], j); }
+
+    @Device
+    public static int32 minOf(Vector<int32,4> ha, Vector<int32,4> hb, uint32 j) { return Q4kBlock.min(ha[2], ha[3], j); }
+
+    /** Offset in a block of the `qs` byte that holds value `k`'s nibble. */
+    @Device
+    public static uint32 quantByte(uint32 k) { return 48 + 32 * (k >> 6) + (k & 31); }
+
+    /** Value `k`'s quant, 0..31, from its `qs` byte and the `qh` byte `k & 31`. */
+    @Device
+    public static int32 quant(int32 b, int32 plane, uint32 k) {
+        return ((b >> (int32) (4 * ((k >> 5) & 1))) & 15) | (((plane >> (int32) (k >> 5)) & 1) << 4);
+    }
+
+    /** The low-nibble quants of four `qs` words, sub-block `2 g`, with their fifth bits from the `qh` words. */
+    @Device
+    public static Vector<int32,4> lowWords(Vector<int32,4> quants, Vector<int32,4> plane, int32 g) {
+        return (quants & 252645135) | (((plane >> (2 * g)) & 16843009) << 4);
+    }
+
+    /** The high-nibble quants of four `qs` words, sub-block `2 g + 1`. */
+    @Device
+    public static Vector<int32,4> highWords(Vector<int32,4> quants, Vector<int32,4> plane, int32 g) {
+        return ((quants >> 4) & 252645135) | (((plane >> (2 * g)) & 33686018) << 3);
+    }
+
+    /** {@link #lowWords} on 32 bytes; the plane is shifted as words, where a variable shift is one instruction. */
+    @Device
+    public static Vector<uint8,32> lowBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) {
+        Vector<int32,8> bits = ((plane.asSigned().asWords() >> (2 * g)) & 16843009) << 4;
+        return (q & 15) | bits.asBytes().asUnsigned();
+    }
+
+    /** {@link #highWords} on 32 bytes. */
+    @Device
+    public static Vector<uint8,32> highBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) {
+        Vector<int32,8> bits = ((plane.asSigned().asWords() >> (2 * g)) & 33686018) << 3;
+        return ((q >> 4) & 15) | bits.asBytes().asUnsigned();
+    }
+
+    @Device
+    public static float32 add(float32 acc, float32 d, float32 dmin, float32 xs, int32 isum, int32 msum) {
+        return acc + d * xs * (float32) isum - dmin * xs * (float32) msum;
+    }
+
+    @Device
+    public static Vector<float32,8> add8(Vector<float32,8> acc, Vector<float32,8> d, Vector<float32,8> dmin,
+            float32 xs, Vector<int32,8> isum, Vector<int32,8> msum) {
+        return acc + d * xs * isum.toF32() - dmin * xs * msum.toF32();
+    }
+}
