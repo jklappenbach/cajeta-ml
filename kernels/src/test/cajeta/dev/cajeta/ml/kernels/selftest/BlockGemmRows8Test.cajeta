@@ -189,4 +189,75 @@ public class BlockGemmRows8Test {
         while (i < rows) { Assert.isTrue(Cajeta.f32ToBits(ga[i]) == Cajeta.f32ToBits(gb[i])); i = i + 1L; }
         ValueCheck.credit(m);
     }
+
+    static void expectRef(BlockGemmRef<Q4kBlock> g, KernelBuffer<float32> got, int8[] file, KernelBuffer<int8> xp,
+            int64 rows, int64 bpr) {
+        KernelBuffer<int8> wf = heap KernelBuffer<int8>((uint64) (rows * bpr * 144L));
+        KernelBuffer<float32> ya = heap KernelBuffer<float32>((uint64) rows);
+        wf.upload(file);
+        g.run(ya, wf, xp, rows, 1L, bpr, rows, false);
+        KernelStream st #= KernelStream.current();
+        st.sync();
+        float32[] ga #= heap float32[rows];
+        float32[] gb #= heap float32[rows];
+        ya.download(ga);
+        got.download(gb);
+        int64 i = 0L;
+        while (i < rows) { Assert.isTrue(Cajeta.f32ToBits(ga[i]) == Cajeta.f32ToBits(gb[i])); i = i + 1L; }
+    }
+
+    static #int8[] slice(int8[] all, int64 fromBlock, int64 blocks) {
+        int8[] out #= heap int8[blocks * 144L];
+        int64 i = 0L;
+        while (i < blocks * 144L) { out[i] = all[fromBlock * 144L + i]; i = i + 1L; }
+        return #out;
+    }
+
+    static #KernelBuffer<int8> packedOf(BlockGemmRows8<Q4kBlock> drv, int8[] file, int64 rows, int64 bpr) {
+        int8[] p #= heap int8[drv.packedBytes(rows, bpr)];
+        drv.pack(file, 0L, rows, bpr, p, 0L);
+        KernelBuffer<int8> w #= heap KernelBuffer<int8>((uint64) drv.packedBytes(rows, bpr));
+        w.upload(p);
+        return #w;
+    }
+
+    @Test
+    public void threeWeightsAgainstOneTokenEachEqualTheGemmFromPiecesBitForBit() {
+        String name = "BlockGemmRows8_dev_cajeta_ml_kernels_quant_Q4kBlock_vec3";
+        String ref = "BlockGemmRef_dev_cajeta_ml_kernels_quant_Q4kBlock_ref";
+        if (!Device.kernelAvailable(name) || !Device.kernelAvailable(ref)) {
+            DeviceSkip.cannot("the 8-row driver is the cpu's (kernel-drivers 9.1.3)");
+            return;
+        }
+        int64 bpr = 3L;
+        int8[] all #= BlockGemmRefTest.weight(42L * bpr);
+        int8[] fa #= BlockGemmRows8Test.slice(all, 0L, 21L * bpr);
+        int8[] fb #= BlockGemmRows8Test.slice(all, 21L * bpr, 13L * bpr);
+        int8[] fc #= BlockGemmRows8Test.slice(all, 34L * bpr, 8L * bpr);
+        int8[] hx #= BlockGemmRefTest.acts(bpr);
+        BlockGemmRows8<Q4kBlock> drv = heap BlockGemmRows8<Q4kBlock>();
+        KernelBuffer<int8> wa #= BlockGemmRows8Test.packedOf(drv, fa, 21L, bpr);
+        KernelBuffer<int8> wb #= BlockGemmRows8Test.packedOf(drv, fb, 13L, bpr);
+        KernelBuffer<int8> wc #= BlockGemmRows8Test.packedOf(drv, fc, 8L, bpr);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> ya = heap KernelBuffer<float32>((uint64) 21L);
+        KernelBuffer<float32> yb = heap KernelBuffer<float32>((uint64) 13L);
+        KernelBuffer<float32> yc = heap KernelBuffer<float32>((uint64) 8L);
+        int64[] m #= ValueCheck.mark();
+        KernelStream st #= KernelStream.current();
+        drv.run3(st, ya, yb, yc, wa, wb, wc, xp, 21L, 13L, 8L, bpr, 2L);
+        st.sync();
+        BlockGemmRef<Q4kBlock> g = heap BlockGemmRef<Q4kBlock>();
+        BlockGemmRows8Test.expectRef(g, ya, fa, xp, 21L, bpr);
+        BlockGemmRows8Test.expectRef(g, yb, fb, xp, 13L, bpr);
+        BlockGemmRows8Test.expectRef(g, yc, fc, xp, 8L, bpr);
+        KernelBuffer<float32> yd = heap KernelBuffer<float32>((uint64) 21L);
+        KernelBuffer<float32> ye = heap KernelBuffer<float32>((uint64) 13L);
+        drv.run3(st, yd, ye, ye, wa, wb, null, xp, 21L, 13L, 0L, bpr, 2L);
+        st.sync();
+        BlockGemmRows8Test.expectRef(g, yd, fa, xp, 21L, bpr);
+        BlockGemmRows8Test.expectRef(g, ye, fb, xp, 13L, bpr);
+        ValueCheck.credit(m);
+    }
 }
