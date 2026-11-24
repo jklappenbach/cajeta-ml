@@ -1,0 +1,35 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import dev.cajeta.ml.kernels.quant.Q8kAct;
+
+/** The sums of a q8_K block's quants sixteen at a time, which a block format with 16-value sub-blocks needs beside the block's own eight. */
+public final class Q8kSubSums {
+    public Q8kSubSums() { return; }
+
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void sums16(KernelBuffer<int32> out, KernelBuffer<int8> xp, uint32 tokens, uint32 blocksPerRow, int64 xpStride) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < tokens * blocksPerRow) {
+            uint32 t = i / blocksPerRow;
+            int64 at = (int64) t * xpStride + (int64) (i - t * blocksPerRow) * (int64) Q8kAct.blockBytes();
+            uint32 j = 0;
+            while (j < 16) {
+                int32 sum = 0;
+                uint32 e = 0;
+                while (e < 16) { sum = sum + Q8kAct.value(xp, at, 16 * j + e); e = e + 1; }
+                out[(int64) i * 16L + (int64) j] = sum;
+                j = j + 1;
+            }
+        }
+    }
+
+    /** `out[(t * blocksPerRow + b) * 16 + j]` set to the sum of quants `16 j .. 16 j + 15` of token `t`'s block `b`; queued on `s`. */
+    public static void run(KernelStream s, KernelBuffer<int32> out, KernelBuffer<int8> xp, int64 tokens, int64 blocksPerRow, int64 xpStride) {
+        uint32 n = (uint32) (tokens * blocksPerRow);
+        sums16.launch(s, grid: [(n + 255) / 256], block: [256])(out, xp, (uint32) tokens, (uint32) blocksPerRow, xpStride);
+    }
+}

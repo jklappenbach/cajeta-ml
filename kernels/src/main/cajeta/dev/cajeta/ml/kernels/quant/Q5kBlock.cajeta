@@ -37,6 +37,26 @@ public final class Q5kBlock {
     @Device
     public static uint32 planeOffset() { return 16; }
 
+    /** When not 0, a value is `d * scale * (q - offset)`: there is no min table, and `minOf` answers `scaleOf`. */
+    @Device
+    public static uint32 offset() { return 0; }
+
+    /** Which 32-byte run of the side plane the quant run `g` reads. */
+    @Device
+    public static int32 planeRun(int32 g) { return 0; }
+
+    /** Offset in a block of the side-plane byte value `k` reads. */
+    @Device
+    public static uint32 planeByte(uint32 k) { return 16 + (k & 31); }
+
+    /** The 32-value stream, `32 s ..`, that the low nibbles of quant run `g` hold. */
+    @Device
+    public static int32 lowStream(int32 g) { return 2 * g; }
+
+    /** The stream the high nibbles of quant run `g` hold. */
+    @Device
+    public static int32 highStream(int32 g) { return 2 * g + 1; }
+
     @Device
     public static float32 dOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.d(ha[0]); }
 
