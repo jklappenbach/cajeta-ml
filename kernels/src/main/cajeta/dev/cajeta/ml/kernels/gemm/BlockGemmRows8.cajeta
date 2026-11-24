@@ -1,6 +1,7 @@
 package dev.cajeta.ml.kernels.gemm;
 
 import cajeta.lang.Cajeta;
+import cajeta.lang.String;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
@@ -21,6 +22,9 @@ import dev.cajeta.ml.kernels.quant.Q8kAct;
  */
 public final class BlockGemmRows8<P> {
     public BlockGemmRows8() { return; }
+
+    /** This instantiation's registered kernel. */
+    public #String kernel() { return "" + rows8.registeredName(); }
 
     /** Bytes of {@link #pack}'s layout for `rows` rows of `bpr` blocks. */
     public int64 packedBytes(int64 rows, int64 bpr) { return ((rows + 7L) / 8L) * bpr * 1216L; }

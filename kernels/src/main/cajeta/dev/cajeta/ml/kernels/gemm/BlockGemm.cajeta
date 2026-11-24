@@ -4,34 +4,35 @@ import cajeta.lang.String;
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
-import dev.cajeta.ml.kernels.quant.Q4kBlock;
 import cajeta.xpu.ShapeFilter;
 import dev.cajeta.ml.kernels.tune.TileFamily;
 
 /**
- * The Q4_K weight times q8_K activations GEMM by name (kernel-drivers spec §3.5):
+ * A block-quantized weight times q8_K activations, the GEMM by name (kernel-drivers spec §3.5),
+ * for the weight format the piece `P` describes:
  * `y[token * outDim + row] = sum over k of W[row][k] * x[token][k]`. The caller loads the weight
  * once and runs; the device's driver packs it, cuts the work and launches. On the cpu that is
  * {@link BlockGemmRows8}; on a GPU a member of the {@link BlockGemmTile} family, picked by the
  * shape choice for the problem.
  */
-public final class Q4kGemm {
-    static final String ROWS8 = "BlockGemmRows8_dev_cajeta_ml_kernels_quant_Q4kBlock_rows8";
-
-    BlockGemmRows8<Q4kBlock> rows;
+public final class BlockGemm<P> {
+    BlockGemmRows8<P> rows;
     TileFamily<BlockTileMember> tiles;
     KernelBuffer<float32> part;
 
-    public Q4kGemm() {
-        this.rows #= heap BlockGemmRows8<Q4kBlock>();
-        this.tiles #= heap TileFamily<BlockTileMember>("q4kBlockTile");
-        this.tiles.add(#heap BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128>());
-        this.tiles.add(#heap BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128>());
+    public BlockGemm() {
+        this.rows #= heap BlockGemmRows8<P>();
+        this.tiles #= heap TileFamily<BlockTileMember>("blockGemmTile");
+        this.tiles.add(#heap BlockGemmTile<P, 128, 128, 32, 64, 128>());
+        this.tiles.add(#heap BlockGemmTile<P, 64, 64, 32, 32, 128>());
         this.part #= heap KernelBuffer<float32>((uint64) 16L);
     }
 
     /** True where the row driver runs, which is the cpu. */
-    boolean byRows() { return Device.kernelAvailable(Q4kGemm.ROWS8); }
+    boolean byRows() {
+        String k #= this.rows.kernel();
+        return Device.kernelAvailable(k);
+    }
 
     /** The weight on the device in this device's packing, from `rows` rows of `cols / 256` file-layout blocks at `file[off ..)`. */
     public #KernelBuffer<int8> load(int8[] file, int64 off, int64 rows, int64 cols) {
@@ -44,7 +45,7 @@ public final class Q4kGemm {
             w.upload(packed);
             return #w;
         }
-        int64 n = rows * bpr * 144L;
+        int64 n = rows * bpr * (int64) P.blockBytes();
         int8[] raw #= heap int8[n];
         int64 i = 0L;
         while (i < n) { raw[i] = file[off + i]; i = i + 1L; }
@@ -55,7 +56,7 @@ public final class Q4kGemm {
 
     /** The kernel that serves `tokens` by `outDim` by `cols` here. */
     public #String kernelFor(int64 tokens, int64 outDim, int64 cols) {
-        if (this.byRows()) { return "" + Q4kGemm.ROWS8; }
+        if (this.byRows()) { return this.rows.kernel(); }
         ShapeFilter f #= this.tiles.filterFor(tokens, outDim, cols);
         int32 idx = this.tiles.chooseUntimed("", f, tokens, outDim, cols);
         if (idx < 0) { idx = 0; }

@@ -6,7 +6,7 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
-import dev.cajeta.ml.kernels.gemm.Q4kGemm;
+import dev.cajeta.ml.kernels.gemm.BlockGemm;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
@@ -22,7 +22,7 @@ public class Q4kGemmTest {
         int64 outDim = 256L;
         int64 cols = 512L;
         int64 bpr = cols / 256L;
-        Q4kGemm op = heap Q4kGemm();
+        BlockGemm<Q4kBlock> op = heap BlockGemm<Q4kBlock>();
         String kernel #= op.kernelFor(tokens, outDim, cols);
         if (!Device.kernelAvailable(ref) || !Device.kernelUsable(kernel)) {
             DeviceSkip.noKernel(kernel, "kernel-drivers 5.1.1");
