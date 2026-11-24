@@ -1,0 +1,84 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import dev.cajeta.ml.kernels.quant.Q8kAct;
+
+/**
+ * {@link BlockGemmRef}'s operation for weights with a float scale per 32 values (Q8_0, Q5_0), from
+ * the pieces alone, one work-item an output element (kernel-drivers plan 8.3.1). Rows of `nb`
+ * blocks are taken in 256-value spans, a missing block reading as a zero block, against q8_K
+ * activations whose scale is per span or, `sst` = 4, per 32 values at byte `288 + 4 j`.
+ *
+ * The 32-value block contract, the `@Device static` methods of `P`: `blockBytes()`; `dOf(h)` on
+ * the block's first two bytes; `quantByte(k)`, `planeByte(k)` and `quant(byte, planeByte, k)`,
+ * value `k` plus `offset()`; `fold(fs, d, xsj, t, gs)`, a block's float step on its dot `t` and the
+ * activation's sum `gs`, and `close(acc, fs, xs)`, a span's. For the drivers a block is `quads()`
+ * quads of four bytes a row, `packByte(b)` of the bytes at `quantOffset()`, each holding
+ * `streams()` streams unpacked by `lowBytes<N>`/`highBytes<N>` against the activations at
+ * `lowAt(q)`/`highAt(q)`, with `planeBytes()` side-plane bytes `planeOf(word, k)` from the word at
+ * `planeOffset()`; `fold8`/`close8` are the float steps on eight rows.
+ */
+public final class Block32GemmRef<P> {
+    public Block32GemmRef() { return; }
+
+    @Device
+    static int32 byteAt(KernelBuffer<int8> w, int64 at, uint32 o, boolean real) {
+        if (!real) { return 0; }
+        return (int32) w[at + (int64) o] & 255;
+    }
+
+    @Kernel
+    public static void ref(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+                           uint32 rows, uint32 tokens, uint32 nb, uint32 spans, int64 yStride, uint32 accum, int64 sst) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < rows * tokens) {
+            uint32 t = i / rows;
+            uint32 r = i - t * rows;
+            float32 acc = 0.0f;
+            uint32 s = 0;
+            while (s < spans) {
+                int64 xa = ((int64) t * (int64) spans + (int64) s) * 320L;
+                float32 fs = 0.0f;
+                uint32 j = 0;
+                while (j < 8) {
+                    uint32 blk = 8 * s + j;
+                    boolean real = blk < nb;
+                    int64 at = ((int64) r * (int64) nb + (int64) blk) * (int64) P.blockBytes();
+                    float32 d = P.dOf(Block32GemmRef.byteAt(w, at, 0, real) | (Block32GemmRef.byteAt(w, at, 1, real) << 8));
+                    int32 dot = 0;
+                    uint32 l = 0;
+                    while (l < 32) {
+                        int32 q = P.quant(Block32GemmRef.byteAt(w, at, P.quantByte(l), real),
+                            Block32GemmRef.byteAt(w, at, P.planeByte(l), real), l);
+                        dot = dot + q * Q8kAct.value(xp, xa, 32 * j + l);
+                        l = l + 1;
+                    }
+                    float32 xsj = Cajeta.bitsToF32(Block32GemmRef.word(xp, xa + 288L + sst * (int64) j));
+                    fs = P.fold(fs, d, xsj, dot, Q8kAct.subSum(xp, xa, j));
+                    j = j + 1;
+                }
+                acc = P.close(acc, fs, Q8kAct.scale(xp, xa));
+                s = s + 1;
+            }
+            int64 yi = (int64) t * yStride + (int64) r;
+            if (accum != 0) { y[yi] = y[yi] + acc; } else { y[yi] = acc; }
+        }
+    }
+
+    @Device
+    static int32 word(KernelBuffer<int8> xp, int64 at) {
+        return ((int32) xp[at] & 255) | (((int32) xp[at + 1L] & 255) << 8) | (((int32) xp[at + 2L] & 255) << 16) | (((int32) xp[at + 3L] & 255) << 24);
+    }
+
+    /** `y[t * yStride + r]` set (or added to) for `rows` rows of `nb` file blocks and `tokens` activation rows of `ceil(nb / 8)` q8_K blocks; queued on the current stream. */
+    public void run(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+                    int64 rows, int64 tokens, int64 nb, int64 yStride, boolean accum, int64 sst) {
+        uint32 n = (uint32) (rows * tokens);
+        KernelStream s #= KernelStream.current();
+        ref.launch(s, grid: [(n + 63) / 64], block: [64])(y, w, xp, (uint32) rows, (uint32) tokens,
+            (uint32) nb, (uint32) ((nb + 7L) / 8L), yStride, accum ? 1 : 0, sst);
+    }
+}

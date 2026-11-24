@@ -1,0 +1,318 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.String;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Unroll;
+import cajeta.xpu.Vector;
+import dev.cajeta.ml.kernels.quant.Q8kAct;
+
+/**
+ * The cpu driver of {@link Block32GemmRef}'s operation (kernel-drivers plan 8.3.1). {@link #pack}
+ * interleaves eight rows a group, a 256-value span at a time: the eight blocks' f16 `d` at
+ * `16 j + 2 r`, block `j`'s quad `q` at `128 + 32 (quads j + q) + 4 r`, its side plane at
+ * `128 + 256 quads + 32 j + 4 r`. Lane r is row `8 g + r`; the kernels take the weight twice, as
+ * bytes and as the caller's f16 view of the same buffer (`halfView`), held past the launch.
+ */
+public final class Block32GemmRows8<P> {
+    public Block32GemmRows8() { return; }
+
+    /** This instantiation's registered kernel. */
+    public #String kernel() { return "" + rows8.registeredName(); }
+
+    /** Bytes of one 256-value span of a row group. */
+    public int64 groupBytes() { return 128L + 8L * (32L * (int64) P.quads() + 8L * (int64) P.planeBytes()); }
+
+    /** Bytes of {@link #pack}'s layout for `rows` rows of `nb` blocks. */
+    public int64 packedBytes(int64 rows, int64 nb) { return ((rows + 7L) / 8L) * ((nb + 7L) / 8L) * this.groupBytes(); }
+
+    static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
+
+    /** `rows` rows of `nb` file blocks at `raw[srcOff ..)` into the interleave at `out[outOff ..)`; a row's missing blocks are zero blocks, rows past `rows` zero bytes. */
+    public void pack(int8[] raw, int64 srcOff, int64 rows, int64 nb, int8[] out, int64 outOff) {
+        int64 spans = (nb + 7L) / 8L;
+        if (rows % 8L != 0L) {
+            int64 n = this.packedBytes(rows, nb);
+            int64 z = 0L;
+            while (z < n) { out[outOff + z] = (int8) 0; z = z + 1L; }
+        }
+        int64 gb = this.groupBytes();
+        int64 qd = (int64) P.quads();
+        int64 pn = (int64) P.planeBytes();
+        int64 pa = 128L + 256L * qd;
+        int64 bb = (int64) P.blockBytes();
+        int64 qo = (int64) P.quantOffset();
+        int64 po = (int64) P.planeOffset();
+        int64 r = 0L;
+        while (r < rows) {
+            int64 lane = r % 8L;
+            int64 blk = 0L;
+            while (blk < spans * 8L) {
+                boolean real = blk < nb;
+                int64 ro = srcOff + (r * nb + blk) * bb;
+                int64 wo = outOff + ((r / 8L) * spans + blk / 8L) * gb;
+                int64 j = blk % 8L;
+                out[wo + 16L * j + 2L * lane] = real ? raw[ro] : (int8) 0;
+                out[wo + 16L * j + 2L * lane + 1L] = real ? raw[ro + 1L] : (int8) 0;
+                int64 k = 0L;
+                while (k < 4L * qd) {
+                    int32 b = real ? Block32GemmRows8.u8(raw, ro + qo + k) : 0;
+                    out[wo + 128L + 32L * (qd * j + k / 4L) + 4L * lane + k % 4L] = (int8) P.packByte(b);
+                    k = k + 1L;
+                }
+                if (pn != 0L) {
+                    int32 qh = 0;
+                    if (real) {
+                        qh = Block32GemmRows8.u8(raw, ro + po) | (Block32GemmRows8.u8(raw, ro + po + 1L) << 8)
+                            | (Block32GemmRows8.u8(raw, ro + po + 2L) << 16) | (Block32GemmRows8.u8(raw, ro + po + 3L) << 24);
+                    }
+                    k = 0L;
+                    while (k < pn) {
+                        out[wo + pa + 8L * pn * j + pn * lane + k] = (int8) P.planeOf(qh, (int32) k);
+                        k = k + 1L;
+                    }
+                }
+                blk = blk + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    /** The four activation bytes at `at`, repeated for every row lane. */
+    @Device
+    static Vector<int8,32> quad(KernelBuffer<int8> xp, int64 at) {
+        Vector<int32,1> a = xp.vload<4>(at).asWords();
+        int32 s = a[0];
+        return heap Vector<int32,8>(s, s, s, s, s, s, s, s).asBytes();
+    }
+
+    /** The activation scale of values `32 j ..` of the q8_K block at `at`: per block when `sst` is 0, per 32 values when 4. */
+    @Device
+    static float32 scaleOf(KernelBuffer<int8> xp, int64 at, int64 sst, int64 j) {
+        Vector<int32,1> s = xp.vload<4>(at + 288L + sst * j).asWords();
+        return Cajeta.bitsToF32(s[0]);
+    }
+
+    /** `v`'s lanes to `y[yi ..)`, only the rows below `rows`, set or added. */
+    @Device
+    static void store(KernelBuffer<float32> y, int64 yi, Vector<float32,8> v, uint32 rows, int64 r0, uint32 accum) {
+        if (r0 + 8L <= (int64) rows) {
+            if (accum != 0) { y.vstore(yi, y.vload<8>(yi) + v); } else { y.vstore(yi, v); }
+            return;
+        }
+        int64 n = (int64) rows - r0;
+        int64 l = 0L;
+        while (l < n) {
+            if (accum != 0) { y[yi + l] = y[yi + l] + v[l]; } else { y[yi + l] = v[l]; }
+            l = l + 1L;
+        }
+    }
+
+    @Kernel(targets = {"cpu"})
+    @Occupancy(maxThreads = 256)
+    public static void rows8(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> wh, KernelBuffer<int8> xp,
+            uint32 rows, uint32 groups, uint32 gPad, int64 spans, int64 nc, int64 chunk,
+            int64 xpStride, int64 yStride, uint32 accum, int64 sst) {
+        uint32 gi = KernelThread.globalIdX();
+        uint32 gr = gi % gPad;
+        int64 cBeg = (int64) (gi / gPad) * chunk;
+        if (gr < groups && cBeg < nc) {
+            int64 r0 = (int64) gr * 8L;
+            int64 cEnd = cBeg + chunk < nc ? cBeg + chunk : nc;
+            int64 qd = (int64) P.quads();
+            int64 pa = 128L + 256L * qd;
+            int64 gb = pa + 64L * (int64) P.planeBytes();
+            int64 wg = (int64) gr * spans * gb;
+            Vector<int32,8> z8 = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+            Vector<float32,8> zf = z8.toF32();
+            int64 c = cBeg;
+            while (c < cEnd) {
+                int64 x0 = c * xpStride;
+                int64 x1 = (c + 1L < cEnd ? c + 1L : cEnd - 1L) * xpStride;
+                int64 x2 = (c + 2L < cEnd ? c + 2L : cEnd - 1L) * xpStride;
+                int64 x3 = (c + 3L < cEnd ? c + 3L : cEnd - 1L) * xpStride;
+                Vector<float32,8> acc0 = zf;
+                Vector<float32,8> acc1 = zf;
+                Vector<float32,8> acc2 = zf;
+                Vector<float32,8> acc3 = zf;
+                int64 b = 0L;
+                while (b < spans) {
+                    int64 wo = wg + b * gb;
+                    int64 xo = b * 320L;
+                    if (c == cBeg && b + 2L < spans) {
+                        int64 pl = 0L;
+                        while (pl < gb / 64L) { w.prefetch(wo + 2L * gb + pl * 64L); pl = pl + 1L; }
+                    }
+                    Vector<int32,8> gs0 = xp.vload<32>(x0 + xo + 256L).asWords();
+                    Vector<int32,8> gs1 = xp.vload<32>(x1 + xo + 256L).asWords();
+                    Vector<int32,8> gs2 = xp.vload<32>(x2 + xo + 256L).asWords();
+                    Vector<int32,8> gs3 = xp.vload<32>(x3 + xo + 256L).asWords();
+                    Vector<float32,8> fs0 = zf;
+                    Vector<float32,8> fs1 = zf;
+                    Vector<float32,8> fs2 = zf;
+                    Vector<float32,8> fs3 = zf;
+                    for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
+                        Vector<float32,8> dv = wh.vload<8>((wo + 16L * j) / 2L).toF32();
+                        Vector<uint8,32> plane = w.vload<32>(wo + 128L + 32L * qd * j).asUnsigned();
+                        if (P.planeBytes() != 0) { plane = w.vload<32>(wo + pa + 32L * j).asUnsigned(); }
+                        Vector<int32,8> t0 = z8;
+                        Vector<int32,8> t1 = z8;
+                        Vector<int32,8> t2 = z8;
+                        Vector<int32,8> t3 = z8;
+                        for (int64 q = Unroll.from(0L); q < 8L; q = q + 1L) {
+                            if (q < qd) {
+                                Vector<uint8,32> rq = w.vload<32>(wo + 128L + 32L * (qd * j + q)).asUnsigned();
+                                Vector<uint8,32> lq = P.lowBytes<32>(rq, plane, (int32) q);
+                                int64 al = xo + 32L * j + (int64) P.lowAt((int32) q);
+                                t0 = lq.dotAccum(Block32GemmRows8.quad(xp, x0 + al), t0);
+                                t1 = lq.dotAccum(Block32GemmRows8.quad(xp, x1 + al), t1);
+                                t2 = lq.dotAccum(Block32GemmRows8.quad(xp, x2 + al), t2);
+                                t3 = lq.dotAccum(Block32GemmRows8.quad(xp, x3 + al), t3);
+                                if (P.streams() == 2) {
+                                    Vector<uint8,32> hq = P.highBytes<32>(rq, plane, (int32) q);
+                                    int64 ah = xo + 32L * j + (int64) P.highAt((int32) q);
+                                    t0 = hq.dotAccum(Block32GemmRows8.quad(xp, x0 + ah), t0);
+                                    t1 = hq.dotAccum(Block32GemmRows8.quad(xp, x1 + ah), t1);
+                                    t2 = hq.dotAccum(Block32GemmRows8.quad(xp, x2 + ah), t2);
+                                    t3 = hq.dotAccum(Block32GemmRows8.quad(xp, x3 + ah), t3);
+                                }
+                            }
+                        }
+                        fs0 = P.fold8(fs0, dv, Block32GemmRows8.scaleOf(xp, x0 + xo, sst, j), t0, gs0[j]);
+                        fs1 = P.fold8(fs1, dv, Block32GemmRows8.scaleOf(xp, x1 + xo, sst, j), t1, gs1[j]);
+                        fs2 = P.fold8(fs2, dv, Block32GemmRows8.scaleOf(xp, x2 + xo, sst, j), t2, gs2[j]);
+                        fs3 = P.fold8(fs3, dv, Block32GemmRows8.scaleOf(xp, x3 + xo, sst, j), t3, gs3[j]);
+                    }
+                    acc0 = P.close8(acc0, fs0, Q8kAct.scale(xp, x0 + xo));
+                    acc1 = P.close8(acc1, fs1, Q8kAct.scale(xp, x1 + xo));
+                    acc2 = P.close8(acc2, fs2, Q8kAct.scale(xp, x2 + xo));
+                    acc3 = P.close8(acc3, fs3, Q8kAct.scale(xp, x3 + xo));
+                    b = b + 1L;
+                }
+                Block32GemmRows8.store(y, c * yStride + r0, acc0, rows, r0, accum);
+                if (c + 1L < cEnd) { Block32GemmRows8.store(y, (c + 1L) * yStride + r0, acc1, rows, r0, accum); }
+                if (c + 2L < cEnd) { Block32GemmRows8.store(y, (c + 2L) * yStride + r0, acc2, rows, r0, accum); }
+                if (c + 3L < cEnd) { Block32GemmRows8.store(y, (c + 3L) * yStride + r0, acc3, rows, r0, accum); }
+                c = c + 4L;
+            }
+        }
+    }
+
+    /** One token against row group `gr`: activation at `xp[x0 ..)`, rows `8 gr ..` to `y[y0 + 8 gr ..)`. */
+    @Device
+    static void vecGroup(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> wh, KernelBuffer<int8> xp,
+            uint32 rows, uint32 gr, int64 spans, int64 x0, int64 y0, uint32 accum, int64 sst) {
+        int64 r0 = (int64) gr * 8L;
+        int64 qd = (int64) P.quads();
+        int64 pa = 128L + 256L * qd;
+        int64 gb = pa + 64L * (int64) P.planeBytes();
+        int64 wg = (int64) gr * spans * gb;
+        Vector<int32,8> z8 = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+        Vector<float32,8> acc0 = z8.toF32();
+        int64 b = 0L;
+        while (b < spans) {
+            int64 wo = wg + b * gb;
+            int64 xo = b * 320L;
+            Vector<int32,8> gs0 = xp.vload<32>(x0 + xo + 256L).asWords();
+            Vector<float32,8> fs0 = z8.toF32();
+            for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
+                Vector<float32,8> dv = wh.vload<8>((wo + 16L * j) / 2L).toF32();
+                Vector<uint8,32> plane = w.vload<32>(wo + 128L + 32L * qd * j).asUnsigned();
+                if (P.planeBytes() != 0) { plane = w.vload<32>(wo + pa + 32L * j).asUnsigned(); }
+                Vector<int32,8> t0 = z8;
+                for (int64 q = Unroll.from(0L); q < 8L; q = q + 1L) {
+                    if (q < qd) {
+                        Vector<uint8,32> rq = w.vload<32>(wo + 128L + 32L * (qd * j + q)).asUnsigned();
+                        t0 = P.lowBytes<32>(rq, plane, (int32) q).dotAccum(Block32GemmRows8.quad(xp, x0 + xo + 32L * j + (int64) P.lowAt((int32) q)), t0);
+                        if (P.streams() == 2) {
+                            t0 = P.highBytes<32>(rq, plane, (int32) q).dotAccum(Block32GemmRows8.quad(xp, x0 + xo + 32L * j + (int64) P.highAt((int32) q)), t0);
+                        }
+                    }
+                }
+                fs0 = P.fold8(fs0, dv, Block32GemmRows8.scaleOf(xp, x0 + xo, sst, j), t0, gs0[j]);
+            }
+            acc0 = P.close8(acc0, fs0, Q8kAct.scale(xp, x0 + xo));
+            b = b + 1L;
+        }
+        Block32GemmRows8.store(y, y0 + r0, acc0, rows, r0, accum);
+    }
+
+    /** {@link #rows8} for one token, the decode mat-vec. */
+    @Kernel(targets = {"cpu"})
+    @Occupancy(maxThreads = 256)
+    public static void vec8(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> wh, KernelBuffer<int8> xp,
+            uint32 rows, uint32 groups, uint32 gPad, int64 spans, int64 nc, int64 chunk,
+            int64 xpStride, int64 yStride, uint32 accum, int64 sst) {
+        uint32 gi = KernelThread.globalIdX();
+        uint32 gr = gi % gPad;
+        int64 cBeg = (int64) (gi / gPad) * chunk;
+        if (gr < groups && cBeg < nc) {
+            int64 cEnd = cBeg + chunk < nc ? cBeg + chunk : nc;
+            int64 c = cBeg;
+            while (c < cEnd) {
+                Block32GemmRows8.vecGroup(y, w, wh, xp, rows, gr, spans, c * xpStride, c * yStride, accum, sst);
+                c = c + 1L;
+            }
+        }
+    }
+
+    /** Up to three weights against one token in one launch: groups `[0, gA)` are A's, the next `gB` B's, the next `gC` C's. Each output equals {@link #vec8}'s. */
+    @Kernel(targets = {"cpu"})
+    @Occupancy(maxThreads = 256)
+    public static void vec3(KernelBuffer<float32> yA, KernelBuffer<float32> yB, KernelBuffer<float32> yC,
+            KernelBuffer<int8> wA, KernelBuffer<int8> wB, KernelBuffer<int8> wC,
+            KernelBuffer<float16> hA, KernelBuffer<float16> hB, KernelBuffer<float16> hC, KernelBuffer<int8> xp,
+            uint32 rowsA, uint32 rowsB, uint32 rowsC, uint32 gA, uint32 gB, uint32 gC, int64 spans, int64 sst) {
+        uint32 gi = KernelThread.globalIdX();
+        if (gi < gA) {
+            Block32GemmRows8.vecGroup(yA, wA, hA, xp, rowsA, gi, spans, 0L, 0L, 0, sst);
+        } else if (gi < gA + gB) {
+            Block32GemmRows8.vecGroup(yB, wB, hB, xp, rowsB, gi - gA, spans, 0L, 0L, 0, sst);
+        } else if (gi < gA + gB + gC) {
+            Block32GemmRows8.vecGroup(yC, wC, hC, xp, rowsC, gi - gA - gB, spans, 0L, 0L, 0, sst);
+        }
+    }
+
+    /** `y[t * yStride + r]` set (or added to) for `rows` rows of `nb` blocks in {@link #pack}'s layout (`wh` its f16 view) and `nc` q8_K token rows `xpStride` bytes apart, scale per 32 values when `sst` is 4; `block` groups a block and `chunk` tokens a work-item; one token runs {@link #vec8}. Queued on `s`. */
+    public void runOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> wh, KernelBuffer<int8> xp,
+            int64 rows, int64 nb, int64 nc, int64 xpStride, int64 yStride, boolean accum, int64 sst,
+            int64 block, int64 chunk) {
+        int64 groups = (rows + 7L) / 8L;
+        int64 gBlocks = (groups + block - 1L) / block;
+        int64 chunks = (nc + chunk - 1L) / chunk;
+        int64 spans = (nb + 7L) / 8L;
+        if (nc == 1L) {
+            vec8.launch(s, grid: [(uint32) (gBlocks * chunks)], block: [(uint32) block])
+                (y, w, wh, xp, (uint32) rows, (uint32) groups, (uint32) (gBlocks * block), spans, nc, chunk,
+                 xpStride, yStride, accum ? 1 : 0, sst);
+            return;
+        }
+        rows8.launch(s, grid: [(uint32) (gBlocks * chunks)], block: [(uint32) block])
+            (y, w, wh, xp, (uint32) rows, (uint32) groups, (uint32) (gBlocks * block), spans, nc, chunk,
+             xpStride, yStride, accum ? 1 : 0, sst);
+    }
+
+    /** {@link #runOn} on the current stream. */
+    public void run(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> wh, KernelBuffer<int8> xp,
+            int64 rows, int64 nb, int64 nc, int64 xpStride, int64 yStride, boolean accum, int64 sst,
+            int64 block, int64 chunk) {
+        KernelStream s #= KernelStream.current();
+        this.runOn(s, y, w, wh, xp, rows, nb, nc, xpStride, yStride, accum, sst, block, chunk);
+    }
+
+    /** `yA`, `yB` and (when `wC` is not null) `yC` set from one token `xp` and three weights in {@link #pack}'s layout with their f16 views, `block` groups a block, one launch. Queued on `s`. */
+    public void run3(KernelStream s, KernelBuffer<float32> yA, KernelBuffer<float32> yB, KernelBuffer<float32> yC,
+            KernelBuffer<int8> wA, KernelBuffer<int8> wB, KernelBuffer<int8> wC,
+            KernelBuffer<float16> hA, KernelBuffer<float16> hB, KernelBuffer<float16> hC, KernelBuffer<int8> xp,
+            int64 rowsA, int64 rowsB, int64 rowsC, int64 nb, int64 sst, int64 block) {
+        uint32 gA = (uint32) ((rowsA + 7L) / 8L);
+        uint32 gB = (uint32) ((rowsB + 7L) / 8L);
+        uint32 gC = wC == null ? 0 : (uint32) ((rowsC + 7L) / 8L);
+        uint32 n = gA + gB + gC;
+        vec3.launch(s, grid: [(n + (uint32) block - 1) / (uint32) block], block: [(uint32) block])
+            (yA, yB, wC == null ? yB : yC, wA, wB, wC == null ? wB : wC, hA, hB, wC == null ? hB : hC, xp,
+             (uint32) rowsA, (uint32) rowsB, (uint32) rowsC, gA, gB, gC, (nb + 7L) / 8L, sst);
+    }
+}

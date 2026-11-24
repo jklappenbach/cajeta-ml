@@ -1,0 +1,217 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.Block32GemmRef;
+import dev.cajeta.ml.kernels.gemm.Block32GemmRows8;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+
+/** The checks of {@link Block32GemmTest} over one 32-value piece `P` (Q8_0 or Q5_0). */
+public final class Block32Check<P> {
+    public Block32Check() { return; }
+
+    static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
+
+    /** `blocks` file blocks of random bytes with a small positive f16 `d`. */
+    public #int8[] weight(int64 blocks) {
+        int64 bb = (int64) P.blockBytes();
+        int8[] raw #= heap int8[blocks * bb];
+        int64 seed = 913L;
+        int64 i = 0L;
+        while (i < blocks * bb) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            raw[i] = (int8) ((seed >> 16) % 256L);
+            i = i + 1L;
+        }
+        int64 b = 0L;
+        while (b < blocks) { raw[b * bb + 1L] = (int8) (40 + (int32) (b % 4L)); b = b + 1L; }
+        return #raw;
+    }
+
+    /** `blocks` q8_K blocks with eight scales at byte 288, so either scale stride reads them. */
+    public #int8[] acts(int64 blocks) {
+        int8[] xp #= heap int8[blocks * 320L];
+        int64 seed = 5151L;
+        int64 b = 0L;
+        while (b < blocks) {
+            int64 o = b * 320L;
+            int64 j = 0L;
+            while (j < 8L) {
+                int32 s = 0;
+                int64 l = 0L;
+                while (l < 32L) {
+                    seed = (seed * 1103515245L + 12345L) % 2147483648L;
+                    int32 q = (int32) ((seed >> 16) % 255L) - 127;
+                    xp[o + j * 32L + l] = (int8) q;
+                    s = s + q;
+                    l = l + 1L;
+                }
+                BlockGemmRefTest.putI32(xp, o + 256L + 4L * j, s);
+                BlockGemmRefTest.putI32(xp, o + 288L + 4L * j, Cajeta.f32ToBits(0.002f + 0.001f * (float32) ((b + j) % 5L)));
+                j = j + 1L;
+            }
+            b = b + 1L;
+        }
+        return #xp;
+    }
+
+    /** Value `k` of the block at `ro` as the format defines it, in float64. */
+    public float64 element(int8[] raw, int64 ro, int64 k) {
+        float64 d = (float64) Q4kBlock.halfBits(Block32Check.u8(raw, ro) | (Block32Check.u8(raw, ro + 1L) << 8));
+        if (P.blockBytes() == 34) { return d * (float64) raw[ro + 2L + k]; }
+        int32 qh = BlockGemmRefTest.word(raw, ro + 2L);
+        int32 b = Block32Check.u8(raw, ro + 6L + k % 16L);
+        int32 q = (k < 16L ? b & 15 : b >> 4) | (((qh >> (int32) k) & 1) << 4);
+        return d * (float64) (q - 16);
+    }
+
+    /** The reference against the definition in float64: each output within 1e-4 of the largest. */
+    public void refMatchesDefinition(int64 rows, int64 tokens, int64 nb, int64 sst) {
+        int64 spans = (nb + 7L) / 8L;
+        int8[] file #= this.weight(rows * nb);
+        int8[] hx #= this.acts(tokens * spans);
+        KernelBuffer<int8> wf = heap KernelBuffer<int8>((uint64) (rows * nb * (int64) P.blockBytes()));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * spans * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (tokens * rows));
+        wf.upload(file);
+        xp.upload(hx);
+        Block32GemmRef<P> g = heap Block32GemmRef<P>();
+        g.run(y, wf, xp, rows, tokens, nb, rows, false, sst);
+        KernelStream st #= KernelStream.current();
+        st.sync();
+        float32[] got #= heap float32[tokens * rows];
+        y.download(got);
+        float64[] want #= heap float64[tokens * rows];
+        float64 big = 0.0;
+        int64 t = 0L;
+        while (t < tokens) {
+            int64 r = 0L;
+            while (r < rows) {
+                float64 sum = 0.0;
+                int64 blk = 0L;
+                while (blk < nb) {
+                    int64 xa = (t * spans + blk / 8L) * 320L;
+                    int64 j = blk % 8L;
+                    float64 xs = (float64) Cajeta.bitsToF32(BlockGemmRefTest.word(hx, xa + 288L + sst * j));
+                    int64 l = 0L;
+                    while (l < 32L) {
+                        sum = sum + this.element(file, (r * nb + blk) * (int64) P.blockBytes(), l) * xs * (float64) hx[xa + 32L * j + l];
+                        l = l + 1L;
+                    }
+                    blk = blk + 1L;
+                }
+                want[t * rows + r] = sum;
+                if (sum > big) { big = sum; }
+                if (0.0 - sum > big) { big = 0.0 - sum; }
+                r = r + 1L;
+            }
+            t = t + 1L;
+        }
+        Assert.isTrue(big > 0.0);
+        int64 i = 0L;
+        while (i < tokens * rows) {
+            float64 e = (float64) got[i] - want[i];
+            if (e < 0.0) { e = 0.0 - e; }
+            Assert.isTrue(e <= 1.0e-4 * big);
+            i = i + 1L;
+        }
+    }
+
+    /** `drv`'s packing of `file` on the device. */
+    public #KernelBuffer<int8> packed(Block32GemmRows8<P> drv, int8[] file, int64 rows, int64 nb) {
+        int8[] p #= heap int8[drv.packedBytes(rows, nb)];
+        drv.pack(file, 0L, rows, nb, p, 0L);
+        KernelBuffer<int8> w #= heap KernelBuffer<int8>((uint64) drv.packedBytes(rows, nb));
+        w.upload(p);
+        return #w;
+    }
+
+    /** `got` bitwise against the reference over `file` for one token or many. */
+    public void expectRef(KernelBuffer<float32> got, float32[] seed, int8[] file, KernelBuffer<int8> xp,
+            int64 rows, int64 tokens, int64 nb, boolean accum, int64 sst) {
+        KernelBuffer<int8> wf = heap KernelBuffer<int8>((uint64) (rows * nb * (int64) P.blockBytes()));
+        KernelBuffer<float32> ya = heap KernelBuffer<float32>((uint64) (tokens * rows));
+        wf.upload(file);
+        if (accum) { ya.upload(seed); }
+        Block32GemmRef<P> g = heap Block32GemmRef<P>();
+        g.run(ya, wf, xp, rows, tokens, nb, rows, accum, sst);
+        KernelStream st #= KernelStream.current();
+        st.sync();
+        float32[] ga #= heap float32[tokens * rows];
+        float32[] gb #= heap float32[tokens * rows];
+        ya.download(ga);
+        got.download(gb);
+        int64 i = 0L;
+        while (i < tokens * rows) { Assert.isTrue(Cajeta.f32ToBits(ga[i]) == Cajeta.f32ToBits(gb[i])); i = i + 1L; }
+    }
+
+    /** The row driver (several tokens, or one through the decode kernel) against the reference, set then added. */
+    public void driverEqualsRef(int64 rows, int64 tokens, int64 nb, int64 sst) {
+        int64 spans = (nb + 7L) / 8L;
+        int8[] file #= this.weight(rows * nb);
+        int8[] hx #= this.acts(tokens * spans);
+        Block32GemmRows8<P> drv = heap Block32GemmRows8<P>();
+        KernelBuffer<int8> w #= this.packed(drv, file, rows, nb);
+        KernelBuffer<float16> wh #= w.halfView();
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * spans * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (tokens * rows));
+        xp.upload(hx);
+        float32[] seed #= heap float32[tokens * rows];
+        int64 i = 0L;
+        while (i < tokens * rows) { seed[i] = 0.25f * (float32) (i % 7L); i = i + 1L; }
+        int32 pass = 0;
+        while (pass < 2) {
+            y.upload(seed);
+            drv.run(y, w, wh, xp, rows, nb, tokens, spans * 320L, rows, pass == 1, sst, 2L, 32L);
+            KernelStream st #= KernelStream.current();
+            st.sync();
+            this.expectRef(y, seed, file, xp, rows, tokens, nb, pass == 1, sst);
+            pass = pass + 1;
+        }
+    }
+
+    static #int8[] slice(int8[] all, int64 from, int64 n) {
+        int8[] out #= heap int8[n];
+        int64 i = 0L;
+        while (i < n) { out[i] = all[from + i]; i = i + 1L; }
+        return #out;
+    }
+
+    /** Three weights of 21, 13 and 8 rows against one token in one launch, then two, each against the reference. */
+    public void threeEqualRef(int64 nb, int64 sst) {
+        int64 bb = (int64) P.blockBytes();
+        int64 spans = (nb + 7L) / 8L;
+        int8[] all #= this.weight(42L * nb);
+        int8[] fa #= Block32Check.slice(all, 0L, 21L * nb * bb);
+        int8[] fb #= Block32Check.slice(all, 21L * nb * bb, 13L * nb * bb);
+        int8[] fc #= Block32Check.slice(all, 34L * nb * bb, 8L * nb * bb);
+        int8[] hx #= this.acts(spans);
+        Block32GemmRows8<P> drv = heap Block32GemmRows8<P>();
+        KernelBuffer<int8> wa #= this.packed(drv, fa, 21L, nb);
+        KernelBuffer<int8> wb #= this.packed(drv, fb, 13L, nb);
+        KernelBuffer<int8> wc #= this.packed(drv, fc, 8L, nb);
+        KernelBuffer<float16> ha #= wa.halfView();
+        KernelBuffer<float16> hb #= wb.halfView();
+        KernelBuffer<float16> hc #= wc.halfView();
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (spans * 320L));
+        xp.upload(hx);
+        KernelBuffer<float32> ya = heap KernelBuffer<float32>((uint64) 21L);
+        KernelBuffer<float32> yb = heap KernelBuffer<float32>((uint64) 13L);
+        KernelBuffer<float32> yc = heap KernelBuffer<float32>((uint64) 8L);
+        float32[] z #= heap float32[21L];
+        KernelStream st #= KernelStream.current();
+        drv.run3(st, ya, yb, yc, wa, wb, wc, ha, hb, hc, xp, 21L, 13L, 8L, nb, sst, 2L);
+        st.sync();
+        this.expectRef(ya, z, fa, xp, 21L, 1L, nb, false, sst);
+        this.expectRef(yb, z, fb, xp, 13L, 1L, nb, false, sst);
+        this.expectRef(yc, z, fc, xp, 8L, 1L, nb, false, sst);
+        KernelBuffer<float32> yd = heap KernelBuffer<float32>((uint64) 21L);
+        KernelBuffer<float32> ye = heap KernelBuffer<float32>((uint64) 13L);
+        drv.run3(st, yd, ye, ye, wa, wb, null, ha, hb, null, xp, 21L, 13L, 0L, nb, sst, 2L);
+        st.sync();
+        this.expectRef(yd, z, fa, xp, 21L, 1L, nb, false, sst);
+        this.expectRef(ye, z, fb, xp, 13L, 1L, nb, false, sst);
+    }
+}

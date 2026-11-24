@@ -1,0 +1,91 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.Block32GemmRows8;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 8.3.1: the 32-value block family (Q8_0, Q5_0) on the reference and the cpu row driver. */
+public class Block32GemmTest {
+    public Block32GemmTest() { return; }
+
+    static boolean has(String name, String why) {
+        if (!Device.kernelAvailable(name)) { DeviceSkip.cannot(why); return false; }
+        return true;
+    }
+
+    @Test
+    public void aPackedSpanIsTheFilesSize() {
+        Block32GemmRows8<Q80Block> q8 = heap Block32GemmRows8<Q80Block>();
+        Block32GemmRows8<Q50Block> q5 = heap Block32GemmRows8<Q50Block>();
+        Assert.isTrue(q8.groupBytes() == 8L * 8L * 34L);
+        Assert.isTrue(q5.groupBytes() == 8L * 8L * 22L);
+        Assert.isTrue(q8.packedBytes(9L, 9L) == 2L * 2L * 2176L);
+    }
+
+    @Test
+    public void thePiecesDecodeEveryValueAsTheFormatsDefineIt() {
+        Block32Check<Q80Block> c8 = heap Block32Check<Q80Block>();
+        Block32Check<Q50Block> c5 = heap Block32Check<Q50Block>();
+        int8[] f8 #= c8.weight(3L);
+        int8[] f5 #= c5.weight(3L);
+        int64 b = 0L;
+        while (b < 3L) {
+            uint32 k = 0;
+            while (k < 32) {
+                int64 r8 = b * 34L;
+                int64 r5 = b * 22L;
+                int32 q8 = Q80Block.quant((int32) f8[r8 + (int64) Q80Block.quantByte(k)] & 255, 0, k) - Q80Block.offset();
+                int32 q5 = Q50Block.quant((int32) f5[r5 + (int64) Q50Block.quantByte(k)] & 255,
+                    (int32) f5[r5 + (int64) Q50Block.planeByte(k)] & 255, k) - Q50Block.offset();
+                float64 d8 = (float64) Q80Block.dOf(((int32) f8[r8] & 255) | (((int32) f8[r8 + 1L] & 255) << 8));
+                float64 d5 = (float64) Q50Block.dOf(((int32) f5[r5] & 255) | (((int32) f5[r5 + 1L] & 255) << 8));
+                Assert.isTrue(d8 * (float64) q8 == c8.element(f8, r8, (int64) k));
+                Assert.isTrue(d5 * (float64) q5 == c5.element(f5, r5, (int64) k));
+                k = k + 1;
+            }
+            b = b + 1L;
+        }
+    }
+
+    @Test
+    public void theReferenceComputesTheFormatsProduct() {
+        if (!Block32GemmTest.has("Block32GemmRef_dev_cajeta_ml_kernels_quant_Q80Block_ref", "the 32-value reference GEMM")) { return; }
+        int64[] m #= ValueCheck.mark();
+        heap Block32Check<Q80Block>().refMatchesDefinition(5L, 3L, 11L, 0L);
+        heap Block32Check<Q80Block>().refMatchesDefinition(5L, 3L, 11L, 4L);
+        heap Block32Check<Q50Block>().refMatchesDefinition(5L, 3L, 11L, 0L);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void theRowDriverEqualsTheReferenceBitForBit() {
+        if (!Block32GemmTest.has("Block32GemmRows8_dev_cajeta_ml_kernels_quant_Q80Block_rows8", "the 8-row driver is the cpu's (kernel-drivers 8.3.1)")) { return; }
+        int64[] m #= ValueCheck.mark();
+        heap Block32Check<Q80Block>().driverEqualsRef(21L, 39L, 19L, 0L);
+        heap Block32Check<Q80Block>().driverEqualsRef(21L, 39L, 19L, 4L);
+        heap Block32Check<Q50Block>().driverEqualsRef(21L, 39L, 19L, 0L);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void oneTokenRunsTheDecodeKernelAndEqualsTheReferenceBitForBit() {
+        if (!Block32GemmTest.has("Block32GemmRows8_dev_cajeta_ml_kernels_quant_Q80Block_vec8", "the 8-row driver is the cpu's (kernel-drivers 8.3.1)")) { return; }
+        int64[] m #= ValueCheck.mark();
+        heap Block32Check<Q80Block>().driverEqualsRef(21L, 1L, 37L, 4L);
+        heap Block32Check<Q50Block>().driverEqualsRef(21L, 1L, 37L, 0L);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void threeWeightsAgainstOneTokenEachEqualTheReferenceBitForBit() {
+        if (!Block32GemmTest.has("Block32GemmRows8_dev_cajeta_ml_kernels_quant_Q80Block_vec3", "the 8-row driver is the cpu's (kernel-drivers 8.3.1)")) { return; }
+        int64[] m #= ValueCheck.mark();
+        heap Block32Check<Q80Block>().threeEqualRef(13L, 4L);
+        heap Block32Check<Q50Block>().threeEqualRef(13L, 0L);
+        ValueCheck.credit(m);
+    }
+}

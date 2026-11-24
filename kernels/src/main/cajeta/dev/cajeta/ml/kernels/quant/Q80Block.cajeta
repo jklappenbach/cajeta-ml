@@ -1,0 +1,89 @@
+package dev.cajeta.ml.kernels.quant;
+
+import cajeta.xpu.Vector;
+
+/**
+ * The Q8_0 block as pieces (kernel-drivers plan 8.3.1): 32 values in 34 bytes, { f16 d; i8 qs[32] }.
+ * A value is `d * q`; the drivers read `q + 128`, so the offset is 128. It meets the 32-value
+ * block contract stated on {@link dev.cajeta.ml.kernels.gemm.Block32GemmRef}.
+ */
+public final class Q80Block {
+    public Q80Block() { return; }
+
+    @Device
+    public static uint32 blockBytes() { return 34; }
+
+    @Device
+    public static uint32 quantOffset() { return 2; }
+
+    /** Four-byte quads of packed quant bytes a block. */
+    @Device
+    public static uint32 quads() { return 8; }
+
+    @Device
+    public static uint32 streams() { return 1; }
+
+    @Device
+    public static uint32 planeOffset() { return 0; }
+
+    /** Side-plane bytes a block in the packed layout. */
+    @Device
+    public static uint32 planeBytes() { return 0; }
+
+    @Device
+    public static int32 offset() { return 128; }
+
+    /** `d` from the block's first two bytes. */
+    @Device
+    public static float32 dOf(int32 h) { return Q4kBlock.halfBits(h & 65535); }
+
+    /** The packed byte for file quant byte `b`. */
+    @Device
+    public static int32 packByte(int32 b) { return (b ^ 128) & 255; }
+
+    /** Packed side-plane byte `k` from the block's plane word. */
+    @Device
+    public static int32 planeOf(int32 qh, int32 k) { return 0; }
+
+    /** Offset in a block of the byte that holds value `k`. */
+    @Device
+    public static uint32 quantByte(uint32 k) { return 2 + k; }
+
+    @Device
+    public static uint32 planeByte(uint32 k) { return 0; }
+
+    /** Value `k`'s quant plus the offset, from its byte. */
+    @Device
+    public static int32 quant(int32 b, int32 plane, uint32 k) { return (b ^ 128) & 255; }
+
+    /** Activation offset in the 32 values of the quad `q`'s low stream. */
+    @Device
+    public static int32 lowAt(int32 q) { return 4 * q; }
+
+    @Device
+    public static int32 highAt(int32 q) { return 4 * q; }
+
+    @Device
+    public static Vector<uint8,N> lowBytes<uint32 N>(Vector<uint8,N> q, Vector<uint8,N> plane, int32 k) { return q; }
+
+    @Device
+    public static Vector<uint8,N> highBytes<uint32 N>(Vector<uint8,N> q, Vector<uint8,N> plane, int32 k) { return q; }
+
+    /** One block's step: `t` is its dot with the activation, `gs` the activation's sum, `xsj` the activation scale of these 32 values. */
+    @Device
+    public static float32 fold(float32 fs, float32 d, float32 xsj, int32 t, int32 gs) {
+        return fs + (d * xsj) * (float32) (t - gs * 128);
+    }
+
+    @Device
+    public static Vector<float32,8> fold8(Vector<float32,8> fs, Vector<float32,8> d, float32 xsj, Vector<int32,8> t, int32 gs) {
+        return fs + (d * xsj) * (t - gs * 128).toF32();
+    }
+
+    /** A 256-value span's step: `fs` its blocks' sum, `xs` the activation's first scale. */
+    @Device
+    public static float32 close(float32 acc, float32 fs, float32 xs) { return acc + fs; }
+
+    @Device
+    public static Vector<float32,8> close8(Vector<float32,8> acc, Vector<float32,8> fs, float32 xs) { return acc + fs; }
+}
