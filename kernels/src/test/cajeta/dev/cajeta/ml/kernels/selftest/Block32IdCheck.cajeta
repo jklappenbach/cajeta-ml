@@ -1,0 +1,66 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.Block32GemmRows8;
+
+/** {@link IdVecTest}'s check over one 32-value piece `P`: three experts of 21 rows of 19 blocks, four selections, scale stride `sst`. */
+public final class Block32IdCheck<P> {
+    public Block32IdCheck() { return; }
+
+    public void check(int64 sst) {
+        int64 rows = 21L;
+        int64 nb = 19L;
+        int64 spans = 3L;
+        int64 experts = 3L;
+        Block32Check<P> gen = heap Block32Check<P>();
+        int8[] file #= gen.weight(experts * rows * nb);
+        Block32GemmRows8<P> drv = heap Block32GemmRows8<P>();
+        int64 es = drv.packedBytes(rows, nb);
+        int8[] packed #= heap int8[experts * es];
+        int64 e = 0L;
+        while (e < experts) {
+            drv.pack(file, e * rows * nb * (int64) P.blockBytes(), rows, nb, packed, e * es);
+            e = e + 1L;
+        }
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (experts * es));
+        w.upload(packed);
+        KernelBuffer<float16> wh #= w.halfView();
+        int8[] hx #= gen.acts(4L * spans);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (4L * spans * 320L));
+        xp.upload(hx);
+        KernelBuffer<int32> sel #= IdVecTest.sel();
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (4L * rows));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) rows);
+        float32[] got #= heap float32[4L * rows];
+        float32[] want #= heap float32[rows];
+        int32[] pick = heap int32[4];
+        pick[0] = 2;
+        pick[1] = 0;
+        pick[2] = 2;
+        pick[3] = 1;
+        KernelStream st #= KernelStream.current();
+        int32 shared = 0;
+        while (shared < 2) {
+            int64 xs = shared == 1 ? 0L : spans * 320L;
+            drv.runIdOn(st, y, w, wh, xp, sel, rows, nb, 4L, es, xs, rows, sst, 2L);
+            st.sync();
+            y.download(got);
+            int64 k = 0L;
+            while (k < 4L) {
+                KernelBuffer<int8> we #= w.slice((uint64) ((int64) pick[k] * es), (uint64) es);
+                KernelBuffer<float16> weh #= we.halfView();
+                KernelBuffer<int8> xk #= xp.slice((uint64) (shared == 1 ? 0L : k * spans * 320L), (uint64) (spans * 320L));
+                drv.run(yr, we, weh, xk, rows, nb, 1L, spans * 320L, rows, false, sst, 2L, 32L);
+                st.sync();
+                yr.download(want);
+                int64 r = 0L;
+                while (r < rows) { Assert.isTrue(Cajeta.f32ToBits(got[k * rows + r]) == Cajeta.f32ToBits(want[r])); r = r + 1L; }
+                k = k + 1L;
+            }
+            shared = shared + 1;
+        }
+    }
+}

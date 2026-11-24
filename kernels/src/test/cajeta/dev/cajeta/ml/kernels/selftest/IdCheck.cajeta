@@ -1,0 +1,113 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
+import dev.cajeta.ml.kernels.gemm.BlockGemmTile;
+
+/** {@link BlockGemmIdTest}'s check over one piece `P`: four experts of 128 rows of 512 values, 70, 0, 129 and 5 routed rows; the 128-row member where the device can launch it. */
+public final class IdCheck<P> {
+    public IdCheck() { return; }
+
+    static #KernelBuffer<int32> ints(int32[] v) {
+        KernelBuffer<int32> b #= heap KernelBuffer<int32>((uint64) v.count());
+        b.upload(v);
+        return #b;
+    }
+
+    public void check(int8[] file) {
+        int64 experts = 4L;
+        int64 outDim = 128L;
+        int64 cols = 512L;
+        int64 bpr = cols / 256L;
+        int64 bb = (int64) P.blockBytes();
+        int64[] c #= heap int64[4];
+        c[0] = 70L;
+        c[1] = 0L;
+        c[2] = 129L;
+        c[3] = 5L;
+        int64 np = 204L;
+        int64 rowsAll = np + 128L;
+        int8[] hx #= BlockGemmRefTest.acts(rowsAll * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (experts * outDim * bpr * bb));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (rowsAll * bpr * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (rowsAll * outDim));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (rowsAll * outDim));
+        w.upload(file);
+        xp.upload(hx);
+        float32[] seed #= heap float32[rowsAll * outDim];
+        int64 i = 0L;
+        while (i < rowsAll * outDim) { seed[i] = 7.0f; i = i + 1L; }
+        BlockGemmRef<P> g = heap BlockGemmRef<P>();
+        KernelStream st #= KernelStream.current();
+        yr.upload(seed);
+        int64 start = 0L;
+        int64 e = 0L;
+        while (e < experts) {
+            if (c[e] > 0L) {
+                KernelBuffer<int8> we #= w.slice((uint64) (e * outDim * bpr * bb), (uint64) (outDim * bpr * bb));
+                KernelBuffer<int8> xe #= xp.slice((uint64) (start * bpr * 320L), (uint64) (c[e] * bpr * 320L));
+                KernelBuffer<float32> ye #= yr.slice((uint64) (start * outDim), (uint64) (c[e] * outDim));
+                g.run(ye, we, xe, outDim, c[e], bpr, outDim, false);
+                st.sync();
+            }
+            start = start + c[e];
+            e = e + 1L;
+        }
+        float32[] want #= heap float32[rowsAll * outDim];
+        yr.download(want);
+        float32[] got #= heap float32[rowsAll * outDim];
+        int32 tm = 0;
+        while (tm < 2) {
+            int64 rowsPer = tm == 0 ? 64L : 128L;
+            int32[] me #= heap int32[8];
+            int32[] mt #= heap int32[8];
+            int32[] mx #= heap int32[8];
+            int64 n = 0L;
+            start = 0L;
+            e = 0L;
+            while (e < experts) {
+                int64 q = 0L;
+                while (q * rowsPer < c[e]) {
+                    me[n] = (int32) e;
+                    mt[n] = (int32) (start + q * rowsPer);
+                    mx[n] = (int32) (start + c[e]);
+                    n = n + 1L;
+                    q = q + 1L;
+                }
+                start = start + c[e];
+                e = e + 1L;
+            }
+            int32[] hm #= heap int32[2];
+            hm[tm] = (int32) n;
+            KernelBuffer<int32> bE #= IdCheck.ints(me);
+            KernelBuffer<int32> bT #= IdCheck.ints(mt);
+            KernelBuffer<int32> bX #= IdCheck.ints(mx);
+            KernelBuffer<int32> meta #= IdCheck.ints(hm);
+            BlockGemmTile<P, 128, 128, 32, 64, 128> big = heap BlockGemmTile<P, 128, 128, 32, 64, 128>();
+            String bigName #= big.idKernel();
+            if (tm == 1 && !Device.kernelUsable(bigName)) { tm = tm + 1; continue; }
+            y.upload(seed);
+            if (tm == 0) {
+                BlockGemmTile<P, 64, 64, 32, 32, 128> t = heap BlockGemmTile<P, 64, 64, 32, 32, 128>();
+                t.runIdOn(st, y, w, xp, bE, bT, bX, meta, n, outDim, cols, outDim);
+            } else {
+                BlockGemmTile<P, 128, 128, 32, 64, 128> t = heap BlockGemmTile<P, 128, 128, 32, 64, 128>();
+                t.runIdOn(st, y, w, xp, bE, bT, bX, meta, n, outDim, cols, outDim);
+            }
+            st.sync();
+            y.download(got);
+            i = 0L;
+            while (i < rowsAll * outDim) {
+                float32 d = want[i] - got[i];
+                if (d < 0.0f) { d = 0.0f - d; }
+                float32 mag = want[i] < 0.0f ? 0.0f - want[i] : want[i];
+                Assert.isTrue(d <= 0.001f * (1.0f + mag));
+                i = i + 1L;
+            }
+            tm = tm + 1;
+        }
+    }
+}

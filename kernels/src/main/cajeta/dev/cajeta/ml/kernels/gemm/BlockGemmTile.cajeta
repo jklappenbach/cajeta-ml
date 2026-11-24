@@ -75,12 +75,374 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
              part, (uint32) splits, accum);
     }
 
+    /** The MoE Id GEMM: `y[row * outDim + r]` for the gathered q8_K rows `xp` of each entry of a TM-row chunk map (`mapE` expert, `mapT0` first row, `mapM1` the entry's end, the count at `meta[TM / 128]`, at most `nChunksMax`) against that expert's `outDim` rows, experts `rowsPerExpert` rows apart in `packed` (file layout). Queued on `s`. */
+    public void runIdOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            KernelBuffer<int32> mapE, KernelBuffer<int32> mapT0, KernelBuffer<int32> mapM1, KernelBuffer<int32> meta,
+            int64 nChunksMax, int64 outDim, int64 cols, int64 rowsPerExpert) {
+        int64 tilesN = outDim / (int64) TN;
+        idTile.launch(s, grid: [(uint32) (nChunksMax * tilesN)], block: [2 * TN])
+            (y, packed, xp, mapE, mapT0, mapM1, meta, (uint32) outDim, (uint32) tilesN, cols / 256L, rowsPerExpert);
+    }
+
+    /** The Id kernel's registered name. */
+    public #String idKernel() { return "" + idTile.registeredName(); }
+
     /** Four words of quant bytes less `off` a byte, as int8; unchanged when `off` is 0. */
     @Device
     static Vector<int32,4> biased(Vector<int32,4> v, int32 off) {
         if (off == 0) { return v; }
         int32 top = 0 - 2139062144;
         return ((v | top) - off * 16843009) ^ top;
+    }
+
+    /** One output tile, the kernels' shared body: tokens from `t0` (stored below `mEnd` when `id` is 1) against rows `i0 ..` of the weight at `wOff`, blocks `bOff ..` for `nbs`; with `id` 0 the dense epilogue (accumulate, split-K partials). */
+    @Device @FastMath
+    static void tileBody(KernelBuffer<float32> y, KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            KernelBuffer<float32> part, Shared<int8> aT, Shared<int8> bT, Shared<float32> xsAll,
+            Shared<float32> dAll, Shared<float32> rgAll, Shared<int32> scAll, Shared<float32> cgAll,
+            Shared<float32> fs, uint32 t0, uint32 i0, uint32 mEnd, int64 wOff, int64 bOff, int64 nbs,
+            uint32 pslot, uint32 splits, uint32 accum, uint32 outDim, int64 blocksPerRow, uint32 id) {
+        uint32 tid = KernelThread.x();
+        uint32 wid = tid / 32;
+        uint32 wr = wid / (TN / WN);
+        uint32 wc = wid % (TN / WN);
+        uint32 tw = t0 + WM * wr;
+        uint32 cw = i0 + WN * wc;
+        uint32 sCol = tid >> 1;
+        uint32 sH = tid & 1;
+        uint32 late = 0;
+        if (P.subValues() == 16 && P.offset() == 0) { late = 1; }
+        int64 rowBytes = blocksPerRow * (int64) P.blockBytes();
+        int64 xRowBytes = blocksPerRow * 320L;
+        int64 sRo = wOff + (int64) (i0 + sCol) * rowBytes + bOff * (int64) P.blockBytes();
+        int64 sXb = (int64) (t0 + sCol) * xRowBytes + bOff * 320L;
+        uint32 aRow0 = tid >> 3;
+        uint32 aPart = tid & 7;
+        int64 aSrc0 = (int64) (t0 + aRow0) * xRowBytes + (int64) (16 * aPart)
+            + bOff * 320L;
+        int64 xrP = (int64) (TM / 4) * xRowBytes;
+        uint32 aDst0 = aRow0 * 144 + 16 * aPart;
+        uint32 aDstP = (TM / 4) * 144;
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1>[WN / 16] mb;
+        CooperativeMatrix<int32,16,16,2>[WN / 16] mc;
+        CooperativeMatrix<int32,16,16,2>[WM / 16][WN / 16] iacc;
+        CooperativeMatrix<float32,16,16,2>[WM / 16][WN / 16] facc;
+        if (id == 0 && accum != 0 && splits == 1) {
+            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                    facc[i][n].load(y, (uint32) ((int64) (tw + 16 * i) * (int64) outDim
+                        + (int64) (cw + 16 * n)), 0, outDim);
+                }
+            }
+        } else {
+            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                for (uint32 n = 0; n < WN / 16; n = n + 1) { facc[i][n].splat(0.0f); }
+            }
+        }
+
+        Vector<int32,4> pa0 = xp.vload<16>(aSrc0).asWords();
+        Vector<int32,4> pa1 = xp.vload<16>(aSrc0 + xrP).asWords();
+        Vector<int32,4> pa2 = xp.vload<16>(aSrc0 + xrP + xrP).asWords();
+        Vector<int32,4> pa3 = xp.vload<16>(aSrc0 + xrP + xrP + xrP).asWords();
+        Vector<int32,4> pb0 = packed.vload<16>(sRo + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) sH))).asWords();
+        Vector<int32,4> pb1 = packed.vload<16>(sRo + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) sH)) + 16L).asWords();
+        Vector<int32,4> pq0 = pb0;
+        Vector<int32,4> pq1 = pb0;
+        Vector<int32,1> px = xp.vload<4>(sXb + 288L).asWords();
+        if (sH == 0) {
+            pq0 = packed.vload<16>(sRo + (int64) P.headOffset()).asWords();
+            pq1 = pq0;
+            if (P.head2Offset() != P.headOffset()) { pq1 = packed.vload<16>(sRo + (int64) P.head2Offset()).asWords(); }
+        } else if (P.offset() == 0 && P.subValues() == 32) {
+            pq0 = xp.vload<16>(sXb + 256L).asWords();
+            pq1 = xp.vload<16>(sXb + 272L).asWords();
+        }
+
+        uint32 nh = (uint32) nbs * 2;
+        uint32 hh = 0;
+        while (hh < nh) {
+            uint32 H = hh & 1;
+            Barrier.workgroup();
+            int64 aDst = (int64) aDst0;
+            aT.vstore(aDst, pa0.asBytes());
+            aT.vstore(aDst + (int64) aDstP, pa1.asBytes());
+            aT.vstore(aDst + (int64) (2 * aDstP), pa2.asBytes());
+            aT.vstore(aDst + (int64) (3 * aDstP), pa3.asBytes());
+            int32 bs0 = 0;
+            int32 bs1 = 0;
+            int32 bs2 = 0;
+            int32 bs3 = 0;
+            if (late != 0) {
+                Vector<int32,4> az = pa0 ^ pa0;
+                Vector<uint8,16> ones = (pa0.asBytes().asUnsigned() ^ pa0.asBytes().asUnsigned()) | 1;
+                Vector<int32,4> sv = ones.dotAccum(pa0.asBytes(), az);
+                bs0 = sv[0] + sv[1] + sv[2] + sv[3];
+                sv = ones.dotAccum(pa1.asBytes(), az);
+                bs1 = sv[0] + sv[1] + sv[2] + sv[3];
+                sv = ones.dotAccum(pa2.asBytes(), az);
+                bs2 = sv[0] + sv[1] + sv[2] + sv[3];
+                sv = ones.dotAccum(pa3.asBytes(), az);
+                bs3 = sv[0] + sv[1] + sv[2] + sv[3];
+            }
+            {
+                int32 pair = (int32) (2 * H + sH);
+                int64 dl = (int64) (sCol * 144) + (int64) (32 * (P.lowStream(pair) & 3));
+                int64 dh = (int64) (sCol * 144) + (int64) (32 * (P.highStream(pair) & 3));
+                Vector<int32,4> w0 = pb0;
+                Vector<int32,4> w1 = pb1;
+                if (late != 0) {
+                    int64 qb = sRo + (int64) (hh >> 1) * (int64) P.blockBytes() + (int64) P.quantOffset()
+                        + (int64) (32 * P.quantRun(pair));
+                    w0 = packed.vload<16>(qb).asWords();
+                    w1 = packed.vload<16>(qb + 16L).asWords();
+                }
+                Vector<int32,4> ph0 = w0;
+                Vector<int32,4> ph1 = w1;
+                if (P.planeBytes() != 0) {
+                    int64 cb = sRo + (int64) (hh >> 1) * (int64) P.blockBytes() + (int64) P.planeOffset()
+                        + (int64) (32 * P.planeRun(pair));
+                    ph0 = packed.vload<16>(cb).asWords();
+                    ph1 = packed.vload<16>(cb + 16L).asWords();
+                }
+                bT.vstore(dl, BlockGemmTile.biased(P.lowWords(w0, ph0, pair), (int32) P.offset()).asBytes());
+                bT.vstore(dl + 16L, BlockGemmTile.biased(P.lowWords(w1, ph1, pair), (int32) P.offset()).asBytes());
+                bT.vstore(dh, BlockGemmTile.biased(P.highWords(w0, ph0, pair), (int32) P.offset()).asBytes());
+                bT.vstore(dh + 16L, BlockGemmTile.biased(P.highWords(w1, ph1, pair), (int32) P.offset()).asBytes());
+            }
+            if (H == 0) {
+                if (sH == 0) {
+                    Vector<int32,4> ha = pq0;
+                    Vector<int32,4> hb = pq1;
+                    dAll[sCol] = P.dOf(ha, hb);
+                    if (P.subBlocks() == 8) {
+                        for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
+                            scAll[sCol * 8 + (uint32) j] = P.scaleOf(ha, hb, (uint32) j);
+                        }
+                    }
+                    if (P.offset() == 0 && P.subValues() == 32) {
+                        float32 dmv = P.dminOf(ha, hb);
+                        uint32 cb = sCol * 8;
+                        cgAll[cb] = 0.0f - dmv * (float32) P.minOf(ha, hb, 0);
+                        cgAll[cb + 1] = 0.0f - dmv * (float32) P.minOf(ha, hb, 1);
+                        cgAll[cb + 2] = 0.0f - dmv * (float32) P.minOf(ha, hb, 2);
+                        cgAll[cb + 3] = 0.0f - dmv * (float32) P.minOf(ha, hb, 3);
+                        cgAll[cb + 4] = 0.0f - dmv * (float32) P.minOf(ha, hb, 4);
+                        cgAll[cb + 5] = 0.0f - dmv * (float32) P.minOf(ha, hb, 5);
+                        cgAll[cb + 6] = 0.0f - dmv * (float32) P.minOf(ha, hb, 6);
+                        cgAll[cb + 7] = 0.0f - dmv * (float32) P.minOf(ha, hb, 7);
+                    }
+                } else {
+                    Vector<int32,1> xw = px;
+                    float32 xv = Cajeta.bitsToF32(xw[0]);
+                    xsAll[sCol] = xv;
+                    if (P.offset() == 0 && P.subValues() == 32) {
+                        Vector<int32,4> q0 = pq0;
+                        Vector<int32,4> q1 = pq1;
+                        uint32 rb = (sCol >> 4) * 128 + (sCol & 15);
+                        rgAll[rb] = xv * (float32) q0[0];
+                        rgAll[rb + 16] = xv * (float32) q0[1];
+                        rgAll[rb + 32] = xv * (float32) q0[2];
+                        rgAll[rb + 48] = xv * (float32) q0[3];
+                        rgAll[rb + 64] = xv * (float32) q1[0];
+                        rgAll[rb + 80] = xv * (float32) q1[1];
+                        rgAll[rb + 96] = xv * (float32) q1[2];
+                        rgAll[rb + 112] = xv * (float32) q1[3];
+                    }
+                }
+            }
+            if (P.subBlocks() == 16 && sH == 0) {
+                Vector<int32,4> ha = pq0;
+                Vector<int32,4> hb = pq1;
+                for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
+                    if (H == 0) { scAll[(uint32) j * TN + sCol] = P.scaleOf(ha, hb, (uint32) j); }
+                    else { scAll[(uint32) j * TN + sCol] = P.scaleOf(ha, hb, 8 + (uint32) j); }
+                }
+                if (late != 0) {
+                    float32 dmv = P.dminOf(ha, hb);
+                    for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
+                        if (H == 0) { cgAll[(uint32) j * TN + sCol] = 0.0f - dmv * (float32) P.minOf(ha, hb, (uint32) j); }
+                        else { cgAll[(uint32) j * TN + sCol] = 0.0f - dmv * (float32) P.minOf(ha, hb, 8 + (uint32) j); }
+                    }
+                }
+            }
+            if (hh + 1 < nh) {
+                int64 nb = (int64) ((hh + 1) >> 1);
+                uint32 nH = (hh + 1) & 1;
+                int64 aS = aSrc0 + nb * 320L + (int64) (128 * nH);
+                pa0 = xp.vload<16>(aS).asWords();
+                aS = aS + xrP;
+                pa1 = xp.vload<16>(aS).asWords();
+                aS = aS + xrP;
+                pa2 = xp.vload<16>(aS).asWords();
+                aS = aS + xrP;
+                pa3 = xp.vload<16>(aS).asWords();
+                int64 bS = sRo + nb * (int64) P.blockBytes() + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) (2 * nH + sH)));
+                pb0 = packed.vload<16>(bS).asWords();
+                pb1 = packed.vload<16>(bS + 16L).asWords();
+                if (nH == 0) {
+                    if (sH == 0) {
+                        pq0 = packed.vload<16>(sRo + nb * (int64) P.blockBytes() + (int64) P.headOffset()).asWords();
+                        pq1 = pq0;
+                        if (P.head2Offset() != P.headOffset()) {
+                            pq1 = packed.vload<16>(sRo + nb * (int64) P.blockBytes() + (int64) P.head2Offset()).asWords();
+                        }
+                    } else {
+                        int64 xb = sXb + nb * 320L;
+                        if (P.offset() == 0 && P.subValues() == 32) {
+                            pq0 = xp.vload<16>(xb + 256L).asWords();
+                            pq1 = xp.vload<16>(xb + 272L).asWords();
+                        }
+                        px = xp.vload<4>(xb + 288L).asWords();
+                    }
+                }
+            }
+            Barrier.workgroup();
+            if (late != 0) {
+                uint32 aTokP = TM / 4;
+                rgAll[aPart * TM + aRow0] = xsAll[aRow0] * (float32) bs0;
+                rgAll[aPart * TM + aRow0 + aTokP] = xsAll[aRow0 + aTokP] * (float32) bs1;
+                rgAll[aPart * TM + aRow0 + 2 * aTokP] = xsAll[aRow0 + 2 * aTokP] * (float32) bs2;
+                rgAll[aPart * TM + aRow0 + 3 * aTokP] = xsAll[aRow0 + 3 * aTokP] * (float32) bs3;
+                Barrier.workgroup();
+            }
+
+            if (H == 0) {
+                for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                    for (uint32 n = 0; n < WN / 16; n = n + 1) { iacc[i][n].splat(0); }
+                }
+            }
+            uint32 cBase = (WN * wc) * 8;
+            uint32 sBase = WN * wc;
+            uint32 aBuf = (WM * wr) * 144;
+            uint32 bBuf = (WN * wc) * 144;
+            if (P.subValues() == 16) {
+                uint32 jj = 0;
+                while (jj < 8) {
+                    uint32 sj = sBase + jj * TN;
+                    uint32 kk = 16 * jj;
+                    for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                        mb[n].load(bT, bBuf + n * (16 * 144) + kk, 1, 144);
+                    }
+                    for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                        ma.load(aT, aBuf + i * (16 * 144) + kk, 0, 144);
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].splat(0); }
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].mma(ma, mb[n]); }
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            TileOps.scaledAccumI32(mc[n], iacc[i][n], scAll, sj + 16 * n, 1);
+                        }
+                    }
+                    if (P.offset() == 0) {
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            WaveVector<float32, 16> cg = WaveVector.ofSlice(cgAll, sj + 16 * n, 1);
+                            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                                facc[i][n].rank1Accum(rgAll[jj * TM + WM * wr + 16 * i], cg);
+                            }
+                        }
+                    }
+                    jj = jj + 1;
+                }
+            } else {
+                uint32 jj = 0;
+                while (jj < 4) {
+                    uint32 j = 4 * H + jj;
+                    uint32 kk = 32 * jj;
+                    for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].splat(0); }
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            mb[n].load(bT, bBuf + n * (16 * 144) + kk, 1, 144);
+                        }
+                        ma.load(aT, aBuf + i * (16 * 144) + kk, 0, 144);
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].mma(ma, mb[n]); }
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            mb[n].load(bT, bBuf + n * (16 * 144) + kk + 16, 1, 144);
+                        }
+                        ma.load(aT, aBuf + i * (16 * 144) + kk + 16, 0, 144);
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].mma(ma, mb[n]); }
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            TileOps.scaledAccumI32(mc[n], iacc[i][n], scAll, cBase + n * 128 + j, 8);
+                        }
+                    }
+                    if (P.offset() == 0) {
+                        uint32 rbase = ((WM / 16) * 8 * wr + j) * 16;
+                        for (uint32 n = 0; n + 3 < WN / 16; n = n + 4) {
+                            WaveVector<float32, 16> cgA = WaveVector.ofSlice(cgAll, cBase + n * 128 + j, 8);
+                            WaveVector<float32, 16> cgB = WaveVector.ofSlice(cgAll, cBase + n * 128 + 128 + j, 8);
+                            WaveVector<float32, 16> cgC = WaveVector.ofSlice(cgAll, cBase + n * 128 + 256 + j, 8);
+                            WaveVector<float32, 16> cgD = WaveVector.ofSlice(cgAll, cBase + n * 128 + 384 + j, 8);
+                            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                                facc[i][n].rank1Accum(rgAll[rbase + 128 * i], cgA);
+                                facc[i][n + 1].rank1Accum(rgAll[rbase + 128 * i], cgB);
+                                facc[i][n + 2].rank1Accum(rgAll[rbase + 128 * i], cgC);
+                                facc[i][n + 3].rank1Accum(rgAll[rbase + 128 * i], cgD);
+                            }
+                        }
+                        for (uint32 n = ((WN / 16) / 4) * 4; n + 1 < WN / 16; n = n + 2) {
+                            WaveVector<float32, 16> cgA = WaveVector.ofSlice(cgAll, cBase + n * 128 + j, 8);
+                            WaveVector<float32, 16> cgB = WaveVector.ofSlice(cgAll, cBase + n * 128 + 128 + j, 8);
+                            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                                facc[i][n].rank1Accum(rgAll[rbase + 128 * i], cgA);
+                                facc[i][n + 1].rank1Accum(rgAll[rbase + 128 * i], cgB);
+                            }
+                        }
+                    }
+                    jj = jj + 1;
+                }
+            }
+            if (H == 1) {
+                uint32 dbase = WN * wc;
+                uint32 xbase = WM * wr;
+                for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                    for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                        WaveVector<float32, 16> dcv = WaveVector.ofSlice(dAll, dbase + 16 * n, 1);
+                        iacc[i][n].scaledAccumInto(facc[i][n], xsAll[xbase + 16 * i], dcv);
+                    }
+                }
+            }
+            hh = hh + 1;
+        }
+
+        if (id != 0) {
+            uint32 lane = tid % 32;
+            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                uint32 tb = tw + 16 * i;
+                if (tb < mEnd) {
+                    if (tb + 16 <= mEnd) {
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            facc[i][n].store(y, (uint32) ((int64) tb * (int64) outDim + (int64) (cw + 16 * n)), 0, outDim);
+                        }
+                    } else {
+                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                            facc[i][n].store(fs, wid * 256, 0, 16);
+                            uint32 sa = lane;
+                            while (sa < 256) {
+                                if (tb + sa / 16 < mEnd) {
+                                    y[(int64) (tb + sa / 16) * (int64) outDim + (int64) (cw + 16 * n + sa % 16)] = fs[wid * 256 + sa];
+                                }
+                                sa = sa + 32;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if (splits > 1) {
+            uint32 pbase = pslot * (TM * TN);
+            uint32 pw = (WM * wr) * TN + WN * wc;
+            for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                    facc[i][n].store(part, pbase + pw + i * (16 * TN) + 16 * n, 0, TN);
+                }
+            }
+            return;
+        }
+        for (uint32 i = 0; i < WM / 16; i = i + 1) {
+            for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                facc[i][n].store(y, (uint32) ((int64) (tw + 16 * i) * (int64) outDim
+                    + (int64) (cw + 16 * n)), 0, outDim);
+            }
+        }
     }
 
     @Occupancy(maxThreads = 2 * TN)
@@ -97,8 +459,6 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
         Shared<int32> scAll = shared int32[TN * 8];
         Shared<float32> cgAll = shared float32[TN * 8];
 
-        uint32 tid = KernelThread.x();
-        uint32 wid = tid / 32;
         uint32 wg = KernelThread.globalIdX() / (2 * TN);
         uint32 tile = wg / splits;
         uint32 split = wg % splits;
@@ -110,321 +470,39 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
         uint32 pslot = (tileT * tilesN + tileI) * splits + split;
         uint32 t0 = tileT * TM;
         uint32 i0 = tileI * TN;
-        uint32 wr = wid / (TN / WN);
-        uint32 wc = wid % (TN / WN);
-        uint32 tw = t0 + WM * wr;
-        uint32 cw = i0 + WN * wc;
-        uint32 sCol = tid >> 1;
-        uint32 sH = tid & 1;
-        uint32 late = 0;
-        if (P.subValues() == 16 && P.offset() == 0) { late = 1; }
         if (t0 < rows && i0 < outDim) {
-            int64 rowBytes = blocksPerRow * (int64) P.blockBytes();
-            int64 xRowBytes = blocksPerRow * 320L;
-            int64 sRo = (int64) (i0 + sCol) * rowBytes + bOff * (int64) P.blockBytes();
-            int64 sXb = (int64) (t0 + sCol) * xRowBytes + bOff * 320L;
-            uint32 aRow0 = tid >> 3;
-            uint32 aPart = tid & 7;
-            int64 aSrc0 = (int64) (t0 + aRow0) * xRowBytes + (int64) (16 * aPart)
-                + bOff * 320L;
-            int64 xrP = (int64) (TM / 4) * xRowBytes;
-            uint32 aDst0 = aRow0 * 144 + 16 * aPart;
-            uint32 aDstP = (TM / 4) * 144;
-            CooperativeMatrix<int8,16,16,0> ma;
-            CooperativeMatrix<int8,16,16,1>[WN / 16] mb;
-            CooperativeMatrix<int32,16,16,2>[WN / 16] mc;
-            CooperativeMatrix<int32,16,16,2>[WM / 16][WN / 16] iacc;
-            CooperativeMatrix<float32,16,16,2>[WM / 16][WN / 16] facc;
-            if (accum != 0 && splits == 1) {
-                for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                    for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                        facc[i][n].load(y, (uint32) ((int64) (tw + 16 * i) * (int64) outDim
-                            + (int64) (cw + 16 * n)), 0, outDim);
-                    }
-                }
-            } else {
-                for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                    for (uint32 n = 0; n < WN / 16; n = n + 1) { facc[i][n].splat(0.0f); }
-                }
-            }
+            BlockGemmTile.tileBody(y, packed, xp, part, aT, bT, xsAll, dAll, rgAll, scAll, cgAll, xsAll,
+                t0, i0, 0, 0L, bOff, nbs, pslot, splits, accum, outDim, blocksPerRow, 0);
+        }
+    }
 
-            Vector<int32,4> pa0 = xp.vload<16>(aSrc0).asWords();
-            Vector<int32,4> pa1 = xp.vload<16>(aSrc0 + xrP).asWords();
-            Vector<int32,4> pa2 = xp.vload<16>(aSrc0 + xrP + xrP).asWords();
-            Vector<int32,4> pa3 = xp.vload<16>(aSrc0 + xrP + xrP + xrP).asWords();
-            Vector<int32,4> pb0 = packed.vload<16>(sRo + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) sH))).asWords();
-            Vector<int32,4> pb1 = packed.vload<16>(sRo + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) sH)) + 16L).asWords();
-            Vector<int32,4> pq0 = pb0;
-            Vector<int32,4> pq1 = pb0;
-            Vector<int32,1> px = xp.vload<4>(sXb + 288L).asWords();
-            if (sH == 0) {
-                pq0 = packed.vload<16>(sRo + (int64) P.headOffset()).asWords();
-                pq1 = pq0;
-                if (P.head2Offset() != P.headOffset()) { pq1 = packed.vload<16>(sRo + (int64) P.head2Offset()).asWords(); }
-            } else if (P.offset() == 0 && P.subValues() == 32) {
-                pq0 = xp.vload<16>(sXb + 256L).asWords();
-                pq1 = xp.vload<16>(sXb + 272L).asWords();
-            }
-
-            uint32 nh = (uint32) nbs * 2;
-            uint32 hh = 0;
-            while (hh < nh) {
-                uint32 H = hh & 1;
-                Barrier.workgroup();
-                int64 aDst = (int64) aDst0;
-                aT.vstore(aDst, pa0.asBytes());
-                aT.vstore(aDst + (int64) aDstP, pa1.asBytes());
-                aT.vstore(aDst + (int64) (2 * aDstP), pa2.asBytes());
-                aT.vstore(aDst + (int64) (3 * aDstP), pa3.asBytes());
-                int32 bs0 = 0;
-                int32 bs1 = 0;
-                int32 bs2 = 0;
-                int32 bs3 = 0;
-                if (late != 0) {
-                    Vector<int32,4> az = pa0 ^ pa0;
-                    Vector<uint8,16> ones = (pa0.asBytes().asUnsigned() ^ pa0.asBytes().asUnsigned()) | 1;
-                    Vector<int32,4> sv = ones.dotAccum(pa0.asBytes(), az);
-                    bs0 = sv[0] + sv[1] + sv[2] + sv[3];
-                    sv = ones.dotAccum(pa1.asBytes(), az);
-                    bs1 = sv[0] + sv[1] + sv[2] + sv[3];
-                    sv = ones.dotAccum(pa2.asBytes(), az);
-                    bs2 = sv[0] + sv[1] + sv[2] + sv[3];
-                    sv = ones.dotAccum(pa3.asBytes(), az);
-                    bs3 = sv[0] + sv[1] + sv[2] + sv[3];
-                }
-                {
-                    int32 pair = (int32) (2 * H + sH);
-                    int64 dl = (int64) (sCol * 144) + (int64) (32 * (P.lowStream(pair) & 3));
-                    int64 dh = (int64) (sCol * 144) + (int64) (32 * (P.highStream(pair) & 3));
-                    Vector<int32,4> w0 = pb0;
-                    Vector<int32,4> w1 = pb1;
-                    if (late != 0) {
-                        int64 qb = sRo + (int64) (hh >> 1) * (int64) P.blockBytes() + (int64) P.quantOffset()
-                            + (int64) (32 * P.quantRun(pair));
-                        w0 = packed.vload<16>(qb).asWords();
-                        w1 = packed.vload<16>(qb + 16L).asWords();
-                    }
-                    Vector<int32,4> ph0 = w0;
-                    Vector<int32,4> ph1 = w1;
-                    if (P.planeBytes() != 0) {
-                        int64 cb = sRo + (int64) (hh >> 1) * (int64) P.blockBytes() + (int64) P.planeOffset()
-                            + (int64) (32 * P.planeRun(pair));
-                        ph0 = packed.vload<16>(cb).asWords();
-                        ph1 = packed.vload<16>(cb + 16L).asWords();
-                    }
-                    bT.vstore(dl, BlockGemmTile.biased(P.lowWords(w0, ph0, pair), (int32) P.offset()).asBytes());
-                    bT.vstore(dl + 16L, BlockGemmTile.biased(P.lowWords(w1, ph1, pair), (int32) P.offset()).asBytes());
-                    bT.vstore(dh, BlockGemmTile.biased(P.highWords(w0, ph0, pair), (int32) P.offset()).asBytes());
-                    bT.vstore(dh + 16L, BlockGemmTile.biased(P.highWords(w1, ph1, pair), (int32) P.offset()).asBytes());
-                }
-                if (H == 0) {
-                    if (sH == 0) {
-                        Vector<int32,4> ha = pq0;
-                        Vector<int32,4> hb = pq1;
-                        dAll[sCol] = P.dOf(ha, hb);
-                        if (P.subBlocks() == 8) {
-                            for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
-                                scAll[sCol * 8 + (uint32) j] = P.scaleOf(ha, hb, (uint32) j);
-                            }
-                        }
-                        if (P.offset() == 0 && P.subValues() == 32) {
-                            float32 dmv = P.dminOf(ha, hb);
-                            uint32 cb = sCol * 8;
-                            cgAll[cb] = 0.0f - dmv * (float32) P.minOf(ha, hb, 0);
-                            cgAll[cb + 1] = 0.0f - dmv * (float32) P.minOf(ha, hb, 1);
-                            cgAll[cb + 2] = 0.0f - dmv * (float32) P.minOf(ha, hb, 2);
-                            cgAll[cb + 3] = 0.0f - dmv * (float32) P.minOf(ha, hb, 3);
-                            cgAll[cb + 4] = 0.0f - dmv * (float32) P.minOf(ha, hb, 4);
-                            cgAll[cb + 5] = 0.0f - dmv * (float32) P.minOf(ha, hb, 5);
-                            cgAll[cb + 6] = 0.0f - dmv * (float32) P.minOf(ha, hb, 6);
-                            cgAll[cb + 7] = 0.0f - dmv * (float32) P.minOf(ha, hb, 7);
-                        }
-                    } else {
-                        Vector<int32,1> xw = px;
-                        float32 xv = Cajeta.bitsToF32(xw[0]);
-                        xsAll[sCol] = xv;
-                        if (P.offset() == 0 && P.subValues() == 32) {
-                            Vector<int32,4> q0 = pq0;
-                            Vector<int32,4> q1 = pq1;
-                            uint32 rb = (sCol >> 4) * 128 + (sCol & 15);
-                            rgAll[rb] = xv * (float32) q0[0];
-                            rgAll[rb + 16] = xv * (float32) q0[1];
-                            rgAll[rb + 32] = xv * (float32) q0[2];
-                            rgAll[rb + 48] = xv * (float32) q0[3];
-                            rgAll[rb + 64] = xv * (float32) q1[0];
-                            rgAll[rb + 80] = xv * (float32) q1[1];
-                            rgAll[rb + 96] = xv * (float32) q1[2];
-                            rgAll[rb + 112] = xv * (float32) q1[3];
-                        }
-                    }
-                }
-                if (P.subBlocks() == 16 && sH == 0) {
-                    Vector<int32,4> ha = pq0;
-                    Vector<int32,4> hb = pq1;
-                    for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
-                        if (H == 0) { scAll[(uint32) j * TN + sCol] = P.scaleOf(ha, hb, (uint32) j); }
-                        else { scAll[(uint32) j * TN + sCol] = P.scaleOf(ha, hb, 8 + (uint32) j); }
-                    }
-                    if (late != 0) {
-                        float32 dmv = P.dminOf(ha, hb);
-                        for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
-                            if (H == 0) { cgAll[(uint32) j * TN + sCol] = 0.0f - dmv * (float32) P.minOf(ha, hb, (uint32) j); }
-                            else { cgAll[(uint32) j * TN + sCol] = 0.0f - dmv * (float32) P.minOf(ha, hb, 8 + (uint32) j); }
-                        }
-                    }
-                }
-                if (hh + 1 < nh) {
-                    int64 nb = (int64) ((hh + 1) >> 1);
-                    uint32 nH = (hh + 1) & 1;
-                    int64 aS = aSrc0 + nb * 320L + (int64) (128 * nH);
-                    pa0 = xp.vload<16>(aS).asWords();
-                    aS = aS + xrP;
-                    pa1 = xp.vload<16>(aS).asWords();
-                    aS = aS + xrP;
-                    pa2 = xp.vload<16>(aS).asWords();
-                    aS = aS + xrP;
-                    pa3 = xp.vload<16>(aS).asWords();
-                    int64 bS = sRo + nb * (int64) P.blockBytes() + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) (2 * nH + sH)));
-                    pb0 = packed.vload<16>(bS).asWords();
-                    pb1 = packed.vload<16>(bS + 16L).asWords();
-                    if (nH == 0) {
-                        if (sH == 0) {
-                            pq0 = packed.vload<16>(sRo + nb * (int64) P.blockBytes() + (int64) P.headOffset()).asWords();
-                            pq1 = pq0;
-                            if (P.head2Offset() != P.headOffset()) {
-                                pq1 = packed.vload<16>(sRo + nb * (int64) P.blockBytes() + (int64) P.head2Offset()).asWords();
-                            }
-                        } else {
-                            int64 xb = sXb + nb * 320L;
-                            if (P.offset() == 0 && P.subValues() == 32) {
-                                pq0 = xp.vload<16>(xb + 256L).asWords();
-                                pq1 = xp.vload<16>(xb + 272L).asWords();
-                            }
-                            px = xp.vload<4>(xb + 288L).asWords();
-                        }
-                    }
-                }
-                Barrier.workgroup();
-                if (late != 0) {
-                    uint32 aTokP = TM / 4;
-                    rgAll[aPart * TM + aRow0] = xsAll[aRow0] * (float32) bs0;
-                    rgAll[aPart * TM + aRow0 + aTokP] = xsAll[aRow0 + aTokP] * (float32) bs1;
-                    rgAll[aPart * TM + aRow0 + 2 * aTokP] = xsAll[aRow0 + 2 * aTokP] * (float32) bs2;
-                    rgAll[aPart * TM + aRow0 + 3 * aTokP] = xsAll[aRow0 + 3 * aTokP] * (float32) bs3;
-                    Barrier.workgroup();
-                }
-
-                if (H == 0) {
-                    for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                        for (uint32 n = 0; n < WN / 16; n = n + 1) { iacc[i][n].splat(0); }
-                    }
-                }
-                uint32 cBase = (WN * wc) * 8;
-                uint32 sBase = WN * wc;
-                uint32 aBuf = (WM * wr) * 144;
-                uint32 bBuf = (WN * wc) * 144;
-                if (P.subValues() == 16) {
-                    uint32 jj = 0;
-                    while (jj < 8) {
-                        uint32 sj = sBase + jj * TN;
-                        uint32 kk = 16 * jj;
-                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                            mb[n].load(bT, bBuf + n * (16 * 144) + kk, 1, 144);
-                        }
-                        for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                            ma.load(aT, aBuf + i * (16 * 144) + kk, 0, 144);
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].splat(0); }
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].mma(ma, mb[n]); }
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                                TileOps.scaledAccumI32(mc[n], iacc[i][n], scAll, sj + 16 * n, 1);
-                            }
-                        }
-                        if (P.offset() == 0) {
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                                WaveVector<float32, 16> cg = WaveVector.ofSlice(cgAll, sj + 16 * n, 1);
-                                for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                                    facc[i][n].rank1Accum(rgAll[jj * TM + WM * wr + 16 * i], cg);
-                                }
-                            }
-                        }
-                        jj = jj + 1;
-                    }
-                } else {
-                    uint32 jj = 0;
-                    while (jj < 4) {
-                        uint32 j = 4 * H + jj;
-                        uint32 kk = 32 * jj;
-                        for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].splat(0); }
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                                mb[n].load(bT, bBuf + n * (16 * 144) + kk, 1, 144);
-                            }
-                            ma.load(aT, aBuf + i * (16 * 144) + kk, 0, 144);
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].mma(ma, mb[n]); }
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                                mb[n].load(bT, bBuf + n * (16 * 144) + kk + 16, 1, 144);
-                            }
-                            ma.load(aT, aBuf + i * (16 * 144) + kk + 16, 0, 144);
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].mma(ma, mb[n]); }
-                            for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                                TileOps.scaledAccumI32(mc[n], iacc[i][n], scAll, cBase + n * 128 + j, 8);
-                            }
-                        }
-                        if (P.offset() == 0) {
-                            uint32 rbase = ((WM / 16) * 8 * wr + j) * 16;
-                            for (uint32 n = 0; n + 3 < WN / 16; n = n + 4) {
-                                WaveVector<float32, 16> cgA = WaveVector.ofSlice(cgAll, cBase + n * 128 + j, 8);
-                                WaveVector<float32, 16> cgB = WaveVector.ofSlice(cgAll, cBase + n * 128 + 128 + j, 8);
-                                WaveVector<float32, 16> cgC = WaveVector.ofSlice(cgAll, cBase + n * 128 + 256 + j, 8);
-                                WaveVector<float32, 16> cgD = WaveVector.ofSlice(cgAll, cBase + n * 128 + 384 + j, 8);
-                                for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                                    facc[i][n].rank1Accum(rgAll[rbase + 128 * i], cgA);
-                                    facc[i][n + 1].rank1Accum(rgAll[rbase + 128 * i], cgB);
-                                    facc[i][n + 2].rank1Accum(rgAll[rbase + 128 * i], cgC);
-                                    facc[i][n + 3].rank1Accum(rgAll[rbase + 128 * i], cgD);
-                                }
-                            }
-                            for (uint32 n = ((WN / 16) / 4) * 4; n + 1 < WN / 16; n = n + 2) {
-                                WaveVector<float32, 16> cgA = WaveVector.ofSlice(cgAll, cBase + n * 128 + j, 8);
-                                WaveVector<float32, 16> cgB = WaveVector.ofSlice(cgAll, cBase + n * 128 + 128 + j, 8);
-                                for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                                    facc[i][n].rank1Accum(rgAll[rbase + 128 * i], cgA);
-                                    facc[i][n + 1].rank1Accum(rgAll[rbase + 128 * i], cgB);
-                                }
-                            }
-                        }
-                        jj = jj + 1;
-                    }
-                }
-                if (H == 1) {
-                    uint32 dbase = WN * wc;
-                    uint32 xbase = WM * wr;
-                    for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                        for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                            WaveVector<float32, 16> dcv = WaveVector.ofSlice(dAll, dbase + 16 * n, 1);
-                            iacc[i][n].scaledAccumInto(facc[i][n], xsAll[xbase + 16 * i], dcv);
-                        }
-                    }
-                }
-                hh = hh + 1;
-            }
-
-            if (splits > 1) {
-                uint32 pbase = pslot * (TM * TN);
-                uint32 pw = (WM * wr) * TN + WN * wc;
-                for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                    for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                        facc[i][n].store(part, pbase + pw + i * (16 * TN) + 16 * n, 0, TN);
-                    }
-                }
-                return;
-            }
-            for (uint32 i = 0; i < WM / 16; i = i + 1) {
-                for (uint32 n = 0; n < WN / 16; n = n + 1) {
-                    facc[i][n].store(y, (uint32) ((int64) (tw + 16 * i) * (int64) outDim
-                        + (int64) (cw + 16 * n)), 0, outDim);
-                }
-            }
+    /** The MoE Id GEMM over a TM-row chunk map: map entry `wg / tilesN` is expert `mapE`, rows `mapT0 ..` stored below `mapM1`, the count at `meta[TM / 128]`; experts' rows `rowsPerExpert` apart in `packed`. */
+    @Occupancy(maxThreads = 2 * TN)
+    @Kernel(targets = {"gpu"}) @FastMath
+    public static void idTile(KernelBuffer<float32> y,
+            KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            KernelBuffer<int32> mapE, KernelBuffer<int32> mapT0,
+            KernelBuffer<int32> mapM1, KernelBuffer<int32> meta,
+            uint32 outDim, uint32 tilesN, int64 blocksPerRow, int64 rowsPerExpert) {
+        Shared<int8> aT = shared int8[TM * 144];
+        Shared<int8> bT = shared int8[TN * 144];
+        Shared<float32> xsAll = shared float32[TM];
+        Shared<float32> dAll = shared float32[TN];
+        Shared<float32> rgAll = shared float32[TM * 8];
+        Shared<int32> scAll = shared int32[TN * 8];
+        Shared<float32> cgAll = shared float32[TN * 8];
+        Shared<float32> fs = shared float32[(TM / WM) * (TN / WN) * 256];
+        uint32 wg = KernelThread.globalIdX() / (2 * TN);
+        uint32 mapIdx = wg / tilesN;
+        uint32 tileI = wg % tilesN;
+        uint32 i0 = tileI * TN;
+        uint32 nChunks = (uint32) meta[(int64) (TM / 128)];
+        if (mapIdx < nChunks && i0 < outDim) {
+            uint32 t0 = (uint32) mapT0[(int64) mapIdx];
+            uint32 mEnd = (uint32) mapM1[(int64) mapIdx];
+            int64 wOff = (int64) mapE[(int64) mapIdx] * rowsPerExpert * blocksPerRow * (int64) P.blockBytes();
+            BlockGemmTile.tileBody(y, packed, xp, y, aT, bT, xsAll, dAll, rgAll, scAll, cgAll, fs,
+                t0, i0, mEnd, wOff, 0L, blocksPerRow, 0, 1, 0, outDim, blocksPerRow, 1);
         }
     }
 }

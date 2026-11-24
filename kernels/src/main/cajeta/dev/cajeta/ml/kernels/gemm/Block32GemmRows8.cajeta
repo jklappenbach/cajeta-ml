@@ -200,15 +200,15 @@ public final class Block32GemmRows8<P> {
         }
     }
 
-    /** One token against row group `gr`: activation at `xp[x0 ..)`, rows `8 gr ..` to `y[y0 + 8 gr ..)`. */
+    /** One token against row group `gr` of the weight at `w[wBase ..)`: activation at `xp[x0 ..)`, rows `8 gr ..` to `y[y0 + 8 gr ..)`. */
     @Device
     static void vecGroup(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> wh, KernelBuffer<int8> xp,
-            uint32 rows, uint32 gr, int64 spans, int64 x0, int64 y0, uint32 accum, int64 sst) {
+            uint32 rows, uint32 gr, int64 spans, int64 x0, int64 y0, uint32 accum, int64 sst, int64 wBase) {
         int64 r0 = (int64) gr * 8L;
         int64 qd = (int64) P.quads();
         int64 pa = 128L + 256L * qd;
         int64 gb = pa + 64L * (int64) P.planeBytes();
-        int64 wg = (int64) gr * spans * gb;
+        int64 wg = wBase + (int64) gr * spans * gb;
         Vector<int32,8> z8 = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
         Vector<float32,8> acc0 = z8.toF32();
         int64 b = 0L;
@@ -252,7 +252,7 @@ public final class Block32GemmRows8<P> {
             int64 cEnd = cBeg + chunk < nc ? cBeg + chunk : nc;
             int64 c = cBeg;
             while (c < cEnd) {
-                Block32GemmRows8.vecGroup(y, w, wh, xp, rows, gr, spans, c * xpStride, c * yStride, accum, sst);
+                Block32GemmRows8.vecGroup(y, w, wh, xp, rows, gr, spans, c * xpStride, c * yStride, accum, sst, 0L);
                 c = c + 1L;
             }
         }
@@ -267,12 +267,37 @@ public final class Block32GemmRows8<P> {
             uint32 rowsA, uint32 rowsB, uint32 rowsC, uint32 gA, uint32 gB, uint32 gC, int64 spans, int64 sst) {
         uint32 gi = KernelThread.globalIdX();
         if (gi < gA) {
-            Block32GemmRows8.vecGroup(yA, wA, hA, xp, rowsA, gi, spans, 0L, 0L, 0, sst);
+            Block32GemmRows8.vecGroup(yA, wA, hA, xp, rowsA, gi, spans, 0L, 0L, 0, sst, 0L);
         } else if (gi < gA + gB) {
-            Block32GemmRows8.vecGroup(yB, wB, hB, xp, rowsB, gi - gA, spans, 0L, 0L, 0, sst);
+            Block32GemmRows8.vecGroup(yB, wB, hB, xp, rowsB, gi - gA, spans, 0L, 0L, 0, sst, 0L);
         } else if (gi < gA + gB + gC) {
-            Block32GemmRows8.vecGroup(yC, wC, hC, xp, rowsC, gi - gA - gB, spans, 0L, 0L, 0, sst);
+            Block32GemmRows8.vecGroup(yC, wC, hC, xp, rowsC, gi - gA - gB, spans, 0L, 0L, 0, sst, 0L);
         }
+    }
+
+    /** One token against each selected expert of a bank, {@link BlockGemmRows8#idVec}'s shape; `wh` is the bank's f16 view. Each output equals {@link #vec8}'s. */
+    @Kernel(targets = {"cpu"})
+    @Occupancy(maxThreads = 256)
+    public static void idVec(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> wh, KernelBuffer<int8> xp,
+            KernelBuffer<int32> sel, uint32 rows, uint32 groups, uint32 used, int64 spans, int64 expertStride,
+            int64 xpStride, int64 yStride, int64 sst) {
+        uint32 gi = KernelThread.globalIdX();
+        uint32 k = gi / groups;
+        if (k < used) {
+            int64 e = (int64) sel[(int64) k];
+            Block32GemmRows8.vecGroup(y, w, wh, xp, rows, gi % groups, spans, (int64) k * xpStride, (int64) k * yStride, 0, sst,
+                e * expertStride);
+        }
+    }
+
+    /** The MoE decode over a bank of `rows` x `nb`-block experts in {@link #pack}'s layout `expertStride` bytes apart (`wh` its f16 view): `used` selections `sel`, each against its token row of `xp` (`xpStride` apart, 0 for one shared row), into `y` rows `yStride` apart. Queued on `s`. */
+    public void runIdOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> wh, KernelBuffer<int8> xp,
+            KernelBuffer<int32> sel, int64 rows, int64 nb, int64 used, int64 expertStride, int64 xpStride, int64 yStride, int64 sst,
+            int64 block) {
+        uint32 groups = (uint32) ((rows + 7L) / 8L);
+        uint32 n = groups * (uint32) used;
+        idVec.launch(s, grid: [(n + (uint32) block - 1) / (uint32) block], block: [(uint32) block])
+            (y, w, wh, xp, sel, (uint32) rows, groups, (uint32) used, (nb + 7L) / 8L, expertStride, xpStride, yStride, sst);
     }
 
     /** `y[t * yStride + r]` set (or added to) for `rows` rows of `nb` blocks in {@link #pack}'s layout (`wh` its f16 view) and `nc` q8_K token rows `xpStride` bytes apart, scale per 32 values when `sst` is 4; `block` groups a block and `chunk` tokens a work-item; one token runs {@link #vec8}. Queued on `s`. */

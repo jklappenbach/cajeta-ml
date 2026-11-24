@@ -1,0 +1,31 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 8.3.2: the tile driver's MoE Id kernel, each expert's rows against the GEMM from pieces on that expert's slice. */
+public class BlockGemmIdTest {
+    public BlockGemmIdTest() { return; }
+
+    @Test
+    public void theIdKernelEqualsThePiecesGemmPerExpertForQ4kQ5kAndQ6k() {
+        String k = "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q5kBlock_64_64_32_32_128_idTile";
+        if (!Device.kernelUsable(k) || !Device.kernelAvailable("BlockGemmRef_dev_cajeta_ml_kernels_quant_Q5kBlock_ref")) {
+            DeviceSkip.noKernel(k, "the tensor-core tile is the GPU's (kernel-drivers 8.3.2)");
+            return;
+        }
+        int64[] m #= ValueCheck.mark();
+        int64 blocks = 4L * 128L * 2L;
+        int8[] f4 #= BlockGemmRefTest.weight(blocks);
+        int8[] f5 #= Q5kBlockTest.weight(blocks);
+        int8[] f6 #= Q6kBlockTest.weight(blocks);
+        heap IdCheck<Q4kBlock>().check(f4);
+        heap IdCheck<Q5kBlock>().check(f5);
+        heap IdCheck<Q6kBlock>().check(f6);
+        ValueCheck.credit(m);
+    }
+}

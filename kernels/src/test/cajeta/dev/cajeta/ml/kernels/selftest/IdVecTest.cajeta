@@ -1,0 +1,44 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 8.3.2.4: the cpu MoE decode on both row drivers, each selection bitwise the one-token kernel on its expert. */
+public class IdVecTest {
+    public IdVecTest() { return; }
+
+    /** The four selections the checks run: experts 2, 0, 2, 1. */
+    static #KernelBuffer<int32> sel() {
+        int32[] v #= heap int32[4];
+        v[0] = 2;
+        v[1] = 0;
+        v[2] = 2;
+        v[3] = 1;
+        KernelBuffer<int32> b #= heap KernelBuffer<int32>((uint64) 4L);
+        b.upload(v);
+        return #b;
+    }
+
+    @Test
+    public void eachSelectionEqualsTheOneTokenKernelOnItsExpert() {
+        if (!Device.kernelAvailable("BlockGemmRows8_dev_cajeta_ml_kernels_quant_Q4kBlock_idVec")) {
+            DeviceSkip.cannot("the MoE decode on the 8-row drivers is the cpu's (kernel-drivers 8.3.2.4)");
+            return;
+        }
+        int64[] m #= ValueCheck.mark();
+        int8[] f4 #= BlockGemmRefTest.weight(3L * 21L * 3L);
+        int8[] f6 #= Q6kBlockTest.weight(3L * 21L * 3L);
+        heap IdVecCheck<Q4kBlock>().check(f4, 3L);
+        heap IdVecCheck<Q6kBlock>().check(f6, 3L);
+        heap Block32IdCheck<Q80Block>().check(4L);
+        heap Block32IdCheck<Q80Block>().check(0L);
+        heap Block32IdCheck<Q50Block>().check(0L);
+        ValueCheck.credit(m);
+    }
+}
