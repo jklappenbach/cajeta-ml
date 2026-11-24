@@ -59,8 +59,15 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
         Vector<int32,8> zv = o0 ^ o0;
         Vector<uint8,32> lo = P.lowBytes<32>(raw, plane, g);
         Vector<uint8,32> hi = P.highBytes<32>(raw, plane, g);
-        Vector<int32,8> dl = lo.dotAccum(a0, zv);
-        Vector<int32,8> dh = hi.dotAccum(a1, zv);
+        Vector<int32,8> dl = zv;
+        Vector<int32,8> dh = zv;
+        if (P.offset() == 0) {
+            dl = lo.dotAccum(a0, zv);
+            dh = hi.dotAccum(a1, zv);
+        } else {
+            dl = BlockGemvWave.centered(lo, (int32) P.offset()).dotAccum(a0, zv);
+            dh = BlockGemvWave.centered(hi, (int32) P.offset()).dotAccum(a1, zv);
+        }
         uint32 ls = (uint32) P.lowStream(g);
         uint32 hs = (uint32) P.highStream(g);
         int32 isum = 0;
@@ -71,10 +78,19 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
         } else {
             isum = BlockGemvWave.sumLo(dl) * P.scaleOf(ha, hb, 2 * ls) + BlockGemvWave.sumHi(dl) * P.scaleOf(ha, hb, 2 * ls + 1)
                 + BlockGemvWave.sumLo(dh) * P.scaleOf(ha, hb, 2 * hs) + BlockGemvWave.sumHi(dh) * P.scaleOf(ha, hb, 2 * hs + 1);
-            msum = BlockGemvWave.sumLo(o0) * P.minOf(ha, hb, 2 * ls) + BlockGemvWave.sumHi(o0) * P.minOf(ha, hb, 2 * ls + 1)
-                + BlockGemvWave.sumLo(o1) * P.minOf(ha, hb, 2 * hs) + BlockGemvWave.sumHi(o1) * P.minOf(ha, hb, 2 * hs + 1);
+            if (P.offset() == 0) {
+                msum = BlockGemvWave.sumLo(o0) * P.minOf(ha, hb, 2 * ls) + BlockGemvWave.sumHi(o0) * P.minOf(ha, hb, 2 * ls + 1)
+                    + BlockGemvWave.sumLo(o1) * P.minOf(ha, hb, 2 * hs) + BlockGemvWave.sumHi(o1) * P.minOf(ha, hb, 2 * hs + 1);
+            }
         }
         return P.add(acc, P.dOf(ha, hb), P.dminOf(ha, hb), xs, isum, msum);
+    }
+
+    /** Unsigned quant bytes less `off` each, as signed bytes: a format with an offset dots them directly and needs no activation sums. */
+    @Device
+    static Vector<int8,32> centered(Vector<uint8,32> q, int32 off) {
+        int32 top = 0 - 2139062144;
+        return (((q.asSigned().asWords() | top) - off * 16843009) ^ top).asBytes();
     }
 
     /** Header words at `ro + off`. */
@@ -265,8 +281,12 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                 }
                 Vector<uint8,32> ones = (q0 ^ q0) | 1;
                 Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
-                Vector<int32,8> o0 = ones.dotAccum(a0, zv);
-                Vector<int32,8> o1 = ones.dotAccum(a1, zv);
+                Vector<int32,8> o0 = zv;
+                Vector<int32,8> o1 = zv;
+                if (P.offset() == 0) {
+                    o0 = ones.dotAccum(a0, zv);
+                    o1 = ones.dotAccum(a1, zv);
+                }
                 acc0 = BlockGemvWave.part(acc0, ha0, hb0, q0, p0, g, a0, a1, o0, o1, xs);
                 if (R > 1) { acc1 = BlockGemvWave.part(acc1, ha1, hb1, q1, p1, g, a0, a1, o0, o1, xs); }
                 if (R > 2) {

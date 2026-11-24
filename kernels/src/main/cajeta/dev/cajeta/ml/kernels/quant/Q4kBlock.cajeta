@@ -161,20 +161,20 @@ public final class Q4kBlock {
     @Device
     public static float32 dmin(int32 h0) { return Q4kBlock.halfBits((h0 >> 16) & 65535); }
 
-    /** Sub-block `j`'s 6-bit scale, `j` in 0..7. */
+    /** Sub-block `j`'s 6-bit scale, `j` in 0..7; branch-free, so lanes with different `j` do not diverge. */
     @Device
     public static int32 scale(int32 h1, int32 h3, uint32 j) {
         int32 s = (int32) (8 * (j & 3));
-        if (j < 4) { return (h1 >> s) & 63; }
-        return ((h3 >> s) & 15) | ((((h1 >> s) & 255) >> 2) & 48);
+        int32 hi = 0 - (int32) ((j >> 2) & 1);
+        return (((h3 >> s) & 15) | ((((h1 >> s) & 255) >> 2) & 48)) & hi | ((h1 >> s) & 63) & (hi ^ (0 - 1));
     }
 
     /** Sub-block `j`'s 6-bit min, `j` in 0..7. */
     @Device
     public static int32 min(int32 h2, int32 h3, uint32 j) {
         int32 s = (int32) (8 * (j & 3));
-        if (j < 4) { return (h2 >> s) & 63; }
-        return (((h3 >> s) & 255) >> 4) | ((((h2 >> s) & 255) >> 2) & 48);
+        int32 hi = 0 - (int32) ((j >> 2) & 1);
+        return ((((h3 >> s) & 255) >> 4) | ((((h2 >> s) & 255) >> 2) & 48)) & hi | ((h2 >> s) & 63) & (hi ^ (0 - 1));
     }
 
     /** The four low-nibble values of a quant word: values `k .. k+3` of a 64-value run's first half. */
