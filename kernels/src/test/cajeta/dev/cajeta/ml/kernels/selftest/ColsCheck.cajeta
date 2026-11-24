@@ -1,0 +1,56 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemvWave;
+
+/** {@link ColsTest}'s check over one K piece `P`: `ncols` token rows against `rows` rows, each column bitwise the one-row member on its token, set then added. */
+public final class ColsCheck<P> {
+    public ColsCheck() { return; }
+
+    public void check(int8[] file, int64 rows, int64 bpr, int64 ncols) {
+        int64 bb = (int64) P.blockBytes();
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        int8[] hx #= BlockGemmRefTest.acts(ncols * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (rows * bpr * bb));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (ncols * bpr * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (ncols * rows));
+        KernelBuffer<float32> y1 = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(file);
+        xp.upload(hx);
+        float32[] seed #= heap float32[ncols * rows];
+        int64 i = 0L;
+        while (i < ncols * rows) { seed[i] = 0.25f * (float32) (i % 5L); i = i + 1L; }
+        float32[] got #= heap float32[ncols * rows];
+        float32[] one #= heap float32[rows];
+        BlockGemvWave<P, 1, 0> m = heap BlockGemvWave<P, 1, 0>();
+        KernelStream st #= KernelStream.current();
+        int32 pass = 0;
+        while (pass < 2) {
+            y.upload(seed);
+            m.runColsOn(st, y, w, xp, rows, bpr * 256L, 0L, ncols, rows, bpr * 320L, pass == 1, 2L, wv);
+            st.sync();
+            y.download(got);
+            int64 c = 0L;
+            while (c < ncols) {
+                KernelBuffer<int8> xc #= xp.slice((uint64) (c * bpr * 320L), (uint64) (bpr * 320L));
+                m.runOn(st, y1, w, xc, rows, bpr * 256L, 0L, false, 1L, wv);
+                st.sync();
+                y1.download(one);
+                int64 r = 0L;
+                while (r < rows) {
+                    float32 want = one[r];
+                    if (pass == 1) { want = seed[c * rows + r] + one[r]; }
+                    Assert.isTrue(Cajeta.f32ToBits(got[c * rows + r]) == Cajeta.f32ToBits(want));
+                    r = r + 1L;
+                }
+                c = c + 1L;
+            }
+            pass = pass + 1;
+        }
+    }
+}

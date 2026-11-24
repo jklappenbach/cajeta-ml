@@ -1,0 +1,31 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import dev.cajeta.ml.kernels.quant.Q40Block;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 9.1.8: the GPU batched decode, each column bitwise the one-token member on its token. */
+public class ColsTest {
+    public ColsTest() { return; }
+
+    @Test
+    public void eachColumnEqualsTheOneTokenMember() {
+        String k = "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q4kBlock_1_0_colsWave";
+        if (!Device.kernelUsable(k)) { DeviceSkip.noKernel(k, "the wave decode driver is the GPU's (kernel-drivers 9.1.8)"); return; }
+        int64[] m #= ValueCheck.mark();
+        int8[] f4 #= BlockGemmRefTest.weight(37L * 9L);
+        int8[] f6 #= Q6kBlockTest.weight(37L * 9L);
+        heap ColsCheck<Q4kBlock>().check(f4, 37L, 9L, 3L);
+        heap ColsCheck<Q4kBlock>().check(f4, 37L, 9L, 8L);
+        heap ColsCheck<Q6kBlock>().check(f6, 37L, 9L, 8L);
+        heap Block32ColsCheck<Q80Block>().check(8L);
+        heap Block32ColsCheck<Q50Block>().check(5L);
+        heap Block32ColsCheck<Q40Block>().check(2L);
+        ValueCheck.credit(m);
+    }
+}

@@ -166,6 +166,68 @@ public final class Block32GemvWave<P, uint32 R> {
         }
     }
 
+    /** One column's step for block `wb` (scale `d`) of the row at `rb`: the column's q8_K row at `xp[xc ..)`. */
+    @Device
+    static float32 colAcc(float32 acc, float32 d, KernelBuffer<int8> w, int64 rb, int64 pre, int64 bs, int64 wb, KernelBuffer<int8> xp, int64 xc) {
+        int64 xb = xc + (wb / 8L) * 320L;
+        Vector<int32,8> aw = xp.vload<32>(xb + (wb % 8L) * 32L, align: 16).asWords();
+        Vector<int32,1> xw = xp.vload<4>(xb + 288L, align: 4).asWords();
+        float32 xs = Cajeta.bitsToF32(xw[0]);
+        int32 og = 0;
+        if (P.fileOffset() != 0) { og = P.fileOffset() * Q8kAct.subSum(xp, xb, (uint32) (wb % 8L)); }
+        return acc + d * xs * (float32) (Block32GemvWave.dot(w, rb + pre + wb * bs, aw) - og);
+    }
+
+    /** The batched decode: up to eight q8_K token rows `xpStride` bytes apart against one row a wave; column `c` to `y[yOff + c * yStride + r]`, each bitwise the one-row member for that token. */
+    @Kernel(targets = {"gpu"})
+    @Occupancy(maxThreads = 256)
+    public static void colsWave(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+            uint32 rows, int64 nb, int64 yOff, uint32 accum, uint32 ncols, uint32 yStride, uint32 xpStride) {
+        int64 xps = (int64) ((xpStride >> 4) << 4);
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 pre = ((nb * 2L + 3L) / 4L) * 4L;
+        int64 bs = (int64) (P.planeBytes() + 4 * P.quads());
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            int64 rb = (int64) row * (pre + nb * bs);
+            int64 wb = (int64) lane;
+            while (wb < nb) {
+                float32 d = Block32GemvWave.dAt(w, rb + 2L * wb);
+                c0 = Block32GemvWave.colAcc(c0, d, w, rb, pre, bs, wb, xp, 0L);
+                if (ncols > 1) { c1 = Block32GemvWave.colAcc(c1, d, w, rb, pre, bs, wb, xp, xps); }
+                if (ncols > 2) { c2 = Block32GemvWave.colAcc(c2, d, w, rb, pre, bs, wb, xp, 2L * xps); }
+                if (ncols > 3) { c3 = Block32GemvWave.colAcc(c3, d, w, rb, pre, bs, wb, xp, 3L * xps); }
+                if (ncols > 4) { c4 = Block32GemvWave.colAcc(c4, d, w, rb, pre, bs, wb, xp, 4L * xps); }
+                if (ncols > 5) { c5 = Block32GemvWave.colAcc(c5, d, w, rb, pre, bs, wb, xp, 5L * xps); }
+                if (ncols > 6) { c6 = Block32GemvWave.colAcc(c6, d, w, rb, pre, bs, wb, xp, 6L * xps); }
+                if (ncols > 7) { c7 = Block32GemvWave.colAcc(c7, d, w, rb, pre, bs, wb, xp, 7L * xps); }
+                wb = wb + (int64) wv;
+            }
+        }
+        WaveCols.store(y, row, rows, yOff, yStride, accum, ncols, lane, c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    /** The batched decode on `s`: `ncols` (1 to 8) token rows `xpStride` bytes apart (a multiple of 16), column `c` into `y[yOff + c * yStride ..)`. */
+    public void runColsOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+            int64 rows, int64 nb, int64 yOff, int64 ncols, int64 yStride, int64 xpStride, boolean accum,
+            int64 wavesPerBlock, int64 waveWidth) {
+        int64 groups = (rows + wavesPerBlock - 1L) / wavesPerBlock;
+        colsWave.launch(s, grid: [(uint32) groups], block: [(uint32) (wavesPerBlock * waveWidth)])
+            (y, w, xp, (uint32) rows, nb, yOff, accum ? 1 : 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
+    }
+
+    /** The column kernel's registered name. */
+    public #String colsKernel() { return "" + colsWave.registeredName(); }
+
     /** `y[yOff + r]` set (or added to) for `rows` rows of `nb` blocks in {@link #pack}'s layout against one q8_K token `xp` (a scale per block), `wavesPerBlock` waves a workgroup. Queued on `s`. */
     public void runOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
             int64 rows, int64 nb, int64 yOff, boolean accum, int64 wavesPerBlock, int64 waveWidth) {

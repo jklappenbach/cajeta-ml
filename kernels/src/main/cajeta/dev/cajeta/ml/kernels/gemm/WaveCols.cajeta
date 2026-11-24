@@ -1,0 +1,48 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.Wave;
+
+/** The batched decode drivers' shared epilogue (kernel-drivers plan 9.1.8): a wave's per-column sums reduced and stored. */
+public final class WaveCols {
+    public WaveCols() { return; }
+
+    /** Each column's wave sum to `y[yOff + c * yStride + row]` from lane 0, set or added. */
+    @Device
+    public static void store(KernelBuffer<float32> y, uint32 row, uint32 rows, int64 yOff, uint32 yStride, uint32 accum,
+            uint32 ncols, uint32 lane, float32 c0, float32 c1, float32 c2, float32 c3, float32 c4, float32 c5,
+            float32 c6, float32 c7) {
+        float32 t0 = Wave.reduceSumF32(c0);
+        float32 t1 = 0.0f;
+        float32 t2 = 0.0f;
+        float32 t3 = 0.0f;
+        float32 t4 = 0.0f;
+        float32 t5 = 0.0f;
+        float32 t6 = 0.0f;
+        float32 t7 = 0.0f;
+        if (ncols > 1) { t1 = Wave.reduceSumF32(c1); }
+        if (ncols > 2) { t2 = Wave.reduceSumF32(c2); }
+        if (ncols > 3) { t3 = Wave.reduceSumF32(c3); }
+        if (ncols > 4) { t4 = Wave.reduceSumF32(c4); }
+        if (ncols > 5) { t5 = Wave.reduceSumF32(c5); }
+        if (ncols > 6) { t6 = Wave.reduceSumF32(c6); }
+        if (ncols > 7) { t7 = Wave.reduceSumF32(c7); }
+        if (lane == 0 && row < rows) {
+            int64 o = yOff + (int64) row;
+            int64 st = (int64) yStride;
+            WaveCols.put(y, o, t0, accum);
+            if (ncols > 1) { WaveCols.put(y, o + st, t1, accum); }
+            if (ncols > 2) { WaveCols.put(y, o + 2L * st, t2, accum); }
+            if (ncols > 3) { WaveCols.put(y, o + 3L * st, t3, accum); }
+            if (ncols > 4) { WaveCols.put(y, o + 4L * st, t4, accum); }
+            if (ncols > 5) { WaveCols.put(y, o + 5L * st, t5, accum); }
+            if (ncols > 6) { WaveCols.put(y, o + 6L * st, t6, accum); }
+            if (ncols > 7) { WaveCols.put(y, o + 7L * st, t7, accum); }
+        }
+    }
+
+    @Device
+    static void put(KernelBuffer<float32> y, int64 o, float32 v, uint32 accum) {
+        if (accum != 0) { y[o] = y[o] + v; } else { y[o] = v; }
+    }
+}
