@@ -102,16 +102,14 @@ public final class Q2kBlock {
 
     /** {@link #lowWords} on 32 bytes. */
     @Device
-    public static Vector<uint8,32> lowBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) {
-        Vector<int32,8> v = (q.asSigned().asWords() >> (4 * (g & 1))) & 50529027;
-        return v.asBytes().asUnsigned();
+    public static Vector<uint8,N> lowBytes<uint32 N>(Vector<uint8,N> q, Vector<uint8,N> plane, int32 g) {
+        return ((q.asSigned().asWords() >> (4 * (g & 1))) & 50529027).asBytes().asUnsigned();
     }
 
     /** {@link #highWords} on 32 bytes. */
     @Device
-    public static Vector<uint8,32> highBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) {
-        Vector<int32,8> v = (q.asSigned().asWords() >> (4 * (g & 1) + 2)) & 50529027;
-        return v.asBytes().asUnsigned();
+    public static Vector<uint8,N> highBytes<uint32 N>(Vector<uint8,N> q, Vector<uint8,N> plane, int32 g) {
+        return ((q.asSigned().asWords() >> (4 * (g & 1) + 2)) & 50529027).asBytes().asUnsigned();
     }
 
     @Device

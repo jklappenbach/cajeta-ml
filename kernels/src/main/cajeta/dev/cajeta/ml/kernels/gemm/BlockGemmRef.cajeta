@@ -25,8 +25,8 @@ import dev.cajeta.ml.kernels.quant.Q8kAct;
  * of `quantBytes()` (two runs read the same bytes when a byte holds four values), each
  * holding two streams of 32 consecutive values, `lowStream(g)` in its low nibbles and
  * `highStream(g)` in its high ones, with further bits in the side plane's run `planeRun(g)`
- * (`planeOffset()`, `planeBytes()`); `lowBytes`/`highBytes` and `lowWords`/`highWords` unpack a
- * run's bytes. `offset()`, when not 0, says a value is `d * scale * (q - offset)` with no min table.
+ * (`planeOffset()`, `planeBytes()`); `lowBytes<N>`/`highBytes<N>` (on N bytes, any width) and
+ * `lowWords`/`highWords` unpack a run's bytes. `offset()`, when not 0, says a value is `d * scale * (q - offset)` with no min table.
  *
  * The combine is over a span: one sub-block's values against the activations at the same
  * indices, summed in int32. The cpu driver maps it to dot instructions on 32-byte vectors and the

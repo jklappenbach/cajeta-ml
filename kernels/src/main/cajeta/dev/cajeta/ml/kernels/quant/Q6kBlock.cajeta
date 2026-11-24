@@ -106,16 +106,14 @@ public final class Q6kBlock {
 
     /** {@link #lowWords} on 32 bytes, with their high bits from the run's `qh` bytes. */
     @Device
-    public static Vector<uint8,32> lowBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) {
-        Vector<int32,8> bits = ((plane.asSigned().asWords() >> (2 * (g & 1))) & 50529027) << 4;
-        return (q & 15) | bits.asBytes().asUnsigned();
+    public static Vector<uint8,N> lowBytes<uint32 N>(Vector<uint8,N> q, Vector<uint8,N> plane, int32 g) {
+        return (q & 15) | (((plane.asSigned().asWords() >> (2 * (g & 1))) & 50529027) << 4).asBytes().asUnsigned();
     }
 
     /** {@link #highWords} on 32 bytes. */
     @Device
-    public static Vector<uint8,32> highBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) {
-        Vector<int32,8> bits = ((plane.asSigned().asWords() >> (2 * (g & 1) + 4)) & 50529027) << 4;
-        return ((q >> 4) & 15) | bits.asBytes().asUnsigned();
+    public static Vector<uint8,N> highBytes<uint32 N>(Vector<uint8,N> q, Vector<uint8,N> plane, int32 g) {
+        return ((q >> 4) & 15) | (((plane.asSigned().asWords() >> (2 * (g & 1) + 4)) & 50529027) << 4).asBytes().asUnsigned();
     }
 
     @Device

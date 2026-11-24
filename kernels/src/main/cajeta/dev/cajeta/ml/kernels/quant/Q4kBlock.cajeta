@@ -107,11 +107,15 @@ public final class Q4kBlock {
 
     /** The low-nibble quants of 32 quant bytes of the pair `g`: for file bytes `32 g + i`, values `64 g + i`. */
     @Device
-    public static Vector<uint8,32> lowBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) { return q & 15; }
+    public static Vector<uint8,N> lowBytes<uint32 N>(Vector<uint8,N> q, Vector<uint8,N> plane, int32 g) {
+        return q & 15;
+    }
 
     /** The high-nibble quants of 32 quant bytes of the pair `g`: for file bytes `32 g + i`, values `64 g + 32 + i`. */
     @Device
-    public static Vector<uint8,32> highBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) { return (q >> 4) & 15; }
+    public static Vector<uint8,N> highBytes<uint32 N>(Vector<uint8,N> q, Vector<uint8,N> plane, int32 g) {
+        return (q >> 4) & 15;
+    }
 
     /** {@link #add} for eight rows at once, one row a lane. */
     @Device
