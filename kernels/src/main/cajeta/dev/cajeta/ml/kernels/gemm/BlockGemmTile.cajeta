@@ -12,6 +12,8 @@ import cajeta.xpu.Unroll;
 import cajeta.xpu.Vector;
 import cajeta.xpu.WaveVector;
 import cajeta.lang.String;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 import dev.cajeta.ml.kernels.quant.Q5kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
@@ -27,13 +29,16 @@ import dev.cajeta.ml.kernels.quant.Q6kBlock;
  * words into its two value streams (`lowWords`, `highWords`) and where those streams lie. With
  * 32-value sub-blocks the integer fold runs every two multiplies, the min term is a rank-1
  * update and a column's eight scales lie together in shared memory; with 16-value sub-blocks the
- * fold runs every multiply and the scales lie scale-major, a wave's slice a run of words. A piece with an offset has its quants
- * staged less the offset and no min term. cajeta-llm's `QkTile` and `Q6Tile` are this kernel with
+ * fold runs every multiply, the scales lie scale-major (a wave's slice a run of words) and the
+ * min term takes its 16-value activation sums from the staged chunks. A piece with an offset has
+ * its quants staged less the offset and no min term. cajeta-llm's `QkTile` and `Q6Tile` are this kernel with
  * the Q4_K and Q6_K decodes written in.
  */
-@Instantiate({BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128>,
+@Instantiate(value = {BlockGemmTile<Q4kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q4kBlock, 128, 128, 32, 64, 128>,
     BlockGemmTile<Q5kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q5kBlock, 128, 128, 32, 64, 128>,
-    BlockGemmTile<Q6kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q6kBlock, 128, 128, 32, 64, 128>})
+    BlockGemmTile<Q6kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q6kBlock, 128, 128, 32, 64, 128>,
+    BlockGemmTile<Q3kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q3kBlock, 128, 128, 32, 64, 128>,
+    BlockGemmTile<Q2kBlock, 64, 64, 32, 32, 128>, BlockGemmTile<Q2kBlock, 128, 128, 32, 64, 128>}, max = 16)
 @Requires(TM == TN && TM % WM == 0 && TN % WN == 0 && WM % 16 == 0 && WN % 16 == 0
     && (TM / WM) * (TN / WN) * 16 == TN && KS == 128 && (WN / 16) % 2 == 0)
 @Unfused
@@ -111,6 +116,8 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
         uint32 cw = i0 + WN * wc;
         uint32 sCol = tid >> 1;
         uint32 sH = tid & 1;
+        uint32 late = 0;
+        if (P.subValues() == 16 && P.offset() == 0) { late = 1; }
         if (t0 < rows && i0 < outDim) {
             int64 rowBytes = blocksPerRow * (int64) P.blockBytes();
             int64 xRowBytes = blocksPerRow * 320L;
@@ -145,8 +152,8 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
             Vector<int32,4> pa1 = xp.vload<16>(aSrc0 + xrP).asWords();
             Vector<int32,4> pa2 = xp.vload<16>(aSrc0 + xrP + xrP).asWords();
             Vector<int32,4> pa3 = xp.vload<16>(aSrc0 + xrP + xrP + xrP).asWords();
-            Vector<int32,4> pb0 = packed.vload<16>(sRo + (int64) (P.quantOffset() + 32 * sH)).asWords();
-            Vector<int32,4> pb1 = packed.vload<16>(sRo + (int64) (P.quantOffset() + 16 + 32 * sH)).asWords();
+            Vector<int32,4> pb0 = packed.vload<16>(sRo + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) sH))).asWords();
+            Vector<int32,4> pb1 = packed.vload<16>(sRo + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) sH)) + 16L).asWords();
             Vector<int32,4> pq0 = pb0;
             Vector<int32,4> pq1 = pb0;
             Vector<int32,1> px = xp.vload<4>(sXb + 288L).asWords();
@@ -154,7 +161,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                 pq0 = packed.vload<16>(sRo + (int64) P.headOffset()).asWords();
                 pq1 = pq0;
                 if (P.head2Offset() != P.headOffset()) { pq1 = packed.vload<16>(sRo + (int64) P.head2Offset()).asWords(); }
-            } else if (P.offset() == 0) {
+            } else if (P.offset() == 0 && P.subValues() == 32) {
                 pq0 = xp.vload<16>(sXb + 256L).asWords();
                 pq1 = xp.vload<16>(sXb + 272L).asWords();
             }
@@ -169,6 +176,22 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                 aT.vstore(aDst + (int64) aDstP, pa1.asBytes());
                 aT.vstore(aDst + (int64) (2 * aDstP), pa2.asBytes());
                 aT.vstore(aDst + (int64) (3 * aDstP), pa3.asBytes());
+                int32 bs0 = 0;
+                int32 bs1 = 0;
+                int32 bs2 = 0;
+                int32 bs3 = 0;
+                if (late != 0) {
+                    Vector<int32,4> az = pa0 ^ pa0;
+                    Vector<uint8,16> ones = (pa0.asBytes().asUnsigned() ^ pa0.asBytes().asUnsigned()) | 1;
+                    Vector<int32,4> sv = ones.dotAccum(pa0.asBytes(), az);
+                    bs0 = sv[0] + sv[1] + sv[2] + sv[3];
+                    sv = ones.dotAccum(pa1.asBytes(), az);
+                    bs1 = sv[0] + sv[1] + sv[2] + sv[3];
+                    sv = ones.dotAccum(pa2.asBytes(), az);
+                    bs2 = sv[0] + sv[1] + sv[2] + sv[3];
+                    sv = ones.dotAccum(pa3.asBytes(), az);
+                    bs3 = sv[0] + sv[1] + sv[2] + sv[3];
+                }
                 {
                     int32 pair = (int32) (2 * H + sH);
                     int64 dl = (int64) (sCol * 144) + (int64) (32 * (P.lowStream(pair) & 3));
@@ -197,7 +220,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                             if (P.subBlocks() == 16) { sc16[(uint32) j * TN + sCol] = P.scaleOf(ha, hb, (uint32) j); }
                             else if (j < 8L) { scAll[sCol * 8 + (uint32) j] = P.scaleOf(ha, hb, (uint32) j); }
                         }
-                        if (P.offset() == 0) {
+                        if (P.offset() == 0 && P.subValues() == 32) {
                             float32 dmv = P.dminOf(ha, hb);
                             uint32 cb = sCol * 8;
                             cgAll[cb] = 0.0f - dmv * (float32) P.minOf(ha, hb, 0);
@@ -213,7 +236,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                         Vector<int32,1> xw = px;
                         float32 xv = Cajeta.bitsToF32(xw[0]);
                         xsAll[sCol] = xv;
-                        if (P.offset() == 0) {
+                        if (P.offset() == 0 && P.subValues() == 32) {
                             Vector<int32,4> q0 = pq0;
                             Vector<int32,4> q1 = pq1;
                             uint32 rb = (sCol >> 4) * 128 + (sCol & 15);
@@ -228,6 +251,15 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                         }
                     }
                 }
+                if (late != 0 && sH == 0) {
+                    Vector<int32,4> ha = pq0;
+                    Vector<int32,4> hb = pq1;
+                    float32 dmv = P.dminOf(ha, hb);
+                    for (int64 j = Unroll.from(0L); j < 8L; j = j + 1L) {
+                        if (H == 0) { cgAll[(uint32) j * TN + sCol] = 0.0f - dmv * (float32) P.minOf(ha, hb, (uint32) j); }
+                        else { cgAll[(uint32) j * TN + sCol] = 0.0f - dmv * (float32) P.minOf(ha, hb, 8 + (uint32) j); }
+                    }
+                }
                 if (hh + 1 < nh) {
                     int64 nb = (int64) ((hh + 1) >> 1);
                     uint32 nH = (hh + 1) & 1;
@@ -239,7 +271,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                     pa2 = xp.vload<16>(aS).asWords();
                     aS = aS + xrP;
                     pa3 = xp.vload<16>(aS).asWords();
-                    int64 bS = sRo + nb * (int64) P.blockBytes() + (int64) (P.quantOffset() + 64 * nH + 32 * sH);
+                    int64 bS = sRo + nb * (int64) P.blockBytes() + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) (2 * nH + sH)));
                     pb0 = packed.vload<16>(bS).asWords();
                     pb1 = packed.vload<16>(bS + 16L).asWords();
                     if (nH == 0) {
@@ -251,7 +283,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                             }
                         } else {
                             int64 xb = sXb + nb * 320L;
-                            if (P.offset() == 0) {
+                            if (P.offset() == 0 && P.subValues() == 32) {
                                 pq0 = xp.vload<16>(xb + 256L).asWords();
                                 pq1 = xp.vload<16>(xb + 272L).asWords();
                             }
@@ -260,6 +292,14 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                     }
                 }
                 Barrier.workgroup();
+                if (late != 0) {
+                    uint32 aTokP = TM / 4;
+                    rgAll[aPart * TM + aRow0] = xsAll[aRow0] * (float32) bs0;
+                    rgAll[aPart * TM + aRow0 + aTokP] = xsAll[aRow0 + aTokP] * (float32) bs1;
+                    rgAll[aPart * TM + aRow0 + 2 * aTokP] = xsAll[aRow0 + 2 * aTokP] * (float32) bs2;
+                    rgAll[aPart * TM + aRow0 + 3 * aTokP] = xsAll[aRow0 + 3 * aTokP] * (float32) bs3;
+                    Barrier.workgroup();
+                }
 
                 if (H == 0) {
                     for (uint32 i = 0; i < WM / 16; i = i + 1) {
@@ -284,6 +324,14 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                             for (uint32 n = 0; n < WN / 16; n = n + 1) { mc[n].mma(ma, mb[n]); }
                             for (uint32 n = 0; n < WN / 16; n = n + 1) {
                                 TileOps.scaledAccumI32(mc[n], iacc[i][n], sc16, sj + 16 * n, 1);
+                            }
+                        }
+                        if (P.offset() == 0) {
+                            for (uint32 n = 0; n < WN / 16; n = n + 1) {
+                                WaveVector<float32, 16> cg = WaveVector.ofSlice(cgAll, sBase + jj * TN + 16 * n, 1);
+                                for (uint32 i = 0; i < WM / 16; i = i + 1) {
+                                    facc[i][n].rank1Accum(rgAll[jj * TM + WM * wr + 16 * i], cg);
+                                }
                             }
                         }
                         jj = jj + 1;

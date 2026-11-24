@@ -18,6 +18,14 @@ public final class Q5kBlock {
     @Device
     public static uint32 quantOffset() { return 48; }
 
+    /** Bytes of quants in a block. */
+    @Device
+    public static uint32 quantBytes() { return 128; }
+
+    /** Which 32-byte run of the quants the run `g` reads. */
+    @Device
+    public static int32 quantRun(int32 g) { return g; }
+
     @Device
     public static uint32 subBlocks() { return 8; }
 

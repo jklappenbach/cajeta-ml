@@ -1,0 +1,133 @@
+package dev.cajeta.ml.kernels.quant;
+
+import cajeta.xpu.Vector;
+
+/**
+ * The Q3_K block as pieces (kernel-drivers spec §2.4): 256 values in 110 bytes,
+ * { u8 hmask[32]; u8 qs[64]; u8 scales[12]; f16 d }, sixteen sub-blocks of 16 values with a 6-bit
+ * scale each, stored less 32. A quant is two bits of `qs` and one of `hmask`, 0..7, and a value is
+ * `d * scale * (q - 4)`. A `qs` byte holds four values 32 apart, so two quant runs read the same
+ * 32 bytes. It meets the block piece contract stated on
+ * {@link dev.cajeta.ml.kernels.gemm.BlockGemmRef}.
+ */
+public final class Q3kBlock {
+    public Q3kBlock() { return; }
+
+    @Device
+    public static uint32 blockBytes() { return 110; }
+
+    @Device
+    public static uint32 quantOffset() { return 32; }
+
+    @Device
+    public static uint32 quantBytes() { return 64; }
+
+    @Device
+    public static int32 quantRun(int32 g) { return g >> 1; }
+
+    @Device
+    public static uint32 subBlocks() { return 16; }
+
+    @Device
+    public static uint32 subValues() { return 16; }
+
+    /** Four bytes before the twelve scale bytes, so words 1 to 3 are the scales. */
+    @Device
+    public static uint32 headOffset() { return 92; }
+
+    /** The block's last 16 bytes, `d` in the top half of word 3. */
+    @Device
+    public static uint32 head2Offset() { return 94; }
+
+    @Device
+    public static uint32 offset() { return 4; }
+
+    @Device
+    public static uint32 planeBytes() { return 32; }
+
+    @Device
+    public static uint32 planeOffset() { return 0; }
+
+    @Device
+    public static int32 planeRun(int32 g) { return 0; }
+
+    @Device
+    public static int32 lowStream(int32 g) { return 2 * g; }
+
+    @Device
+    public static int32 highStream(int32 g) { return 2 * g + 1; }
+
+    @Device
+    public static float32 dOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.halfBits((hb[3] >> 16) & 65535); }
+
+    @Device
+    public static float32 dminOf(Vector<int32,4> ha, Vector<int32,4> hb) { return 0.0f; }
+
+    /** Sub-block `j`'s scale, -32..31: a nibble of scale bytes 0..7 and two bits of bytes 8..11. */
+    @Device
+    public static int32 scaleOf(Vector<int32,4> ha, Vector<int32,4> hb, uint32 j) {
+        int32 lw = ha[1];
+        if ((j & 7) >= 4) { lw = ha[2]; }
+        int32 sh = (int32) (8 * (j & 3));
+        int32 nib = (((lw >> sh) & 255) >> (int32) (4 * (j >> 3))) & 15;
+        int32 hi = (((ha[3] >> sh) & 255) >> (int32) (2 * (j >> 2))) & 3;
+        return (nib | (hi << 4)) - 32;
+    }
+
+    @Device
+    public static int32 minOf(Vector<int32,4> ha, Vector<int32,4> hb, uint32 j) { return Q3kBlock.scaleOf(ha, hb, j); }
+
+    /** Offset in a block of the `qs` byte that holds value `k`'s two bits. */
+    @Device
+    public static uint32 quantByte(uint32 k) { return 32 + 32 * (k >> 7) + (k & 31); }
+
+    /** Offset in a block of the `hmask` byte that holds value `k`'s high bit. */
+    @Device
+    public static uint32 planeByte(uint32 k) { return k & 31; }
+
+    /** Value `k`'s quant, 0..7, from its `qs` and `hmask` bytes. */
+    @Device
+    public static int32 quant(int32 b, int32 plane, uint32 k) {
+        int32 s = (int32) (k >> 5);
+        return ((b >> (2 * (s & 3))) & 3) | (((plane >> s) & 1) << 2);
+    }
+
+    /** Stream `2 g` of four `qs` words of run `g`, with its high bits from the `hmask` words. */
+    @Device
+    public static Vector<int32,4> lowWords(Vector<int32,4> quants, Vector<int32,4> plane, int32 g) {
+        return ((quants >> (4 * (g & 1))) & 50529027) | (((plane >> (2 * g)) & 16843009) << 2);
+    }
+
+    /** Stream `2 g + 1` of four `qs` words of run `g`. */
+    @Device
+    public static Vector<int32,4> highWords(Vector<int32,4> quants, Vector<int32,4> plane, int32 g) {
+        return ((quants >> (4 * (g & 1) + 2)) & 50529027) | (((plane >> (2 * g + 1)) & 16843009) << 2);
+    }
+
+    /** {@link #lowWords} on 32 bytes. */
+    @Device
+    public static Vector<uint8,32> lowBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) {
+        Vector<int32,8> v = ((q.asSigned().asWords() >> (4 * (g & 1))) & 50529027)
+            | (((plane.asSigned().asWords() >> (2 * g)) & 16843009) << 2);
+        return v.asBytes().asUnsigned();
+    }
+
+    /** {@link #highWords} on 32 bytes. */
+    @Device
+    public static Vector<uint8,32> highBytes(Vector<uint8,32> q, Vector<uint8,32> plane, int32 g) {
+        Vector<int32,8> v = ((q.asSigned().asWords() >> (4 * (g & 1) + 2)) & 50529027)
+            | (((plane.asSigned().asWords() >> (2 * g + 1)) & 16843009) << 2);
+        return v.asBytes().asUnsigned();
+    }
+
+    @Device
+    public static float32 add(float32 acc, float32 d, float32 dmin, float32 xs, int32 isum, int32 msum) {
+        return acc + d * xs * (float32) (isum - msum * 4);
+    }
+
+    @Device
+    public static Vector<float32,8> add8(Vector<float32,8> acc, Vector<float32,8> d, Vector<float32,8> dmin,
+            float32 xs, Vector<int32,8> isum, Vector<int32,8> msum) {
+        return acc + d * xs * (isum - msum * 4).toF32();
+    }
+}

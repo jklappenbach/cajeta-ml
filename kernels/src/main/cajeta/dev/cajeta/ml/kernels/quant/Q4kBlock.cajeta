@@ -21,6 +21,14 @@ public final class Q4kBlock {
     @Device
     public static uint32 quantOffset() { return 16; }
 
+    /** Bytes of quants in a block. */
+    @Device
+    public static uint32 quantBytes() { return 128; }
+
+    /** Which 32-byte run of the quants the run `g` reads. */
+    @Device
+    public static int32 quantRun(int32 g) { return g; }
+
     /** Sub-blocks in a block, each with its own scale and min. */
     @Device
     public static uint32 subBlocks() { return 8; }

@@ -21,7 +21,8 @@ import dev.cajeta.ml.kernels.quant.Q8kAct;
  * `add(acc, d, dmin, xs, isum, msum)`, the block's float step, where `isum` is the sum over
  * sub-blocks of scale times dot and `msum` of min times the sub-block's activation sum.
  *
- * For the drivers a block is also four runs of 32 quant bytes, `quantOffset() + 32 g ..`, each
+ * For the drivers a block is also four runs of 32 quant bytes, `quantOffset() + 32 quantRun(g) ..`
+ * of `quantBytes()` (two runs read the same bytes when a byte holds four values), each
  * holding two streams of 32 consecutive values, `lowStream(g)` in its low nibbles and
  * `highStream(g)` in its high ones, with further bits in the side plane's run `planeRun(g)`
  * (`planeOffset()`, `planeBytes()`); `lowBytes`/`highBytes` and `lowWords`/`highWords` unpack a

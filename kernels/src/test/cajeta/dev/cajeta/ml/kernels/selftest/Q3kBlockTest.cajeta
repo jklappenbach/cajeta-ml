@@ -1,0 +1,148 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemm;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRows8;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 8.2: the Q3_K pieces, through the GEMM from pieces, the cpu row driver and the entry. */
+public class Q3kBlockTest {
+    public Q3kBlockTest() { return; }
+
+    static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
+
+    static #int8[] weight(int64 blocks) {
+        int8[] raw #= heap int8[blocks * 110L];
+        int64 seed = 991L;
+        int64 i = 0L;
+        while (i < blocks * 110L) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            raw[i] = (int8) ((seed >> 16) % 256L);
+            i = i + 1L;
+        }
+        int64 b = 0L;
+        while (b < blocks) {
+            raw[b * 110L + 109L] = (int8) (44 + (int32) (b % 4L));
+            b = b + 1L;
+        }
+        return #raw;
+    }
+
+    /** Element `k` of the block at `ro` as the format defines it, in float64. */
+    static float64 element(int8[] raw, int64 ro, int64 k) {
+        float64 d = (float64) Q4kBlock.halfBits(Q3kBlockTest.u8(raw, ro + 108L) | (Q3kBlockTest.u8(raw, ro + 109L) << 8));
+        int64 j = k / 16L;
+        int32 b0 = Q3kBlockTest.u8(raw, ro + 96L + j % 8L);
+        int32 nib = j < 8L ? (b0 & 15) : (b0 >> 4);
+        int32 hb = Q3kBlockTest.u8(raw, ro + 104L + j % 4L);
+        int32 sc = (nib | (((hb >> (int32) (2L * (j / 4L))) & 3) << 4)) - 32;
+        int64 s = k / 32L;
+        int64 i = k % 32L;
+        int32 q = (Q3kBlockTest.u8(raw, ro + 32L + 32L * (k / 128L) + i) >> (int32) (2L * (s % 4L))) & 3;
+        q = q + 4 * ((Q3kBlockTest.u8(raw, ro + i) >> (int32) s) & 1);
+        return d * (float64) sc * (float64) (q - 4);
+    }
+
+    @Test
+    public void theGemmFromTheQ6kPiecesEqualsDecodeThenMultiply() {
+        String name = "BlockGemmRef_dev_cajeta_ml_kernels_quant_Q3kBlock_ref";
+        if (!Device.kernelAvailable(name)) {
+            DeviceSkip.noKernel(name, "kernel-drivers 8.2.1");
+            return;
+        }
+        int64 rows = 13L;
+        int64 tokens = 5L;
+        int64 bpr = 3L;
+        int8[] hw #= Q3kBlockTest.weight(rows * bpr);
+        int8[] hx #= BlockGemmRefTest.acts(tokens * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (rows * bpr * 110L));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * bpr * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (tokens * rows));
+        w.upload(hw);
+        xp.upload(hx);
+        int64[] m #= ValueCheck.mark();
+        BlockGemmRef<Q3kBlock> g = heap BlockGemmRef<Q3kBlock>();
+        g.run(y, w, xp, rows, tokens, bpr, rows, false);
+        KernelStream st #= KernelStream.current();
+        st.sync();
+        float32[] got #= heap float32[tokens * rows];
+        y.download(got);
+        int64 t = 0L;
+        while (t < tokens) {
+            int64 r = 0L;
+            while (r < rows) {
+                float64 want = 0.0;
+                float64 mag = 1.0;
+                int64 b = 0L;
+                while (b < bpr) {
+                    float64 xs = (float64) Cajeta.bitsToF32(BlockGemmRefTest.word(hx, (t * bpr + b) * 320L + 288L));
+                    int64 k = 0L;
+                    while (k < 256L) {
+                        float64 term = Q3kBlockTest.element(hw, (r * bpr + b) * 110L, k) * xs * (float64) hx[(t * bpr + b) * 320L + k];
+                        want = want + term;
+                        mag = mag + (term < 0.0 ? 0.0 - term : term);
+                        k = k + 1L;
+                    }
+                    b = b + 1L;
+                }
+                float64 diff = (float64) got[t * rows + r] - want;
+                if (diff < 0.0) { diff = 0.0 - diff; }
+                Assert.isTrue(diff <= 1.0e-5 * mag);
+                r = r + 1L;
+            }
+            t = t + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void theOperationByNameEqualsTheGemmFromTheQ6kPieces() {
+        String ref = "BlockGemmRef_dev_cajeta_ml_kernels_quant_Q3kBlock_ref";
+        int64 tokens = 128L;
+        int64 outDim = 256L;
+        int64 cols = 512L;
+        int64 bpr = cols / 256L;
+        BlockGemm<Q3kBlock> op = heap BlockGemm<Q3kBlock>();
+        String kernel #= op.kernelFor(tokens, outDim, cols);
+        if (!Device.kernelAvailable(ref) || !Device.kernelUsable(kernel)) {
+            DeviceSkip.noKernel(kernel, "kernel-drivers 8.2");
+            return;
+        }
+        int8[] file #= Q3kBlockTest.weight(outDim * bpr);
+        int8[] hx #= BlockGemmRefTest.acts(tokens * bpr);
+        KernelBuffer<int8> wf = heap KernelBuffer<int8>((uint64) (outDim * bpr * 110L));
+        KernelBuffer<int8> w #= op.load(file, 0L, outDim, cols);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * bpr * 320L));
+        KernelBuffer<float32> ya = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> yb = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        wf.upload(file);
+        xp.upload(hx);
+        float32[] ga #= heap float32[tokens * outDim];
+        float32[] gb #= heap float32[tokens * outDim];
+        BlockGemmRef<Q3kBlock> g = heap BlockGemmRef<Q3kBlock>();
+        int64[] m #= ValueCheck.mark();
+        KernelStream st #= KernelStream.current();
+        g.run(ya, wf, xp, outDim, tokens, bpr, outDim, false);
+        op.run(st, yb, w, xp, tokens, outDim, cols, false);
+        st.sync();
+        ya.download(ga);
+        yb.download(gb);
+        int64 i = 0L;
+        while (i < tokens * outDim) {
+            float32 d = ga[i] - gb[i];
+            if (d < 0.0f) { d = 0.0f - d; }
+            float32 mag = ga[i] < 0.0f ? 0.0f - ga[i] : ga[i];
+            Assert.isTrue(d <= 0.001f * (1.0f + mag));
+            i = i + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+}
