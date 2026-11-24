@@ -154,4 +154,18 @@ public class Block32GemmTest {
         while (i < bytes) { Assert.isTrue(got[i] == want[i]); i = i + 1L; }
         ValueCheck.credit(m);
     }
+
+    @Test
+    public void everyGpuDecodeMemberComputesTheFormatsProduct() {
+        String k = "Block32GemvWave_dev_cajeta_ml_kernels_quant_Q80Block_4_wave";
+        if (!Device.kernelUsable(k)) { DeviceSkip.noKernel(k, "the wave decode driver is the GPU's (kernel-drivers 8.3.1.3)"); return; }
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        int64[] m #= ValueCheck.mark();
+        heap Block32Check<Q80Block>().waveMatchesDefinition(23L, 75L, wv);
+        heap Block32Check<Q50Block>().waveMatchesDefinition(23L, 75L, wv);
+        heap Block32Check<Q80Block>().waveMatchesDefinition(9L, 13L, wv);
+        heap Block32Check<Q50Block>().waveMatchesDefinition(9L, 13L, wv);
+        ValueCheck.credit(m);
+    }
 }

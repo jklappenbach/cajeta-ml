@@ -6,6 +6,7 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.gemm.Block32GemmRef;
 import dev.cajeta.ml.kernels.gemm.Block32GemmRows8;
+import dev.cajeta.ml.kernels.gemm.Block32GemvWave;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 
 /** The checks of {@link Block32GemmTest} over one 32-value piece `P` (Q8_0 or Q5_0). */
@@ -213,5 +214,84 @@ public final class Block32Check<P> {
         st.sync();
         this.expectRef(yd, z, fa, xp, 21L, 1L, nb, false, sst);
         this.expectRef(ye, z, fb, xp, 13L, 1L, nb, false, sst);
+    }
+
+    /** One token's product of `rows` rows of `nb` blocks in float64 as the format defines it, a scale per q8_K block. */
+    public #float64[] definition(int8[] file, int8[] hx, int64 rows, int64 nb) {
+        float64[] want #= heap float64[rows];
+        int64 r = 0L;
+        while (r < rows) {
+            float64 sum = 0.0;
+            int64 blk = 0L;
+            while (blk < nb) {
+                int64 xa = (blk / 8L) * 320L;
+                float64 xs = (float64) Cajeta.bitsToF32(BlockGemmRefTest.word(hx, xa + 288L));
+                int64 l = 0L;
+                while (l < 32L) {
+                    sum = sum + this.element(file, (r * nb + blk) * (int64) P.blockBytes(), l) * xs * (float64) hx[xa + 32L * (blk % 8L) + l];
+                    l = l + 1L;
+                }
+                blk = blk + 1L;
+            }
+            want[r] = sum;
+            r = r + 1L;
+        }
+        return #want;
+    }
+
+    /** `got` within 1e-4 of the largest of `want`. */
+    static void near(float64[] want, float32[] got, int64 n) {
+        float64 big = 0.0;
+        int64 i = 0L;
+        while (i < n) { float64 a = want[i] < 0.0 ? 0.0 - want[i] : want[i]; if (a > big) { big = a; } i = i + 1L; }
+        Assert.isTrue(big > 0.0);
+        i = 0L;
+        while (i < n) {
+            float64 e = (float64) got[i] - want[i];
+            if (e < 0.0) { e = 0.0 - e; }
+            Assert.isTrue(e <= 1.0e-4 * big);
+            i = i + 1L;
+        }
+    }
+
+    /** Every member of the GPU decode driver against the definition, set then added onto a seed. */
+    public void waveMatchesDefinition(int64 rows, int64 nb, int64 wv) {
+        int64 spans = (nb + 7L) / 8L;
+        int8[] file #= this.weight(rows * nb);
+        int8[] hx #= this.acts(spans);
+        float64[] want #= this.definition(file, hx, rows, nb);
+        Block32GemvWave<P, 1> m1 = heap Block32GemvWave<P, 1>();
+        Block32GemvWave<P, 2> m2 = heap Block32GemvWave<P, 2>();
+        Block32GemvWave<P, 4> m4 = heap Block32GemvWave<P, 4>();
+        int8[] pk #= heap int8[rows * m1.rowBytes(nb)];
+        m1.pack(file, 0L, rows, nb, pk, 0L);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (rows * m1.rowBytes(nb)));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (spans * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) rows);
+        w.upload(pk);
+        xp.upload(hx);
+        float32[] got #= heap float32[rows];
+        float32[] seed #= heap float32[rows];
+        float64[] want2 #= heap float64[rows];
+        int64 i = 0L;
+        while (i < rows) { seed[i] = 0.5f * (float32) (i % 3L); want2[i] = want[i] + (float64) seed[i]; i = i + 1L; }
+        KernelStream st #= KernelStream.current();
+        int32 m = 0;
+        while (m < 3) {
+            if (m == 0) { m1.runOn(st, y, w, xp, rows, nb, 0L, false, 2L, wv); }
+            if (m == 1) { m2.runOn(st, y, w, xp, rows, nb, 0L, false, 2L, wv); }
+            if (m == 2) { m4.runOn(st, y, w, xp, rows, nb, 0L, false, 2L, wv); }
+            st.sync();
+            y.download(got);
+            Block32Check.near(want, got, rows);
+            y.upload(seed);
+            if (m == 0) { m1.runOn(st, y, w, xp, rows, nb, 0L, true, 2L, wv); }
+            if (m == 1) { m2.runOn(st, y, w, xp, rows, nb, 0L, true, 2L, wv); }
+            if (m == 2) { m4.runOn(st, y, w, xp, rows, nb, 0L, true, 2L, wv); }
+            st.sync();
+            y.download(got);
+            Block32Check.near(want2, got, rows);
+            m = m + 1;
+        }
     }
 }

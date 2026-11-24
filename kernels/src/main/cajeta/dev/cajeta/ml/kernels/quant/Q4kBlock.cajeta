@@ -130,6 +130,21 @@ public final class Q4kBlock {
         return acc + d * xs * (float32) isum - dmin * xs * (float32) msum;
     }
 
+    /** {@link #halfBits} without branches, for code where lanes diverge on it. */
+    @Device
+    public static float32 halfBranchless(int32 h) {
+        int32 sgn = (h >> 15) << 31;
+        int32 exp = (h >> 10) & 31;
+        int32 man = h & 1023;
+        int32 norm = sgn | ((exp + 112) << 23) | (man << 13);
+        int32 inf = sgn | (255 << 23) | (man << 13);
+        int32 sub = Cajeta.f32ToBits((float32) man * 5.9604644775390625e-8f) | sgn;
+        int32 m0 = (exp - 1) >> 31;
+        int32 m31 = (30 - exp) >> 31;
+        int32 mn = (m0 | m31) ^ (0 - 1);
+        return Cajeta.bitsToF32((norm & mn) | (inf & m31) | (sub & m0));
+    }
+
     /** IEEE half bits (low 16 of `h`) as float32, exactly. */
     @Device
     public static float32 halfBits(int32 h) {

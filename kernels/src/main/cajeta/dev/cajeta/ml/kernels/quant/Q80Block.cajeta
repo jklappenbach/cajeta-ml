@@ -30,12 +30,16 @@ public final class Q80Block {
     @Device
     public static uint32 planeBytes() { return 0; }
 
+    /** The offset of `lowBytes`/`highBytes` of the file's own bytes read as signed. */
+    @Device
+    public static int32 fileOffset() { return 0; }
+
     @Device
     public static int32 offset() { return 128; }
 
     /** `d` from the block's first two bytes. */
     @Device
-    public static float32 dOf(int32 h) { return Q4kBlock.halfBits(h & 65535); }
+    public static float32 dOf(int32 h) { return Q4kBlock.halfBranchless(h & 65535); }
 
     /** The packed byte for file quant byte `b`. */
     @Device

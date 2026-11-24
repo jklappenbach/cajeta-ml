@@ -19,7 +19,8 @@ import dev.cajeta.ml.kernels.quant.Q8kAct;
  * quads of four bytes a row, `packByte(b)` of the bytes at `quantOffset()`, each holding
  * `streams()` streams unpacked by `lowBytes<N>`/`highBytes<N>` against the activations at
  * `lowAt(q)`/`highAt(q)`, with `planeBytes()` side-plane bytes `planeOf(word, k)` from the word at
- * `planeOffset()`; `fold8`/`close8` are the float steps on eight rows.
+ * `planeOffset()`; `fold8`/`close8` are the float steps on eight rows; `fileOffset()` is the
+ * offset of the unpack of the file's own bytes read as signed, for a driver that keeps them.
  */
 public final class Block32GemmRef<P> {
     public Block32GemmRef() { return; }

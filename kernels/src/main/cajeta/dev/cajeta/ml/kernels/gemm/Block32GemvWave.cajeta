@@ -1,0 +1,175 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.lang.Cajeta;
+import cajeta.lang.String;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Unroll;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+import dev.cajeta.ml.kernels.quant.Q8kAct;
+
+/**
+ * The GPU decode mat-vec over the 32-value pieces (kernel-drivers plan 8.3.1.3). A wave owns `R`
+ * rows; lane `l` takes blocks `l, l + wave, ..` of each, adds `d * xs * n` for a block's integer
+ * dot `n`, and the wave sums its lanes. {@link #pack} lays a row out as its f16 scales, padded to a
+ * word, then each block's side plane and the file's quant bytes, the size of the file's row.
+ */
+@Instantiate(value = {Block32GemvWave<Q80Block, 1>, Block32GemvWave<Q80Block, 2>, Block32GemvWave<Q80Block, 4>,
+    Block32GemvWave<Q50Block, 1>, Block32GemvWave<Q50Block, 2>, Block32GemvWave<Q50Block, 4>})
+@Requires(R == 1 || R == 2 || R == 4)
+public final class Block32GemvWave<P, uint32 R> {
+    public Block32GemvWave() { return; }
+
+    /** This instantiation's registered kernel. */
+    public #String kernel() { return "" + wave.registeredName(); }
+
+    /** Rows a wave owns. */
+    public int32 rowsPerWave() { return (int32) R; }
+
+    /** Bytes of a row's scales, padded to a word. */
+    public int64 prefixBytes(int64 nb) { return ((nb * 2L + 3L) / 4L) * 4L; }
+
+    /** Bytes of one packed row of `nb` blocks. */
+    public int64 rowBytes(int64 nb) { return this.prefixBytes(nb) + nb * (int64) (P.planeBytes() + 4 * P.quads()); }
+
+    static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
+
+    /** `rows` rows of `nb` file blocks at `raw[srcOff ..)` into this driver's layout at `out[outOff ..)`. */
+    public void pack(int8[] raw, int64 srcOff, int64 rows, int64 nb, int8[] out, int64 outOff) {
+        int64 bb = (int64) P.blockBytes();
+        int64 pn = (int64) P.planeBytes();
+        int64 qn = 4L * (int64) P.quads();
+        int64 pre = this.prefixBytes(nb);
+        int64 rb = this.rowBytes(nb);
+        int64 r = 0L;
+        while (r < rows) {
+            int64 ro = outOff + r * rb;
+            int64 z = 0L;
+            while (z < pre) { out[ro + z] = (int8) 0; z = z + 1L; }
+            int64 b = 0L;
+            while (b < nb) {
+                int64 fo = srcOff + (r * nb + b) * bb;
+                int64 bo = ro + pre + b * (pn + qn);
+                out[ro + 2L * b] = raw[fo];
+                out[ro + 2L * b + 1L] = raw[fo + 1L];
+                if (pn != 0L) {
+                    int64 po = fo + (int64) P.planeOffset();
+                    int32 qh = Block32GemvWave.u8(raw, po) | (Block32GemvWave.u8(raw, po + 1L) << 8)
+                        | (Block32GemvWave.u8(raw, po + 2L) << 16) | (Block32GemvWave.u8(raw, po + 3L) << 24);
+                    int64 k = 0L;
+                    while (k < pn) { out[bo + k] = (int8) P.planeOf(qh, (int32) k); k = k + 1L; }
+                }
+                int64 k = 0L;
+                while (k < qn) {
+                    out[bo + pn + k] = raw[fo + (int64) P.quantOffset() + k];
+                    k = k + 1L;
+                }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    /** The f16 scale at byte `at` (even) of `w`, read through its aligned word. */
+    @Device
+    static float32 dAt(KernelBuffer<int8> w, int64 at) {
+        Vector<int32,1> h = w.vload<4>(at - (at & 3L), align: 4).asWords();
+        return P.dOf(h[0] >> (int32) ((at & 2L) * 8L));
+    }
+
+    /** The block at `bo`'s dot with the activation words `aw`, its values plus `fileOffset()`. */
+    @Device
+    static int32 dot(KernelBuffer<int8> w, int64 bo, Vector<int32,8> aw) {
+        int64 pn = (int64) P.planeBytes();
+        Vector<uint8,4> pl = w.vload<4>(bo, align: 4).asUnsigned();
+        Vector<int32,1> t = heap Vector<int32,1>(0);
+        for (int64 q = Unroll.from(0L); q < 8L; q = q + 1L) {
+            if (q < (int64) P.quads()) {
+                Vector<uint8,4> rq = w.vload<4>(bo + pn + 4L * q, align: 4).asUnsigned();
+                t = P.lowBytes<4>(rq, pl, (int32) q).asSigned().dotAccum(heap Vector<int32,1>(aw[P.lowAt((int32) q) / 4]).asBytes(), t);
+                if (P.streams() == 2) {
+                    t = P.highBytes<4>(rq, pl, (int32) q).asSigned().dotAccum(heap Vector<int32,1>(aw[P.highAt((int32) q) / 4]).asBytes(), t);
+                }
+            }
+        }
+        return t[0];
+    }
+
+    @Device
+    static void put(KernelBuffer<float32> y, int64 o, float32 v, uint32 accum) {
+        if (accum != 0) { y[o] = y[o] + v; } else { y[o] = v; }
+    }
+
+    @Kernel(targets = {"gpu"})
+    @Occupancy(maxThreads = 256)
+    public static void wave(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+            uint32 rows, int64 nb, int64 yOff, uint32 accum) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row0 = (KernelThread.globalIdX() / wv) * R;
+        int64 pre = ((nb * 2L + 3L) / 4L) * 4L;
+        int64 bs = (int64) (P.planeBytes() + 4 * P.quads());
+        int64 rb = pre + nb * bs;
+        float32 acc0 = 0.0f;
+        float32 acc1 = 0.0f;
+        float32 acc2 = 0.0f;
+        float32 acc3 = 0.0f;
+        if (row0 < rows) {
+            uint32 last = rows - 1;
+            uint32 r1 = row0 + 1; if (r1 > last) { r1 = last; }
+            uint32 r2 = row0 + 2; if (r2 > last) { r2 = last; }
+            uint32 r3 = row0 + 3; if (r3 > last) { r3 = last; }
+            int64 rb0 = (int64) row0 * rb;
+            int64 rb1 = (int64) r1 * rb;
+            int64 rb2 = (int64) r2 * rb;
+            int64 rb3 = (int64) r3 * rb;
+            int64 wb = (int64) lane;
+            while (wb < nb) {
+                int64 xb = (wb / 8L) * 320L;
+                Vector<int32,8> aw = xp.vload<32>(xb + (wb % 8L) * 32L, align: 16).asWords();
+                Vector<int32,1> xw = xp.vload<4>(xb + 288L, align: 4).asWords();
+                float32 xs = Cajeta.bitsToF32(xw[0]);
+                int32 og = 0;
+                if (P.fileOffset() != 0) { og = P.fileOffset() * Q8kAct.subSum(xp, xb, (uint32) (wb % 8L)); }
+                int64 bo = pre + wb * bs;
+                acc0 = acc0 + Block32GemvWave.dAt(w, rb0 + 2L * wb) * xs * (float32) (Block32GemvWave.dot(w, rb0 + bo, aw) - og);
+                if (R > 1) { acc1 = acc1 + Block32GemvWave.dAt(w, rb1 + 2L * wb) * xs * (float32) (Block32GemvWave.dot(w, rb1 + bo, aw) - og); }
+                if (R > 2) {
+                    acc2 = acc2 + Block32GemvWave.dAt(w, rb2 + 2L * wb) * xs * (float32) (Block32GemvWave.dot(w, rb2 + bo, aw) - og);
+                    acc3 = acc3 + Block32GemvWave.dAt(w, rb3 + 2L * wb) * xs * (float32) (Block32GemvWave.dot(w, rb3 + bo, aw) - og);
+                }
+                wb = wb + (int64) wv;
+            }
+        }
+        float32 t0 = Wave.reduceSumF32(acc0);
+        float32 t1 = t0;
+        float32 t2 = t0;
+        float32 t3 = t0;
+        if (R > 1) { t1 = Wave.reduceSumF32(acc1); }
+        if (R > 2) {
+            t2 = Wave.reduceSumF32(acc2);
+            t3 = Wave.reduceSumF32(acc3);
+        }
+        if (lane == 0) {
+            int64 o = yOff + (int64) row0;
+            if (row0 < rows) { Block32GemvWave.put(y, o, t0, accum); }
+            if (R > 1 && row0 + 1 < rows) { Block32GemvWave.put(y, o + 1L, t1, accum); }
+            if (R > 2 && row0 + 2 < rows) { Block32GemvWave.put(y, o + 2L, t2, accum); }
+            if (R > 2 && row0 + 3 < rows) { Block32GemvWave.put(y, o + 3L, t3, accum); }
+        }
+    }
+
+    /** `y[yOff + r]` set (or added to) for `rows` rows of `nb` blocks in {@link #pack}'s layout against one q8_K token `xp` (a scale per block), `wavesPerBlock` waves a workgroup. Queued on `s`. */
+    public void runOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+            int64 rows, int64 nb, int64 yOff, boolean accum, int64 wavesPerBlock, int64 waveWidth) {
+        int64 waves = (rows + (int64) R - 1L) / (int64) R;
+        int64 groups = (waves + wavesPerBlock - 1L) / wavesPerBlock;
+        wave.launch(s, grid: [(uint32) groups], block: [(uint32) (wavesPerBlock * waveWidth)])
+            (y, w, xp, (uint32) rows, nb, yOff, accum ? 1 : 0);
+    }
+}
