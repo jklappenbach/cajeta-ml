@@ -51,6 +51,7 @@ public final class Kernels {
         + "topk_int32|transpose_float16|transpose_float32|transpose_int8|unary_bfloat16|"
         + "unary_float16|unary_float32|"
         + "AttnDecodeRows_128_decode|AttnDecodeRows_128_decodeBatch|AttnDecodeWave_2_8_16_1_8_decode|"
+        + "AttnPrefillChunks_128_chunked|AttnPrefillChunks_256_chunked|AttnPrefillRows_128_prefill|"
         + "AttnDecodeWave_2_8_16_1_8_decodeBatch|AttnDecodeWave_2_8_16_4_32_decode|"
         + "AttnDecodeWave_2_8_16_4_32_decodeBatch|AttnDecodeWave_4_4_16_1_4_decode|"
         + "AttnDecodeWave_4_4_16_1_4_decodeBatch|AttnDecodeWave_4_4_16_4_16_decode|"

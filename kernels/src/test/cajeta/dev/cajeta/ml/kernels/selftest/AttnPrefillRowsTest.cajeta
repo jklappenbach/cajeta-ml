@@ -1,0 +1,117 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.attn.AttnPrefillChunks;
+import dev.cajeta.ml.kernels.attn.AttnPrefillRows;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 9.3.7: the cpu prefill-attention drivers (one key at a time, and 256-key chunks) against causal softmax attention in float64. */
+public class AttnPrefillRowsTest {
+    public AttnPrefillRowsTest() { return; }
+
+    /** The chunked driver (`chunk`, head size `hd`) or the one-key one (128): 2 kv heads of 3 query heads, `rows` query rows from `startPos`, `window` (0 the whole range), keys on 5 permuted pages of 64. */
+    static void check(int64 hd, boolean chunk, int32 rows, int32 startPos, int32 window) {
+        int32 nKv = 2;
+        int32 group = 3;
+        int32 nH = nKv * group;
+        int64 kvDim = (int64) nKv * hd;
+        int64 pos = 320L;
+        float16[] kh #= heap float16[pos * kvDim];
+        float16[] vh #= heap float16[pos * kvDim];
+        int64 i = 0L;
+        while (i < pos * kvDim) { kh[i] = (float16) AttnDecodeRowsTest.rnd(i); vh[i] = (float16) AttnDecodeRowsTest.rnd(i + 999L); i = i + 1L; }
+        int64 qn = (int64) rows * (int64) nH * hd;
+        float32[] qh #= heap float32[qn];
+        i = 0L;
+        while (i < qn) { qh[i] = AttnDecodeRowsTest.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        int32[] tab #= heap int32[5L];
+        tab[0] = 3;
+        tab[1] = 0;
+        tab[2] = 4;
+        tab[3] = 1;
+        tab[4] = 2;
+        KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (pos * kvDim));
+        KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (pos * kvDim));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) qn);
+        KernelBuffer<float32> out = heap KernelBuffer<float32>((uint64) qn);
+        KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) 5L);
+        k.upload(kh);
+        v.upload(vh);
+        q.upload(qh);
+        pt.upload(tab);
+        float32 scale = 0.0883883f;
+        KernelStream s #= KernelStream.current();
+        if (!chunk) {
+            heap AttnPrefillRows<128>().runOn(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale, window, 8);
+        } else if (hd == 128L) {
+            heap AttnPrefillChunks<128>().runOn(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale, window, 8);
+        } else {
+            heap AttnPrefillChunks<256>().runOn(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale, window, 8);
+        }
+        s.sync();
+        float32[] got #= heap float32[qn];
+        out.download(got);
+        int64 r = 0L;
+        while (r < (int64) rows) {
+            int64 count = (int64) startPos + r + 1L;
+            int64 t0 = 0L;
+            if (window > 0 && count > (int64) window) { t0 = count - (int64) window; }
+            int64 h = 0L;
+            while (h < (int64) nH) {
+                int64 kvh = h / (int64) group;
+                int64 qo = (r * (int64) nH + h) * hd;
+                float64 big = -1.0e300;
+                int64 t = t0;
+                while (t < count) {
+                    int64 ro = ((int64) tab[t / 64L] * 64L + t % 64L) * kvDim + kvh * hd;
+                    float64 sc = 0.0;
+                    int64 d = 0L;
+                    while (d < hd) { sc = sc + (float64) qh[qo + d] * (float64) (float32) kh[ro + d]; d = d + 1L; }
+                    sc = sc * (float64) scale;
+                    if (sc > big) { big = sc; }
+                    t = t + 1L;
+                }
+                float64[] want #= heap float64[hd];
+                float64 den = 0.0;
+                t = t0;
+                while (t < count) {
+                    int64 ro = ((int64) tab[t / 64L] * 64L + t % 64L) * kvDim + kvh * hd;
+                    float64 sc = 0.0;
+                    int64 d = 0L;
+                    while (d < hd) { sc = sc + (float64) qh[qo + d] * (float64) (float32) kh[ro + d]; d = d + 1L; }
+                    float64 w = Math.exp(sc * (float64) scale - big);
+                    den = den + w;
+                    d = 0L;
+                    while (d < hd) { want[d] = want[d] + w * (float64) (float32) vh[ro + d]; d = d + 1L; }
+                    t = t + 1L;
+                }
+                int64 d = 0L;
+                while (d < hd) {
+                    Assert.isTrue(Math.abs((float64) got[qo + d] - want[d] / den) <= 0.0001);
+                    d = d + 1L;
+                }
+                h = h + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    @Test
+    public void bothDriversEqualCausalAttention() {
+        String kn = "AttnPrefillRows_128_prefill";
+        if (!Device.kernelUsable(kn)) { DeviceSkip.noKernel(kn, "the prefill-attention rows driver is the cpu's (kernel-drivers 9.3.7)"); return; }
+        int64[] m #= ValueCheck.mark();
+        AttnPrefillRowsTest.check(128L, false, 37, 0, 0);
+        AttnPrefillRowsTest.check(128L, false, 9, 280, 100);
+        AttnPrefillRowsTest.check(128L, true, 9, 280, 0);
+        AttnPrefillRowsTest.check(256L, true, 37, 0, 0);
+        AttnPrefillRowsTest.check(256L, true, 9, 280, 70);
+        AttnPrefillRowsTest.check(256L, true, 1, 300, 0);
+        ValueCheck.credit(m);
+    }
+}
