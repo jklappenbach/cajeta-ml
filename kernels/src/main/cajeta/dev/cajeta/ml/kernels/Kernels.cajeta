@@ -141,6 +141,7 @@ public final class Kernels {
         + "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q6kBlock_128_128_32_64_128_idTile|"
         + "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q6kBlock_64_64_32_32_128_blockTile|"
         + "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q6kBlock_64_64_32_32_128_idTile|"
+        + "BlockGemvF32_dev_cajeta_ml_kernels_quant_Q6kBlock_wave|"
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q2kBlock_1_0_cols3Wave|"
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q2kBlock_1_0_colsWave|"
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q2kBlock_1_0_wave|"

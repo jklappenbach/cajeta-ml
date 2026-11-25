@@ -1,0 +1,89 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemvF32;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 9.1.7.2: the Q6_K float decode against the format's definition on float activations. */
+public class BlockGemvF32Test {
+    public BlockGemvF32Test() { return; }
+
+    /** `rows` rows of `bpr` blocks with an activation and an output offset, each output within 1e-5 of its absolute sum, set then added. */
+    static void check(int64 rows, int64 bpr) {
+        int64 xOff = 8L;
+        int64 yOff = 5L;
+        int64 cols = bpr * 256L;
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        int8[] file #= Q6kBlockTest.weight(rows * bpr);
+        float32[] hx #= heap float32[xOff + cols];
+        int64 seed = 611L;
+        int64 i = 0L;
+        while (i < xOff + cols) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            hx[i] = (float32) ((seed >> 16) % 2001L - 1000L) * 0.001f;
+            i = i + 1L;
+        }
+        float64[] want #= heap float64[rows];
+        float64[] mag #= heap float64[rows];
+        int64 r = 0L;
+        while (r < rows) {
+            float64 s = 0.0;
+            float64 a = 0.0;
+            int64 k = 0L;
+            while (k < cols) {
+                float64 t = Q6kBlockTest.element(file, (r * bpr + k / 256L) * 210L, k % 256L) * (float64) hx[xOff + k];
+                s = s + t;
+                a = a + Math.abs(t);
+                k = k + 1L;
+            }
+            want[r] = s;
+            mag[r] = a;
+            r = r + 1L;
+        }
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) file.count());
+        w.upload(file);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) hx.count());
+        x.upload(hx);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (yOff + rows));
+        float32[] sd #= heap float32[yOff + rows];
+        i = 0L;
+        while (i < yOff + rows) { sd[i] = 0.5f * (float32) (i % 3L); i = i + 1L; }
+        float32[] got #= heap float32[yOff + rows];
+        BlockGemvF32<Q6kBlock> m = heap BlockGemvF32<Q6kBlock>();
+        KernelStream st #= KernelStream.current();
+        int32 pass = 0;
+        while (pass < 2) {
+            y.upload(sd);
+            m.runOn(st, y, w, x, rows, cols, xOff, yOff, pass == 1, 2L, wv);
+            st.sync();
+            y.download(got);
+            i = 0L;
+            while (i < yOff) { Assert.isTrue(got[i] == sd[i]); i = i + 1L; }
+            r = 0L;
+            while (r < rows) {
+                float64 e = want[r];
+                if (pass == 1) { e = e + (float64) sd[yOff + r]; }
+                Assert.isTrue(Math.abs((float64) got[yOff + r] - e) <= 0.00001 * (mag[r] + 1.0));
+                r = r + 1L;
+            }
+            pass = pass + 1;
+        }
+    }
+
+    @Test
+    public void theQ6kFloatDecodeEqualsItsDefinition() {
+        String k = "BlockGemvF32_dev_cajeta_ml_kernels_quant_Q6kBlock_wave";
+        if (!Device.kernelUsable(k)) { DeviceSkip.noKernel(k, "the float wave decode is the GPU's (kernel-drivers 9.1.7.2)"); return; }
+        int64[] m #= ValueCheck.mark();
+        BlockGemvF32Test.check(23L, 9L);
+        BlockGemvF32Test.check(7L, 3L);
+        ValueCheck.credit(m);
+    }
+}
