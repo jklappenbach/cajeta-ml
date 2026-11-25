@@ -7,6 +7,7 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.attn.AttnPrefillChunks;
 import dev.cajeta.ml.kernels.attn.AttnPrefillRows;
+import dev.cajeta.ml.kernels.attn.AttnPrefillTile;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
 
@@ -14,10 +15,9 @@ import dev.cajeta.ml.kernels.testing.ValueCheck;
 public class AttnPrefillRowsTest {
     public AttnPrefillRowsTest() { return; }
 
-    /** The chunked driver (`chunk`, head size `hd`) or the one-key one (128): 2 kv heads of 3 query heads, `rows` query rows from `startPos`, `window` (0 the whole range), keys on 5 permuted pages of 64. */
-    static void check(int64 hd, boolean chunk, int32 rows, int32 startPos, int32 window) {
+    /** Driver `kind` (0 the one-key rows at 128, 1 the chunks, 2 the GPU tile) at head size `hd`: 2 kv heads of `group` query heads, `rows` query rows from `startPos`, `window` (0 the whole range), keys on 5 permuted pages of 64, each output within `tol`. */
+    static void check(int64 hd, int32 kind, int32 group, int32 rows, int32 startPos, int32 window, float64 tol) {
         int32 nKv = 2;
-        int32 group = 3;
         int32 nH = nKv * group;
         int64 kvDim = (int64) nKv * hd;
         int64 pos = 320L;
@@ -46,7 +46,11 @@ public class AttnPrefillRowsTest {
         pt.upload(tab);
         float32 scale = 0.0883883f;
         KernelStream s #= KernelStream.current();
-        if (!chunk) {
+        if (kind == 2 && hd == 128L) {
+            AttnPrefillTile.run128On(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale);
+        } else if (kind == 2) {
+            AttnPrefillTile.run256On(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale, window);
+        } else if (kind == 0) {
             heap AttnPrefillRows<128>().runOn(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale, window, 8);
         } else if (hd == 128L) {
             heap AttnPrefillChunks<128>().runOn(s, out, q, k, v, pt, 0, rows, nH, nKv, startPos, scale, window, 8);
@@ -92,7 +96,7 @@ public class AttnPrefillRowsTest {
                 }
                 int64 d = 0L;
                 while (d < hd) {
-                    Assert.isTrue(Math.abs((float64) got[qo + d] - want[d] / den) <= 0.0001);
+                    Assert.isTrue(Math.abs((float64) got[qo + d] - want[d] / den) <= tol);
                     d = d + 1L;
                 }
                 h = h + 1L;
@@ -106,12 +110,24 @@ public class AttnPrefillRowsTest {
         String kn = "AttnPrefillRows_128_prefill";
         if (!Device.kernelUsable(kn)) { DeviceSkip.noKernel(kn, "the prefill-attention rows driver is the cpu's (kernel-drivers 9.3.7)"); return; }
         int64[] m #= ValueCheck.mark();
-        AttnPrefillRowsTest.check(128L, false, 37, 0, 0);
-        AttnPrefillRowsTest.check(128L, false, 9, 280, 100);
-        AttnPrefillRowsTest.check(128L, true, 9, 280, 0);
-        AttnPrefillRowsTest.check(256L, true, 37, 0, 0);
-        AttnPrefillRowsTest.check(256L, true, 9, 280, 70);
-        AttnPrefillRowsTest.check(256L, true, 1, 300, 0);
+        AttnPrefillRowsTest.check(128L, 0, 3, 37, 0, 0, 0.0001);
+        AttnPrefillRowsTest.check(128L, 0, 3, 9, 280, 100, 0.0001);
+        AttnPrefillRowsTest.check(128L, 1, 3, 9, 280, 0, 0.0001);
+        AttnPrefillRowsTest.check(256L, 1, 3, 37, 0, 0, 0.0001);
+        AttnPrefillRowsTest.check(256L, 1, 3, 9, 280, 70, 0.0001);
+        AttnPrefillRowsTest.check(256L, 1, 3, 1, 300, 0, 0.0001);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void theGpuTileEqualsCausalAttentionAtBothHeadSizes() {
+        String kn = "prefillTile128";
+        if (!Device.kernelUsable(kn)) { DeviceSkip.noKernel(kn, "the f16 prefill tile is the GPU's (kernel-drivers 9.3.8)"); return; }
+        int64[] m #= ValueCheck.mark();
+        AttnPrefillRowsTest.check(128L, 2, 4, 37, 0, 0, 0.005);
+        AttnPrefillRowsTest.check(128L, 2, 4, 40, 250, 0, 0.005);
+        AttnPrefillRowsTest.check(256L, 2, 4, 37, 0, 0, 0.005);
+        AttnPrefillRowsTest.check(256L, 2, 4, 40, 250, 70, 0.005);
         ValueCheck.credit(m);
     }
 }
