@@ -1,0 +1,60 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.time.Clock;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.ShapeFilter;
+import cajeta.xpu.ShapeProbe;
+import cajeta.xpu.ShapeVerdict;
+import dev.cajeta.ml.kernels.tune.TileFamily;
+
+/** Times one survivor of {@link BlockGemm}'s tile family on the caller's weight and activations into the entry's scratch output `y` (the split scratch `part` holding 8 splits of it), with the split it would take, as a burst of launches between two syncs priced per launch (kernel-drivers 10.2.2). */
+public final class BlockGemmProbe implements ShapeProbe {
+    TileFamily<BlockTileMember> fam;
+    ShapeFilter f;
+    KernelBuffer<int8> w;
+    KernelBuffer<int8> xp;
+    KernelBuffer<float32> y;
+    KernelBuffer<float32> part;
+    KernelStream s;
+    int64 rows;
+    int64 outDim;
+    int64 cols;
+
+    public BlockGemmProbe(^TileFamily<BlockTileMember> fam, ^ShapeFilter f, ^KernelStream s, ^KernelBuffer<float32> y,
+            ^KernelBuffer<float32> part, ^KernelBuffer<int8> w, ^KernelBuffer<int8> xp, int64 rows, int64 outDim, int64 cols) {
+        this.fam = fam;
+        this.f = f;
+        this.s = s;
+        this.y = y;
+        this.part = part;
+        this.w = w;
+        this.xp = xp;
+        this.rows = rows;
+        this.outDim = outDim;
+        this.cols = cols;
+    }
+
+    /** Launches a sample. */
+    static final int32 BURST = 8;
+
+    public int64 timeNanos(int32 i) {
+        ShapeVerdict v = this.f.survivor(i);
+        int32 idx = this.fam.indexOf(v.candidate.kernel);
+        if (idx < 0) { return 0L; }
+        BlockTileMember sh = this.fam.shapes().get(idx);
+        int64 tile = (int64) sh.tileM();
+        int64 tiles = (this.rows / tile) * (this.outDim / (int64) sh.tileN());
+        int64 sp = TileSplitFixup.splitsFor(tiles, this.cols / 256L);
+        this.s.sync();
+        int64 t0 = Clock.nanoTime();
+        int32 k = 0;
+        while (k < BlockGemmProbe.BURST) {
+            sh.runOn(this.s, this.y, this.w, this.xp, this.rows, this.outDim, this.cols, this.part, sp, (uint32) 0);
+            if (sp > 1L) { TileSplitFixup.runOn(this.s, this.y, this.part, this.rows, this.outDim, tile, sp, false); }
+            k = k + 1;
+        }
+        this.s.sync();
+        return (Clock.nanoTime() - t0) / (int64) BlockGemmProbe.BURST;
+    }
+}

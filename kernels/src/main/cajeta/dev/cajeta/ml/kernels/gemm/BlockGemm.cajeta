@@ -12,13 +12,16 @@ import dev.cajeta.ml.kernels.tune.TileFamily;
  * for the weight format the piece `P` describes:
  * `y[token * outDim + row] = sum over k of W[row][k] * x[token][k]`. The caller loads the weight
  * once and runs; the device's driver packs it, cuts the work and launches. On the cpu that is
- * {@link BlockGemmRows8}; on a GPU a member of the {@link BlockGemmTile} family, picked by the
- * shape choice for the problem.
+ * {@link BlockGemmRows8}; on a GPU a member of the {@link BlockGemmTile} family, timed at first use
+ * of a problem and remembered, split over K ({@link TileSplitFixup}) where its tiles leave compute
+ * units idle.
  */
 public final class BlockGemm<P> {
     BlockGemmRows8<P> rows;
     TileFamily<BlockTileMember> tiles;
     KernelBuffer<float32> part;
+    int64 partCap;
+    KernelBuffer<float32> probeY;
 
     public BlockGemm() {
         this.rows #= heap BlockGemmRows8<P>();
@@ -26,6 +29,29 @@ public final class BlockGemm<P> {
         this.tiles.add(#heap BlockGemmTile<P, 128, 128, 32, 64, 128>());
         this.tiles.add(#heap BlockGemmTile<P, 64, 64, 32, 32, 128>());
         this.part #= heap KernelBuffer<float32>((uint64) 16L);
+        this.partCap = 16L;
+        this.probeY #= heap KernelBuffer<float32>((uint64) 16L);
+    }
+
+    /** The split-K scratch grown to the most any member could split `t` by `outDim` by `cols` into (8 splits of the whole output); a buffer in use drains first. */
+    void ensurePart(int64 t, int64 outDim, int64 cols) {
+        int64 need = 8L * t * outDim;
+        if (need > this.partCap) {
+            KernelStream st #= KernelStream.current();
+            st.sync();
+            this.part #= heap KernelBuffer<float32>((uint64) need);
+            this.probeY #= heap KernelBuffer<float32>((uint64) (t * outDim));
+            this.partCap = need;
+        }
+    }
+
+    /** The row driver's work items a workgroup: the device's wave, else 64, at most 256 (cajeta-llm's `rowsPerBlock`). */
+    static int64 rowsBlock() {
+        int64 b = 64L;
+        int32 wv = Device.waveSize();
+        if (wv > 0) { b = (int64) wv; }
+        if (b > 256L) { b = 256L; }
+        return b;
     }
 
     /** True where the row driver runs, which is the cpu. */
@@ -73,18 +99,42 @@ public final class BlockGemm<P> {
         return this.tiles.shapes().get(idx).kernel();
     }
 
+    /** The tile member for `t` (whole tiles) by `outDim` by `cols`: remembered, else timed on `w` and `xp` into scratch and remembered. */
+    int32 chooseFor(KernelStream s, KernelBuffer<int8> w, KernelBuffer<int8> xp, int64 t, int64 outDim, int64 cols) {
+        int32 idx = this.tiles.remembered(t, outDim, cols);
+        if (idx < 0) {
+            this.ensurePart(t, outDim, cols);
+            ShapeFilter f #= this.tiles.filterFor(t, outDim, cols);
+            BlockGemmProbe probe = heap BlockGemmProbe(this.tiles, f, s, this.probeY, this.part, w, xp, t, outDim, cols);
+            idx = this.tiles.chooseWith("", f, probe, t, outDim, cols);
+        }
+        if (idx < 0) { idx = 0; }
+        return idx;
+    }
+
+    /** Makes {@link #run}'s choice for `tokens` by `outDim` by `cols` ahead of it, timing on `w` and `xp` (holding {@link #tokensFor} rows) without writing any output, so a first run pays no timing; nothing where the row driver runs. Queued on `s`. */
+    public void prewarm(KernelStream s, KernelBuffer<int8> w, KernelBuffer<int8> xp, int64 tokens, int64 outDim, int64 cols) {
+        if (this.byRows()) { return; }
+        int32 idx = this.chooseFor(s, w, xp, this.tokensFor(tokens), outDim, cols);
+        if (idx < 0) { return; }
+    }
+
     /** `y` set (or added to) for `tokens` q8_K rows in `xp` and a weight from {@link #load}, `xp` and `y` holding {@link #tokensFor} rows (the rows past `tokens` are scratch); queued on `s`. */
     public void run(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
             int64 tokens, int64 outDim, int64 cols, boolean accum) {
         int64 bpr = cols / 256L;
         if (this.byRows()) {
-            this.rows.runOn(s, y, w, xp, outDim, bpr, tokens, bpr * 320L, outDim, accum, 64L, 32L);
+            this.rows.runOn(s, y, w, xp, outDim, bpr, tokens, bpr * 320L, outDim, accum, BlockGemm.rowsBlock(), 32L);
             return;
         }
         int64 t = this.tokensFor(tokens);
-        ShapeFilter f #= this.tiles.filterFor(t, outDim, cols);
-        int32 idx = this.tiles.chooseUntimed("", f, t, outDim, cols);
-        if (idx < 0) { idx = 0; }
-        this.tiles.shapes().get(idx).runOn(s, y, w, xp, t, outDim, cols, this.part, 1L, accum ? 1 : 0);
+        int32 idx = this.chooseFor(s, w, xp, t, outDim, cols);
+        BlockTileMember sh = this.tiles.shapes().get(idx);
+        int64 tile = (int64) sh.tileM();
+        int64 tiles = (t / tile) * (outDim / (int64) sh.tileN());
+        int64 sp = TileSplitFixup.splitsFor(tiles, bpr);
+        if (sp > 1L) { this.ensurePart(t, outDim, cols); }
+        sh.runOn(s, y, w, xp, t, outDim, cols, this.part, sp, accum ? 1 : 0);
+        if (sp > 1L) { TileSplitFixup.runOn(s, y, this.part, t, outDim, tile, sp, accum); }
     }
 }

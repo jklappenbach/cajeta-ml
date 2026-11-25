@@ -205,7 +205,7 @@ public final class Kernels {
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q6kBlock_4_1_colsWave|"
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q6kBlock_4_1_wave|pack32|"
         + "PieceProbe_dev_cajeta_ml_kernels_quant_Q4kBlock_header|sums16|"
-        + "f16SlotPackRows|prefillTile128|prefillTile256|decodeSeg128|";
+        + "f16SlotPackRows|prefillTile128|prefillTile256|decodeSeg128|tileSplitFixup|";
 
     /** Whether `kernel` is one of this package's: a consumer's census reads it as EXTERNAL,
      *  gated by this package's suite. A generic kernel the consumer instantiates for its own

@@ -1,0 +1,68 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+/**
+ * Split-K for the dense GPU tiles (kernel-drivers 10.2.2): where a problem has fewer output tiles
+ * than the device has compute units, each tile's blocks are cut into `splits` runs, each run
+ * writes its partial tile to a scratch buffer (`(tile * splits + split) * TM * TN`, row-major),
+ * and the fixup sums them into `y`. cajeta-llm's `splitsFor` and `tcSplitFixupKernel`.
+ */
+public final class TileSplitFixup {
+    public TileSplitFixup() { return; }
+
+    /** The split count for `tiles` output tiles of `nb` blocks: 1 when the tiles fill the compute units, else the smallest divisor of `nb` from 2 to 8 that does, or the largest that divides. */
+    public static int64 splitsFor(int64 tiles, int64 nb) {
+        int64 sms = (int64) Device.multiprocessorCount();
+        if (sms <= 0L) { sms = 128L; }
+        if (tiles >= sms) { return 1L; }
+        int64 sp = 1L;
+        int64 cand = 2L;
+        while (cand <= 8L) {
+            if (nb % cand == 0L) {
+                sp = cand;
+                if (tiles * cand >= sms) { return cand; }
+            }
+            cand = cand + 1L;
+        }
+        return sp;
+    }
+
+    /** `y[t][c]` (plus its old value when `accum` is 1) as the sum over the splits of their partial tiles, square tiles of edge `1 << tileShift`, one work item an element. */
+    @Kernel(targets = {"gpu"})
+    @Occupancy(maxThreads = 256)
+    public static void tileSplitFixup(KernelBuffer<float32> y, KernelBuffer<float32> part, uint32 rows, uint32 outDim,
+            uint32 tilesN, uint32 splits, uint32 accum, uint32 tileShift) {
+        uint32 e = KernelThread.globalIdX();
+        uint32 total = rows * outDim;
+        if (e < total) {
+            uint32 t = e / outDim;
+            uint32 c = e - t * outDim;
+            uint32 mask = (1 << tileShift) - 1;
+            uint32 tile = (t >> tileShift) * tilesN + (c >> tileShift);
+            int64 slot = (int64) (1 << (2 * tileShift));
+            int64 at = (int64) (tile * splits) * slot + (int64) (((t & mask) << tileShift) + (c & mask));
+            float32 acc = 0.0f;
+            if (accum != 0) { acc = y[(int64) e]; }
+            uint32 sp = 0;
+            while (sp < splits) {
+                acc = acc + part[at + (int64) sp * slot];
+                sp = sp + 1;
+            }
+            y[(int64) e] = acc;
+        }
+    }
+
+    /** The fixup of `splits` partial tiles of edge `tile` (a power of two) for `rows` by `outDim` into `y`. Queued on `s`. */
+    public static void runOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<float32> part, int64 rows, int64 outDim,
+            int64 tile, int64 splits, boolean accum) {
+        uint32 shift = 0;
+        while ((1L << (int64) shift) < tile) { shift = shift + 1; }
+        int64 total = rows * outDim;
+        tileSplitFixup.launch(s, grid: [(uint32) ((total + 255L) / 256L)], block: [256])
+            (y, part, (uint32) rows, (uint32) outDim, (uint32) (outDim / tile), (uint32) splits, accum ? 1 : 0, shift);
+    }
+}
