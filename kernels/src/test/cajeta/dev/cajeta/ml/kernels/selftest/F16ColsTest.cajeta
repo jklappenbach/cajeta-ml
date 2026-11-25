@@ -129,8 +129,11 @@ public class F16ColsTest {
             }
             c = c + 1L;
         }
-        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) file.count());
-        w.upload(file);
+        BlockGemvF16Cols<Q6kBlock, 0> lay = heap BlockGemvF16Cols<Q6kBlock, 0>();
+        int8[] pk #= heap int8[rows * lay.rowBytes(bpr)];
+        lay.pack(file, 0L, rows, bpr, pk, 0L);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pk.count());
+        w.upload(pk);
         KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (yOff + ncols * rows));
         float32[] sd #= heap float32[yOff + ncols * rows];
         int64 i = 0L;

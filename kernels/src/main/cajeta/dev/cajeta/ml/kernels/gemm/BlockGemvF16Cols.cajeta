@@ -6,12 +6,14 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 import cajeta.xpu.Vector;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
 
 /**
  * The GPU f16 batched decode of the 16-value K formats with an offset and no min (kernel-drivers
- * plan 9.1.7.3): up to eight slot-major f16 token rows ({@link F16Cols}) against one file-layout
- * row a wave. Lane `(g, a)` of a block's four takes the runs `128 g + 32 t + 16 a ..`, each as f16
+ * plan 9.1.7.3): up to eight slot-major f16 token rows ({@link F16Cols}) against one row a wave
+ * of {@link #pack}'s layout, cajeta-llm's resident one: a row's `d`s first, padded to a word, then
+ * its blocks less `d` (the block's last two bytes), so every block is 16-aligned. Lane `(g, a)` of a block's four takes the runs `128 g + 32 t + 16 a ..`, each as f16
  * `q - offset()` against two slot vectors, scaled by `d` times its sub-block's scale; with `H` 1 a
  * lane group takes half a block (two runs) a pass. That is cajeta-llm's `q6kF16WaveMatVecColsKernel`
  * (`H` 0) and `q6kF16HalfWaveMatVecColsKernel` (`H` 1), so each column equals its kernel's bit for
@@ -21,6 +23,43 @@ import dev.cajeta.ml.kernels.quant.Q6kBlock;
 @Requires(H < 2)
 public final class BlockGemvF16Cols<P, uint32 H> {
     public BlockGemvF16Cols() { return; }
+
+    /** Bytes of a row's `d` prefix, `bpr` f16s padded to a word. */
+    public int64 prefixBytes(int64 bpr) { return ((bpr * 2L + 3L) / 4L) * 4L; }
+
+    /** Bytes of one packed row of `bpr` blocks. */
+    public int64 rowBytes(int64 bpr) { return this.prefixBytes(bpr) + bpr * ((int64) P.blockBytes() - 2L); }
+
+    /** `rows` file rows of `bpr` blocks at `raw[srcOff ..)` into this layout at `out[outOff ..)`. */
+    public void pack(int8[] raw, int64 srcOff, int64 rows, int64 bpr, int8[] out, int64 outOff) {
+        int64 bb = (int64) P.blockBytes();
+        int64 pb = bb - 2L;
+        int64 pre = this.prefixBytes(bpr);
+        int64 rb = this.rowBytes(bpr);
+        int64 r = 0L;
+        while (r < rows) {
+            int64 ro = outOff + r * rb;
+            int64 z = 0L;
+            while (z < pre) { out[ro + z] = (int8) 0; z = z + 1L; }
+            int64 b = 0L;
+            while (b < bpr) {
+                int64 fo = srcOff + (r * bpr + b) * bb;
+                out[ro + 2L * b] = raw[fo + pb];
+                out[ro + 2L * b + 1L] = raw[fo + pb + 1L];
+                int64 k = 0L;
+                while (k < pb) { out[ro + pre + b * pb + k] = raw[fo + k]; k = k + 1L; }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
+
+    /** The f16 at byte `at` (even) of `w`, read through its aligned word. */
+    @Device
+    static float32 dAt(KernelBuffer<int8> w, int64 at) {
+        Vector<int32,1> h = w.vload<4>(at - (at & 3L), align: 4).asWords();
+        return Q4kBlock.halfBranchless((h[0] >> (int32) ((at & 2L) * 8L)) & 65535);
+    }
 
     /** This instantiation's registered kernel. */
     public #String kernel() { return "" + colsWave.registeredName(); }
@@ -49,7 +88,8 @@ public final class BlockGemvF16Cols<P, uint32 H> {
         uint32 wv = (uint32) Group.width();
         uint32 lane = KernelThread.x() % wv;
         uint32 row = KernelThread.globalIdX() / wv;
-        int64 bb = (int64) P.blockBytes();
+        int64 pb = (int64) P.blockBytes() - 2L;
+        int64 pre = ((blocksPerRow * 2L + 3L) / 4L) * 4L;
         uint32 bpr = (uint32) blocksPerRow;
         int64 xs = (int64) xStride;
         uint32 nr = H == 1 ? 2 : 4;
@@ -63,7 +103,7 @@ public final class BlockGemvF16Cols<P, uint32 H> {
         float32 c6 = 0.0f;
         float32 c7 = 0.0f;
         if (row < rows) {
-            int64 rb = (int64) row * blocksPerRow * bb;
+            int64 rb = (int64) row * (pre + blocksPerRow * pb);
             int32 m = (int32) (lane % 4);
             int32 g = m / 2;
             int32 a = m - g * 2;
@@ -74,14 +114,14 @@ public final class BlockGemvF16Cols<P, uint32 H> {
                 if (H == 1) { b = u / 2; h = u - b * 2; }
                 int64 js = F16Cols.slotStride(b, bpr);
                 int64 xa = F16Cols.slotBase(xOff, b, bpr, m) + (int64) (4 * h) * js;
-                int64 ob = rb + (int64) b * bb;
+                int64 ob = rb + pre + (int64) b * pb;
                 uint32 k0 = (uint32) (128 * g + 16 * a);
-                Vector<int32,4> wA = w.vload<16>(ob + (int64) P.quantByte(k0)).asWords();
-                Vector<int32,4> wB = w.vload<16>(ob + (int64) P.quantByte(k0 + 32)).asWords();
-                Vector<int32,4> wH = w.vload<16>(ob + (int64) P.planeByte(k0)).asWords();
-                Vector<int32,4> ha = w.vload<16>(ob + (int64) P.headOffset()).asWords();
-                Vector<int32,4> hb = w.vload<16>(ob + (int64) P.head2Offset()).asWords();
-                float32 d = P.dOf(ha, hb);
+                Vector<int32,4> wA = w.vload<16>(ob + (int64) P.quantByte(k0), align: 4).asWords();
+                Vector<int32,4> wB = w.vload<16>(ob + (int64) P.quantByte(k0 + 32), align: 4).asWords();
+                Vector<int32,4> wH = w.vload<16>(ob + (int64) P.planeByte(k0), align: 4).asWords();
+                Vector<int32,4> ha = w.vload<16>(ob + (int64) P.headOffset(), align: 4).asWords();
+                Vector<int32,4> hb = ha;
+                float32 d = BlockGemvF16Cols.dAt(w, rb + 2L * (int64) b);
                 uint32 j0 = (uint32) (8 * g + a) + 4 * h;
                 Vector<int32,4> q0 = P.lowWords(wA, wH, 0);
                 Vector<int32,4> q1 = P.lowWords(wB, wH, 1);
@@ -117,7 +157,7 @@ public final class BlockGemvF16Cols<P, uint32 H> {
         WaveCols.store(y, row, rows, yOff, yStride, accum, ncols, lane, c0, c1, c2, c3, c4, c5, c6, c7);
     }
 
-    /** `ncols` (1 to 8) slot-major f16 token rows `xStride` halves apart from `xOff` against `rows` file-layout rows of `cols / 256` blocks, column `c` into `y[yOff + c * yStride ..)`, set or added. Queued on `s`. */
+    /** `ncols` (1 to 8) slot-major f16 token rows `xStride` halves apart from `xOff` against `rows` rows of {@link #pack}'s layout, `cols / 256` blocks each, column `c` into `y[yOff + c * yStride ..)`, set or added. Queued on `s`. */
     public void runColsOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> x,
             int64 rows, int64 cols, int64 xOff, int64 yOff, int64 ncols, int64 yStride, int64 xStride, boolean accum,
             int64 wavesPerBlock, int64 waveWidth) {
