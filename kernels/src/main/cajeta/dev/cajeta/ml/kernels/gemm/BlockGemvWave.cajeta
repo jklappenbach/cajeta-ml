@@ -378,46 +378,47 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                 + BlockGemvWave.highHalf(hc).dotSum(BlockGemvWave.highHalf(a1), 0) * s3;
             return P.add(acc, d, dm, xs, cs, 0);
         }
-        Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
-        Vector<int32,8> dl = zv;
-        Vector<int32,8> dh = zv;
-        if (P.offset() == 0) {
-            dl = lo.dotAccum(a0, zv);
-            dh = hi.dotAccum(a1, zv);
-        } else {
-            dl = lc.dotAccum(a0, zv);
-            dh = hc.dotAccum(a1, zv);
-        }
-        int32 isum = 0;
-        int32 msum = 0;
         if (P.subValues() == 32) {
-            isum = BlockGemvWave.sum8(dl) * s0 + BlockGemvWave.sum8(dh) * s1;
-            msum = Q8kAct.subSum(xp, xb, ls) * m0 + Q8kAct.subSum(xp, xb, hs) * m1;
-        } else {
-            isum = BlockGemvWave.sumLo(dl) * s0 + BlockGemvWave.sumHi(dl) * s1
-                + BlockGemvWave.sumLo(dh) * s2 + BlockGemvWave.sumHi(dh) * s3;
+            int32 i0 = 0;
+            int32 i1 = 0;
             if (P.offset() == 0) {
-                Vector<uint8,32> ones = (lo ^ lo) | 1;
-                Vector<int32,8> o0 = ones.dotAccum(a0, zv);
-                Vector<int32,8> o1 = ones.dotAccum(a1, zv);
-                msum = BlockGemvWave.sumLo(o0) * m0 + BlockGemvWave.sumHi(o0) * m1
-                    + BlockGemvWave.sumLo(o1) * m2 + BlockGemvWave.sumHi(o1) * m3;
+                i0 = lo.dotSum(a0, 0);
+                i1 = hi.dotSum(a1, 0);
+            } else {
+                i0 = lc.dotSum(a0, 0);
+                i1 = hc.dotSum(a1, 0);
             }
+            return P.add(acc, d, dm, xs, i0 * s0 + i1 * s1,
+                Q8kAct.subSum(xp, xb, ls) * m0 + Q8kAct.subSum(xp, xb, hs) * m1);
         }
+        Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
+        Vector<int32,8> dl = lo.dotAccum(a0, zv);
+        Vector<int32,8> dh = hi.dotAccum(a1, zv);
+        int32 isum = BlockGemvWave.sumLo(dl) * s0 + BlockGemvWave.sumHi(dl) * s1
+            + BlockGemvWave.sumLo(dh) * s2 + BlockGemvWave.sumHi(dh) * s3;
+        Vector<uint8,32> ones = (lo ^ lo) | 1;
+        Vector<int32,8> o0 = ones.dotAccum(a0, zv);
+        Vector<int32,8> o1 = ones.dotAccum(a1, zv);
+        int32 msum = BlockGemvWave.sumLo(o0) * m0 + BlockGemvWave.sumHi(o0) * m1
+            + BlockGemvWave.sumLo(o1) * m2 + BlockGemvWave.sumHi(o1) * m3;
         return P.add(acc, d, dm, xs, isum, msum);
     }
 
-    /** The batched decode: up to eight q8_K token rows `xpStride` bytes apart against one row a wave, each block's header and run decoded once for every column; column `c` to `y[yOff + c * yStride + r]`, each bitwise this class's one-row member for that token. */
+    /** The batched decode: up to eight q8_K token rows `xpStride` bytes apart against one row a wave (two when `R` is over 1, sharing each column's loads), each block's header and run decoded once for every column; column `c` to `y[yOff + c * yStride + r]`, each bitwise this class's one-row member for that token. */
     @Kernel(targets = {"gpu"})
     @Occupancy(maxThreads = 256)
     public static void colsWave(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
             uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum, uint32 ncols, uint32 yStride, uint32 xpStride) {
         uint32 wv = (uint32) Group.width();
-        BlockGemvWave.colsRow(y, w, xp, KernelThread.globalIdX() / wv, rows, blocksPerRow, yOff, accum, ncols, yStride, xpStride,
-            KernelThread.x() % wv, wv);
+        BlockGemvWave.colsRow(y, w, xp, BlockGemvWave.colRows() * (KernelThread.globalIdX() / wv), rows, blocksPerRow, yOff, accum,
+            ncols, yStride, xpStride, KernelThread.x() % wv, wv);
     }
 
-    /** Up to three weights against the same tokens in one launch: waves `[0, rowsA)` run `wA` into `yA`, the next `rowsB` `wB` into `yB`, the next `rowsC` `wC` into `yC`; each output bitwise {@link #colsWave}'s. */
+    /** Rows a wave of the column kernels: two when `R` is over 1. */
+    @Device
+    static uint32 colRows() { return R > 1 ? 2 : 1; }
+
+    /** Up to three weights against the same tokens in one launch: the first waves run `wA`'s `rowsA` rows into `yA`, the next `wB`'s into `yB`, the next `wC`'s into `yC`; each output bitwise {@link #colsWave}'s. */
     @Kernel(targets = {"gpu"})
     @Occupancy(maxThreads = 256)
     public static void cols3Wave(KernelBuffer<float32> yA, KernelBuffer<float32> yB, KernelBuffer<float32> yC,
@@ -427,16 +428,20 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
         uint32 wv = (uint32) Group.width();
         uint32 lane = KernelThread.x() % wv;
         uint32 wave = KernelThread.globalIdX() / wv;
-        if (wave < rowsA) {
-            BlockGemvWave.colsRow(yA, wA, xp, wave, rowsA, blocksPerRow, 0L, accum, ncols, yStrideA, xpStride, lane, wv);
-        } else if (wave < rowsA + rowsB) {
-            BlockGemvWave.colsRow(yB, wB, xp, wave - rowsA, rowsB, blocksPerRow, 0L, accum, ncols, yStrideB, xpStride, lane, wv);
-        } else if (wave < rowsA + rowsB + rowsC) {
-            BlockGemvWave.colsRow(yC, wC, xp, wave - rowsA - rowsB, rowsC, blocksPerRow, 0L, accum, ncols, yStrideC, xpStride, lane, wv);
+        uint32 cr = BlockGemvWave.colRows();
+        uint32 nA = (rowsA + cr - 1) / cr;
+        uint32 nB = (rowsB + cr - 1) / cr;
+        uint32 nC = (rowsC + cr - 1) / cr;
+        if (wave < nA) {
+            BlockGemvWave.colsRow(yA, wA, xp, cr * wave, rowsA, blocksPerRow, 0L, accum, ncols, yStrideA, xpStride, lane, wv);
+        } else if (wave < nA + nB) {
+            BlockGemvWave.colsRow(yB, wB, xp, cr * (wave - nA), rowsB, blocksPerRow, 0L, accum, ncols, yStrideB, xpStride, lane, wv);
+        } else if (wave < nA + nB + nC) {
+            BlockGemvWave.colsRow(yC, wC, xp, cr * (wave - nA - nB), rowsC, blocksPerRow, 0L, accum, ncols, yStrideC, xpStride, lane, wv);
         }
     }
 
-    /** {@link #colsWave}'s body for row `row` of `rows`, run by lane `lane` of a wave `wv` wide. */
+    /** {@link #colsWave}'s body for row `row` of `rows` and, with `R` over 1, row `row + 1` on the same activation loads, run by lane `lane` of a wave `wv` wide. */
     @Device
     static void colsRow(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp, uint32 row, uint32 rows,
             int64 blocksPerRow, int64 yOff, uint32 accum, uint32 ncols, uint32 yStride, uint32 xpStride, uint32 lane, uint32 wv) {
@@ -451,8 +456,18 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
         float32 c5 = 0.0f;
         float32 c6 = 0.0f;
         float32 c7 = 0.0f;
+        float32 e0 = 0.0f;
+        float32 e1 = 0.0f;
+        float32 e2 = 0.0f;
+        float32 e3 = 0.0f;
+        float32 e4 = 0.0f;
+        float32 e5 = 0.0f;
+        float32 e6 = 0.0f;
+        float32 e7 = 0.0f;
         if (row < rows) {
             int64 rb = (int64) row * blocksPerRow * bb;
+            int64 rbB = rb;
+            if (R > 1 && row + 1 < rows) { rbB = rb + blocksPerRow * bb; }
             int32 g = (int32) (lane % 4);
             uint32 b = lane / 4;
             int64 al = 32L * (int64) P.lowStream(g);
@@ -513,6 +528,59 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                 }
                 float32 d = P.dOf(ha, hb);
                 float32 dm = P.dminOf(ha, hb);
+                int64 obB = rbB + (int64) b * bb;
+                Vector<int32,4> haB = BlockGemvWave.head(w, obB, P.headOffset());
+                Vector<int32,4> hbB = haB;
+                if (P.head2Offset() != P.headOffset()) { hbB = BlockGemvWave.head(w, obB, P.head2Offset()); }
+                Vector<uint8,32> qB = BlockGemvWave.run(w, obB, g);
+                Vector<uint8,32> plB = BlockGemvWave.planeOf(w, obB, g, qB);
+                Vector<uint8,32> loB = P.lowBytes<32>(qB, plB, g);
+                Vector<uint8,32> hiB = P.highBytes<32>(qB, plB, g);
+                Vector<int8,32> lcB = loB.asSigned();
+                Vector<int8,32> hcB = hiB.asSigned();
+                if (P.offset() != 0) {
+                    lcB = BlockGemvWave.centered(loB, (int32) P.offset());
+                    hcB = BlockGemvWave.centered(hiB, (int32) P.offset());
+                }
+                int32 s0B = 0;
+                int32 s1B = 0;
+                int32 s2B = 0;
+                int32 s3B = 0;
+                int32 m0B = 0;
+                int32 m1B = 0;
+                int32 m2B = 0;
+                int32 m3B = 0;
+                if (P.subValues() == 32) {
+                    s0B = P.scaleOf(haB, hbB, ls);
+                    s1B = P.scaleOf(haB, hbB, hs);
+                    m0B = P.minOf(haB, hbB, ls);
+                    m1B = P.minOf(haB, hbB, hs);
+                } else {
+                    s0B = P.scaleOf(haB, hbB, 2 * ls);
+                    s1B = P.scaleOf(haB, hbB, 2 * ls + 1);
+                    s2B = P.scaleOf(haB, hbB, 2 * hs);
+                    s3B = P.scaleOf(haB, hbB, 2 * hs + 1);
+                    if (P.offset() == 0) {
+                        m0B = P.minOf(haB, hbB, 2 * ls);
+                        m1B = P.minOf(haB, hbB, 2 * ls + 1);
+                        m2B = P.minOf(haB, hbB, 2 * hs);
+                        m3B = P.minOf(haB, hbB, 2 * hs + 1);
+                    }
+                }
+                Vector<uint8,32> mlB = loB;
+                Vector<uint8,32> mhB = hiB;
+                if (BlockGemvWave.folds()) {
+                    loB = (loB.asSigned().asWords() * heap Vector<int32,8>(s0B, s0B, s0B, s0B, s1B, s1B, s1B, s1B)).asBytes().asUnsigned();
+                    hiB = (hiB.asSigned().asWords() * heap Vector<int32,8>(s2B, s2B, s2B, s2B, s3B, s3B, s3B, s3B)).asBytes().asUnsigned();
+                    int32 b0B = m0B * 16843009;
+                    int32 b1B = m1B * 16843009;
+                    int32 b2B = m2B * 16843009;
+                    int32 b3B = m3B * 16843009;
+                    mlB = heap Vector<int32,8>(b0B, b0B, b0B, b0B, b1B, b1B, b1B, b1B).asBytes().asUnsigned();
+                    mhB = heap Vector<int32,8>(b2B, b2B, b2B, b2B, b3B, b3B, b3B, b3B).asBytes().asUnsigned();
+                }
+                float32 dB = P.dOf(haB, hbB);
+                float32 dmB = P.dminOf(haB, hbB);
                 int64 xb = (int64) b * 320L;
                 int64 o1 = xps;
                 if (ncols < 2) { o1 = 0L; }
@@ -523,7 +591,9 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                 Vector<int8,32> q1 = xp.vload<32>(xb + o1 + ah);
                 float32 x1 = BlockGemvWave.colScale(xp, xb + o1);
                 c0 = BlockGemvWave.colStep(c0, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, p0, q0, x0, xp, xb, ls, hs);
+                if (R > 1) { e0 = BlockGemvWave.colStep(e0, loB, hiB, lcB, hcB, mlB, mhB, s0B, s1B, s2B, s3B, m0B, m1B, m2B, m3B, dB, dmB, p0, q0, x0, xp, xb, ls, hs); }
                 c1 = BlockGemvWave.colStep(c1, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, p1, q1, x1, xp, xb + o1, ls, hs);
+                if (R > 1) { e1 = BlockGemvWave.colStep(e1, loB, hiB, lcB, hcB, mlB, mhB, s0B, s1B, s2B, s3B, m0B, m1B, m2B, m3B, dB, dmB, p1, q1, x1, xp, xb + o1, ls, hs); }
                 if (ncols > 2) {
                     int64 n2 = 3L * xps;
                     if (ncols < 4) { n2 = 2L * xps; }
@@ -534,7 +604,9 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                     Vector<int8,32> q3 = xp.vload<32>(xb + n2 + ah);
                     float32 x3 = BlockGemvWave.colScale(xp, xb + n2);
                     c2 = BlockGemvWave.colStep(c2, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, p2, q2, x2, xp, xb + 2L * xps, ls, hs);
+                    if (R > 1) { e2 = BlockGemvWave.colStep(e2, loB, hiB, lcB, hcB, mlB, mhB, s0B, s1B, s2B, s3B, m0B, m1B, m2B, m3B, dB, dmB, p2, q2, x2, xp, xb + 2L * xps, ls, hs); }
                     c3 = BlockGemvWave.colStep(c3, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, p3, q3, x3, xp, xb + n2, ls, hs);
+                    if (R > 1) { e3 = BlockGemvWave.colStep(e3, loB, hiB, lcB, hcB, mlB, mhB, s0B, s1B, s2B, s3B, m0B, m1B, m2B, m3B, dB, dmB, p3, q3, x3, xp, xb + n2, ls, hs); }
                 }
                 if (ncols > 4) {
                     int64 n4 = 5L * xps;
@@ -546,7 +618,9 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                     Vector<int8,32> q5 = xp.vload<32>(xb + n4 + ah);
                     float32 x5 = BlockGemvWave.colScale(xp, xb + n4);
                     c4 = BlockGemvWave.colStep(c4, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, p4, q4, x4, xp, xb + 4L * xps, ls, hs);
+                    if (R > 1) { e4 = BlockGemvWave.colStep(e4, loB, hiB, lcB, hcB, mlB, mhB, s0B, s1B, s2B, s3B, m0B, m1B, m2B, m3B, dB, dmB, p4, q4, x4, xp, xb + 4L * xps, ls, hs); }
                     c5 = BlockGemvWave.colStep(c5, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, p5, q5, x5, xp, xb + n4, ls, hs);
+                    if (R > 1) { e5 = BlockGemvWave.colStep(e5, loB, hiB, lcB, hcB, mlB, mhB, s0B, s1B, s2B, s3B, m0B, m1B, m2B, m3B, dB, dmB, p5, q5, x5, xp, xb + n4, ls, hs); }
                 }
                 if (ncols > 6) {
                     int64 n6 = 7L * xps;
@@ -558,19 +632,23 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                     Vector<int8,32> q7 = xp.vload<32>(xb + n6 + ah);
                     float32 x7 = BlockGemvWave.colScale(xp, xb + n6);
                     c6 = BlockGemvWave.colStep(c6, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, p6, q6, x6, xp, xb + 6L * xps, ls, hs);
+                    if (R > 1) { e6 = BlockGemvWave.colStep(e6, loB, hiB, lcB, hcB, mlB, mhB, s0B, s1B, s2B, s3B, m0B, m1B, m2B, m3B, dB, dmB, p6, q6, x6, xp, xb + 6L * xps, ls, hs); }
                     c7 = BlockGemvWave.colStep(c7, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, p7, q7, x7, xp, xb + n6, ls, hs);
+                    if (R > 1) { e7 = BlockGemvWave.colStep(e7, loB, hiB, lcB, hcB, mlB, mhB, s0B, s1B, s2B, s3B, m0B, m1B, m2B, m3B, dB, dmB, p7, q7, x7, xp, xb + n6, ls, hs); }
                 }
                 b = b + wv / 4;
             }
         }
         WaveCols.store(y, row, rows, yOff, yStride, accum, ncols, lane, c0, c1, c2, c3, c4, c5, c6, c7);
+        if (R > 1) { WaveCols.store(y, row + 1, rows, yOff, yStride, accum, ncols, lane, e0, e1, e2, e3, e4, e5, e6, e7); }
     }
 
     /** The batched decode on `s`: `ncols` (1 to 8) token rows `xpStride` bytes apart (a multiple of 16), column `c` into `y[yOff + c * yStride ..)`, `wavesPerBlock` waves a workgroup. */
     public void runColsOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
             int64 rows, int64 cols, int64 yOff, int64 ncols, int64 yStride, int64 xpStride, boolean accum,
             int64 wavesPerBlock, int64 waveWidth) {
-        int64 groups = (rows + wavesPerBlock - 1L) / wavesPerBlock;
+        int64 cr = R > 1 ? 2L : 1L;
+        int64 groups = ((rows + cr - 1L) / cr + wavesPerBlock - 1L) / wavesPerBlock;
         colsWave.launch(s, grid: [(uint32) groups], block: [(uint32) (wavesPerBlock * waveWidth)])
             (y, w, xp, (uint32) rows, cols / 256L, yOff, accum ? 1 : 0, (uint32) ncols, (uint32) yStride, (uint32) xpStride);
     }
@@ -583,7 +661,9 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
             KernelBuffer<int8> wA, KernelBuffer<int8> wB, KernelBuffer<int8> wC, KernelBuffer<int8> xp,
             int64 rowsA, int64 rowsB, int64 rowsC, int64 cols, int64 ncols, int64 yStrideA, int64 yStrideB, int64 yStrideC,
             int64 xpStride, boolean accum, int64 wavesPerBlock, int64 waveWidth) {
-        int64 groups = (rowsA + rowsB + rowsC + wavesPerBlock - 1L) / wavesPerBlock;
+        int64 cr = R > 1 ? 2L : 1L;
+        int64 waves = (rowsA + cr - 1L) / cr + (rowsB + cr - 1L) / cr + (rowsC + cr - 1L) / cr;
+        int64 groups = (waves + wavesPerBlock - 1L) / wavesPerBlock;
         cols3Wave.launch(s, grid: [(uint32) groups], block: [(uint32) (wavesPerBlock * waveWidth)])
             (yA, yB, yC, wA, wB, wC, xp, (uint32) rowsA, (uint32) rowsB, (uint32) rowsC, cols / 256L, accum ? 1 : 0,
              (uint32) ncols, (uint32) yStrideA, (uint32) yStrideB, (uint32) yStrideC, (uint32) xpStride);
