@@ -1,0 +1,95 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Cajeta;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemvWave;
+
+/** {@link ColsTest}'s three-weight check over K piece `P`: member `<P, R, PF>`'s fused column kernel on weights of `rowsA`, `rowsB` and `rowsC` rows (C absent at 0) against `ncols` tokens, each output bitwise that weight's own column launch, set then added. */
+public final class Cols3Check<P, uint32 R, uint32 PF> {
+    public Cols3Check() { return; }
+
+    /** Bytes `[from, from + n)` of `file` as a device buffer. */
+    static #KernelBuffer<int8> part(int8[] file, int64 from, int64 n) {
+        int8[] b #= heap int8[n];
+        int64 i = 0L;
+        while (i < n) { b[i] = file[from + i]; i = i + 1L; }
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) n);
+        w.upload(b);
+        return #w;
+    }
+
+    /** A seed of `n` floats that differs per weight `k`. */
+    static #float32[] seed(int64 n, int64 k) {
+        float32[] s #= heap float32[n];
+        int64 i = 0L;
+        while (i < n) { s[i] = 0.25f * (float32) ((i + k) % 5L); i = i + 1L; }
+        return #s;
+    }
+
+    /** `got` against weight `w`'s own column launch from `sd`, bit for bit. */
+    static void same(BlockGemvWave<P, R, PF> mc, KernelStream st, float32[] got, float32[] sd, KernelBuffer<int8> w,
+            KernelBuffer<int8> xp, int64 rows, int64 bpr, int64 ncols, boolean add, int64 wv) {
+        KernelBuffer<float32> r = heap KernelBuffer<float32>((uint64) (ncols * rows));
+        r.upload(sd);
+        mc.runColsOn(st, r, w, xp, rows, bpr * 256L, 0L, ncols, rows, bpr * 320L, add, 2L, wv);
+        st.sync();
+        float32[] want #= heap float32[ncols * rows];
+        r.download(want);
+        int64 i = 0L;
+        while (i < ncols * rows) {
+            Assert.isTrue(Cajeta.f32ToBits(got[i]) == Cajeta.f32ToBits(want[i]));
+            i = i + 1L;
+        }
+    }
+
+    public void check(int8[] file, int64 rowsA, int64 rowsB, int64 rowsC, int64 bpr, int64 ncols) {
+        int64 rb = bpr * (int64) P.blockBytes();
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        int8[] hx #= BlockGemmRefTest.acts(ncols * bpr);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (ncols * bpr * 320L));
+        xp.upload(hx);
+        KernelBuffer<int8> wA #= Cols3Check.part(file, 0L, rowsA * rb);
+        KernelBuffer<int8> wB #= Cols3Check.part(file, rowsA * rb, rowsB * rb);
+        int64 rc = rowsC > 0L ? rowsC : 1L;
+        KernelBuffer<int8> wC #= Cols3Check.part(file, (rowsA + rowsB) * rb, rc * rb);
+        KernelBuffer<float32> yA = heap KernelBuffer<float32>((uint64) (ncols * rowsA));
+        KernelBuffer<float32> yB = heap KernelBuffer<float32>((uint64) (ncols * rowsB));
+        KernelBuffer<float32> yC = heap KernelBuffer<float32>((uint64) (ncols * rc));
+        float32[] sA #= Cols3Check.seed(ncols * rowsA, 0L);
+        float32[] sB #= Cols3Check.seed(ncols * rowsB, 1L);
+        float32[] sC #= Cols3Check.seed(ncols * rc, 2L);
+        float32[] gA #= heap float32[ncols * rowsA];
+        float32[] gB #= heap float32[ncols * rowsB];
+        float32[] gC #= heap float32[ncols * rc];
+        BlockGemvWave<P, R, PF> mc = heap BlockGemvWave<P, R, PF>();
+        KernelStream st #= KernelStream.current();
+        int32 pass = 0;
+        while (pass < 2) {
+            boolean add = pass == 1;
+            yA.upload(sA);
+            yB.upload(sB);
+            yC.upload(sC);
+            if (rowsC > 0L) {
+                mc.runCols3On(st, yA, yB, yC, wA, wB, wC, xp, rowsA, rowsB, rowsC, bpr * 256L, ncols,
+                    rowsA, rowsB, rowsC, bpr * 320L, add, 2L, wv);
+            } else {
+                mc.runCols3On(st, yA, yB, yA, wA, wB, wA, xp, rowsA, rowsB, 0L, bpr * 256L, ncols,
+                    rowsA, rowsB, rowsA, bpr * 320L, add, 2L, wv);
+            }
+            st.sync();
+            yA.download(gA);
+            yB.download(gB);
+            Cols3Check.same(mc, st, gA, sA, wA, xp, rowsA, bpr, ncols, add, wv);
+            Cols3Check.same(mc, st, gB, sB, wB, xp, rowsB, bpr, ncols, add, wv);
+            if (rowsC > 0L) {
+                yC.download(gC);
+                Cols3Check.same(mc, st, gC, sC, wC, xp, rowsC, bpr, ncols, add, wv);
+            }
+            pass = pass + 1;
+        }
+    }
+}

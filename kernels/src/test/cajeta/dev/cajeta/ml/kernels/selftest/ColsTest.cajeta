@@ -58,4 +58,38 @@ public class ColsTest {
         heap Block32ColsCheck<Q40Block, 4>().check(2L);
         ValueCheck.credit(m);
     }
+
+    @Test
+    public void threeWeightsInOneLaunchEachEqualTheirOwnColumnLaunch() {
+        String k = "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q4kBlock_1_0_cols3Wave";
+        if (!Device.kernelUsable(k)) { DeviceSkip.noKernel(k, "the wave decode driver is the GPU's (kernel-drivers 9.1.8.4)"); return; }
+        int64[] m #= ValueCheck.mark();
+        int8[] f2 #= Q2kBlockTest.weight(68L * 9L);
+        int8[] f3 #= Q3kBlockTest.weight(68L * 9L);
+        int8[] f4 #= BlockGemmRefTest.weight(68L * 9L);
+        int8[] f5 #= Q5kBlockTest.weight(68L * 9L);
+        int8[] f6 #= Q6kBlockTest.weight(68L * 9L);
+        heap Cols3Check<Q2kBlock, 1, 0>().check(f2, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q2kBlock, 2, 0>().check(f2, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q2kBlock, 4, 0>().check(f2, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q3kBlock, 1, 0>().check(f3, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q3kBlock, 2, 0>().check(f3, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q3kBlock, 4, 0>().check(f3, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q4kBlock, 1, 0>().check(f4, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q4kBlock, 2, 0>().check(f4, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q4kBlock, 4, 0>().check(f4, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q4kBlock, 1, 1>().check(f4, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q4kBlock, 2, 1>().check(f4, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q4kBlock, 4, 1>().check(f4, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q5kBlock, 1, 0>().check(f5, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q5kBlock, 2, 0>().check(f5, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q5kBlock, 4, 0>().check(f5, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q6kBlock, 1, 0>().check(f6, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q6kBlock, 2, 0>().check(f6, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q6kBlock, 4, 0>().check(f6, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q6kBlock, 4, 1>().check(f6, 37L, 20L, 11L, 9L, 8L);
+        heap Cols3Check<Q4kBlock, 1, 0>().check(f4, 37L, 20L, 0L, 9L, 3L);
+        heap Cols3Check<Q6kBlock, 1, 0>().check(f6, 37L, 20L, 0L, 9L, 3L);
+        ValueCheck.credit(m);
+    }
 }

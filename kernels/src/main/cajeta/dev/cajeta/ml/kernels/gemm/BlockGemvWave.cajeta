@@ -412,10 +412,35 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
     @Occupancy(maxThreads = 256)
     public static void colsWave(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
             uint32 rows, int64 blocksPerRow, int64 yOff, uint32 accum, uint32 ncols, uint32 yStride, uint32 xpStride) {
-        int64 xps = (int64) ((xpStride >> 4) << 4);
+        uint32 wv = (uint32) Group.width();
+        BlockGemvWave.colsRow(y, w, xp, KernelThread.globalIdX() / wv, rows, blocksPerRow, yOff, accum, ncols, yStride, xpStride,
+            KernelThread.x() % wv, wv);
+    }
+
+    /** Up to three weights against the same tokens in one launch: waves `[0, rowsA)` run `wA` into `yA`, the next `rowsB` `wB` into `yB`, the next `rowsC` `wC` into `yC`; each output bitwise {@link #colsWave}'s. */
+    @Kernel(targets = {"gpu"})
+    @Occupancy(maxThreads = 256)
+    public static void cols3Wave(KernelBuffer<float32> yA, KernelBuffer<float32> yB, KernelBuffer<float32> yC,
+            KernelBuffer<int8> wA, KernelBuffer<int8> wB, KernelBuffer<int8> wC, KernelBuffer<int8> xp,
+            uint32 rowsA, uint32 rowsB, uint32 rowsC, int64 blocksPerRow, uint32 accum, uint32 ncols,
+            uint32 yStrideA, uint32 yStrideB, uint32 yStrideC, uint32 xpStride) {
         uint32 wv = (uint32) Group.width();
         uint32 lane = KernelThread.x() % wv;
-        uint32 row = KernelThread.globalIdX() / wv;
+        uint32 wave = KernelThread.globalIdX() / wv;
+        if (wave < rowsA) {
+            BlockGemvWave.colsRow(yA, wA, xp, wave, rowsA, blocksPerRow, 0L, accum, ncols, yStrideA, xpStride, lane, wv);
+        } else if (wave < rowsA + rowsB) {
+            BlockGemvWave.colsRow(yB, wB, xp, wave - rowsA, rowsB, blocksPerRow, 0L, accum, ncols, yStrideB, xpStride, lane, wv);
+        } else if (wave < rowsA + rowsB + rowsC) {
+            BlockGemvWave.colsRow(yC, wC, xp, wave - rowsA - rowsB, rowsC, blocksPerRow, 0L, accum, ncols, yStrideC, xpStride, lane, wv);
+        }
+    }
+
+    /** {@link #colsWave}'s body for row `row` of `rows`, run by lane `lane` of a wave `wv` wide. */
+    @Device
+    static void colsRow(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp, uint32 row, uint32 rows,
+            int64 blocksPerRow, int64 yOff, uint32 accum, uint32 ncols, uint32 yStride, uint32 xpStride, uint32 lane, uint32 wv) {
+        int64 xps = (int64) ((xpStride >> 4) << 4);
         int64 bb = (int64) P.blockBytes();
         uint32 bpr = (uint32) blocksPerRow;
         float32 c0 = 0.0f;
@@ -552,6 +577,20 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
 
     /** The column kernel's registered name. */
     public #String colsKernel() { return "" + colsWave.registeredName(); }
+
+    /** `yA`, `yB` and (when `rowsC` is over 0) `yC` from `ncols` token rows of `xp` and three weights of `cols / 256` blocks a row, one launch; `rowsC` 0 leaves `yC` and `wC` unread. Each output equals {@link #runColsOn}'s on its weight. Queued on `s`. */
+    public void runCols3On(KernelStream s, KernelBuffer<float32> yA, KernelBuffer<float32> yB, KernelBuffer<float32> yC,
+            KernelBuffer<int8> wA, KernelBuffer<int8> wB, KernelBuffer<int8> wC, KernelBuffer<int8> xp,
+            int64 rowsA, int64 rowsB, int64 rowsC, int64 cols, int64 ncols, int64 yStrideA, int64 yStrideB, int64 yStrideC,
+            int64 xpStride, boolean accum, int64 wavesPerBlock, int64 waveWidth) {
+        int64 groups = (rowsA + rowsB + rowsC + wavesPerBlock - 1L) / wavesPerBlock;
+        cols3Wave.launch(s, grid: [(uint32) groups], block: [(uint32) (wavesPerBlock * waveWidth)])
+            (yA, yB, yC, wA, wB, wC, xp, (uint32) rowsA, (uint32) rowsB, (uint32) rowsC, cols / 256L, accum ? 1 : 0,
+             (uint32) ncols, (uint32) yStrideA, (uint32) yStrideB, (uint32) yStrideC, (uint32) xpStride);
+    }
+
+    /** The three-weight column kernel's registered name. */
+    public #String cols3Kernel() { return "" + cols3Wave.registeredName(); }
 
     /** `y[yOff + r]` set (or added to) for `rows` file-layout rows of `cols / 256` blocks against one q8_K token `xp`, `wavesPerBlock` waves a workgroup. Queued on `s`. */
     public void runOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
