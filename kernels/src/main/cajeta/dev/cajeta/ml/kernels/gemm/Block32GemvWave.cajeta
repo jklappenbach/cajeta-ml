@@ -166,16 +166,24 @@ public final class Block32GemvWave<P, uint32 R> {
         }
     }
 
-    /** One column's step for block `wb` (scale `d`) of the row at `rb`: the column's q8_K row at `xp[xc ..)`. */
+    /** One column's step for block `wb` (scale `d`) of the row at `rb`: the column's activation words `aw` and scale `xs`, its q8_K block at `xp[xb ..)`. */
     @Device
-    static float32 colAcc(float32 acc, float32 d, KernelBuffer<int8> w, int64 rb, int64 pre, int64 bs, int64 wb, KernelBuffer<int8> xp, int64 xc) {
-        int64 xb = xc + (wb / 8L) * 320L;
-        Vector<int32,8> aw = xp.vload<32>(xb + (wb % 8L) * 32L, align: 16).asWords();
-        Vector<int32,1> xw = xp.vload<4>(xb + 288L, align: 4).asWords();
-        float32 xs = Cajeta.bitsToF32(xw[0]);
+    static float32 colAcc(float32 acc, float32 d, KernelBuffer<int8> w, int64 rb, int64 pre, int64 bs, int64 wb,
+            Vector<int32,8> aw, float32 xs, KernelBuffer<int8> xp, int64 xb) {
         int32 og = 0;
         if (P.fileOffset() != 0) { og = P.fileOffset() * Q8kAct.subSum(xp, xb, (uint32) (wb % 8L)); }
         return acc + d * xs * (float32) (Block32GemvWave.dot(w, rb + pre + wb * bs, aw) - og);
+    }
+
+    /** Block `wb`'s activation words in the q8_K block at `xb`. */
+    @Device
+    static Vector<int32,8> colWords(KernelBuffer<int8> xp, int64 xb, int64 wb) { return xp.vload<32>(xb + (wb % 8L) * 32L, align: 16).asWords(); }
+
+    /** The scale of the q8_K block at `xb`. */
+    @Device
+    static float32 colScale(KernelBuffer<int8> xp, int64 xb) {
+        Vector<int32,1> xw = xp.vload<4>(xb + 288L, align: 4).asWords();
+        return Cajeta.bitsToF32(xw[0]);
     }
 
     /** The batched decode: up to eight q8_K token rows `xpStride` bytes apart against one row a wave; column `c` to `y[yOff + c * yStride + r]`, each bitwise the one-row member for that token. */
@@ -202,14 +210,52 @@ public final class Block32GemvWave<P, uint32 R> {
             int64 wb = (int64) lane;
             while (wb < nb) {
                 float32 d = Block32GemvWave.dAt(w, rb + 2L * wb);
-                c0 = Block32GemvWave.colAcc(c0, d, w, rb, pre, bs, wb, xp, 0L);
-                if (ncols > 1) { c1 = Block32GemvWave.colAcc(c1, d, w, rb, pre, bs, wb, xp, xps); }
-                if (ncols > 2) { c2 = Block32GemvWave.colAcc(c2, d, w, rb, pre, bs, wb, xp, 2L * xps); }
-                if (ncols > 3) { c3 = Block32GemvWave.colAcc(c3, d, w, rb, pre, bs, wb, xp, 3L * xps); }
-                if (ncols > 4) { c4 = Block32GemvWave.colAcc(c4, d, w, rb, pre, bs, wb, xp, 4L * xps); }
-                if (ncols > 5) { c5 = Block32GemvWave.colAcc(c5, d, w, rb, pre, bs, wb, xp, 5L * xps); }
-                if (ncols > 6) { c6 = Block32GemvWave.colAcc(c6, d, w, rb, pre, bs, wb, xp, 6L * xps); }
-                if (ncols > 7) { c7 = Block32GemvWave.colAcc(c7, d, w, rb, pre, bs, wb, xp, 7L * xps); }
+                int64 o1 = xps;
+                if (ncols < 2) { o1 = 0L; }
+                int64 b0 = (wb / 8L) * 320L;
+                Vector<int32,8> w0 = Block32GemvWave.colWords(xp, b0, wb);
+                float32 x0 = Block32GemvWave.colScale(xp, b0);
+                int64 b1 = o1 + (wb / 8L) * 320L;
+                Vector<int32,8> w1 = Block32GemvWave.colWords(xp, b1, wb);
+                float32 x1 = Block32GemvWave.colScale(xp, b1);
+                c0 = Block32GemvWave.colAcc(c0, d, w, rb, pre, bs, wb, w0, x0, xp, b0);
+                c1 = Block32GemvWave.colAcc(c1, d, w, rb, pre, bs, wb, w1, x1, xp, b1);
+                if (ncols > 2) {
+                    int64 n2 = 3L * xps;
+                    if (ncols < 4) { n2 = 2L * xps; }
+                    int64 b2 = 2L * xps + (wb / 8L) * 320L;
+                    Vector<int32,8> w2 = Block32GemvWave.colWords(xp, b2, wb);
+                    float32 x2 = Block32GemvWave.colScale(xp, b2);
+                    int64 b3 = n2 + (wb / 8L) * 320L;
+                    Vector<int32,8> w3 = Block32GemvWave.colWords(xp, b3, wb);
+                    float32 x3 = Block32GemvWave.colScale(xp, b3);
+                    c2 = Block32GemvWave.colAcc(c2, d, w, rb, pre, bs, wb, w2, x2, xp, b2);
+                    c3 = Block32GemvWave.colAcc(c3, d, w, rb, pre, bs, wb, w3, x3, xp, b3);
+                }
+                if (ncols > 4) {
+                    int64 n4 = 5L * xps;
+                    if (ncols < 6) { n4 = 4L * xps; }
+                    int64 b4 = 4L * xps + (wb / 8L) * 320L;
+                    Vector<int32,8> w4 = Block32GemvWave.colWords(xp, b4, wb);
+                    float32 x4 = Block32GemvWave.colScale(xp, b4);
+                    int64 b5 = n4 + (wb / 8L) * 320L;
+                    Vector<int32,8> w5 = Block32GemvWave.colWords(xp, b5, wb);
+                    float32 x5 = Block32GemvWave.colScale(xp, b5);
+                    c4 = Block32GemvWave.colAcc(c4, d, w, rb, pre, bs, wb, w4, x4, xp, b4);
+                    c5 = Block32GemvWave.colAcc(c5, d, w, rb, pre, bs, wb, w5, x5, xp, b5);
+                }
+                if (ncols > 6) {
+                    int64 n6 = 7L * xps;
+                    if (ncols < 8) { n6 = 6L * xps; }
+                    int64 b6 = 6L * xps + (wb / 8L) * 320L;
+                    Vector<int32,8> w6 = Block32GemvWave.colWords(xp, b6, wb);
+                    float32 x6 = Block32GemvWave.colScale(xp, b6);
+                    int64 b7 = n6 + (wb / 8L) * 320L;
+                    Vector<int32,8> w7 = Block32GemvWave.colWords(xp, b7, wb);
+                    float32 x7 = Block32GemvWave.colScale(xp, b7);
+                    c6 = Block32GemvWave.colAcc(c6, d, w, rb, pre, bs, wb, w6, x6, xp, b6);
+                    c7 = Block32GemvWave.colAcc(c7, d, w, rb, pre, bs, wb, w7, x7, xp, b7);
+                }
                 wb = wb + (int64) wv;
             }
         }
