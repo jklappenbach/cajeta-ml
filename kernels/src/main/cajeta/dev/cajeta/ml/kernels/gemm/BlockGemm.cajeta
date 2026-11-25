@@ -34,6 +34,9 @@ public final class BlockGemm<P> {
         return Device.kernelAvailable(k);
     }
 
+    /** True where {@link #load} packs the row driver's 8-row interleave; false where it keeps the file layout. */
+    public boolean packsRows() { return this.byRows(); }
+
     /** The weight on the device in this device's packing, from `rows` rows of `cols / 256` file-layout blocks at `file[off ..)`. */
     public #KernelBuffer<int8> load(int8[] file, int64 off, int64 rows, int64 cols) {
         int64 bpr = cols / 256L;
@@ -54,16 +57,23 @@ public final class BlockGemm<P> {
         return #w;
     }
 
+    /** The token rows `xp` and `y` must hold for {@link #run} of `tokens`: `tokens` where the row driver runs, a whole number of the largest tile's 128 rows on a GPU. */
+    public int64 tokensFor(int64 tokens) {
+        if (this.byRows()) { return tokens; }
+        return (tokens + 127L) / 128L * 128L;
+    }
+
     /** The kernel that serves `tokens` by `outDim` by `cols` here. */
     public #String kernelFor(int64 tokens, int64 outDim, int64 cols) {
         if (this.byRows()) { return this.rows.kernel(); }
-        ShapeFilter f #= this.tiles.filterFor(tokens, outDim, cols);
-        int32 idx = this.tiles.chooseUntimed("", f, tokens, outDim, cols);
+        int64 t = this.tokensFor(tokens);
+        ShapeFilter f #= this.tiles.filterFor(t, outDim, cols);
+        int32 idx = this.tiles.chooseUntimed("", f, t, outDim, cols);
         if (idx < 0) { idx = 0; }
         return this.tiles.shapes().get(idx).kernel();
     }
 
-    /** `y` set (or added to) for `tokens` q8_K rows in `xp` and a weight from {@link #load}; queued on `s`. */
+    /** `y` set (or added to) for `tokens` q8_K rows in `xp` and a weight from {@link #load}, `xp` and `y` holding {@link #tokensFor} rows (the rows past `tokens` are scratch); queued on `s`. */
     public void run(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
             int64 tokens, int64 outDim, int64 cols, boolean accum) {
         int64 bpr = cols / 256L;
@@ -71,9 +81,10 @@ public final class BlockGemm<P> {
             this.rows.runOn(s, y, w, xp, outDim, bpr, tokens, bpr * 320L, outDim, accum, 64L, 32L);
             return;
         }
-        ShapeFilter f #= this.tiles.filterFor(tokens, outDim, cols);
-        int32 idx = this.tiles.chooseUntimed("", f, tokens, outDim, cols);
+        int64 t = this.tokensFor(tokens);
+        ShapeFilter f #= this.tiles.filterFor(t, outDim, cols);
+        int32 idx = this.tiles.chooseUntimed("", f, t, outDim, cols);
         if (idx < 0) { idx = 0; }
-        this.tiles.shapes().get(idx).runOn(s, y, w, xp, tokens, outDim, cols, this.part, 1L, accum ? 1 : 0);
+        this.tiles.shapes().get(idx).runOn(s, y, w, xp, t, outDim, cols, this.part, 1L, accum ? 1 : 0);
     }
 }

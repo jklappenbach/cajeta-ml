@@ -66,4 +66,61 @@ public class Q4kGemmTest {
         }
         ValueCheck.credit(m);
     }
+
+    @Test
+    public void aRaggedTokenCountRunsOnTheRowsItAsksFor() {
+        String ref = "BlockGemmRef_dev_cajeta_ml_kernels_quant_Q4kBlock_ref";
+        int64 tokens = 37L;
+        int64 outDim = 256L;
+        int64 cols = 512L;
+        int64 bpr = cols / 256L;
+        BlockGemm<Q4kBlock> op = heap BlockGemm<Q4kBlock>();
+        String kernel #= op.kernelFor(tokens, outDim, cols);
+        if (!Device.kernelAvailable(ref) || !Device.kernelUsable(kernel)) {
+            DeviceSkip.noKernel(kernel, "kernel-drivers 10.2");
+            return;
+        }
+        int64 tp = op.tokensFor(tokens);
+        Assert.isTrue(tp >= tokens);
+        int8[] file #= BlockGemmRefTest.weight(outDim * bpr);
+        int8[] hx #= BlockGemmRefTest.acts(tp * bpr);
+        KernelBuffer<int8> wf = heap KernelBuffer<int8>((uint64) (outDim * bpr * 144L));
+        KernelBuffer<int8> w #= op.load(file, 0L, outDim, cols);
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tp * bpr * 320L));
+        KernelBuffer<float32> ya = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> yb = heap KernelBuffer<float32>((uint64) (tp * outDim));
+        wf.upload(file);
+        xp.upload(hx);
+        float32[] seedY #= heap float32[tp * outDim];
+        int64 i = 0L;
+        while (i < tp * outDim) { seedY[i] = 0.25f * (float32) (i % 7L); i = i + 1L; }
+        float32[] seedA #= heap float32[tokens * outDim];
+        i = 0L;
+        while (i < tokens * outDim) { seedA[i] = seedY[i]; i = i + 1L; }
+        float32[] ga #= heap float32[tokens * outDim];
+        float32[] gb #= heap float32[tp * outDim];
+        BlockGemmRef<Q4kBlock> g = heap BlockGemmRef<Q4kBlock>();
+        int64[] m #= ValueCheck.mark();
+        int32 pass = 0;
+        while (pass < 2) {
+            ya.upload(seedA);
+            yb.upload(seedY);
+            KernelStream st #= KernelStream.current();
+            g.run(ya, wf, xp, outDim, tokens, bpr, outDim, pass == 1);
+            op.run(st, yb, w, xp, tokens, outDim, cols, pass == 1);
+            st.sync();
+            ya.download(ga);
+            yb.download(gb);
+            i = 0L;
+            while (i < tokens * outDim) {
+                float32 d = ga[i] - gb[i];
+                if (d < 0.0f) { d = 0.0f - d; }
+                float32 mag = ga[i] < 0.0f ? 0.0f - ga[i] : ga[i];
+                Assert.isTrue(d <= 0.001f * (1.0f + mag));
+                i = i + 1L;
+            }
+            pass = pass + 1;
+        }
+        ValueCheck.credit(m);
+    }
 }
