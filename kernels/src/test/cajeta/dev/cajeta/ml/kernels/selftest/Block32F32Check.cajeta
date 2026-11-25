@@ -1,0 +1,81 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.Block32GemvF32;
+import dev.cajeta.ml.kernels.gemm.Block32GemvWave;
+
+/** {@link Block32GemvF32Test}'s check over one 32-value piece `P`: the float decode on the packed layout against the format's definition in float64, each output within 1e-5 of its absolute sum, with an activation and an output offset, set then added. */
+public final class Block32F32Check<P> {
+    public Block32F32Check() { return; }
+
+    public void check(int64 rows, int64 nb) {
+        int64 xOff = 16L;
+        int64 yOff = 3L;
+        int64 cols = nb * 32L;
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        Block32Check<P> gen = heap Block32Check<P>();
+        int8[] file #= gen.weight(rows * nb);
+        Block32GemvWave<P, 1> lay = heap Block32GemvWave<P, 1>();
+        int8[] pk #= heap int8[rows * lay.rowBytes(nb)];
+        lay.pack(file, 0L, rows, nb, pk, 0L);
+        float32[] hx #= heap float32[xOff + cols];
+        int64 seed = 271L;
+        int64 i = 0L;
+        while (i < xOff + cols) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            hx[i] = (float32) ((seed >> 16) % 2001L - 1000L) * 0.001f;
+            i = i + 1L;
+        }
+        float64[] want #= heap float64[rows];
+        float64[] mag #= heap float64[rows];
+        int64 bb = (int64) P.blockBytes();
+        int64 r = 0L;
+        while (r < rows) {
+            float64 s = 0.0;
+            float64 a = 0.0;
+            int64 k = 0L;
+            while (k < cols) {
+                float64 t = gen.element(file, (r * nb + k / 32L) * bb, k % 32L) * (float64) hx[xOff + k];
+                s = s + t;
+                a = a + Math.abs(t);
+                k = k + 1L;
+            }
+            want[r] = s;
+            mag[r] = a;
+            r = r + 1L;
+        }
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pk.count());
+        w.upload(pk);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) hx.count());
+        x.upload(hx);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (yOff + rows));
+        float32[] sd #= heap float32[yOff + rows];
+        i = 0L;
+        while (i < yOff + rows) { sd[i] = 0.5f * (float32) (i % 3L); i = i + 1L; }
+        float32[] got #= heap float32[yOff + rows];
+        Block32GemvF32<P> m = heap Block32GemvF32<P>();
+        KernelStream st #= KernelStream.current();
+        int32 pass = 0;
+        while (pass < 2) {
+            y.upload(sd);
+            m.runOn(st, y, w, x, rows, nb, xOff, yOff, pass == 1, 2L, wv);
+            st.sync();
+            y.download(got);
+            i = 0L;
+            while (i < yOff) { Assert.isTrue(got[i] == sd[i]); i = i + 1L; }
+            r = 0L;
+            while (r < rows) {
+                float64 e = want[r];
+                if (pass == 1) { e = e + (float64) sd[yOff + r]; }
+                Assert.isTrue(Math.abs((float64) got[yOff + r] - e) <= 0.00001 * (mag[r] + 1.0));
+                r = r + 1L;
+            }
+            pass = pass + 1;
+        }
+    }
+}

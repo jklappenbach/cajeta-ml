@@ -1,0 +1,25 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import dev.cajeta.ml.kernels.quant.Q40Block;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 9.1.7.1: the 32-value float decode against each format's definition on float activations. */
+public class Block32GemvF32Test {
+    public Block32GemvF32Test() { return; }
+
+    @Test
+    public void theFloatDecodeOfEveryFormatEqualsItsDefinition() {
+        String k = "Block32GemvF32_dev_cajeta_ml_kernels_quant_Q80Block_wave";
+        if (!Device.kernelUsable(k)) { DeviceSkip.noKernel(k, "the float wave decode is the GPU's (kernel-drivers 9.1.7.1)"); return; }
+        int64[] m #= ValueCheck.mark();
+        heap Block32F32Check<Q80Block>().check(23L, 75L);
+        heap Block32F32Check<Q40Block>().check(23L, 75L);
+        heap Block32F32Check<Q50Block>().check(23L, 75L);
+        heap Block32F32Check<Q80Block>().check(5L, 3L);
+        ValueCheck.credit(m);
+    }
+}

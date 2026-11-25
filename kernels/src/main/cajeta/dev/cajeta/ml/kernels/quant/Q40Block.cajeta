@@ -79,4 +79,20 @@ public final class Q40Block {
 
     @Device
     public static Vector<float32,8> close8(Vector<float32,8> acc, Vector<float32,8> fs, float32 xs) { return acc + fs * xs; }
+
+    /** Values 0 to 15 as signed integers (less the offset), from the packed quant bytes `a` (0 to 15) and `b` (16 to 31): the float decode's view. */
+    @Device
+    public static Vector<int8,16> f32Low(Vector<int8,16> a, Vector<int8,16> b) { return (a & 15) - 8; }
+
+    /** Values 16 to 31 as {@link #f32Low} gives 0 to 15. */
+    @Device
+    public static Vector<int8,16> f32High(Vector<int8,16> a, Vector<int8,16> b) { return ((a >> 4) & 15) - 8; }
+
+    /** What a set plane bit adds to a value in the float decode; 0 when the format has no plane. */
+    @Device
+    public static int32 planeWeight() { return 0; }
+
+    /** Value `k`'s plane bit in the packed plane word `pw`. */
+    @Device
+    public static int32 planeBit(int32 pw, int32 k) { return 0; }
 }

@@ -1,0 +1,103 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.lang.String;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import cajeta.xpu.Wave;
+import dev.cajeta.ml.kernels.quant.Q40Block;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+
+/**
+ * The GPU float-activation decode of the 32-value formats (kernel-drivers plan 9.1.7.1): one row a
+ * wave, a lane a block, on {@link Block32GemvWave}'s packed layout, against an unquantized float
+ * token. A block's values (the piece's `f32Low` and `f32High`) meet the activations four lanes at a
+ * time and `d` scales the block's sum; a plane bit adds `planeWeight()` times its activation. That
+ * is cajeta-llm's float wave order, so each output equals its kernel's bit for bit (spec 7.9).
+ */
+@Instantiate(value = {Block32GemvF32<Q80Block>, Block32GemvF32<Q40Block>, Block32GemvF32<Q50Block>}, max = 8)
+public final class Block32GemvF32<P> {
+    public Block32GemvF32() { return; }
+
+    /** This instantiation's registered kernel. */
+    public #String kernel() { return "" + wave.registeredName(); }
+
+    /** The f16 scale at byte `at` (even) of `w`, read through its aligned word. */
+    @Device
+    static float32 dAt(KernelBuffer<int8> w, int64 at) {
+        Vector<int32,1> h = w.vload<4>(at - (at & 3L), align: 4).asWords();
+        return P.dOf(h[0] >> (int32) ((at & 2L) * 8L));
+    }
+
+    /** `y[yOff + r]` set (or added to, `accum` 1) to row `r`'s dot with the float token at `x[xOff ..)`, `nb` blocks a row. */
+    @Kernel(targets = {"gpu"})
+    @Occupancy(maxThreads = 256)
+    public static void wave(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float32> x,
+            uint32 rows, int64 nb, int64 xOff, int64 yOff, uint32 accum) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 pre = ((nb * 2L + 3L) / 4L) * 4L;
+        int64 pn = (int64) P.planeBytes();
+        int64 bs = pn + 4L * (int64) P.quads();
+        float32 acc = 0.0f;
+        if (row < rows) {
+            int64 rb = (int64) row * (pre + nb * bs);
+            int64 wb = (int64) lane;
+            while (wb < nb) {
+                int64 bo = rb + pre + wb * bs;
+                float32 d = Block32GemvF32.dAt(w, rb + 2L * wb);
+                int64 xo = xOff + wb * 32L;
+                Vector<int8,16> qa = w.vload<16>(bo + pn);
+                Vector<int8,16> qb = qa;
+                if (P.quads() == 8) { qb = w.vload<16>(bo + pn + 16L); }
+                Vector<int8,16> v0 = P.f32Low(qa, qb);
+                Vector<int8,16> v1 = P.f32High(qa, qb);
+                Vector<int16,8> W0 = v0.widenLo();
+                Vector<int16,8> W1 = v0.widenHi();
+                Vector<int16,8> W2 = v1.widenLo();
+                Vector<int16,8> W3 = v1.widenHi();
+                Vector<float32,4> p = W0.widenLo().toF32() * x.vload<4>(xo);
+                p = p + W0.widenHi().toF32() * x.vload<4>(xo + 4L);
+                p = p + W1.widenLo().toF32() * x.vload<4>(xo + 8L);
+                p = p + W1.widenHi().toF32() * x.vload<4>(xo + 12L);
+                p = p + W2.widenLo().toF32() * x.vload<4>(xo + 16L);
+                p = p + W2.widenHi().toF32() * x.vload<4>(xo + 20L);
+                p = p + W3.widenLo().toF32() * x.vload<4>(xo + 24L);
+                p = p + W3.widenHi().toF32() * x.vload<4>(xo + 28L);
+                if (pn != 0L) {
+                    Vector<int32,1> pv = w.vload<4>(bo, align: 4).asWords();
+                    int32 pw = pv[0];
+                    float32 dot = p[0] + p[1] + p[2] + p[3];
+                    float32 hs = 0.0f;
+                    int32 j = 0;
+                    while (j < 16) {
+                        hs = hs + (float32) P.planeBit(pw, j) * x[xo + (int64) j];
+                        hs = hs + (float32) P.planeBit(pw, j + 16) * x[xo + (int64) (j + 16)];
+                        j = j + 1;
+                    }
+                    acc = acc + d * (dot + (float32) P.planeWeight() * hs);
+                } else {
+                    acc = acc + d * (p[0] + p[1] + p[2] + p[3]);
+                }
+                wb = wb + (int64) wv;
+            }
+        }
+        float32 tot = Wave.reduceSumF32(acc);
+        if (lane == 0 && row < rows) {
+            int64 o = yOff + (int64) row;
+            if (accum != 0) { y[o] = y[o] + tot; } else { y[o] = tot; }
+        }
+    }
+
+    /** `y[yOff + r]` set (or added to) for `rows` packed rows of `nb` blocks against the float token `x[xOff ..)`, `wavesPerBlock` waves a workgroup. Queued on `s`. */
+    public void runOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float32> x,
+            int64 rows, int64 nb, int64 xOff, int64 yOff, boolean accum, int64 wavesPerBlock, int64 waveWidth) {
+        int64 groups = (rows + wavesPerBlock - 1L) / wavesPerBlock;
+        wave.launch(s, grid: [(uint32) groups], block: [(uint32) (wavesPerBlock * waveWidth)])
+            (y, w, x, (uint32) rows, nb, xOff, yOff, accum ? 1 : 0);
+    }
+}
