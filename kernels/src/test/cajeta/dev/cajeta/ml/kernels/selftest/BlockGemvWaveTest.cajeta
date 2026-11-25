@@ -127,19 +127,37 @@ public class BlockGemvWaveTest {
     }
 
     @Test
-    public void theQ2kQ3kAndQ5kMembersEqualTheGemmFromPieces() {
+    public void everyMemberOfEveryFormatEqualsTheGemmFromPieces() {
         String k = "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q2kBlock_1_0_wave";
         if (!Device.kernelUsable(k) || !Device.kernelAvailable("BlockGemmRef_dev_cajeta_ml_kernels_quant_Q2kBlock_ref")) {
-            DeviceSkip.noKernel(k, "the wave decode driver is the GPU's (kernel-drivers 9.1.8.2)");
+            DeviceSkip.noKernel(k, "the wave decode driver is the GPU's (kernel-drivers 9.1.9)");
             return;
         }
         int64[] m #= ValueCheck.mark();
         int8[] f2 #= Q2kBlockTest.weight(37L * 9L);
         int8[] f3 #= Q3kBlockTest.weight(37L * 9L);
+        int8[] f4 #= BlockGemmRefTest.weight(37L * 9L);
         int8[] f5 #= Q5kBlockTest.weight(37L * 9L);
-        heap WaveCheck<Q2kBlock>().check(f2, 37L, 9L);
-        heap WaveCheck<Q3kBlock>().check(f3, 37L, 9L);
-        heap WaveCheck<Q5kBlock>().check(f5, 37L, 9L);
+        int8[] f6 #= Q6kBlockTest.weight(37L * 9L);
+        heap WaveCheck<Q2kBlock, 1, 0>().check(f2, 37L, 9L);
+        heap WaveCheck<Q2kBlock, 2, 0>().check(f2, 37L, 9L);
+        heap WaveCheck<Q2kBlock, 4, 0>().check(f2, 37L, 9L);
+        heap WaveCheck<Q3kBlock, 1, 0>().check(f3, 37L, 9L);
+        heap WaveCheck<Q3kBlock, 2, 0>().check(f3, 37L, 9L);
+        heap WaveCheck<Q3kBlock, 4, 0>().check(f3, 37L, 9L);
+        heap WaveCheck<Q4kBlock, 1, 0>().check(f4, 37L, 9L);
+        heap WaveCheck<Q4kBlock, 2, 0>().check(f4, 37L, 9L);
+        heap WaveCheck<Q4kBlock, 4, 0>().check(f4, 37L, 9L);
+        heap WaveCheck<Q4kBlock, 1, 1>().check(f4, 37L, 9L);
+        heap WaveCheck<Q4kBlock, 2, 1>().check(f4, 37L, 9L);
+        heap WaveCheck<Q4kBlock, 4, 1>().check(f4, 37L, 9L);
+        heap WaveCheck<Q5kBlock, 1, 0>().check(f5, 37L, 9L);
+        heap WaveCheck<Q5kBlock, 2, 0>().check(f5, 37L, 9L);
+        heap WaveCheck<Q5kBlock, 4, 0>().check(f5, 37L, 9L);
+        heap WaveCheck<Q6kBlock, 1, 0>().check(f6, 37L, 9L);
+        heap WaveCheck<Q6kBlock, 2, 0>().check(f6, 37L, 9L);
+        heap WaveCheck<Q6kBlock, 4, 0>().check(f6, 37L, 9L);
+        heap WaveCheck<Q6kBlock, 4, 1>().check(f6, 37L, 9L);
         ValueCheck.credit(m);
     }
 }

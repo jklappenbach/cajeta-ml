@@ -5,11 +5,11 @@ import cajeta.xpu.KernelStream;
 import cajeta.xpu.KernelThread;
 import dev.cajeta.ml.kernels.quant.Q8kAct;
 
-/** The sums of a q8_K block's quants sixteen at a time, which a block format with 16-value sub-blocks needs beside the block's own eight. */
+/** The sums of a q8_K block's quants sixteen at a time, which the cpu row driver needs for a format with 16-value sub-blocks beside the block's own eight. */
 public final class Q8kSubSums {
     public Q8kSubSums() { return; }
 
-    @Kernel
+    @Kernel(targets = {"cpu"})
     @Occupancy(maxThreads = 256)
     public static void sums16(KernelBuffer<int32> out, KernelBuffer<int8> xp, uint32 tokens, uint32 blocksPerRow, int64 xpStride) {
         uint32 i = KernelThread.globalIdX();

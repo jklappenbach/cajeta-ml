@@ -1,0 +1,37 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.Device;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
+import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 9.1.9: the tile driver's 64-row member, which the operation reaches only where the 128-row one cannot launch, against the GEMM from pieces. */
+public class BlockGemmTileTest {
+    public BlockGemmTileTest() { return; }
+
+    @Test
+    public void theSixtyFourRowTileEqualsTheGemmFromPiecesForEveryFormat() {
+        String k = "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q4kBlock_64_64_32_32_128_blockTile";
+        if (!Device.kernelUsable(k) || !Device.kernelAvailable("BlockGemmRef_dev_cajeta_ml_kernels_quant_Q4kBlock_ref")) {
+            DeviceSkip.noKernel(k, "the tensor-core tile is the GPU's (kernel-drivers 9.1.9)");
+            return;
+        }
+        int64[] m #= ValueCheck.mark();
+        int64 blocks = 192L * 2L;
+        int8[] f2 #= Q2kBlockTest.weight(blocks);
+        int8[] f3 #= Q3kBlockTest.weight(blocks);
+        int8[] f4 #= BlockGemmRefTest.weight(blocks);
+        int8[] f5 #= Q5kBlockTest.weight(blocks);
+        int8[] f6 #= Q6kBlockTest.weight(blocks);
+        heap TileCheck<Q2kBlock>().check(f2);
+        heap TileCheck<Q3kBlock>().check(f3);
+        heap TileCheck<Q4kBlock>().check(f4);
+        heap TileCheck<Q5kBlock>().check(f5);
+        heap TileCheck<Q6kBlock>().check(f6);
+        ValueCheck.credit(m);
+    }
+}

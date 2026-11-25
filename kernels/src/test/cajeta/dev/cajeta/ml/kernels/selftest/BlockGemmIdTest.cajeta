@@ -1,6 +1,8 @@
 package dev.cajeta.ml.kernels.selftest;
 
 import cajeta.xpu.Device;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 import dev.cajeta.ml.kernels.quant.Q5kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
@@ -12,7 +14,7 @@ public class BlockGemmIdTest {
     public BlockGemmIdTest() { return; }
 
     @Test
-    public void theIdKernelEqualsThePiecesGemmPerExpertForQ4kQ5kAndQ6k() {
+    public void theIdKernelEqualsThePiecesGemmPerExpertForEveryFormat() {
         String k = "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q5kBlock_64_64_32_32_128_idTile";
         if (!Device.kernelUsable(k) || !Device.kernelAvailable("BlockGemmRef_dev_cajeta_ml_kernels_quant_Q5kBlock_ref")) {
             DeviceSkip.noKernel(k, "the tensor-core tile is the GPU's (kernel-drivers 8.3.2)");
@@ -26,6 +28,10 @@ public class BlockGemmIdTest {
         heap IdCheck<Q4kBlock>().check(f4);
         heap IdCheck<Q5kBlock>().check(f5);
         heap IdCheck<Q6kBlock>().check(f6);
+        int8[] f2 #= Q2kBlockTest.weight(blocks);
+        int8[] f3 #= Q3kBlockTest.weight(blocks);
+        heap IdCheck<Q2kBlock>().check(f2);
+        heap IdCheck<Q3kBlock>().check(f3);
         ValueCheck.credit(m);
     }
 }

@@ -1,0 +1,58 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
+import dev.cajeta.ml.kernels.gemm.BlockGemmTile;
+
+/** {@link BlockGemmTileTest}'s check over one K piece `P`: the 64-row tile member on 128 tokens by 192 rows of 512 values against the GEMM from pieces, set then added. */
+public final class TileCheck<P> {
+    public TileCheck() { return; }
+
+    public void check(int8[] file) {
+        int64 tokens = 128L;
+        int64 outDim = 192L;
+        int64 cols = 512L;
+        int64 bpr = cols / 256L;
+        int64 bb = (int64) P.blockBytes();
+        int8[] hx #= BlockGemmRefTest.acts(tokens * bpr);
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) (outDim * bpr * bb));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tokens * bpr * 320L));
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> yr = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) 1L);
+        w.upload(file);
+        xp.upload(hx);
+        float32[] seed #= heap float32[tokens * outDim];
+        int64 i = 0L;
+        while (i < tokens * outDim) { seed[i] = 0.5f * (float32) (i % 3L); i = i + 1L; }
+        KernelStream st #= KernelStream.current();
+        BlockGemmRef<P> g = heap BlockGemmRef<P>();
+        g.run(yr, w, xp, outDim, tokens, bpr, outDim, false);
+        st.sync();
+        float32[] want #= heap float32[tokens * outDim];
+        yr.download(want);
+        float32[] got #= heap float32[tokens * outDim];
+        BlockGemmTile<P, 64, 64, 32, 32, 128> t = heap BlockGemmTile<P, 64, 64, 32, 32, 128>();
+        Assert.isTrue(t.fits(tokens, outDim, cols));
+        int32 pass = 0;
+        while (pass < 2) {
+            y.upload(seed);
+            t.runOn(st, y, w, xp, tokens, outDim, cols, part, 1L, (uint32) pass);
+            st.sync();
+            y.download(got);
+            i = 0L;
+            while (i < tokens * outDim) {
+                float32 e = want[i];
+                if (pass == 1) { e = seed[i] + want[i]; }
+                float32 d = e - got[i];
+                if (d < 0.0f) { d = 0.0f - d; }
+                float32 mag = e < 0.0f ? 0.0f - e : e;
+                Assert.isTrue(d <= 0.001f * (1.0f + mag));
+                i = i + 1L;
+            }
+            pass = pass + 1;
+        }
+    }
+}

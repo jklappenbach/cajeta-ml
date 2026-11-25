@@ -7,8 +7,8 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.gemm.BlockGemvWave;
 
-/** {@link ColsTest}'s check over one K piece `P`: `ncols` token rows against `rows` rows, each column bitwise the one-row member on its token, set then added. */
-public final class ColsCheck<P> {
+/** {@link ColsTest}'s check over one K piece `P`: member `<P, R, PF>`'s column kernel on `ncols` token rows against `rows` rows, each column bitwise the one-row member on its token, set then added. */
+public final class ColsCheck<P, uint32 R, uint32 PF> {
     public ColsCheck() { return; }
 
     public void check(int8[] file, int64 rows, int64 bpr, int64 ncols) {
@@ -28,11 +28,12 @@ public final class ColsCheck<P> {
         float32[] got #= heap float32[ncols * rows];
         float32[] one #= heap float32[rows];
         BlockGemvWave<P, 1, 0> m = heap BlockGemvWave<P, 1, 0>();
+        BlockGemvWave<P, R, PF> mc = heap BlockGemvWave<P, R, PF>();
         KernelStream st #= KernelStream.current();
         int32 pass = 0;
         while (pass < 2) {
             y.upload(seed);
-            m.runColsOn(st, y, w, xp, rows, bpr * 256L, 0L, ncols, rows, bpr * 320L, pass == 1, 2L, wv);
+            mc.runColsOn(st, y, w, xp, rows, bpr * 256L, 0L, ncols, rows, bpr * 320L, pass == 1, 2L, wv);
             st.sync();
             y.download(got);
             int64 c = 0L;

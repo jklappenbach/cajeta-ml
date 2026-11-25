@@ -6,8 +6,8 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
 import dev.cajeta.ml.kernels.gemm.BlockGemvWave;
 
-/** {@link BlockGemvWaveTest}'s check over one K piece `P`: the one-row and four-row members against the GEMM from pieces for one token. */
-public final class WaveCheck<P> {
+/** {@link BlockGemvWaveTest}'s check over one K piece `P`: member `<P, R, PF>` against the GEMM from pieces for one token. */
+public final class WaveCheck<P, uint32 R, uint32 PF> {
     public WaveCheck() { return; }
 
     public void check(int8[] file, int64 rows, int64 bpr) {
@@ -27,13 +27,8 @@ public final class WaveCheck<P> {
         float32[] want #= heap float32[rows];
         y.download(want);
         float32[] got #= heap float32[rows];
-        BlockGemvWave<P, 1, 0> a = heap BlockGemvWave<P, 1, 0>();
-        a.runOn(st, y, w, xp, rows, bpr * 256L, 0L, false, 1L, wv);
-        st.sync();
-        y.download(got);
-        BlockGemvWaveTest.close(want, got, rows);
-        BlockGemvWave<P, 4, 0> b = heap BlockGemvWave<P, 4, 0>();
-        b.runOn(st, y, w, xp, rows, bpr * 256L, 0L, false, 2L, wv);
+        BlockGemvWave<P, R, PF> a = heap BlockGemvWave<P, R, PF>();
+        a.runOn(st, y, w, xp, rows, bpr * 256L, 0L, false, 2L, wv);
         st.sync();
         y.download(got);
         BlockGemvWaveTest.close(want, got, rows);

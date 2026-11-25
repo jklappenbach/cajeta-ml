@@ -2,8 +2,12 @@ package dev.cajeta.ml.kernels.selftest;
 
 import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
+import dev.cajeta.ml.kernels.quant.Q40Block;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
@@ -39,6 +43,13 @@ public class IdVecTest {
         heap Block32IdCheck<Q80Block>().check(4L);
         heap Block32IdCheck<Q80Block>().check(0L);
         heap Block32IdCheck<Q50Block>().check(0L);
+        heap Block32IdCheck<Q40Block>().check(0L);
+        int8[] f2 #= Q2kBlockTest.weight(3L * 21L * 3L);
+        int8[] f3 #= Q3kBlockTest.weight(3L * 21L * 3L);
+        int8[] f5 #= Q5kBlockTest.weight(3L * 21L * 3L);
+        heap IdVecCheck<Q2kBlock>().check(f2, 3L);
+        heap IdVecCheck<Q3kBlock>().check(f3, 3L);
+        heap IdVecCheck<Q5kBlock>().check(f5, 3L);
         ValueCheck.credit(m);
     }
 }

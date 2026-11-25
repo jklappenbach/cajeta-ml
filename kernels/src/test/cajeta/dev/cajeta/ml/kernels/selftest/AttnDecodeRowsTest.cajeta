@@ -82,51 +82,88 @@ public class AttnDecodeRowsTest {
         }
     }
 
-    /** Partials for 2 kv heads of `group` query heads over 150 positions in 4 splits from `kernel`'s driver. */
-    static void runAndVerify(int32 group, int64 hd, boolean wave) {
+    /** Driver `kind`'s partials (0 the cpu rows, 1 to 4 the wave members `<4,4,16,4,16>`, `<2,8,16,1,8>`, `<4,4,16,1,4>`, `<2,8,16,4,32>`) for 2 kv heads of `group` query heads in 4 splits: one row of 150 positions, or with `batch` a batch of 150 and 97. */
+    static void runAndVerify(int32 group, int64 hd, int32 kind, boolean batch) {
         int32 nKv = 2;
-        int32 count = 150;
         int32 splits = 4;
         int64 rows = 192L;
         int64 kvDim = (int64) nKv * hd;
         int64 nH = (int64) (nKv * group);
+        int32 n = batch ? 2 : 1;
         float16[] kh #= heap float16[rows * kvDim];
         float16[] vh #= heap float16[rows * kvDim];
         int64 i = 0L;
         while (i < rows * kvDim) { kh[i] = (float16) AttnDecodeRowsTest.rnd(i); vh[i] = (float16) AttnDecodeRowsTest.rnd(i + 999L); i = i + 1L; }
-        float32[] qh #= heap float32[nH * hd];
+        float32[] qh #= heap float32[(int64) n * nH * hd];
         i = 0L;
-        while (i < nH * hd) { qh[i] = AttnDecodeRowsTest.rnd(i + 31L) * 3.0f; i = i + 1L; }
+        while (i < (int64) n * nH * hd) { qh[i] = AttnDecodeRowsTest.rnd(i + 31L) * 3.0f; i = i + 1L; }
         int32[] tab #= heap int32[3L];
         tab[0] = 2;
         tab[1] = 0;
         tab[2] = 1;
+        int32[] counts #= heap int32[2L];
+        counts[0] = 150;
+        counts[1] = 97;
+        int32[] rt #= heap int32[8L];
+        int32 r = 0;
+        while (r < n) {
+            rt[(int64) (4 * r)] = 0;
+            rt[(int64) (4 * r + 1)] = counts[(int64) r] - 1;
+            rt[(int64) (4 * r + 2)] = counts[(int64) r];
+            rt[(int64) (4 * r + 3)] = splits;
+            r = r + 1;
+        }
         KernelBuffer<float16> k = heap KernelBuffer<float16>((uint64) (rows * kvDim));
         KernelBuffer<float16> v = heap KernelBuffer<float16>((uint64) (rows * kvDim));
-        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) (nH * hd));
+        KernelBuffer<float32> q = heap KernelBuffer<float32>((uint64) ((int64) n * nH * hd));
         KernelBuffer<int32> pt = heap KernelBuffer<int32>((uint64) 3L);
+        KernelBuffer<int32> rowTab = heap KernelBuffer<int32>((uint64) 8L);
         k.upload(kh);
         v.upload(vh);
         q.upload(qh);
         pt.upload(tab);
+        rowTab.upload(rt);
         int64 pn = nH * (int64) splits * (hd + 2L);
-        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) pn);
+        KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) ((int64) n * pn));
         float32 scale = 0.0883883f;
+        int32 qs = (int32) (nH * hd);
+        int32 ps = (int32) pn;
         KernelStream s #= KernelStream.current();
-        if (!wave) {
+        if (kind == 0) {
             AttnDecodeRows<128> drv = heap AttnDecodeRows<128>();
-            drv.runOn(s, part, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
-        } else if (hd == 128L) {
+            if (batch) { drv.runBatchOn(s, part, q, k, v, pt, nKv, group, rowTab, n, splits, qs, ps, scale); }
+            else { drv.runOn(s, part, q, k, v, pt, 0, nKv, group, counts[0], 0, splits, scale); }
+        } else if (kind == 1) {
             AttnDecodeWave<4, 4, 16, 4, 16> drv = heap AttnDecodeWave<4, 4, 16, 4, 16>();
-            drv.runOn(s, part, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
-        } else {
+            if (batch) { drv.runBatchOn(s, part, q, k, v, pt, nKv, group, rowTab, n, splits, qs, ps, scale); }
+            else { drv.runOn(s, part, q, k, v, pt, 0, nKv, group, counts[0], 0, splits, scale); }
+        } else if (kind == 2) {
             AttnDecodeWave<2, 8, 16, 1, 8> drv = heap AttnDecodeWave<2, 8, 16, 1, 8>();
-            drv.runOn(s, part, q, k, v, pt, 0, nKv, group, count, 0, splits, scale);
+            if (batch) { drv.runBatchOn(s, part, q, k, v, pt, nKv, group, rowTab, n, splits, qs, ps, scale); }
+            else { drv.runOn(s, part, q, k, v, pt, 0, nKv, group, counts[0], 0, splits, scale); }
+        } else if (kind == 3) {
+            AttnDecodeWave<4, 4, 16, 1, 4> drv = heap AttnDecodeWave<4, 4, 16, 1, 4>();
+            if (batch) { drv.runBatchOn(s, part, q, k, v, pt, nKv, group, rowTab, n, splits, qs, ps, scale); }
+            else { drv.runOn(s, part, q, k, v, pt, 0, nKv, group, counts[0], 0, splits, scale); }
+        } else {
+            AttnDecodeWave<2, 8, 16, 4, 32> drv = heap AttnDecodeWave<2, 8, 16, 4, 32>();
+            if (batch) { drv.runBatchOn(s, part, q, k, v, pt, nKv, group, rowTab, n, splits, qs, ps, scale); }
+            else { drv.runOn(s, part, q, k, v, pt, 0, nKv, group, counts[0], 0, splits, scale); }
         }
         s.sync();
-        float32[] got #= heap float32[pn];
+        float32[] got #= heap float32[(int64) n * pn];
         part.download(got);
-        AttnDecodeRowsTest.verify(got, qh, kh, vh, tab, nKv, group, count, splits, hd, scale);
+        r = 0;
+        while (r < n) {
+            float32[] gr #= heap float32[pn];
+            float32[] qr #= heap float32[nH * hd];
+            i = 0L;
+            while (i < pn) { gr[i] = got[(int64) r * pn + i]; i = i + 1L; }
+            i = 0L;
+            while (i < nH * hd) { qr[i] = qh[(int64) r * nH * hd + i]; i = i + 1L; }
+            AttnDecodeRowsTest.verify(gr, qr, kh, vh, tab, nKv, group, counts[(int64) r], splits, hd, scale);
+            r = r + 1;
+        }
     }
 
     @Test
@@ -137,7 +174,8 @@ public class AttnDecodeRowsTest {
             return;
         }
         int64[] m #= ValueCheck.mark();
-        AttnDecodeRowsTest.runAndVerify(3, 128L, false);
+        AttnDecodeRowsTest.runAndVerify(3, 128L, 0, false);
+        AttnDecodeRowsTest.runAndVerify(3, 128L, 0, true);
         ValueCheck.credit(m);
     }
 
@@ -150,9 +188,15 @@ public class AttnDecodeRowsTest {
             return;
         }
         int64[] m #= ValueCheck.mark();
-        AttnDecodeRowsTest.runAndVerify(8, 128L, true);
-        AttnDecodeRowsTest.runAndVerify(4, 128L, true);
-        AttnDecodeRowsTest.runAndVerify(2, 256L, true);
+        AttnDecodeRowsTest.runAndVerify(8, 128L, 1, false);
+        AttnDecodeRowsTest.runAndVerify(4, 128L, 1, false);
+        AttnDecodeRowsTest.runAndVerify(2, 256L, 2, false);
+        AttnDecodeRowsTest.runAndVerify(4, 128L, 3, false);
+        AttnDecodeRowsTest.runAndVerify(2, 256L, 4, false);
+        AttnDecodeRowsTest.runAndVerify(8, 128L, 1, true);
+        AttnDecodeRowsTest.runAndVerify(2, 256L, 2, true);
+        AttnDecodeRowsTest.runAndVerify(4, 128L, 3, true);
+        AttnDecodeRowsTest.runAndVerify(2, 256L, 4, true);
         ValueCheck.credit(m);
     }
 }

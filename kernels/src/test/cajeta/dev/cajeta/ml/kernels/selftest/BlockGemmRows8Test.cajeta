@@ -7,7 +7,10 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
 import dev.cajeta.ml.kernels.gemm.BlockGemmRows8;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
@@ -258,6 +261,24 @@ public class BlockGemmRows8Test {
         st.sync();
         BlockGemmRows8Test.expectRef(g, yd, fa, xp, 21L, bpr);
         BlockGemmRows8Test.expectRef(g, ye, fb, xp, 13L, bpr);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void threeWeightsOfEveryOtherFormatEachEqualTheGemmFromPiecesBitForBit() {
+        if (!Device.kernelAvailable("BlockGemmRows8_dev_cajeta_ml_kernels_quant_Q2kBlock_vec3")) {
+            DeviceSkip.cannot("the 8-row driver is the cpu's (kernel-drivers 9.1.9)");
+            return;
+        }
+        int64[] m #= ValueCheck.mark();
+        int8[] f2 #= Q2kBlockTest.weight(42L * 3L);
+        int8[] f3 #= Q3kBlockTest.weight(42L * 3L);
+        int8[] f5 #= Q5kBlockTest.weight(42L * 3L);
+        int8[] f6 #= Q6kBlockTest.weight(42L * 3L);
+        heap Rows8Check<Q2kBlock>().three(f2, 3L);
+        heap Rows8Check<Q3kBlock>().three(f3, 3L);
+        heap Rows8Check<Q5kBlock>().three(f5, 3L);
+        heap Rows8Check<Q6kBlock>().three(f6, 3L);
         ValueCheck.credit(m);
     }
 }
