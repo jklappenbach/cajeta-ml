@@ -337,15 +337,23 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
         }
     }
 
-    /** One column's step on a block decoded once for every column: unpacked runs `lo`/`hi` (`lc`/`hc` less the offset), scales `s0 ..` and mins `m0 ..` of the lane's sub-blocks, `d`, `dm`; the column's activation streams at `xp[xb + al ..)`, `[xb + ah ..)` and its scale and sums at `xb`. The same integers as {@link #part}, so the same value. */
+    /** Whether a column decode folds each sub-block's scale into its quant bytes: 16-value sub-blocks, no offset, every product under a byte. */
+    @Device
+    static boolean folds() { return P.offset() == 0 && P.subValues() == 16 && P.quantScaleMax() < 256; }
+
+    /** One column's step on a block decoded once for every column: unpacked runs `lo`/`hi` (`lc`/`hc` less the offset; times their scales, and `ml`/`mh` the mins in every byte, when {@link #folds}), scales `s0 ..` and mins `m0 ..` of the lane's sub-blocks, `d`, `dm`; the column's activation streams at `xp[xb + al ..)`, `[xb + ah ..)` and its scale and sums at `xb`. The same integers as {@link #part}, so the same value. */
     @Device
     static float32 colStep(float32 acc, Vector<uint8,32> lo, Vector<uint8,32> hi, Vector<int8,32> lc, Vector<int8,32> hc,
+            Vector<uint8,32> ml, Vector<uint8,32> mh,
             int32 s0, int32 s1, int32 s2, int32 s3, int32 m0, int32 m1, int32 m2, int32 m3, float32 d, float32 dm,
             KernelBuffer<int8> xp, int64 xb, int64 al, int64 ah, uint32 ls, uint32 hs) {
         Vector<int8,32> a0 = xp.vload<32>(xb + al);
         Vector<int8,32> a1 = xp.vload<32>(xb + ah);
         Vector<int32,1> xw = xp.vload<4>(xb + 288L).asWords();
         float32 xs = Cajeta.bitsToF32(xw[0]);
+        if (BlockGemvWave.folds()) {
+            return P.add(acc, d, dm, xs, hi.dotSum(a1, lo.dotSum(a0, 0)), mh.dotSum(a1, ml.dotSum(a0, 0)));
+        }
         Vector<int32,8> zv = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
         Vector<int32,8> dl = zv;
         Vector<int32,8> dh = zv;
@@ -442,17 +450,29 @@ public final class BlockGemvWave<P, uint32 R, uint32 PF> {
                         m3 = P.minOf(ha, hb, 2 * hs + 1);
                     }
                 }
+                Vector<uint8,32> ml = lo;
+                Vector<uint8,32> mh = hi;
+                if (BlockGemvWave.folds()) {
+                    lo = (lo.asSigned().asWords() * heap Vector<int32,8>(s0, s0, s0, s0, s1, s1, s1, s1)).asBytes().asUnsigned();
+                    hi = (hi.asSigned().asWords() * heap Vector<int32,8>(s2, s2, s2, s2, s3, s3, s3, s3)).asBytes().asUnsigned();
+                    int32 b0 = m0 * 16843009;
+                    int32 b1 = m1 * 16843009;
+                    int32 b2 = m2 * 16843009;
+                    int32 b3 = m3 * 16843009;
+                    ml = heap Vector<int32,8>(b0, b0, b0, b0, b1, b1, b1, b1).asBytes().asUnsigned();
+                    mh = heap Vector<int32,8>(b2, b2, b2, b2, b3, b3, b3, b3).asBytes().asUnsigned();
+                }
                 float32 d = P.dOf(ha, hb);
                 float32 dm = P.dminOf(ha, hb);
                 int64 xb = (int64) b * 320L;
-                c0 = BlockGemvWave.colStep(c0, lo, hi, lc, hc, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb, al, ah, ls, hs);
-                if (ncols > 1) { c1 = BlockGemvWave.colStep(c1, lo, hi, lc, hc, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + xps, al, ah, ls, hs); }
-                if (ncols > 2) { c2 = BlockGemvWave.colStep(c2, lo, hi, lc, hc, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 2L * xps, al, ah, ls, hs); }
-                if (ncols > 3) { c3 = BlockGemvWave.colStep(c3, lo, hi, lc, hc, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 3L * xps, al, ah, ls, hs); }
-                if (ncols > 4) { c4 = BlockGemvWave.colStep(c4, lo, hi, lc, hc, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 4L * xps, al, ah, ls, hs); }
-                if (ncols > 5) { c5 = BlockGemvWave.colStep(c5, lo, hi, lc, hc, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 5L * xps, al, ah, ls, hs); }
-                if (ncols > 6) { c6 = BlockGemvWave.colStep(c6, lo, hi, lc, hc, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 6L * xps, al, ah, ls, hs); }
-                if (ncols > 7) { c7 = BlockGemvWave.colStep(c7, lo, hi, lc, hc, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 7L * xps, al, ah, ls, hs); }
+                c0 = BlockGemvWave.colStep(c0, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb, al, ah, ls, hs);
+                if (ncols > 1) { c1 = BlockGemvWave.colStep(c1, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + xps, al, ah, ls, hs); }
+                if (ncols > 2) { c2 = BlockGemvWave.colStep(c2, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 2L * xps, al, ah, ls, hs); }
+                if (ncols > 3) { c3 = BlockGemvWave.colStep(c3, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 3L * xps, al, ah, ls, hs); }
+                if (ncols > 4) { c4 = BlockGemvWave.colStep(c4, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 4L * xps, al, ah, ls, hs); }
+                if (ncols > 5) { c5 = BlockGemvWave.colStep(c5, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 5L * xps, al, ah, ls, hs); }
+                if (ncols > 6) { c6 = BlockGemvWave.colStep(c6, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 6L * xps, al, ah, ls, hs); }
+                if (ncols > 7) { c7 = BlockGemvWave.colStep(c7, lo, hi, lc, hc, ml, mh, s0, s1, s2, s3, m0, m1, m2, m3, d, dm, xp, xb + 7L * xps, al, ah, ls, hs); }
                 b = b + wv / 4;
             }
         }

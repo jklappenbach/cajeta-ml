@@ -1,9 +1,12 @@
 package dev.cajeta.ml.kernels.selftest;
 
 import cajeta.xpu.Device;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
 import dev.cajeta.ml.kernels.quant.Q40Block;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
 import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
 import dev.cajeta.ml.kernels.quant.Q80Block;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
@@ -23,6 +26,13 @@ public class ColsTest {
         heap ColsCheck<Q4kBlock>().check(f4, 37L, 9L, 3L);
         heap ColsCheck<Q4kBlock>().check(f4, 37L, 9L, 8L);
         heap ColsCheck<Q6kBlock>().check(f6, 37L, 9L, 8L);
+        int8[] f2 #= Q2kBlockTest.weight(37L * 9L);
+        int8[] f3 #= Q3kBlockTest.weight(37L * 9L);
+        int8[] f5 #= Q5kBlockTest.weight(37L * 9L);
+        heap ColsCheck<Q2kBlock>().check(f2, 37L, 9L, 3L);
+        heap ColsCheck<Q2kBlock>().check(f2, 37L, 9L, 8L);
+        heap ColsCheck<Q3kBlock>().check(f3, 37L, 9L, 8L);
+        heap ColsCheck<Q5kBlock>().check(f5, 37L, 9L, 8L);
         heap Block32ColsCheck<Q80Block>().check(8L);
         heap Block32ColsCheck<Q50Block>().check(5L);
         heap Block32ColsCheck<Q40Block>().check(2L);

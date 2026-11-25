@@ -41,6 +41,10 @@ public final class Q6kBlock {
     @Device
     public static uint32 head2Offset() { return 194; }
 
+    /** The largest stored quant times the largest scale magnitude; under 256 with `offset()` 0, a driver may fold the scale into the quant bytes. */
+    @Device
+    public static uint32 quantScaleMax() { return 8001; }
+
     @Device
     public static uint32 offset() { return 32; }
 

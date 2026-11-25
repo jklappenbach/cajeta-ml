@@ -39,6 +39,10 @@ public final class Q2kBlock {
     @Device
     public static uint32 head2Offset() { return 68; }
 
+    /** The largest stored quant times the largest scale magnitude; under 256 with `offset()` 0, a driver may fold the scale into the quant bytes. */
+    @Device
+    public static uint32 quantScaleMax() { return 45; }
+
     @Device
     public static uint32 offset() { return 0; }
 
@@ -58,17 +62,15 @@ public final class Q2kBlock {
     public static int32 highStream(int32 g) { return 2 * g + 1; }
 
     @Device
-    public static float32 dOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.halfBits(hb[3] & 65535); }
+    public static float32 dOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.halfBranchless(hb[3] & 65535); }
 
     @Device
-    public static float32 dminOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.halfBits((hb[3] >> 16) & 65535); }
+    public static float32 dminOf(Vector<int32,4> ha, Vector<int32,4> hb) { return Q4kBlock.halfBranchless((hb[3] >> 16) & 65535); }
 
     /** Sub-block `j`'s scale-and-min byte, `j` in 0..15. */
     @Device
     static int32 headByte(Vector<int32,4> ha, uint32 j) {
-        int32 w = ha[0];
-        if (j >= 12) { w = ha[3]; } else if (j >= 8) { w = ha[2]; } else if (j >= 4) { w = ha[1]; }
-        return (w >> (int32) (8 * (j & 3))) & 255;
+        return (ha[(int32) (j >> 2)] >> (int32) (8 * (j & 3))) & 255;
     }
 
     @Device

@@ -6,7 +6,10 @@ import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.gemm.BlockGemmRef;
 import dev.cajeta.ml.kernels.gemm.BlockGemvWave;
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
 import dev.cajeta.ml.kernels.quant.Q4kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
 import dev.cajeta.ml.kernels.quant.Q6kBlock;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
@@ -120,6 +123,23 @@ public class BlockGemvWaveTest {
         st.sync();
         y.download(got);
         BlockGemvWaveTest.close(want, got, rows);
+        ValueCheck.credit(m);
+    }
+
+    @Test
+    public void theQ2kQ3kAndQ5kMembersEqualTheGemmFromPieces() {
+        String k = "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q2kBlock_1_0_wave";
+        if (!Device.kernelUsable(k) || !Device.kernelAvailable("BlockGemmRef_dev_cajeta_ml_kernels_quant_Q2kBlock_ref")) {
+            DeviceSkip.noKernel(k, "the wave decode driver is the GPU's (kernel-drivers 9.1.8.2)");
+            return;
+        }
+        int64[] m #= ValueCheck.mark();
+        int8[] f2 #= Q2kBlockTest.weight(37L * 9L);
+        int8[] f3 #= Q3kBlockTest.weight(37L * 9L);
+        int8[] f5 #= Q5kBlockTest.weight(37L * 9L);
+        heap WaveCheck<Q2kBlock>().check(f2, 37L, 9L);
+        heap WaveCheck<Q3kBlock>().check(f3, 37L, 9L);
+        heap WaveCheck<Q5kBlock>().check(f5, 37L, 9L);
         ValueCheck.credit(m);
     }
 }
