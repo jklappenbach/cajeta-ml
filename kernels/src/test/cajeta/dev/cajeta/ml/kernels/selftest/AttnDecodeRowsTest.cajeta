@@ -6,6 +6,7 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import dev.cajeta.unit.Assert;
 import dev.cajeta.ml.kernels.attn.AttnDecodeRows;
+import dev.cajeta.ml.kernels.attn.AttnDecodeSeg;
 import dev.cajeta.ml.kernels.attn.AttnDecodeWave;
 import dev.cajeta.ml.kernels.testing.DeviceSkip;
 import dev.cajeta.ml.kernels.testing.ValueCheck;
@@ -82,7 +83,7 @@ public class AttnDecodeRowsTest {
         }
     }
 
-    /** Driver `kind`'s partials (0 the cpu rows, 1 to 4 the wave members `<4,4,16,4,16>`, `<2,8,16,1,8>`, `<4,4,16,1,4>`, `<2,8,16,4,32>`) for 2 kv heads of `group` query heads in 4 splits: one row of 150 positions, or with `batch` a batch of 150 and 97. */
+    /** Driver `kind`'s partials (0 the cpu rows, 1 to 4 the wave members `<4,4,16,4,16>`, `<2,8,16,1,8>`, `<4,4,16,1,4>`, `<2,8,16,4,32>`, 5 the one-head segments, four partials a split) for 2 kv heads of `group` query heads in 4 splits: one row of 150 positions, or with `batch` a batch of 150 and 97. */
     static void runAndVerify(int32 group, int64 hd, int32 kind, boolean batch) {
         int32 nKv = 2;
         int32 splits = 4;
@@ -123,7 +124,8 @@ public class AttnDecodeRowsTest {
         q.upload(qh);
         pt.upload(tab);
         rowTab.upload(rt);
-        int64 pn = nH * (int64) splits * (hd + 2L);
+        int32 pm = kind == 5 ? 4 : 1;
+        int64 pn = nH * (int64) (splits * pm) * (hd + 2L);
         KernelBuffer<float32> part = heap KernelBuffer<float32>((uint64) ((int64) n * pn));
         float32 scale = 0.0883883f;
         int32 qs = (int32) (nH * hd);
@@ -145,6 +147,8 @@ public class AttnDecodeRowsTest {
             AttnDecodeWave<4, 4, 16, 1, 4> drv = heap AttnDecodeWave<4, 4, 16, 1, 4>();
             if (batch) { drv.runBatchOn(s, part, q, k, v, pt, nKv, group, rowTab, n, splits, qs, ps, scale); }
             else { drv.runOn(s, part, q, k, v, pt, 0, nKv, group, counts[0], 0, splits, scale); }
+        } else if (kind == 5) {
+            AttnDecodeSeg.runOn(s, part, q, k, v, pt, 0, (int32) nH, counts[0], 0, splits, scale);
         } else {
             AttnDecodeWave<2, 8, 16, 4, 32> drv = heap AttnDecodeWave<2, 8, 16, 4, 32>();
             if (batch) { drv.runBatchOn(s, part, q, k, v, pt, nKv, group, rowTab, n, splits, qs, ps, scale); }
@@ -161,7 +165,7 @@ public class AttnDecodeRowsTest {
             while (i < pn) { gr[i] = got[(int64) r * pn + i]; i = i + 1L; }
             i = 0L;
             while (i < nH * hd) { qr[i] = qh[(int64) r * nH * hd + i]; i = i + 1L; }
-            AttnDecodeRowsTest.verify(gr, qr, kh, vh, tab, nKv, group, counts[(int64) r], splits, hd, scale);
+            AttnDecodeRowsTest.verify(gr, qr, kh, vh, tab, nKv, group, counts[(int64) r], splits * pm, hd, scale);
             r = r + 1;
         }
     }
@@ -197,6 +201,7 @@ public class AttnDecodeRowsTest {
         AttnDecodeRowsTest.runAndVerify(2, 256L, 2, true);
         AttnDecodeRowsTest.runAndVerify(4, 128L, 3, true);
         AttnDecodeRowsTest.runAndVerify(2, 256L, 4, true);
+        AttnDecodeRowsTest.runAndVerify(1, 128L, 5, false);
         ValueCheck.credit(m);
     }
 }
