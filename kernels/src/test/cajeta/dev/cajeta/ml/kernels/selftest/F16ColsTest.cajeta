@@ -1,0 +1,227 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.Math;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.Block32GemvF16Cols;
+import dev.cajeta.ml.kernels.gemm.Block32GemvWave;
+import dev.cajeta.ml.kernels.gemm.BlockGemvF16Cols;
+import dev.cajeta.ml.kernels.gemm.F16Cols;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** kernel-drivers 9.1.7.3: the slot-major f16 packer, and the Q6_K and Q8_0 f16 batched decodes against each format's definition on the packed tokens. */
+public class F16ColsTest {
+    public F16ColsTest() { return; }
+
+    static #float32[] acts(int64 n) {
+        float32[] hx #= heap float32[n];
+        int64 seed = 733L;
+        int64 i = 0L;
+        while (i < n) {
+            seed = (seed * 1103515245L + 12345L) % 2147483648L;
+            hx[i] = (float32) ((seed >> 16) % 2001L - 1000L) * 0.001f;
+            i = i + 1L;
+        }
+        return #hx;
+    }
+
+    /** `ncols` token rows of `n` values packed slot-major, `xs` halves apart from `xo`, read back. */
+    static #float16[] packed(KernelBuffer<float16> xh, int64 ncols, int64 n, int64 xo, int64 xs) {
+        float32[] hx #= F16ColsTest.acts(ncols * n);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) (ncols * n));
+        x.upload(hx);
+        KernelStream st #= KernelStream.current();
+        KernelBuffer<float16> tmp = heap KernelBuffer<float16>((uint64) (ncols * xs));
+        F16Cols.runPackOn(st, tmp, x, ncols, n, n, xs);
+        st.sync();
+        float16[] pk #= heap float16[ncols * xs];
+        tmp.download(pk);
+        float16[] got #= heap float16[xo + ncols * xs];
+        int64 i = 0L;
+        while (i < ncols * xs) { got[xo + i] = pk[i]; i = i + 1L; }
+        xh.upload(got);
+        return #got;
+    }
+
+    @Test
+    public void thePackerPutsEveryElementAtItsSlot() {
+        int64[] m #= ValueCheck.mark();
+        int64 n = 2560L;
+        int64 rows = 3L;
+        int64 xs = n + 64L;
+        float32[] hx #= F16ColsTest.acts(rows * n);
+        KernelBuffer<float32> x = heap KernelBuffer<float32>((uint64) (rows * n));
+        x.upload(hx);
+        KernelBuffer<float16> out = heap KernelBuffer<float16>((uint64) (rows * xs));
+        KernelStream st #= KernelStream.current();
+        F16Cols.runPackOn(st, out, x, rows, n, n, xs);
+        st.sync();
+        float16[] got #= heap float16[rows * xs];
+        out.download(got);
+        boolean[] seen #= heap boolean[n];
+        int64 e = 0L;
+        while (e < n) {
+            int64 o = F16Cols.slotOffset(e, n / 256L);
+            Assert.isTrue(o >= 0L && o < n && !seen[o]);
+            seen[o] = true;
+            e = e + 1L;
+        }
+        int64 r = 0L;
+        while (r < rows) {
+            e = 0L;
+            while (e < n) {
+                Assert.isTrue((float32) got[r * xs + F16Cols.slotOffset(e, n / 256L)] == (float32) (float16) hx[r * n + e]);
+                e = e + 1L;
+            }
+            r = r + 1L;
+        }
+        ValueCheck.credit(m);
+    }
+
+    /** Each column of `got` (`rows` apart from `yOff`) against `want` within 1e-5 of `mag`, plus `sd` when `add`. */
+    static void near(float32[] got, float64[] want, float64[] mag, float32[] sd, int64 n, int64 yOff, boolean add) {
+        int64 i = 0L;
+        while (i < yOff) { Assert.isTrue(got[i] == sd[i]); i = i + 1L; }
+        i = 0L;
+        while (i < n) {
+            float64 e = want[i];
+            if (add) { e = e + (float64) sd[yOff + i]; }
+            Assert.isTrue(Math.abs((float64) got[yOff + i] - e) <= 0.00001 * (mag[i] + 1.0));
+            i = i + 1L;
+        }
+    }
+
+    /** Q6_K member `H` on `rows` rows of `bpr` blocks against `ncols` packed tokens. */
+    static void q6(int32 half, int64 rows, int64 bpr, int64 ncols) {
+        int64 n = bpr * 256L;
+        int64 xo = 32L;
+        int64 xs = n + 64L;
+        int64 yOff = 2L;
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        int8[] file #= Q6kBlockTest.weight(rows * bpr);
+        KernelBuffer<float16> xh = heap KernelBuffer<float16>((uint64) (xo + ncols * xs));
+        float16[] hx #= F16ColsTest.packed(xh, ncols, n, xo, xs);
+        float64[] want #= heap float64[ncols * rows];
+        float64[] mag #= heap float64[ncols * rows];
+        int64 c = 0L;
+        while (c < ncols) {
+            int64 r = 0L;
+            while (r < rows) {
+                float64 s = 0.0;
+                float64 a = 0.0;
+                int64 k = 0L;
+                while (k < n) {
+                    float64 t = Q6kBlockTest.element(file, (r * bpr + k / 256L) * 210L, k % 256L)
+                        * (float64) (float32) hx[xo + c * xs + F16Cols.slotOffset(k, bpr)];
+                    s = s + t;
+                    a = a + Math.abs(t);
+                    k = k + 1L;
+                }
+                want[c * rows + r] = s;
+                mag[c * rows + r] = a;
+                r = r + 1L;
+            }
+            c = c + 1L;
+        }
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) file.count());
+        w.upload(file);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (yOff + ncols * rows));
+        float32[] sd #= heap float32[yOff + ncols * rows];
+        int64 i = 0L;
+        while (i < yOff + ncols * rows) { sd[i] = 0.5f * (float32) (i % 3L); i = i + 1L; }
+        float32[] got #= heap float32[yOff + ncols * rows];
+        KernelStream st #= KernelStream.current();
+        int32 pass = 0;
+        while (pass < 2) {
+            y.upload(sd);
+            if (half == 1) {
+                heap BlockGemvF16Cols<Q6kBlock, 1>().runColsOn(st, y, w, xh, rows, n, xo, yOff, ncols, rows, xs, pass == 1, 2L, wv);
+            } else {
+                heap BlockGemvF16Cols<Q6kBlock, 0>().runColsOn(st, y, w, xh, rows, n, xo, yOff, ncols, rows, xs, pass == 1, 2L, wv);
+            }
+            st.sync();
+            y.download(got);
+            F16ColsTest.near(got, want, mag, sd, ncols * rows, yOff, pass == 1);
+            pass = pass + 1;
+        }
+    }
+
+    /** Q8_0 member `H` on `rows` rows of `bpr` 256-value groups against `ncols` packed tokens. */
+    static void q8(int32 half, int64 rows, int64 bpr, int64 ncols) {
+        int64 n = bpr * 256L;
+        int64 nb = bpr * 8L;
+        int64 xo = 32L;
+        int64 xs = n + 64L;
+        int64 yOff = 2L;
+        int64 wv = (int64) Device.waveSize();
+        if (wv <= 0L) { wv = 32L; }
+        Block32Check<Q80Block> gen = heap Block32Check<Q80Block>();
+        int8[] file #= gen.weight(rows * nb);
+        Block32GemvWave<Q80Block, 1> lay = heap Block32GemvWave<Q80Block, 1>();
+        int8[] pk #= heap int8[rows * lay.rowBytes(nb)];
+        lay.pack(file, 0L, rows, nb, pk, 0L);
+        KernelBuffer<float16> xh = heap KernelBuffer<float16>((uint64) (xo + ncols * xs));
+        float16[] hx #= F16ColsTest.packed(xh, ncols, n, xo, xs);
+        float64[] want #= heap float64[ncols * rows];
+        float64[] mag #= heap float64[ncols * rows];
+        int64 c = 0L;
+        while (c < ncols) {
+            int64 r = 0L;
+            while (r < rows) {
+                float64 s = 0.0;
+                float64 a = 0.0;
+                int64 k = 0L;
+                while (k < n) {
+                    float64 t = gen.element(file, (r * nb + k / 32L) * 34L, k % 32L)
+                        * (float64) (float32) hx[xo + c * xs + F16Cols.slotOffset(k, bpr)];
+                    s = s + t;
+                    a = a + Math.abs(t);
+                    k = k + 1L;
+                }
+                want[c * rows + r] = s;
+                mag[c * rows + r] = a;
+                r = r + 1L;
+            }
+            c = c + 1L;
+        }
+        KernelBuffer<int8> w = heap KernelBuffer<int8>((uint64) pk.count());
+        w.upload(pk);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>((uint64) (yOff + ncols * rows));
+        float32[] sd #= heap float32[yOff + ncols * rows];
+        int64 i = 0L;
+        while (i < yOff + ncols * rows) { sd[i] = 0.5f * (float32) (i % 3L); i = i + 1L; }
+        float32[] got #= heap float32[yOff + ncols * rows];
+        KernelStream st #= KernelStream.current();
+        int32 pass = 0;
+        while (pass < 2) {
+            y.upload(sd);
+            if (half == 1) {
+                heap Block32GemvF16Cols<Q80Block, 1>().runColsOn(st, y, w, xh, rows, n, xo, yOff, ncols, rows, xs, pass == 1, 2L, wv);
+            } else {
+                heap Block32GemvF16Cols<Q80Block, 0>().runColsOn(st, y, w, xh, rows, n, xo, yOff, ncols, rows, xs, pass == 1, 2L, wv);
+            }
+            st.sync();
+            y.download(got);
+            F16ColsTest.near(got, want, mag, sd, ncols * rows, yOff, pass == 1);
+            pass = pass + 1;
+        }
+    }
+
+    @Test
+    public void theF16BatchedDecodesEqualTheirDefinitions() {
+        String k = "BlockGemvF16Cols_dev_cajeta_ml_kernels_quant_Q6kBlock_0_colsWave";
+        if (!Device.kernelUsable(k)) { DeviceSkip.noKernel(k, "the f16 batched decode is the GPU's (kernel-drivers 9.1.7.3)"); return; }
+        int64[] m #= ValueCheck.mark();
+        F16ColsTest.q6(0, 37L, 10L, 8L);
+        F16ColsTest.q6(1, 37L, 10L, 3L);
+        F16ColsTest.q8(0, 37L, 10L, 3L);
+        F16ColsTest.q8(1, 37L, 10L, 8L);
+        ValueCheck.credit(m);
+    }
+}

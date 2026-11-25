@@ -75,6 +75,8 @@ public final class Kernels {
         + "Block32GemmTile_dev_cajeta_ml_kernels_quant_Q50Block_64_64_32_32_128_tile|"
         + "Block32GemmTile_dev_cajeta_ml_kernels_quant_Q80Block_128_128_32_64_128_tile|"
         + "Block32GemmTile_dev_cajeta_ml_kernels_quant_Q80Block_64_64_32_32_128_tile|"
+        + "Block32GemvF16Cols_dev_cajeta_ml_kernels_quant_Q80Block_0_colsWave|"
+        + "Block32GemvF16Cols_dev_cajeta_ml_kernels_quant_Q80Block_1_colsWave|"
         + "Block32GemvF32_dev_cajeta_ml_kernels_quant_Q40Block_wave|"
         + "Block32GemvF32_dev_cajeta_ml_kernels_quant_Q50Block_wave|"
         + "Block32GemvF32_dev_cajeta_ml_kernels_quant_Q80Block_wave|"
@@ -141,6 +143,8 @@ public final class Kernels {
         + "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q6kBlock_128_128_32_64_128_idTile|"
         + "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q6kBlock_64_64_32_32_128_blockTile|"
         + "BlockGemmTile_dev_cajeta_ml_kernels_quant_Q6kBlock_64_64_32_32_128_idTile|"
+        + "BlockGemvF16Cols_dev_cajeta_ml_kernels_quant_Q6kBlock_0_colsWave|"
+        + "BlockGemvF16Cols_dev_cajeta_ml_kernels_quant_Q6kBlock_1_colsWave|"
         + "BlockGemvF32_dev_cajeta_ml_kernels_quant_Q6kBlock_wave|"
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q2kBlock_1_0_cols3Wave|"
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q2kBlock_1_0_colsWave|"
@@ -199,7 +203,8 @@ public final class Kernels {
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q6kBlock_4_1_cols3Wave|"
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q6kBlock_4_1_colsWave|"
         + "BlockGemvWave_dev_cajeta_ml_kernels_quant_Q6kBlock_4_1_wave|pack32|"
-        + "PieceProbe_dev_cajeta_ml_kernels_quant_Q4kBlock_header|sums16|";
+        + "PieceProbe_dev_cajeta_ml_kernels_quant_Q4kBlock_header|sums16|"
+        + "f16SlotPackRows|";
 
     /** Whether `kernel` is one of this package's: a consumer's census reads it as EXTERNAL,
      *  gated by this package's suite. A generic kernel the consumer instantiates for its own

@@ -1,0 +1,100 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+
+/**
+ * The f16 batched decode's activation layout and step (kernel-drivers plan 9.1.7.3), shared by
+ * {@link BlockGemvF16Cols} and {@link Block32GemvF16Cols}: a row of 256-value blocks is stored
+ * slot-major, so lane slot `m` of a block reads its 8-half vectors `js` halves apart. A run of 16
+ * values meets two such vectors, a `dotSum` each, and its scale adds it ({@link #col}).
+ */
+public final class F16Cols {
+    public F16Cols() { return; }
+
+    /** Offset of element `e` of a row of `bpr` 256-blocks: chunks of 8 blocks (`cw` wide at the row's end), in each the 8-half vector `j` of lane slot `m` of block `b` at `j*cw*32 + (b - chunk)*32 + m*8`. */
+    @Device
+    public static int64 slotOffset(int64 e, int64 bpr) {
+        int64 b = e / 256L;
+        int64 n = e - b * 256L;
+        int64 m = 2L * ((n >> 7) & 1L) + ((n >> 4) & 1L);
+        int64 j = 2L * ((n >> 5) & 3L) + ((n >> 3) & 1L);
+        int64 cb = (b / 8L) * 8L;
+        int64 cw = bpr - cb;
+        if (cw > 8L) { cw = 8L; }
+        return cb * 256L + j * cw * 32L + (b - cb) * 32L + m * 8L + (n & 7L);
+    }
+
+    /** The slot stride of block `b` of a row of `bpr`: 32 halves times its chunk's width. */
+    @Device
+    public static int64 slotStride(uint32 b, uint32 bpr) {
+        uint32 cb = (b / 8) * 8;
+        uint32 cw = bpr - cb;
+        if (cw > 8) { cw = 8; }
+        return (int64) (cw * 32);
+    }
+
+    /** Lane slot `m`'s first vector of block `b` in a row of `bpr` at `xOff`. */
+    @Device
+    public static int64 slotBase(int64 xOff, uint32 b, uint32 bpr, int32 m) {
+        uint32 cb = (b / 8) * 8;
+        return xOff + (int64) (cb * 256) + (int64) ((b - cb) * 32) + (int64) (m * 8);
+    }
+
+    /** One column's pass: `nr` runs (4 or 2) with weights `wl{t}`/`wh{t}` and scales `e{t}` against the slot vectors from `base`, `js` apart, all loaded first; run `t` adds `e{t}` times its two `dotSum`s. */
+    @Device
+    public static float32 col(float32 acc, KernelBuffer<float16> x, int64 base, int64 js, uint32 nr,
+            Vector<float16,8> wl0, Vector<float16,8> wh0, Vector<float16,8> wl1, Vector<float16,8> wh1,
+            Vector<float16,8> wl2, Vector<float16,8> wh2, Vector<float16,8> wl3, Vector<float16,8> wh3,
+            float32 e0, float32 e1, float32 e2, float32 e3) {
+        Vector<float16,8> a0 = x.vload<8>(base, align: 16);
+        Vector<float16,8> b0 = x.vload<8>(base + js, align: 16);
+        Vector<float16,8> a1 = x.vload<8>(base + 2L * js, align: 16);
+        Vector<float16,8> b1 = x.vload<8>(base + 3L * js, align: 16);
+        Vector<float16,8> a2 = a0;
+        Vector<float16,8> b2 = b0;
+        Vector<float16,8> a3 = a1;
+        Vector<float16,8> b3 = b1;
+        if (nr > 2) {
+            a2 = x.vload<8>(base + 4L * js, align: 16);
+            b2 = x.vload<8>(base + 5L * js, align: 16);
+            a3 = x.vload<8>(base + 6L * js, align: 16);
+            b3 = x.vload<8>(base + 7L * js, align: 16);
+        }
+        float32 t0 = wh0.dotSum(b0, wl0.dotSum(a0, 0.0f));
+        float32 r = acc + e0 * t0;
+        float32 t1 = wh1.dotSum(b1, wl1.dotSum(a1, 0.0f));
+        r = r + e1 * t1;
+        if (nr > 2) {
+            float32 t2 = wh2.dotSum(b2, wl2.dotSum(a2, 0.0f));
+            r = r + e2 * t2;
+            float32 t3 = wh3.dotSum(b3, wl3.dotSum(a3, 0.0f));
+            r = r + e3 * t3;
+        }
+        return r;
+    }
+
+    /** f32 rows (row `r` at `r * xStride`, `n` values, `n % 256 == 0`) to slot-major f16 rows at `r * outStride`. */
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void f16SlotPackRows(KernelBuffer<float16> out, KernelBuffer<float32> x, uint32 n, uint32 rows,
+            uint32 xStride, uint32 outStride) {
+        uint32 gi = KernelThread.globalIdX();
+        uint32 r = gi / n;
+        uint32 e = gi - r * n;
+        if (r < rows) {
+            out[(int64) r * (int64) outStride + F16Cols.slotOffset((int64) e, (int64) (n / 256))]
+                = (float16) x[(int64) r * (int64) xStride + (int64) e];
+        }
+    }
+
+    /** `rows` f32 rows of `n` values `xStride` apart into slot-major f16 rows `outStride` apart. Queued on `s`. */
+    public static void runPackOn(KernelStream s, KernelBuffer<float16> out, KernelBuffer<float32> x, int64 rows, int64 n,
+            int64 xStride, int64 outStride) {
+        int64 total = rows * n;
+        f16SlotPackRows.launch(s, grid: [(uint32) ((total + 255L) / 256L)], block: [256])
+            (out, x, (uint32) n, (uint32) rows, (uint32) xStride, (uint32) outStride);
+    }
+}

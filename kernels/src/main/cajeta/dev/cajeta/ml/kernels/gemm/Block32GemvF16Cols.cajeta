@@ -1,0 +1,119 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.lang.String;
+import cajeta.xpu.Group;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.Vector;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+
+/**
+ * The GPU f16 batched decode of a 32-value format whose packed quant bytes are its values (Q8_0;
+ * kernel-drivers plan 9.1.7.3): up to eight slot-major f16 token rows ({@link F16Cols}) against one
+ * row of {@link Block32GemvWave}'s packed layout a wave, eight blocks a 256-value group. Lane
+ * `(g, a)` of a group's four takes half `a` of blocks `8 b + 4 g + t`, each as f16 against two slot
+ * vectors, scaled by its block's `d`; with `H` 1 a lane group takes half a group (two blocks) a pass.
+ * That is cajeta-llm's `q80F16WaveMatVecColsKernel` (`H` 0) and `q80F16HalfWaveMatVecColsKernel`
+ * (`H` 1), so each column equals its kernel's bit for bit (spec 7.9).
+ */
+@Instantiate(value = {Block32GemvF16Cols<Q80Block, 0>, Block32GemvF16Cols<Q80Block, 1>}, max = 4)
+@Requires(H < 2)
+public final class Block32GemvF16Cols<P, uint32 H> {
+    public Block32GemvF16Cols() { return; }
+
+    /** This instantiation's registered kernel. */
+    public #String kernel() { return "" + colsWave.registeredName(); }
+
+    /** The f16 scale at byte `at` (even) of `w`, read through its aligned word. */
+    @Device
+    static float32 dAt(KernelBuffer<int8> w, int64 at) {
+        Vector<int32,1> h = w.vload<4>(at - (at & 3L), align: 4).asWords();
+        return P.dOf(h[0] >> (int32) ((at & 2L) * 8L));
+    }
+
+    /** Column `c` of up to eight to `y[yOff + c * yStride + r]`, set or added (`accum` 1); the token rows `xStride` halves apart from `xOff`, `blocksPerRow` 256-value groups a row. */
+    @Kernel(targets = {"gpu"})
+    @Occupancy(maxThreads = 256)
+    public static void colsWave(KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> x,
+            uint32 rows, int64 blocksPerRow, int64 xOff, int64 yOff, uint32 accum, uint32 ncols, uint32 yStride, uint32 xStride) {
+        uint32 wv = (uint32) Group.width();
+        uint32 lane = KernelThread.x() % wv;
+        uint32 row = KernelThread.globalIdX() / wv;
+        int64 nb = blocksPerRow * 8L;
+        int64 pre = ((nb * 2L + 3L) / 4L) * 4L;
+        int64 pn = (int64) P.planeBytes();
+        int64 bs = pn + 4L * (int64) P.quads();
+        uint32 bpr = (uint32) blocksPerRow;
+        int64 xs = (int64) xStride;
+        uint32 nr = H == 1 ? 2 : 4;
+        uint32 passes = H == 1 ? 2 * bpr : bpr;
+        float32 c0 = 0.0f;
+        float32 c1 = 0.0f;
+        float32 c2 = 0.0f;
+        float32 c3 = 0.0f;
+        float32 c4 = 0.0f;
+        float32 c5 = 0.0f;
+        float32 c6 = 0.0f;
+        float32 c7 = 0.0f;
+        if (row < rows) {
+            int64 rb = (int64) row * (pre + nb * bs);
+            int32 m = (int32) (lane % 4);
+            int32 g = m / 2;
+            int32 a = m - g * 2;
+            uint32 u = lane / 4;
+            while (u < passes) {
+                uint32 b = u;
+                uint32 h = 0;
+                if (H == 1) { b = u / 2; h = u - b * 2; }
+                int64 js = F16Cols.slotStride(b, bpr);
+                int64 xa = F16Cols.slotBase(xOff, b, bpr, m) + (int64) (4 * h) * js;
+                int64 qb = (int64) (b * 8 + (uint32) (g * 4) + 2 * h);
+                int64 ro = rb + pre + qb * bs + pn + (int64) (a * 16);
+                Vector<int8,16> w0 = w.vload<16>(ro, align: 4);
+                Vector<int8,16> w1 = w.vload<16>(ro + bs, align: 4);
+                Vector<int8,16> w2 = w0;
+                Vector<int8,16> w3 = w1;
+                if (H == 0) {
+                    w2 = w.vload<16>(ro + 2L * bs, align: 4);
+                    w3 = w.vload<16>(ro + 3L * bs, align: 4);
+                }
+                float32 d0 = Block32GemvF16Cols.dAt(w, rb + 2L * qb);
+                float32 d1 = Block32GemvF16Cols.dAt(w, rb + 2L * qb + 2L);
+                float32 d2 = d0;
+                float32 d3 = d1;
+                if (H == 0) {
+                    d2 = Block32GemvF16Cols.dAt(w, rb + 2L * qb + 4L);
+                    d3 = Block32GemvF16Cols.dAt(w, rb + 2L * qb + 6L);
+                }
+                Vector<float16,8> wl0 = w0.widenLo().toF32().toF16();
+                Vector<float16,8> wh0 = w0.widenHi().toF32().toF16();
+                Vector<float16,8> wl1 = w1.widenLo().toF32().toF16();
+                Vector<float16,8> wh1 = w1.widenHi().toF32().toF16();
+                Vector<float16,8> wl2 = w2.widenLo().toF32().toF16();
+                Vector<float16,8> wh2 = w2.widenHi().toF32().toF16();
+                Vector<float16,8> wl3 = w3.widenLo().toF32().toF16();
+                Vector<float16,8> wh3 = w3.widenHi().toF32().toF16();
+                c0 = F16Cols.col(c0, x, xa, js, nr, wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, d0, d1, d2, d3);
+                if (ncols > 1) { c1 = F16Cols.col(c1, x, xa + xs, js, nr, wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, d0, d1, d2, d3); }
+                if (ncols > 2) { c2 = F16Cols.col(c2, x, xa + 2L * xs, js, nr, wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, d0, d1, d2, d3); }
+                if (ncols > 3) { c3 = F16Cols.col(c3, x, xa + 3L * xs, js, nr, wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, d0, d1, d2, d3); }
+                if (ncols > 4) { c4 = F16Cols.col(c4, x, xa + 4L * xs, js, nr, wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, d0, d1, d2, d3); }
+                if (ncols > 5) { c5 = F16Cols.col(c5, x, xa + 5L * xs, js, nr, wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, d0, d1, d2, d3); }
+                if (ncols > 6) { c6 = F16Cols.col(c6, x, xa + 6L * xs, js, nr, wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, d0, d1, d2, d3); }
+                if (ncols > 7) { c7 = F16Cols.col(c7, x, xa + 7L * xs, js, nr, wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, d0, d1, d2, d3); }
+                u = u + wv / 4;
+            }
+        }
+        WaveCols.store(y, row, rows, yOff, yStride, accum, ncols, lane, c0, c1, c2, c3, c4, c5, c6, c7);
+    }
+
+    /** `ncols` (1 to 8) slot-major f16 token rows `xStride` halves apart from `xOff` against `rows` packed rows of `cols / 32` blocks (`cols` a multiple of 256), column `c` into `y[yOff + c * yStride ..)`, set or added. Queued on `s`. */
+    public void runColsOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<float16> x,
+            int64 rows, int64 cols, int64 xOff, int64 yOff, int64 ncols, int64 yStride, int64 xStride, boolean accum,
+            int64 wavesPerBlock, int64 waveWidth) {
+        int64 groups = (rows + wavesPerBlock - 1L) / wavesPerBlock;
+        colsWave.launch(s, grid: [(uint32) groups], block: [(uint32) (wavesPerBlock * waveWidth)])
+            (y, w, x, (uint32) rows, cols / 256L, xOff, yOff, accum ? 1 : 0, (uint32) ncols, (uint32) yStride, (uint32) xStride);
+    }
+}
