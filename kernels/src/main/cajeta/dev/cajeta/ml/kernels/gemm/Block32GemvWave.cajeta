@@ -18,7 +18,7 @@ import dev.cajeta.ml.kernels.quant.Q8kAct;
  * The GPU decode mat-vec over the 32-value pieces (kernel-drivers plan 8.3.1.3). A wave owns `R`
  * rows; lane `l` takes blocks `l, l + wave, ..` of each, adds `d * xs * n` for a block's integer
  * dot `n`, and the wave sums its lanes. {@link #pack} lays a row out as its f16 scales, padded to a
- * word, then each block's side plane and the file's quant bytes, the size of the file's row.
+ * word, then each block less its scale (cajeta-llm's split rows), the size of the file's row.
  */
 @Instantiate(value = {Block32GemvWave<Q80Block, 1>, Block32GemvWave<Q80Block, 2>, Block32GemvWave<Q80Block, 4>,
     Block32GemvWave<Q50Block, 1>, Block32GemvWave<Q50Block, 2>, Block32GemvWave<Q50Block, 4>,
@@ -61,10 +61,8 @@ public final class Block32GemvWave<P, uint32 R> {
                 out[ro + 2L * b + 1L] = raw[fo + 1L];
                 if (pn != 0L) {
                     int64 po = fo + (int64) P.planeOffset();
-                    int32 qh = Block32GemvWave.u8(raw, po) | (Block32GemvWave.u8(raw, po + 1L) << 8)
-                        | (Block32GemvWave.u8(raw, po + 2L) << 16) | (Block32GemvWave.u8(raw, po + 3L) << 24);
                     int64 k = 0L;
-                    while (k < pn) { out[bo + k] = (int8) P.planeOf(qh, (int32) k); k = k + 1L; }
+                    while (k < pn) { out[bo + k] = raw[po + k]; k = k + 1L; }
                 }
                 int64 k = 0L;
                 while (k < qn) {
@@ -89,6 +87,10 @@ public final class Block32GemvWave<P, uint32 R> {
     static int32 dot(KernelBuffer<int8> w, int64 bo, Vector<int32,8> aw) {
         int64 pn = (int64) P.planeBytes();
         Vector<uint8,4> pl = w.vload<4>(bo, align: 4).asUnsigned();
+        if (P.planeBytes() != 0) {
+            Vector<int32,1> qh = w.vload<4>(bo, align: 4).asWords();
+            pl = heap Vector<int32,1>(P.planeWordOf(qh[0])).asBytes().asUnsigned();
+        }
         Vector<int32,1> t = heap Vector<int32,1>(0);
         for (int64 q = Unroll.from(0L); q < 8L; q = q + 1L) {
             if (q < (int64) P.quads()) {

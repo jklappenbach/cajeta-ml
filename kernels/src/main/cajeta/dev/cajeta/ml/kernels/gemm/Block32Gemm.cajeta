@@ -74,8 +74,7 @@ public final class Block32Gemm<P> implements QuantGemm {
 
     public boolean packsRows() { return this.byRows(); }
 
-    /** True on a GPU for a piece with no side plane: there the tile layout is the split rows. Q5_0 packs its plane rearranged, which the split rows keep raw. */
-    public boolean splitsRows() { return !this.byRows() && P.planeBytes() == 0; }
+    public boolean splitsRows() { return !this.byRows(); }
 
     /** The weight on the device in this device's packing, from `rows` rows of `cols / 32` file blocks at `file[off ..)`; on a GPU with the tile's tail bytes. */
     public #KernelBuffer<int8> load(int8[] file, int64 off, int64 rows, int64 cols) {

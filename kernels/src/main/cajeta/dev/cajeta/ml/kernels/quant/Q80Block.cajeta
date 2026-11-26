@@ -49,6 +49,10 @@ public final class Q80Block {
     @Device
     public static int32 planeOf(int32 qh, int32 k) { return 0; }
 
+    /** No plane. */
+    @Device
+    public static int32 planeWordOf(int32 qh) { return 0; }
+
     /** Offset in a block of the byte that holds value `k`. */
     @Device
     public static uint32 quantByte(uint32 k) { return 2 + k; }

@@ -54,6 +54,24 @@ public final class Q50Block {
         return hb;
     }
 
+    /** {@link #planeOf}'s four bytes from the raw `qh` word at once: each half's 4x4 bit matrix transposed, its bits spread two apart. */
+    @Device
+    public static int32 planeWordOf(int32 qh) {
+        return Q50Block.spread(qh & 65535) | (Q50Block.spread((qh >> 16) & 65535) << 1);
+    }
+
+    /** Bit `4 q + k` of the 16-bit `x` moved to bit `8 k + 2 q`. */
+    @Device
+    static int32 spread(int32 x) {
+        int32 t = (x ^ (x >> 3)) & 2570;
+        int32 v = x ^ t ^ (t << 3);
+        t = (v ^ (v >> 6)) & 204;
+        v = v ^ t ^ (t << 6);
+        int32 z = (v & 15) | ((v & 240) << 4) | ((v & 3840) << 8) | ((v & 61440) << 12);
+        z = (z | (z << 2)) & 858993459;
+        return (z | (z << 1)) & 1431655765;
+    }
+
     @Device
     public static uint32 quantByte(uint32 k) { return 6 + (k & 15); }
 
@@ -109,7 +127,7 @@ public final class Q50Block {
     @Device
     public static int32 planeWeight() { return 16; }
 
-    /** Value `k`'s plane bit in the packed plane word `pw`. */
+    /** Value `k`'s plane bit in the raw `qh` word. */
     @Device
-    public static int32 planeBit(int32 pw, int32 k) { return (pw >> (8 * (k & 3) + 2 * ((k & 15) >> 2) + (k >> 4))) & 1; }
+    public static int32 planeBit(int32 qh, int32 k) { return (qh >> k) & 1; }
 }

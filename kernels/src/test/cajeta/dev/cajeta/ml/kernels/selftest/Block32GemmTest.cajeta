@@ -23,6 +23,30 @@ public class Block32GemmTest {
         return true;
     }
 
+    /** FIRES: Q5_0's plane word from the raw `qh` equals the four plane bytes, on edge words and a sweep. */
+    @Test
+    public void theQ50PlaneWordFromRawQhEqualsThePlaneBytes() {
+        int64 seed = 77L;
+        int32 n = 0;
+        while (n < 4096) {
+            int32 qh = 0;
+            if (n == 1) { qh = 0 - 1; }
+            else if (n == 2) { qh = 1; }
+            else if (n == 3) { qh = (int32) 2147483648L; }
+            else if (n > 3) {
+                seed = (seed * 1103515245L + 12345L) % 2147483648L;
+                int64 hi = seed;
+                seed = (seed * 1103515245L + 12345L) % 2147483648L;
+                qh = (int32) (((hi & 65535L) << 16) | (seed & 65535L));
+            }
+            int32 want = 0;
+            int32 k = 0;
+            while (k < 4) { want = want | (Q50Block.planeOf(qh, k) << (8 * k)); k = k + 1; }
+            Assert.isTrue(Q50Block.planeWordOf(qh) == want);
+            n = n + 1;
+        }
+    }
+
     @Test
     public void aPackedSpanIsTheFilesSize() {
         Block32GemmRows8<Q80Block> q8 = heap Block32GemmRows8<Q80Block>();

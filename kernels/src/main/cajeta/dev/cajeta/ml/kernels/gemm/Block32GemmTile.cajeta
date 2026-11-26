@@ -90,7 +90,7 @@ public final class Block32GemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN
             return b;
         }
         int64 pw = (int64) P.planeBytes() / 4L;
-        Vector<uint8,4> pl = heap Vector<int32,1>(a[0]).asBytes().asUnsigned();
+        Vector<uint8,4> pl = heap Vector<int32,1>(P.planeWordOf(a[0])).asBytes().asUnsigned();
         Vector<int32,4> out = a;
         for (int64 q = Unroll.from(0L); q < 8L; q = q + 1L) {
             if (q < (int64) P.quads()) {

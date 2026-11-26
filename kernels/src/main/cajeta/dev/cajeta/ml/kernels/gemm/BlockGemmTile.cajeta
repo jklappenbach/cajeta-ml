@@ -97,9 +97,16 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
     public void runIdOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> packed, KernelBuffer<int8> xp,
             KernelBuffer<int32> mapE, KernelBuffer<int32> mapT0, KernelBuffer<int32> mapM1, KernelBuffer<int32> meta,
             int64 nChunksMax, int64 outDim, int64 cols, int64 rowsPerExpert) {
+        this.runIdLayoutOn(s, y, packed, xp, mapE, mapT0, mapM1, meta, nChunksMax, outDim, cols, rowsPerExpert, 0);
+    }
+
+    /** {@link #runIdOn} with the experts' rows in layout `lay` (1: the split rows of `P.splitRows()`). Queued on `s`. */
+    public void runIdLayoutOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> packed, KernelBuffer<int8> xp,
+            KernelBuffer<int32> mapE, KernelBuffer<int32> mapT0, KernelBuffer<int32> mapM1, KernelBuffer<int32> meta,
+            int64 nChunksMax, int64 outDim, int64 cols, int64 rowsPerExpert, uint32 lay) {
         int64 tilesN = outDim / (int64) TN;
         idTile.launch(s, grid: [(uint32) (nChunksMax * tilesN)], block: [2 * TN])
-            (y, packed, xp, mapE, mapT0, mapM1, meta, (uint32) outDim, (uint32) tilesN, cols / 256L, rowsPerExpert);
+            (y, packed, xp, mapE, mapT0, mapM1, meta, (uint32) outDim, (uint32) tilesN, cols / 256L, rowsPerExpert, lay);
     }
 
     /** The Id kernel's registered name. */
@@ -508,7 +515,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
             KernelBuffer<int8> packed, KernelBuffer<int8> xp,
             KernelBuffer<int32> mapE, KernelBuffer<int32> mapT0,
             KernelBuffer<int32> mapM1, KernelBuffer<int32> meta,
-            uint32 outDim, uint32 tilesN, int64 blocksPerRow, int64 rowsPerExpert) {
+            uint32 outDim, uint32 tilesN, int64 blocksPerRow, int64 rowsPerExpert, uint32 lay) {
         Shared<int8> aT = shared int8[TM * 144];
         Shared<int8> bT = shared int8[TN * 144];
         Shared<float32> xsAll = shared float32[TM];
@@ -525,9 +532,11 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
         if (mapIdx < nChunks && i0 < outDim) {
             uint32 t0 = (uint32) mapT0[(int64) mapIdx];
             uint32 mEnd = (uint32) mapM1[(int64) mapIdx];
-            int64 wOff = (int64) mapE[(int64) mapIdx] * rowsPerExpert * blocksPerRow * (int64) P.blockBytes();
+            int64 rowBytes = blocksPerRow * (int64) P.blockBytes();
+            if (lay != 0) { rowBytes = ((blocksPerRow * 2L + 3L) / 4L) * 4L + blocksPerRow * ((int64) P.blockBytes() - 2L); }
+            int64 wOff = (int64) mapE[(int64) mapIdx] * rowsPerExpert * rowBytes;
             BlockGemmTile.tileBody(y, packed, xp, y, aT, bT, xsAll, dAll, rgAll, scAll, cgAll, fs,
-                t0, i0, mEnd, wOff, 0L, blocksPerRow, 0, 1, 0, outDim, blocksPerRow, 1, 0);
+                t0, i0, mEnd, wOff, 0L, blocksPerRow, 0, 1, 0, outDim, blocksPerRow, 1, lay);
         }
     }
 }
