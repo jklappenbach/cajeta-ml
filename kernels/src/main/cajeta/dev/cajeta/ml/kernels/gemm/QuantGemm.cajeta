@@ -3,6 +3,7 @@ package dev.cajeta.ml.kernels.gemm;
 import cajeta.lang.String;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
+import dev.cajeta.ml.kernels.tune.TileChoiceListener;
 
 /** A block-quantized GEMM by name over q8_K activations, whatever its weight format ({@link BlockGemm} for each K piece), so a caller holds one per format. */
 public interface QuantGemm {
@@ -15,8 +16,14 @@ public interface QuantGemm {
     /** True where {@link #run} reads the activation with a scale per 32 values (`PackQ8K.rows32`), not one per 256. */
     boolean scalesPer32();
 
+    /** True when {@link #run} serves a weight of `outDim` rows of `cols` values here: on a GPU a tile member fits it. */
+    boolean serves(int64 outDim, int64 cols);
+
     /** The token rows `xp` and `y` must hold for {@link #run} of `tokens`. */
     int64 tokensFor(int64 tokens);
+
+    /** Tells `l` each GPU member choice the entry settles. */
+    void onChoice(^TileChoiceListener l);
 
     /** The shape store the GPU choice is remembered in across runs ("" keeps none). */
     void setShapeDir(String d);

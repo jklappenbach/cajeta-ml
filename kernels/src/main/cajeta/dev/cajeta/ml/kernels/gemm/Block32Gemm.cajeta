@@ -5,6 +5,7 @@ import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.ShapeFilter;
+import dev.cajeta.ml.kernels.tune.TileChoiceListener;
 import dev.cajeta.ml.kernels.tune.TileFamily;
 
 /**
@@ -72,6 +73,8 @@ public final class Block32Gemm<P> implements QuantGemm {
         this.tiles.forget();
     }
 
+    public void onChoice(^TileChoiceListener l) { this.tiles.onChoice(l); }
+
     public boolean packsRows() { return this.byRows(); }
 
     public boolean splitsRows() { return !this.byRows(); }
@@ -94,6 +97,18 @@ public final class Block32Gemm<P> implements QuantGemm {
         KernelBuffer<int8> w #= heap KernelBuffer<int8>((uint64) n);
         w.upload(split);
         return #w;
+    }
+
+    /** True when {@link #run} serves a weight of `outDim` rows of `cols` values here: whole blocks on the cpu, a fitting tile member on a GPU. */
+    public boolean serves(int64 outDim, int64 cols) {
+        if (this.byRows()) { return cols > 0L && cols % 32L == 0L; }
+        int64 t = this.tokensFor(1L);
+        int64 i = 0L;
+        while (i < this.tiles.shapes().count()) {
+            if (this.tiles.shapes().get(i).fits(t, outDim, cols)) { return true; }
+            i = i + 1L;
+        }
+        return false;
     }
 
     public int64 tokensFor(int64 tokens) {

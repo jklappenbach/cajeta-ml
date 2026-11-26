@@ -5,6 +5,7 @@ import cajeta.xpu.Device;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 import cajeta.xpu.ShapeFilter;
+import dev.cajeta.ml.kernels.tune.TileChoiceListener;
 import dev.cajeta.ml.kernels.tune.TileFamily;
 
 /**
@@ -69,6 +70,8 @@ public final class BlockGemm<P> implements QuantGemm {
     }
 
     /** True where {@link #load} packs the row driver's 8-row interleave; false where it keeps a GPU layout. */
+    public void onChoice(^TileChoiceListener l) { this.tiles.onChoice(l); }
+
     public boolean packsRows() { return this.byRows(); }
 
     public boolean scalesPer32() { return false; }
@@ -130,6 +133,18 @@ public final class BlockGemm<P> implements QuantGemm {
     }
 
     /** The token rows `xp` and `y` must hold for {@link #run} of `tokens`: `tokens` where the row driver runs, a whole number of the largest tile's 128 rows on a GPU. */
+    /** True when {@link #run} serves a weight of `outDim` rows of `cols` values here: whole blocks on the cpu, a fitting tile member on a GPU. */
+    public boolean serves(int64 outDim, int64 cols) {
+        if (this.byRows()) { return cols > 0L && cols % 256L == 0L; }
+        int64 t = this.tokensFor(1L);
+        int64 i = 0L;
+        while (i < this.tiles.shapes().count()) {
+            if (this.tiles.shapes().get(i).fits(t, outDim, cols)) { return true; }
+            i = i + 1L;
+        }
+        return false;
+    }
+
     public int64 tokensFor(int64 tokens) {
         if (this.byRows()) { return tokens; }
         return (tokens + 127L) / 128L * 128L;
