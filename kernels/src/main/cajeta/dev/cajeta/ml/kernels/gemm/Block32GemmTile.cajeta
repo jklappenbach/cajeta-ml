@@ -28,7 +28,8 @@ import dev.cajeta.ml.kernels.quant.Q80Block;
 @Requires(TM == TN && TM % WM == 0 && TN % WN == 0 && WM % 16 == 0 && WN % 16 == 0
     && (TM / WM) * (TN / WN) * 16 == TN && KS == 128)
 @Unfused
-public final class Block32GemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS> {
+public final class Block32GemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, uint32 KS>
+        implements BlockTileMember {
     public Block32GemmTile() { return; }
 
     /** This instantiation's registered kernel. */
@@ -56,6 +57,13 @@ public final class Block32GemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN
         tile.launch(s, grid: [(uint32) (tilesM * tilesN * splits)], block: [2 * TN])
             (y, packed, xp, (uint32) rows, (uint32) outDim, (uint32) tilesN, cols / 256L,
              part, (uint32) splits, accum);
+    }
+
+    /** {@link #runOn}: this tile reads only the split rows, whatever `lay` says. */
+    public void runLayoutOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> packed,
+            KernelBuffer<int8> xp, int64 rows, int64 outDim, int64 cols,
+            KernelBuffer<float32> part, int64 splits, uint32 accum, uint32 lay) {
+        this.runOn(s, y, packed, xp, rows, outDim, cols, part, splits, accum);
     }
 
     /** Word `i` of the eight in `a` then `b`. */

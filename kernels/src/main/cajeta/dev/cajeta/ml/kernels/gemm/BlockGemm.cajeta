@@ -71,6 +71,8 @@ public final class BlockGemm<P> implements QuantGemm {
     /** True where {@link #load} packs the row driver's 8-row interleave; false where it keeps a GPU layout. */
     public boolean packsRows() { return this.byRows(); }
 
+    public boolean scalesPer32() { return false; }
+
     /** True where {@link #load} holds the GPU split row layout (`P.splitRows()` on a GPU). */
     public boolean splitsRows() { return !this.byRows() && P.splitRows() != 0; }
 

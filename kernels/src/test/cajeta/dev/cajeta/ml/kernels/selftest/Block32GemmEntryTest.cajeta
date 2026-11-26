@@ -1,0 +1,33 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import dev.cajeta.ml.kernels.quant.Q40Block;
+import dev.cajeta.ml.kernels.quant.Q50Block;
+import dev.cajeta.ml.kernels.quant.Q80Block;
+
+/** kernel-drivers 10.2.4.3.2: the 32-value formats' GEMM by name, held through the interface, against the reference on a ragged and a whole-tile batch. */
+public class Block32GemmEntryTest {
+    public Block32GemmEntryTest() { return; }
+
+    @Test
+    public void q80ByNameEqualsTheReference() {
+        heap Block32GemmEntryCheck<Q80Block>().check("Q80Block", 37L, 256L, 512L, false);
+        heap Block32GemmEntryCheck<Q80Block>().check("Q80Block", 128L, 256L, 512L, false);
+    }
+
+    @Test
+    public void q80ReadsThePer32ActivationWhereAsked() {
+        heap Block32GemmEntryCheck<Q80Block>().check("Q80Block", 37L, 256L, 512L, true);
+    }
+
+    @Test
+    public void q50ByNameEqualsTheReference() {
+        heap Block32GemmEntryCheck<Q50Block>().check("Q50Block", 37L, 256L, 512L, false);
+        heap Block32GemmEntryCheck<Q50Block>().check("Q50Block", 128L, 256L, 512L, false);
+    }
+
+    @Test
+    public void q40ByNameEqualsTheReference() {
+        heap Block32GemmEntryCheck<Q40Block>().check("Q40Block", 37L, 256L, 512L, false);
+        heap Block32GemmEntryCheck<Q40Block>().check("Q40Block", 128L, 256L, 512L, false);
+    }
+}

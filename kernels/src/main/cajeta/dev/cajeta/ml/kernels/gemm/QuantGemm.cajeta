@@ -12,6 +12,9 @@ public interface QuantGemm {
     /** True where the weight is held in the GPU split row layout: each row's block `d`s first, then the blocks less `d`. */
     boolean splitsRows();
 
+    /** True where {@link #run} reads the activation with a scale per 32 values (`PackQ8K.rows32`), not one per 256. */
+    boolean scalesPer32();
+
     /** The token rows `xp` and `y` must hold for {@link #run} of `tokens`. */
     int64 tokensFor(int64 tokens);
 

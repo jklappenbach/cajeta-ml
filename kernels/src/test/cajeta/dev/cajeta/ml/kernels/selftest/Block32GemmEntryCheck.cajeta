@@ -1,0 +1,75 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import cajeta.lang.String;
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import dev.cajeta.unit.Assert;
+import dev.cajeta.ml.kernels.gemm.Block32Gemm;
+import dev.cajeta.ml.kernels.gemm.Block32GemmRef;
+import dev.cajeta.ml.kernels.gemm.QuantGemm;
+import dev.cajeta.ml.kernels.testing.DeviceSkip;
+import dev.cajeta.ml.kernels.testing.ValueCheck;
+
+/** {@link Block32GemmEntryTest}'s check over 32-value piece `P`: the entry held as a {@link QuantGemm} against the reference on `tokens` rows, set then added, within 1e-3; `per32` the cpu's per-32 activation. */
+public final class Block32GemmEntryCheck<P> {
+    public Block32GemmEntryCheck() { return; }
+
+    public void check(String fmt, int64 tokens, int64 outDim, int64 cols, boolean per32) {
+        String ref #= "Block32GemmRef_dev_cajeta_ml_kernels_quant_" + fmt + "_ref";
+        int64 nb = cols / 32L;
+        int64 spans = (nb + 7L) / 8L;
+        Block32Gemm<P> entry = heap Block32Gemm<P>();
+        entry.setScalesPer32(per32);
+        String kernel #= entry.kernelFor(tokens, outDim, cols);
+        if (!Device.kernelAvailable(ref) || !Device.kernelUsable(kernel)) {
+            DeviceSkip.noKernel(kernel, "kernel-drivers 10.2.4.3.2");
+            return;
+        }
+        QuantGemm op = entry;
+        if (per32 && !op.scalesPer32()) { return; }
+        Block32Check<P> c = heap Block32Check<P>();
+        int8[] file #= c.weight(outDim * nb);
+        KernelBuffer<int8> w #= entry.load(file, 0L, outDim, cols);
+        int64 tp = op.tokensFor(tokens);
+        int8[] hx #= c.acts(tp * spans);
+        KernelBuffer<int8> wf = heap KernelBuffer<int8>((uint64) (outDim * nb * (int64) P.blockBytes()));
+        KernelBuffer<int8> xp = heap KernelBuffer<int8>((uint64) (tp * spans * 320L));
+        KernelBuffer<float32> ya = heap KernelBuffer<float32>((uint64) (tokens * outDim));
+        KernelBuffer<float32> yb = heap KernelBuffer<float32>((uint64) (tp * outDim));
+        wf.upload(file);
+        xp.upload(hx);
+        float32[] seedY #= heap float32[tp * outDim];
+        int64 i = 0L;
+        while (i < tp * outDim) { seedY[i] = 0.25f * (float32) (i % 7L); i = i + 1L; }
+        float32[] seedA #= heap float32[tokens * outDim];
+        i = 0L;
+        while (i < tokens * outDim) { seedA[i] = seedY[i]; i = i + 1L; }
+        float32[] ga #= heap float32[tokens * outDim];
+        float32[] gb #= heap float32[tp * outDim];
+        Block32GemmRef<P> g = heap Block32GemmRef<P>();
+        int64[] m #= ValueCheck.mark();
+        KernelStream st #= KernelStream.current();
+        op.prewarm(st, w, xp, tokens, outDim, cols);
+        int32 pass = 0;
+        while (pass < 2) {
+            ya.upload(seedA);
+            yb.upload(seedY);
+            g.run(ya, wf, xp, outDim, tokens, nb, outDim, pass == 1, op.scalesPer32() ? 4L : 0L);
+            op.run(st, yb, w, xp, tokens, outDim, cols, pass == 1);
+            st.sync();
+            ya.download(ga);
+            yb.download(gb);
+            i = 0L;
+            while (i < tokens * outDim) {
+                float32 d = ga[i] - gb[i];
+                if (d < 0.0f) { d = 0.0f - d; }
+                float32 mag = ga[i] < 0.0f ? 0.0f - ga[i] : ga[i];
+                if (d > 0.001f * (1.0f + mag)) { Assert.fail(fmt + " value " + i + ": entry " + gb[i] + " against " + ga[i]); }
+                i = i + 1L;
+            }
+            pass = pass + 1;
+        }
+        ValueCheck.credit(m);
+    }
+}
