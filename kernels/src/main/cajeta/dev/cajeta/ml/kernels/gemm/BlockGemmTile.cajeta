@@ -62,18 +62,36 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
             && rows > 0L && outDim > 0L && cols > 0L;
     }
 
-    /** `y[token * outDim + row]` set (or added to) from `packed` (file layout) and `xp` (q8_K rows); with `splits > 1` each workgroup writes its partial tile to `part` for a fixup to sum. Queued on `s`. */
+    /** {@link #runLayoutOn} on the file layout. */
     public void runOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> packed,
             KernelBuffer<int8> xp, int64 rows, int64 outDim, int64 cols,
             KernelBuffer<float32> part, int64 splits, uint32 accum) {
+        this.runLayoutOn(s, y, packed, xp, rows, outDim, cols, part, splits, accum, 0);
+    }
+
+    /** `y[token * outDim + row]` set (or added to) from `packed` (the file layout, or with `lay` 1 the split rows of `P.splitRows()`) and `xp` (q8_K rows); with `splits > 1` each workgroup writes its partial tile to `part` for a fixup to sum. Queued on `s`. */
+    public void runLayoutOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> packed,
+            KernelBuffer<int8> xp, int64 rows, int64 outDim, int64 cols,
+            KernelBuffer<float32> part, int64 splits, uint32 accum, uint32 lay) {
         int64 tilesM = rows / (int64) TM;
         int64 tilesN = outDim / (int64) TN;
         int64 tiles = tilesM * tilesN;
         int64 nb = cols / 256L;
         blockTile.launch(s, grid: [(uint32) (tiles * splits)], block: [2 * TN])
             (y, packed, xp, (uint32) rows, (uint32) outDim, (uint32) tilesN, nb,
-             part, (uint32) splits, accum);
+             part, (uint32) splits, accum, lay);
     }
+
+    /** The header words two bytes on from `ha` with the block's trailing `d` (`dBits`) as the last half-word: the split layout's second header, where `ha` ends at `d`. */
+    @Device
+    static Vector<int32,4> shifted(Vector<int32,4> ha, int32 dBits) {
+        return heap Vector<int32,4>(((ha[0] >> 16) & 65535) | (ha[1] << 16), ((ha[1] >> 16) & 65535) | (ha[2] << 16),
+            ((ha[2] >> 16) & 65535) | (ha[3] << 16), ((ha[3] >> 16) & 65535) | (dBits << 16));
+    }
+
+    /** The half-word at `at`. */
+    @Device
+    static int32 halfAt(KernelBuffer<int8> packed, int64 at) { return ((int32) packed[at] & 255) | (((int32) packed[at + 1L] & 255) << 8); }
 
     /** The MoE Id GEMM: `y[row * outDim + r]` for the gathered q8_K rows `xp` of each entry of a TM-row chunk map (`mapE` expert, `mapT0` first row, `mapM1` the entry's end, the count at `meta[TM / 128]`, at most `nChunksMax`) against that expert's `outDim` rows, experts `rowsPerExpert` rows apart in `packed` (file layout). Queued on `s`. */
     public void runIdOn(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> packed, KernelBuffer<int8> xp,
@@ -101,7 +119,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
             KernelBuffer<float32> part, Shared<int8> aT, Shared<int8> bT, Shared<float32> xsAll,
             Shared<float32> dAll, Shared<float32> rgAll, Shared<int32> scAll, Shared<float32> cgAll,
             Shared<float32> fs, uint32 t0, uint32 i0, uint32 mEnd, int64 wOff, int64 bOff, int64 nbs,
-            uint32 pslot, uint32 splits, uint32 accum, uint32 outDim, int64 blocksPerRow, uint32 id) {
+            uint32 pslot, uint32 splits, uint32 accum, uint32 outDim, int64 blocksPerRow, uint32 id, uint32 lay) {
         uint32 tid = KernelThread.x();
         uint32 wid = tid / 32;
         uint32 wr = wid / (TN / WN);
@@ -112,9 +130,12 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
         uint32 sH = tid & 1;
         uint32 late = 0;
         if (P.subValues() == 16 && P.offset() == 0) { late = 1; }
-        int64 rowBytes = blocksPerRow * (int64) P.blockBytes();
+        int64 bs = (int64) P.blockBytes() - 2L * (int64) lay;
+        int64 prefix = lay != 0 ? ((blocksPerRow * 2L + 3L) / 4L) * 4L : 0L;
+        int64 rowBytes = prefix + blocksPerRow * bs;
         int64 xRowBytes = blocksPerRow * 320L;
-        int64 sRo = wOff + (int64) (i0 + sCol) * rowBytes + bOff * (int64) P.blockBytes();
+        int64 sRow = wOff + (int64) (i0 + sCol) * rowBytes + bOff * 2L;
+        int64 sRo = wOff + (int64) (i0 + sCol) * rowBytes + prefix + bOff * bs;
         int64 sXb = (int64) (t0 + sCol) * xRowBytes + bOff * 320L;
         uint32 aRow0 = tid >> 3;
         uint32 aPart = tid & 7;
@@ -153,7 +174,10 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
         if (sH == 0) {
             pq0 = packed.vload<16>(sRo + (int64) P.headOffset()).asWords();
             pq1 = pq0;
-            if (P.head2Offset() != P.headOffset()) { pq1 = packed.vload<16>(sRo + (int64) P.head2Offset()).asWords(); }
+            if (P.head2Offset() != P.headOffset()) {
+                if (lay != 0) { pq1 = BlockGemmTile.shifted(pq0, BlockGemmTile.halfAt(packed, sRow)); }
+                else { pq1 = packed.vload<16>(sRo + (int64) P.head2Offset()).asWords(); }
+            }
         } else if (P.offset() == 0 && P.subValues() == 32) {
             pq0 = xp.vload<16>(sXb + 256L).asWords();
             pq1 = xp.vload<16>(sXb + 272L).asWords();
@@ -192,7 +216,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                 Vector<int32,4> w0 = pb0;
                 Vector<int32,4> w1 = pb1;
                 if (late != 0) {
-                    int64 qb = sRo + (int64) (hh >> 1) * (int64) P.blockBytes() + (int64) P.quantOffset()
+                    int64 qb = sRo + (int64) (hh >> 1) * bs + (int64) P.quantOffset()
                         + (int64) (32 * P.quantRun(pair));
                     w0 = packed.vload<16>(qb).asWords();
                     w1 = packed.vload<16>(qb + 16L).asWords();
@@ -200,7 +224,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                 Vector<int32,4> ph0 = w0;
                 Vector<int32,4> ph1 = w1;
                 if (P.planeBytes() != 0) {
-                    int64 cb = sRo + (int64) (hh >> 1) * (int64) P.blockBytes() + (int64) P.planeOffset()
+                    int64 cb = sRo + (int64) (hh >> 1) * bs + (int64) P.planeOffset()
                         + (int64) (32 * P.planeRun(pair));
                     ph0 = packed.vload<16>(cb).asWords();
                     ph1 = packed.vload<16>(cb + 16L).asWords();
@@ -277,15 +301,16 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
                 pa2 = xp.vload<16>(aS).asWords();
                 aS = aS + xrP;
                 pa3 = xp.vload<16>(aS).asWords();
-                int64 bS = sRo + nb * (int64) P.blockBytes() + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) (2 * nH + sH)));
+                int64 bS = sRo + nb * bs + (int64) P.quantOffset() + (int64) (32 * P.quantRun((int32) (2 * nH + sH)));
                 pb0 = packed.vload<16>(bS).asWords();
                 pb1 = packed.vload<16>(bS + 16L).asWords();
                 if (nH == 0) {
                     if (sH == 0) {
-                        pq0 = packed.vload<16>(sRo + nb * (int64) P.blockBytes() + (int64) P.headOffset()).asWords();
+                        pq0 = packed.vload<16>(sRo + nb * bs + (int64) P.headOffset()).asWords();
                         pq1 = pq0;
                         if (P.head2Offset() != P.headOffset()) {
-                            pq1 = packed.vload<16>(sRo + nb * (int64) P.blockBytes() + (int64) P.head2Offset()).asWords();
+                            if (lay != 0) { pq1 = BlockGemmTile.shifted(pq0, BlockGemmTile.halfAt(packed, sRow + nb * 2L)); }
+                            else { pq1 = packed.vload<16>(sRo + nb * bs + (int64) P.head2Offset()).asWords(); }
                         }
                     } else {
                         int64 xb = sXb + nb * 320L;
@@ -450,7 +475,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
     public static void blockTile(KernelBuffer<float32> y,
             KernelBuffer<int8> packed, KernelBuffer<int8> xp, uint32 rows,
             uint32 outDim, uint32 tilesN, int64 blocksPerRow,
-            KernelBuffer<float32> part, uint32 splits, uint32 accum) {
+            KernelBuffer<float32> part, uint32 splits, uint32 accum, uint32 lay) {
         Shared<int8> aT = shared int8[TM * 144];
         Shared<int8> bT = shared int8[TN * 144];
         Shared<float32> xsAll = shared float32[TM];
@@ -472,7 +497,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
         uint32 i0 = tileI * TN;
         if (t0 < rows && i0 < outDim) {
             BlockGemmTile.tileBody(y, packed, xp, part, aT, bT, xsAll, dAll, rgAll, scAll, cgAll, xsAll,
-                t0, i0, 0, 0L, bOff, nbs, pslot, splits, accum, outDim, blocksPerRow, 0);
+                t0, i0, 0, 0L, bOff, nbs, pslot, splits, accum, outDim, blocksPerRow, 0, lay);
         }
     }
 
@@ -502,7 +527,7 @@ public final class BlockGemmTile<P, uint32 TM, uint32 TN, uint32 WM, uint32 WN, 
             uint32 mEnd = (uint32) mapM1[(int64) mapIdx];
             int64 wOff = (int64) mapE[(int64) mapIdx] * rowsPerExpert * blocksPerRow * (int64) P.blockBytes();
             BlockGemmTile.tileBody(y, packed, xp, y, aT, bT, xsAll, dAll, rgAll, scAll, cgAll, fs,
-                t0, i0, mEnd, wOff, 0L, blocksPerRow, 0, 1, 0, outDim, blocksPerRow, 1);
+                t0, i0, mEnd, wOff, 0L, blocksPerRow, 0, 1, 0, outDim, blocksPerRow, 1, 0);
         }
     }
 }

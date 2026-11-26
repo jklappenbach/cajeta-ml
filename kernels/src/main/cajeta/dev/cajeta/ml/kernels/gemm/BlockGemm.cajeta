@@ -68,8 +68,36 @@ public final class BlockGemm<P> implements QuantGemm {
         this.tiles.forget();
     }
 
-    /** True where {@link #load} packs the row driver's 8-row interleave; false where it keeps the file layout. */
+    /** True where {@link #load} packs the row driver's 8-row interleave; false where it keeps a GPU layout. */
     public boolean packsRows() { return this.byRows(); }
+
+    /** True where {@link #load} holds the GPU split row layout (`P.splitRows()` on a GPU). */
+    public boolean splitsRows() { return !this.byRows() && P.splitRows() != 0; }
+
+    /** Bytes of a GPU row of `bpr` blocks in the split layout: the `d`s padded to a word, then each block less its `d`. */
+    static int64 splitRowBytes(int64 bpr) { return ((bpr * 2L + 3L) / 4L) * 4L + bpr * ((int64) P.blockBytes() - 2L); }
+
+    /** `rows` file-layout rows of `bpr` blocks at `file[off ..)` in the split layout at `out[0 ..)`, each block's trailing `d` moved to its row's prefix. */
+    public void splitPack(int8[] file, int64 off, int64 rows, int64 bpr, int8[] out) {
+        int64 bb = (int64) P.blockBytes();
+        int64 prefix = ((bpr * 2L + 3L) / 4L) * 4L;
+        int64 rb = BlockGemm.splitRowBytes(bpr);
+        int64 r = 0L;
+        while (r < rows) {
+            int64 k = 0L;
+            while (k < prefix) { out[r * rb + k] = (int8) 0; k = k + 1L; }
+            int64 b = 0L;
+            while (b < bpr) {
+                int64 src = off + (r * bpr + b) * bb;
+                out[r * rb + 2L * b] = file[src + bb - 2L];
+                out[r * rb + 2L * b + 1L] = file[src + bb - 1L];
+                k = 0L;
+                while (k < bb - 2L) { out[r * rb + prefix + b * (bb - 2L) + k] = file[src + k]; k = k + 1L; }
+                b = b + 1L;
+            }
+            r = r + 1L;
+        }
+    }
 
     /** The weight on the device in this device's packing, from `rows` rows of `cols / 256` file-layout blocks at `file[off ..)`. */
     public #KernelBuffer<int8> load(int8[] file, int64 off, int64 rows, int64 cols) {
@@ -81,6 +109,14 @@ public final class BlockGemm<P> implements QuantGemm {
             KernelBuffer<int8> w #= heap KernelBuffer<int8>((uint64) n);
             w.upload(packed);
             return #w;
+        }
+        if (P.splitRows() != 0) {
+            int64 sn = rows * BlockGemm.splitRowBytes(bpr);
+            int8[] sp #= heap int8[sn];
+            this.splitPack(file, off, rows, bpr, sp);
+            KernelBuffer<int8> ws #= heap KernelBuffer<int8>((uint64) sn);
+            ws.upload(sp);
+            return #ws;
         }
         int64 n = rows * bpr * (int64) P.blockBytes();
         int8[] raw #= heap int8[n];
@@ -113,7 +149,7 @@ public final class BlockGemm<P> implements QuantGemm {
         if (idx < 0) {
             this.ensurePart(t, outDim, cols);
             ShapeFilter f #= this.tiles.filterFor(t, outDim, cols);
-            BlockGemmProbe probe = heap BlockGemmProbe(this.tiles, f, s, this.probeY, this.part, w, xp, t, outDim, cols);
+            BlockGemmProbe probe = heap BlockGemmProbe(this.tiles, f, s, this.probeY, this.part, w, xp, t, outDim, cols, P.splitRows());
             idx = this.tiles.chooseWith(this.shapeDir, f, probe, t, outDim, cols);
         }
         if (idx < 0) { idx = 0; }
@@ -142,7 +178,7 @@ public final class BlockGemm<P> implements QuantGemm {
         int64 tiles = (t / tile) * (outDim / (int64) sh.tileN());
         int64 sp = TileSplitFixup.splitsFor(tiles, bpr);
         if (sp > 1L) { this.ensurePart(t, outDim, cols); }
-        sh.runOn(s, y, w, xp, t, outDim, cols, this.part, sp, accum ? 1 : 0);
+        sh.runLayoutOn(s, y, w, xp, t, outDim, cols, this.part, sp, accum ? 1 : 0, P.splitRows());
         if (sp > 1L) { TileSplitFixup.runOn(s, y, this.part, t, outDim, tile, sp, accum); }
     }
 }

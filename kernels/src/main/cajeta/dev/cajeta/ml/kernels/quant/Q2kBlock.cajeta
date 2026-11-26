@@ -44,6 +44,10 @@ public final class Q2kBlock {
     public static uint32 quantScaleMax() { return 45; }
 
     @Device
+    /** 1 where cajeta-llm keeps a GPU row as its blocks' trailing `d`s first (padded to a word), then each block less its `d`; 0 for the file layout. */
+    @Device
+    public static uint32 splitRows() { return 0; }
+
     /** cajeta-llm's 8-row cpu interleave for this format, as `BlockGemmRows8` packs and reads it: 0 runs in file order, 1 Q6_K's quant and plane quads interleaved a 96-byte step, 2 the scale-and-min bytes kept whole. */
     @Device
     public static uint32 rowsLayout() { return 2; }

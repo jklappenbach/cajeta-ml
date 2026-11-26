@@ -20,9 +20,10 @@ public final class BlockGemmProbe implements ShapeProbe {
     int64 rows;
     int64 outDim;
     int64 cols;
+    uint32 lay;
 
     public BlockGemmProbe(^TileFamily<BlockTileMember> fam, ^ShapeFilter f, ^KernelStream s, ^KernelBuffer<float32> y,
-            ^KernelBuffer<float32> part, ^KernelBuffer<int8> w, ^KernelBuffer<int8> xp, int64 rows, int64 outDim, int64 cols) {
+            ^KernelBuffer<float32> part, ^KernelBuffer<int8> w, ^KernelBuffer<int8> xp, int64 rows, int64 outDim, int64 cols, uint32 lay) {
         this.fam = fam;
         this.f = f;
         this.s = s;
@@ -33,6 +34,7 @@ public final class BlockGemmProbe implements ShapeProbe {
         this.rows = rows;
         this.outDim = outDim;
         this.cols = cols;
+        this.lay = lay;
     }
 
     /** Launches a sample. */
@@ -50,7 +52,7 @@ public final class BlockGemmProbe implements ShapeProbe {
         int64 t0 = Clock.nanoTime();
         int32 k = 0;
         while (k < BlockGemmProbe.BURST) {
-            sh.runOn(this.s, this.y, this.w, this.xp, this.rows, this.outDim, this.cols, this.part, sp, (uint32) 0);
+            sh.runLayoutOn(this.s, this.y, this.w, this.xp, this.rows, this.outDim, this.cols, this.part, sp, (uint32) 0, this.lay);
             if (sp > 1L) { TileSplitFixup.runOn(this.s, this.y, this.part, this.rows, this.outDim, tile, sp, false); }
             k = k + 1;
         }
