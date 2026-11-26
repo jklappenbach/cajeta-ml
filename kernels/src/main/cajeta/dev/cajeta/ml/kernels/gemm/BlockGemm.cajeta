@@ -22,6 +22,7 @@ public final class BlockGemm<P> {
     KernelBuffer<float32> part;
     int64 partCap;
     KernelBuffer<float32> probeY;
+    String shapeDir;
 
     public BlockGemm() {
         this.rows #= heap BlockGemmRows8<P>();
@@ -31,6 +32,7 @@ public final class BlockGemm<P> {
         this.part #= heap KernelBuffer<float32>((uint64) 16L);
         this.partCap = 16L;
         this.probeY #= heap KernelBuffer<float32>((uint64) 16L);
+        this.shapeDir #= "";
     }
 
     /** The split-K scratch grown to the most any member could split `t` by `outDim` by `cols` into (8 splits of the whole output); a buffer in use drains first. */
@@ -58,6 +60,12 @@ public final class BlockGemm<P> {
     boolean byRows() {
         String k #= this.rows.kernel();
         return Device.kernelAvailable(k);
+    }
+
+    /** The shape store the GPU choice is remembered in across runs ("" keeps none), the remembered choices dropped. */
+    public void setShapeDir(String d) {
+        this.shapeDir #= d.clone();
+        this.tiles.forget();
     }
 
     /** True where {@link #load} packs the row driver's 8-row interleave; false where it keeps the file layout. */
@@ -106,7 +114,7 @@ public final class BlockGemm<P> {
             this.ensurePart(t, outDim, cols);
             ShapeFilter f #= this.tiles.filterFor(t, outDim, cols);
             BlockGemmProbe probe = heap BlockGemmProbe(this.tiles, f, s, this.probeY, this.part, w, xp, t, outDim, cols);
-            idx = this.tiles.chooseWith("", f, probe, t, outDim, cols);
+            idx = this.tiles.chooseWith(this.shapeDir, f, probe, t, outDim, cols);
         }
         if (idx < 0) { idx = 0; }
         return idx;
