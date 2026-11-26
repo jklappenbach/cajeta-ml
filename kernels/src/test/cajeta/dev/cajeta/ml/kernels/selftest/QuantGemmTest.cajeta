@@ -1,0 +1,39 @@
+package dev.cajeta.ml.kernels.selftest;
+
+import dev.cajeta.ml.kernels.quant.Q2kBlock;
+import dev.cajeta.ml.kernels.quant.Q3kBlock;
+import dev.cajeta.ml.kernels.quant.Q5kBlock;
+import dev.cajeta.ml.kernels.quant.Q6kBlock;
+
+/** kernel-drivers 10.2.4: the other K formats' GEMM by name, held through the interface, against the GEMM from the pieces on a ragged and a whole-tile batch. */
+public class QuantGemmTest {
+    public QuantGemmTest() { return; }
+
+    @Test
+    public void q5kByNameEqualsThePieces() {
+        int8[] f #= Q5kBlockTest.weight(256L * 2L);
+        heap QuantGemmCheck<Q5kBlock>().check("Q5kBlock", f, 37L, 256L, 512L);
+        heap QuantGemmCheck<Q5kBlock>().check("Q5kBlock", f, 128L, 256L, 512L);
+    }
+
+    @Test
+    public void q6kByNameEqualsThePieces() {
+        int8[] f #= Q6kBlockTest.weight(256L * 2L);
+        heap QuantGemmCheck<Q6kBlock>().check("Q6kBlock", f, 37L, 256L, 512L);
+        heap QuantGemmCheck<Q6kBlock>().check("Q6kBlock", f, 128L, 256L, 512L);
+    }
+
+    @Test
+    public void q3kByNameEqualsThePieces() {
+        int8[] f #= Q3kBlockTest.weight(256L * 2L);
+        heap QuantGemmCheck<Q3kBlock>().check("Q3kBlock", f, 37L, 256L, 512L);
+        heap QuantGemmCheck<Q3kBlock>().check("Q3kBlock", f, 128L, 256L, 512L);
+    }
+
+    @Test
+    public void q2kByNameEqualsThePieces() {
+        int8[] f #= Q2kBlockTest.weight(256L * 2L);
+        heap QuantGemmCheck<Q2kBlock>().check("Q2kBlock", f, 37L, 256L, 512L);
+        heap QuantGemmCheck<Q2kBlock>().check("Q2kBlock", f, 128L, 256L, 512L);
+    }
+}

@@ -1,0 +1,24 @@
+package dev.cajeta.ml.kernels.gemm;
+
+import cajeta.lang.String;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+
+/** A block-quantized GEMM by name over q8_K activations, whatever its weight format ({@link BlockGemm} for each K piece), so a caller holds one per format. */
+public interface QuantGemm {
+    /** True where the weight is held in the row driver's 8-row interleave; false where it keeps the file layout. */
+    boolean packsRows();
+
+    /** The token rows `xp` and `y` must hold for {@link #run} of `tokens`. */
+    int64 tokensFor(int64 tokens);
+
+    /** The shape store the GPU choice is remembered in across runs ("" keeps none). */
+    void setShapeDir(String d);
+
+    /** Makes {@link #run}'s choice for `tokens` by `outDim` by `cols` ahead of it, writing no output. Queued on `s`. */
+    void prewarm(KernelStream s, KernelBuffer<int8> w, KernelBuffer<int8> xp, int64 tokens, int64 outDim, int64 cols);
+
+    /** `y` set (or added to) for `tokens` q8_K rows in `xp`; queued on `s`. */
+    void run(KernelStream s, KernelBuffer<float32> y, KernelBuffer<int8> w, KernelBuffer<int8> xp,
+            int64 tokens, int64 outDim, int64 cols, boolean accum);
+}

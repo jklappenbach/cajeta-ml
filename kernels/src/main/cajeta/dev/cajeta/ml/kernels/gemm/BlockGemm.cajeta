@@ -16,7 +16,7 @@ import dev.cajeta.ml.kernels.tune.TileFamily;
  * of a problem and remembered, split over K ({@link TileSplitFixup}) where its tiles leave compute
  * units idle.
  */
-public final class BlockGemm<P> {
+public final class BlockGemm<P> implements QuantGemm {
     BlockGemmRows8<P> rows;
     TileFamily<BlockTileMember> tiles;
     KernelBuffer<float32> part;

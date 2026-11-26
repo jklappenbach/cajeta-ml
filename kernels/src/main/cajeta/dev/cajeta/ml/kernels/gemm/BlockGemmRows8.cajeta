@@ -43,14 +43,60 @@ public final class BlockGemmRows8<P> {
     public int64 packedBytes(int64 rows, int64 bpr) { return ((rows + 7L) / 8L) * bpr * this.groupBytes(); }
 
     /** Bytes of one block of a row group: header, eight rows' quants, eight rows' side plane. */
-    public int64 groupBytes() { return this.quantsAt() + 8L * (int64) (P.quantBytes() + P.planeBytes()); }
+    public int64 groupBytes() { return BlockGemmRows8.quantBase() + 8L * (int64) (P.quantBytes() + P.planeBytes()); }
 
     /** Offset of the scales in a packed block. */
-    int64 scalesAt() { return P.offset() == 0 ? 64L : 32L; }
+    @Device
+    static int64 scaleBase() { return P.offset() == 0 ? 64L : 32L; }
+
+    /** Offset of the mins in a packed block: after the scales, or the scale bytes themselves where a byte holds both. */
+    @Device
+    static int64 minBase() {
+        if (P.offset() == 0 && P.rowsLayout() != 2) { return BlockGemmRows8.scaleBase() + 8L * (int64) P.subBlocks(); }
+        return BlockGemmRows8.scaleBase();
+    }
 
     /** Offset of the quants in a packed block. */
-    int64 quantsAt() {
-        return this.scalesAt() + 8L * (int64) P.subBlocks() * (P.offset() == 0 ? 2L : 1L);
+    @Device
+    static int64 quantBase() { return BlockGemmRows8.minBase() + 8L * (int64) P.subBlocks(); }
+
+    /** Offset of quant quad `kq` (file bytes `4 kq ..`) from the quants, lane 0. */
+    @Device
+    static int64 quadAt(int64 kq) {
+        if (P.rowsLayout() == 1) { return 96L * (8L * (kq / 16L) + kq % 8L) + 32L * ((kq % 16L) / 8L); }
+        return 32L * kq;
+    }
+
+    /** Offset of plane quad `kp` from the quants, lane 0. */
+    @Device
+    static int64 planeAt(int64 kp) {
+        if (P.rowsLayout() == 1) { return 96L * kp + 64L; }
+        return 8L * (int64) P.quantBytes() + 32L * kp;
+    }
+
+    /** Eight rows' scales at `at`, a row a lane: the byte, or its low nibble where it holds the min too. */
+    @Device
+    static Vector<int32,8> scales(KernelBuffer<int8> w, int64 at) {
+        Vector<int32,8> v = BlockGemmRows8.lanes(w, at);
+        if (P.rowsLayout() == 2) { return v & 15; }
+        return v;
+    }
+
+    /** Eight rows' mins at `at`: the byte, or its high nibble where it holds the scale too. */
+    @Device
+    static Vector<int32,8> mins(KernelBuffer<int8> w, int64 at) {
+        Vector<int32,8> v = BlockGemmRows8.lanes(w, at);
+        if (P.rowsLayout() == 2) { return (v >> 4) & 15; }
+        return v;
+    }
+
+    /** Quads `q` and `q + 1` of a run, 64 bytes, the first at `at`. */
+    @Device
+    static Vector<uint8,64> pair(KernelBuffer<int8> w, int64 at) {
+        if (P.rowsLayout() != 1) { return w.vload<64>(at).asUnsigned(); }
+        Vector<int32,8> a = w.vload<32>(at).asWords();
+        Vector<int32,8> b = w.vload<32>(at + 96L).asWords();
+        return heap Vector<int32,16>(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]).asBytes().asUnsigned();
     }
 
     static int32 u8(int8[] raw, int64 at) { return (int32) raw[at] & 255; }
@@ -82,9 +128,11 @@ public final class BlockGemmRows8<P> {
         int64 pn = (int64) P.planeBytes();
         int64 qn = (int64) P.quantBytes();
         int64 gb = this.groupBytes();
-        int64 so = this.scalesAt();
-        int64 qa = this.quantsAt();
+        int64 so = BlockGemmRows8.scaleBase();
+        int64 mo = BlockGemmRows8.minBase();
+        int64 qa = BlockGemmRows8.quantBase();
         boolean own = P.offset() == 0;
+        boolean whole = P.rowsLayout() == 2;
         int64 r = 0L;
         while (r < rows) {
             int64 lane = r % 8L;
@@ -100,18 +148,21 @@ public final class BlockGemmRows8<P> {
                 if (own) { BlockGemmRows8.putI32(out, wo + 32L + lane * 4L, Cajeta.f32ToBits(P.dminOf(ha, hb))); }
                 uint32 j = 0;
                 while (j < P.subBlocks()) {
-                    out[wo + so + 8L * (int64) j + lane] = (int8) P.scaleOf(ha, hb, j);
-                    if (own) { out[wo + so + 8L * (int64) (P.subBlocks() + j) + lane] = (int8) P.minOf(ha, hb, j); }
+                    if (whole) { out[wo + so + 8L * (int64) j + lane] = (int8) (P.scaleOf(ha, hb, j) | (P.minOf(ha, hb, j) << 4)); }
+                    else {
+                        out[wo + so + 8L * (int64) j + lane] = (int8) P.scaleOf(ha, hb, j);
+                        if (own) { out[wo + mo + 8L * (int64) j + lane] = (int8) P.minOf(ha, hb, j); }
+                    }
                     j = j + 1;
                 }
                 int64 k = 0L;
                 while (k < qn) {
-                    out[wo + qa + 32L * (k / 4L) + 4L * lane + (k % 4L)] = packed[ro + qo + k];
+                    out[wo + qa + BlockGemmRows8.quadAt(k / 4L) + 4L * lane + (k % 4L)] = packed[ro + qo + k];
                     k = k + 1L;
                 }
                 k = 0L;
                 while (k < pn) {
-                    out[wo + qa + 8L * qn + 32L * (k / 4L) + 4L * lane + (k % 4L)] = packed[ro + po + k];
+                    out[wo + qa + BlockGemmRows8.planeAt(k / 4L) + 4L * lane + (k % 4L)] = packed[ro + po + k];
                     k = k + 1L;
                 }
                 b = b + 1L;
@@ -182,11 +233,10 @@ public final class BlockGemmRows8<P> {
             int64 cEnd = cBeg + chunk < nc ? cBeg + chunk : nc;
             int64 sb = (int64) P.subBlocks();
             int64 own = P.offset() == 0 ? 1L : 0L;
-            int64 so = 32L + 32L * own;
-            int64 mo = so + 8L * sb * own;
-            int64 qo = mo + 8L * sb;
-            int64 po = qo + 8L * (int64) P.quantBytes();
-            int64 gb = po + 8L * (int64) P.planeBytes();
+            int64 so = BlockGemmRows8.scaleBase();
+            int64 mo = BlockGemmRows8.minBase();
+            int64 qo = BlockGemmRows8.quantBase();
+            int64 gb = qo + 8L * (int64) (P.quantBytes() + P.planeBytes());
             int64 wg = (int64) gr * blocksPerRow * gb;
             Vector<int32,8> z8 = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
             Vector<float32,8> zf = z8.toF32();
@@ -229,9 +279,9 @@ public final class BlockGemmRows8<P> {
                         for (int64 h = Unroll.from(0L); h < 2L; h = h + 1L) {
                             for (int64 q4 = Unroll.from(0L); q4 < 4L; q4 = q4 + 1L) {
                                 int64 q = 4L * h + q4;
-                                Vector<uint8,32> rq = w.vload<32>(wo + qo + 32L * (8L * (int64) P.quantRun((int32) g) + q)).asUnsigned();
+                                Vector<uint8,32> rq = w.vload<32>(wo + qo + BlockGemmRows8.quadAt(8L * (int64) P.quantRun((int32) g) + q)).asUnsigned();
                                 Vector<uint8,32> plane = rq;
-                                if (P.planeBytes() != 0) { plane = w.vload<32>(wo + po + 32L * (8L * (int64) P.planeRun((int32) g) + q)).asUnsigned(); }
+                                if (P.planeBytes() != 0) { plane = w.vload<32>(wo + qo + BlockGemmRows8.planeAt(8L * (int64) P.planeRun((int32) g) + q)).asUnsigned(); }
                                 Vector<uint8,32> lq = P.lowBytes<32>(rq, plane, (int32) g);
                                 Vector<uint8,32> hq = P.highBytes<32>(rq, plane, (int32) g);
                                 int64 al = xo + 32L * ls + 4L * q;
@@ -247,8 +297,8 @@ public final class BlockGemmRows8<P> {
                             }
                             if (sb == 16L || h == 1L) {
                                 int64 half = sb == 16L ? h : 0L;
-                                Vector<int32,8> scl = BlockGemmRows8.lanes(w, wo + so + 8L * (ls * (sb / 8L) + half));
-                                Vector<int32,8> sch = BlockGemmRows8.lanes(w, wo + so + 8L * (hs * (sb / 8L) + half));
+                                Vector<int32,8> scl = BlockGemmRows8.scales(w, wo + so + 8L * (ls * (sb / 8L) + half));
+                                Vector<int32,8> sch = BlockGemmRows8.scales(w, wo + so + 8L * (hs * (sb / 8L) + half));
                                 si0 = si0 + tl0 * scl + th0 * sch;
                                 si1 = si1 + tl1 * scl + th1 * sch;
                                 si2 = si2 + tl2 * scl + th2 * sch;
@@ -293,7 +343,7 @@ public final class BlockGemmRows8<P> {
                     Vector<int32,8> dm3 = z8;
                     for (int64 j = Unroll.from(0L); j < 16L; j = j + 1L) {
                         if (j < sb) {
-                            Vector<int32,8> m = BlockGemmRows8.lanes(w, wo + mo + 8L * j);
+                            Vector<int32,8> m = BlockGemmRows8.mins(w, wo + mo + 8L * j);
                             int64 l = j % 8L;
                             if (j < 8L) {
                                 dm0 = dm0 + m * ga0[l];
@@ -333,11 +383,10 @@ public final class BlockGemmRows8<P> {
         int64 r0 = (int64) gr * 8L;
         int64 sb = (int64) P.subBlocks();
         int64 own = P.offset() == 0 ? 1L : 0L;
-        int64 so = 32L + 32L * own;
-        int64 mo = so + 8L * sb * own;
-        int64 qo = mo + 8L * sb;
-        int64 po = qo + 8L * (int64) P.quantBytes();
-        int64 gb = po + 8L * (int64) P.planeBytes();
+        int64 so = BlockGemmRows8.scaleBase();
+        int64 mo = BlockGemmRows8.minBase();
+        int64 qo = BlockGemmRows8.quantBase();
+        int64 gb = qo + 8L * (int64) (P.quantBytes() + P.planeBytes());
         int64 wg = wBase + (int64) gr * blocksPerRow * gb;
         Vector<int32,8> z8 = heap Vector<int32,8>(0, 0, 0, 0, 0, 0, 0, 0);
         Vector<int32,16> z16 = heap Vector<int32,16>(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -362,9 +411,9 @@ public final class BlockGemmRows8<P> {
                 for (int64 h = Unroll.from(0L); h < 2L; h = h + 1L) {
                     for (int64 q2 = Unroll.from(0L); q2 < 2L; q2 = q2 + 1L) {
                         int64 q = 4L * h + 2L * q2;
-                        Vector<uint8,64> rq = w.vload<64>(wo + qo + 32L * (8L * (int64) P.quantRun((int32) g) + q)).asUnsigned();
+                        Vector<uint8,64> rq = BlockGemmRows8.pair(w, wo + qo + BlockGemmRows8.quadAt(8L * (int64) P.quantRun((int32) g) + q));
                         Vector<uint8,64> plane = rq;
-                        if (P.planeBytes() != 0) { plane = w.vload<64>(wo + po + 32L * (8L * (int64) P.planeRun((int32) g) + q)).asUnsigned(); }
+                        if (P.planeBytes() != 0) { plane = BlockGemmRows8.pair(w, wo + qo + BlockGemmRows8.planeAt(8L * (int64) P.planeRun((int32) g) + q)); }
                         Vector<uint8,64> lq = P.lowBytes<64>(rq, plane, (int32) g);
                         Vector<uint8,64> hq = P.highBytes<64>(rq, plane, (int32) g);
                         wl = lq.dotAccum(BlockGemmRows8.quad2(xp, x0 + xo + 32L * ls + 4L * q), wl);
@@ -372,8 +421,8 @@ public final class BlockGemmRows8<P> {
                     }
                     if (sb == 16L || h == 1L) {
                         int64 half = sb == 16L ? h : 0L;
-                        Vector<int32,8> scl = BlockGemmRows8.lanes(w, wo + so + 8L * (ls * (sb / 8L) + half));
-                        Vector<int32,8> sch = BlockGemmRows8.lanes(w, wo + so + 8L * (hs * (sb / 8L) + half));
+                        Vector<int32,8> scl = BlockGemmRows8.scales(w, wo + so + 8L * (ls * (sb / 8L) + half));
+                        Vector<int32,8> sch = BlockGemmRows8.scales(w, wo + so + 8L * (hs * (sb / 8L) + half));
                         si0 = si0 + BlockGemmRows8.fold(wl) * scl + BlockGemmRows8.fold(wh) * sch;
                         wl = z16;
                         wh = z16;
@@ -391,7 +440,7 @@ public final class BlockGemmRows8<P> {
             Vector<int32,8> dm0 = z8;
             for (int64 j = Unroll.from(0L); j < 16L; j = j + 1L) {
                 if (j < sb) {
-                    Vector<int32,8> m = BlockGemmRows8.lanes(w, wo + mo + 8L * j);
+                    Vector<int32,8> m = BlockGemmRows8.mins(w, wo + mo + 8L * j);
                     int64 l = j % 8L;
                     if (j < 8L) {
                         dm0 = dm0 + m * ga0[l];

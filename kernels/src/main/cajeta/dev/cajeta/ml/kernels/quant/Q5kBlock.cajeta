@@ -51,6 +51,11 @@ public final class Q5kBlock {
     public static uint32 quantScaleMax() { return 1953; }
 
     @Device
+    /** cajeta-llm's 8-row cpu interleave for this format, as `BlockGemmRows8` packs and reads it: 0 runs in file order, 1 Q6_K's quant and plane quads interleaved a 96-byte step, 2 the scale-and-min bytes kept whole. */
+    @Device
+    public static uint32 rowsLayout() { return 0; }
+
+    @Device
     public static uint32 offset() { return 0; }
 
     /** Which 32-byte run of the side plane the quant run `g` reads. */
