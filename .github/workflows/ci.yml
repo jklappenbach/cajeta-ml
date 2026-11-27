@@ -89,7 +89,8 @@ env:
   # kernels size their launches with, and MFMA on CDNA3 (datacenter-gpus 3).
   # v0.54.0 adds CooperativeMatrix.storeAs<U>, which the 16-bit-output GEMMs
   # store their interior tiles with (coop-converting-store).
-  CAJETA_VERSION: v0.54.0
+  # v0.55.0 adds the vector width as a method's value parameter, which kernels 0.2.20's pieces use.
+  CAJETA_VERSION: v0.55.0
 
 jobs:
   build-test:
